@@ -23,6 +23,7 @@ Initial open-source preview release for a self-hosted single-creator membership 
 - Process-local rate-limit cleanup and bucket cap.
 - Config encryption root key generation and persistence for Docker deployments.
 - Health and readiness endpoints.
+- Private vulnerability reporting guidance.
 
 ### Theme
 
@@ -40,6 +41,12 @@ Initial open-source preview release for a self-hosted single-creator membership 
 - Manual translation management and AI-assisted draft generation.
 - Translation provider config with OpenAI-compatible chat completions.
 - Review workflow and machine-translation label policy.
+
+### Repository and License
+
+- Public repository moved to `39mikuu/OpenLayerlyPro`.
+- Project licensed under `AGPL-3.0-only`.
+- Added README, security policy, contribution guide, release audit, release checklist, and GitHub templates.
 
 ### Known Limitations
 
