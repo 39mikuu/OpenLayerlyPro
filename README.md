@@ -6,7 +6,6 @@ OpenLayerlyPro helps independent illustrators and creators run their own members
 
 Current status: **v0.1 preview / alpha**. The project is suitable for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, and backups.
 
-It is not affiliated with FANBOX, Patreon, Pixiv, Afdian, payment platforms, or social platforms.
 
 ## 核心特性
 
