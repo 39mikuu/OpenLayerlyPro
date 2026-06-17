@@ -1,0 +1,69 @@
+import { count, eq } from "drizzle-orm";
+import { NextRequest } from "next/server";
+import { z } from "zod";
+
+import { getDb } from "@/db";
+import { memberships, membershipTiers, paymentRequests, posts } from "@/db/schema";
+import { handleApiError, jsonError, jsonOk } from "@/lib/api";
+import { requireAdmin } from "@/modules/auth/session";
+
+export const runtime = "nodejs";
+
+const patchSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  slug: z
+    .string()
+    .min(1)
+    .max(100)
+    .regex(/^[a-z0-9-]+$/)
+    .optional(),
+  description: z.string().max(2000).nullable().optional(),
+  priceLabel: z.string().min(1).max(100).optional(),
+  level: z.number().int().min(1).optional(),
+  durationDays: z.number().int().min(1).optional(),
+  purchaseEnabled: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
+});
+
+export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    await requireAdmin();
+    const { id } = await ctx.params;
+    const input = patchSchema.parse(await req.json());
+    const [tier] = await getDb()
+      .update(membershipTiers)
+      .set({ ...input, updatedAt: new Date() })
+      .where(eq(membershipTiers.id, id))
+      .returning();
+    if (!tier) return jsonError(404, "tierNotFound");
+    return jsonOk(tier);
+  } catch (err) {
+    return handleApiError(err);
+  }
+}
+
+export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    await requireAdmin();
+    const { id } = await ctx.params;
+    const db = getDb();
+    const [[m], [pr], [po]] = await Promise.all([
+      db.select({ c: count() }).from(memberships).where(eq(memberships.tierId, id)),
+      db.select({ c: count() }).from(paymentRequests).where(eq(paymentRequests.tierId, id)),
+      db.select({ c: count() }).from(posts).where(eq(posts.requiredTierId, id)),
+    ]);
+    const refs = {
+      memberships: Number(m.c),
+      payments: Number(pr.c),
+      posts: Number(po.c),
+    };
+    if (Object.values(refs).some((value) => value > 0)) {
+      return jsonError(400, "tierInUse", refs);
+    }
+    await db.delete(membershipTiers).where(eq(membershipTiers.id, id));
+    return jsonOk({ deleted: true });
+  } catch (err) {
+    return handleApiError(err);
+  }
+}

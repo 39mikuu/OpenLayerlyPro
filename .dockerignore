@@ -1,0 +1,10 @@
+node_modules
+.next
+.git
+uploads
+.env
+.env.*
+!.env.example
+
+docker-compose*.yml
+Dockerfile

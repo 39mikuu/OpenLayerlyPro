@@ -1,0 +1,31 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://artist:artist_password@postgres:5432/artist_member
+      UPLOAD_DIR: /app/uploads
+    depends_on:
+      - postgres
+    volumes:
+      - uploads:/app/uploads
+      - secrets:/app/secrets
+    ports:
+      - "3000:3000"
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: artist_member
+      POSTGRES_USER: artist
+      POSTGRES_PASSWORD: artist_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+  uploads:
+  secrets:

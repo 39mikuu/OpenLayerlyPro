@@ -1,0 +1,1 @@
+ALTER TABLE "posts" ADD CONSTRAINT "posts_required_tier_id_membership_tiers_id_fk" FOREIGN KEY ("required_tier_id") REFERENCES "public"."membership_tiers"("id") ON DELETE no action ON UPDATE no action;

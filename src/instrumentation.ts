@@ -1,0 +1,16 @@
+/**
+ * Next.js 服务启动钩子：启动时立即执行环境变量校验。
+ * 生产环境配置不安全（如默认/过短的 SESSION_SECRET）时 getEnv 会抛错，
+ * 应用直接启动失败，而不是等到首个请求才报错。
+ */
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    try {
+      const { getEnv } = await import("@/lib/env");
+      getEnv();
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  }
+}

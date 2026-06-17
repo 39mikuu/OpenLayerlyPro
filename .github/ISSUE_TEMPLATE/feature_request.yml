@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest an improvement for OpenLayerlyPro.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or operator problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the smallest useful version of the feature.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Admin
+        - Public theme
+        - Auth/session/security
+        - Payment/review
+        - File/storage/download
+        - i18n/translation
+        - Deployment
+        - Plugin/theme future
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: What should this feature not include?

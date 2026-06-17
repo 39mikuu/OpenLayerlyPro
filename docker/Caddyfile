@@ -1,0 +1,18 @@
+# Caddy 自动 HTTPS 反向代理：为 {$APP_DOMAIN} 自动签发并续期 Let's Encrypt 证书，
+# 把流量反代到内部的 app 容器（仅监听 HTTP:3000）。
+#
+# Caddy 的 reverse_proxy 会自动追加 X-Forwarded-For（真实客户端 IP 在末位）、
+# X-Forwarded-Proto、X-Forwarded-Host。配合 .env 的 TRUSTED_PROXY_HOPS=1，
+# 应用即可取到可信的真实客户端 IP。
+#
+# 安全前提：app 的 3000 端口不能直接对公网开放，否则攻击者可绕过 Caddy 直接发伪造
+# 的 X-Forwarded-For。生产部署请把 docker-compose.yml 中 app 的端口改为
+# "127.0.0.1:3000:3000" 或用防火墙只放行 Caddy。
+#
+# 无需 ACME 邮箱即可自动签发证书。如需指定，在下方站点块前加全局选项：
+#   { email you@example.com }
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:3000
+}

@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible bug in OpenLayerlyPro.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not include secrets, session tokens, SMTP passwords, S3 keys, or private payment screenshots.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: "Example: v0.1.0-preview or a commit SHA."
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Docker Compose
+        - Cloudflare Tunnel
+        - Reverse proxy / VPS
+        - Local development
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Remove secrets before posting.

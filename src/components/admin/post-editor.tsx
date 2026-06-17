@@ -1,0 +1,330 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+import { PostTranslationEditor } from "@/components/admin/post-translation-editor";
+import { useT } from "@/components/i18n-provider";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { api, uploadFile } from "@/lib/client";
+
+type TierOption = { id: string; name: string; level: number };
+
+type PostData = {
+  id: string;
+  title: string;
+  slug: string;
+  summary: string | null;
+  body: string | null;
+  coverFileId: string | null;
+  visibility: "public" | "login" | "member";
+  requiredTierId: string | null;
+  status: string;
+  originalLocale: string;
+};
+
+type AttachedFile = {
+  fileId: string;
+  kind: string;
+  originalName: string;
+  sizeBytes: number;
+};
+
+export function PostEditor({
+  post,
+  tiers,
+  attachedFiles,
+}: {
+  post: PostData | null;
+  tiers: TierOption[];
+  attachedFiles: AttachedFile[];
+}) {
+  const router = useRouter();
+  const t = useT();
+  const isNew = !post;
+  const [form, setForm] = useState({
+    title: post?.title ?? "",
+    slug: post?.slug ?? "",
+    summary: post?.summary ?? "",
+    body: post?.body ?? "",
+    visibility: post?.visibility ?? ("public" as const),
+    requiredTierId: post?.requiredTierId ?? "",
+    coverFileId: post?.coverFileId ?? null,
+  });
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function run(fn: () => Promise<void>) {
+    setLoading(true);
+    setMessage(null);
+    try {
+      await fn();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : t("admin.common.operationFailed"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function payload() {
+    return {
+      title: form.title,
+      slug: form.slug,
+      summary: form.summary || null,
+      body: form.body || null,
+      coverFileId: form.coverFileId,
+      visibility: form.visibility,
+      requiredTierId: form.visibility === "member" ? form.requiredTierId || null : null,
+    };
+  }
+
+  async function save() {
+    await run(async () => {
+      if (isNew) {
+        const created = await api<{ id: string }>("/api/admin/posts", {
+          method: "POST",
+          body: payload(),
+        });
+        router.push(`/admin/posts/${created.id}`);
+        router.refresh();
+      } else {
+        await api(`/api/admin/posts/${post.id}`, { method: "PUT", body: payload() });
+        setMessage(t("admin.common.saved"));
+        router.refresh();
+      }
+    });
+  }
+
+  async function uploadAndAttach(file: File, kind: "image" | "attachment") {
+    if (!post) return;
+    await run(async () => {
+      const purpose = kind === "image" ? "content_image" : "content_attachment";
+      const record = await uploadFile<{ id: string }>("/api/admin/files/upload", file, {
+        purpose,
+      });
+      await api(`/api/admin/posts/${post.id}/files`, {
+        method: "POST",
+        body: { fileId: record.id, kind },
+      });
+      setMessage(t("admin.posts.fileAdded"));
+      router.refresh();
+    });
+  }
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <Label>{t("admin.posts.titleColumn")}</Label>
+            <Input
+              value={form.title}
+              onChange={(e) => setForm({ ...form, title: e.target.value })}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label>{t("admin.posts.slug")}</Label>
+            <Input value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} />
+          </div>
+        </div>
+        <div className="space-y-1">
+          <Label>{t("admin.posts.summary")}</Label>
+          <Input
+            value={form.summary}
+            onChange={(e) => setForm({ ...form, summary: e.target.value })}
+          />
+        </div>
+        <div className="space-y-1">
+          <Label>{t("admin.posts.body")}</Label>
+          <Textarea
+            rows={8}
+            value={form.body}
+            onChange={(e) => setForm({ ...form, body: e.target.value })}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <Label>{t("admin.posts.visibility")}</Label>
+            <select
+              className="border rounded-md h-9 px-2 w-full bg-transparent text-sm"
+              value={form.visibility}
+              onChange={(e) =>
+                setForm({ ...form, visibility: e.target.value as typeof form.visibility })
+              }
+            >
+              <option value="public">{t("admin.posts.public")}</option>
+              <option value="login">{t("admin.posts.login")}</option>
+              <option value="member">{t("admin.posts.member")}</option>
+            </select>
+          </div>
+          {form.visibility === "member" && (
+            <div className="space-y-1">
+              <Label>{t("admin.posts.requiredTier")}</Label>
+              <select
+                className="border rounded-md h-9 px-2 w-full bg-transparent text-sm"
+                value={form.requiredTierId}
+                onChange={(e) => setForm({ ...form, requiredTierId: e.target.value })}
+              >
+                <option value="">{t("admin.posts.choose")}</option>
+                {tiers.map((tier) => (
+                  <option key={tier.id} value={tier.id}>
+                    {t("admin.posts.tierLevel", { name: tier.name, level: tier.level })}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+        <div className="space-y-2">
+          <Label>{t("admin.posts.cover")}</Label>
+          {form.coverFileId && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={`/api/files/${form.coverFileId}/download`}
+              alt={t("admin.posts.coverAlt")}
+              className="w-48 rounded-md border"
+            />
+          )}
+          <Input
+            type="file"
+            accept=".jpg,.jpeg,.png,.webp"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              run(async () => {
+                const record = await uploadFile<{ id: string }>("/api/admin/files/upload", file, {
+                  purpose: "cover",
+                });
+                setForm((f) => ({ ...f, coverFileId: record.id }));
+                setMessage(t("admin.posts.coverUploaded"));
+              });
+            }}
+          />
+        </div>
+        {message && <p className="text-sm text-muted-foreground">{message}</p>}
+        <div className="flex gap-2">
+          <Button disabled={loading || !form.title || !form.slug} onClick={save}>
+            {isNew ? t("admin.posts.createDraft") : t("admin.common.save")}
+          </Button>
+          {!isNew && post.status !== "published" && (
+            <Button
+              variant="outline"
+              disabled={loading}
+              onClick={() =>
+                run(async () => {
+                  await api(`/api/admin/posts/${post.id}/publish`, { method: "POST" });
+                  setMessage(t("admin.posts.published"));
+                  router.refresh();
+                })
+              }
+            >
+              {t("admin.posts.publish")}
+            </Button>
+          )}
+          {!isNew && post.status === "published" && (
+            <Button
+              variant="outline"
+              disabled={loading}
+              onClick={() =>
+                run(async () => {
+                  await api(`/api/admin/posts/${post.id}/archive`, { method: "POST" });
+                  setMessage(t("admin.posts.archived"));
+                  router.refresh();
+                })
+              }
+            >
+              {t("admin.posts.archive")}
+            </Button>
+          )}
+          {!isNew && (
+            <Button
+              variant="destructive"
+              disabled={loading}
+              onClick={() =>
+                run(async () => {
+                  if (!confirm(t("admin.posts.confirmDelete"))) return;
+                  await api(`/api/admin/posts/${post.id}`, { method: "DELETE" });
+                  router.push("/admin/posts");
+                  router.refresh();
+                })
+              }
+            >
+              {t("admin.common.delete")}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {!isNew && <PostTranslationEditor postId={post.id} originalLocale={post.originalLocale} />}
+
+      {!isNew && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">{t("admin.posts.gallery")}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              {attachedFiles.length === 0 && (
+                <p className="text-sm text-muted-foreground">{t("admin.posts.noFiles")}</p>
+              )}
+              {attachedFiles.map((f) => (
+                <div
+                  key={f.fileId}
+                  className="flex items-center justify-between border rounded-md px-3 py-2 text-sm"
+                >
+                  <span className="truncate mr-2">
+                    [{t(f.kind === "image" ? "admin.posts.image" : "admin.posts.attachment")}]{" "}
+                    {f.originalName}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={loading}
+                    onClick={() =>
+                      run(async () => {
+                        await api(`/api/admin/posts/${post.id}/files`, {
+                          method: "DELETE",
+                          body: { fileId: f.fileId },
+                        });
+                        router.refresh();
+                      })
+                    }
+                  >
+                    {t("admin.common.remove")}
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>{t("admin.posts.uploadImage")}</Label>
+                <Input
+                  type="file"
+                  accept=".jpg,.jpeg,.png,.webp,.gif"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) uploadAndAttach(file, "image");
+                  }}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>{t("admin.posts.uploadAttachment")}</Label>
+                <Input
+                  type="file"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) uploadAndAttach(file, "attachment");
+                  }}
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}

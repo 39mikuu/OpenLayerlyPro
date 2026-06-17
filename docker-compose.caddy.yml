@@ -1,0 +1,20 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      # 反代的对外域名（A 记录指向本机）。在 .env 中设置 APP_DOMAIN。
+      - APP_DOMAIN=${APP_DOMAIN}
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

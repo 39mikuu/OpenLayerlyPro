@@ -1,0 +1,2 @@
+-- users.locale is stored as PostgreSQL text, so it already accepts "ja".
+-- This migration records the application-level locale contract expansion without unnecessary DDL.
