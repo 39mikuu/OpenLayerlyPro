@@ -79,6 +79,15 @@ async function assertOwnProofFile(proofFileId: string, userId: string): Promise<
   }
 }
 
+async function assertActivePaymentMethod(paymentMethodId: string): Promise<void> {
+  const [method] = await getDb()
+    .select()
+    .from(paymentMethods)
+    .where(and(eq(paymentMethods.id, paymentMethodId), eq(paymentMethods.isActive, true)))
+    .limit(1);
+  if (!method) throw new ApiError(400, "paymentMethodUnavailable");
+}
+
 export async function createPaymentRequest(input: {
   userId: string;
   tierId: string;
@@ -94,6 +103,7 @@ export async function createPaymentRequest(input: {
     .limit(1);
   if (!tier || !tier.isActive) throw new ApiError(404, "tierNotFound");
   if (!tier.purchaseEnabled) throw new ApiError(400, "tierUnavailable");
+  if (input.paymentMethodId) await assertActivePaymentMethod(input.paymentMethodId);
   if (input.proofFileId) await assertOwnProofFile(input.proofFileId, input.userId);
 
   // 同等级 pending 去重（PRD §10.8）
