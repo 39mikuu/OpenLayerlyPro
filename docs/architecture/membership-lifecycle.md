@@ -105,7 +105,9 @@ extendMembership(id,  { days,   actor, expectedVersion }): Promise<Membership>
 
 ## 7. 与 grantMembership 的关系
 
-`grantMembership` 的顺延叠加语义不变（ADR 0001）。新建行 `status` 默认 `active`、`version=0`，并在同事务写一条 `audit_events`（`action='grant'`）。付款审核触发的 grant，其审计事件与付款 `approve` 事件共享 `correlation_id`（#6）。
+`grantMembership` 的顺延叠加语义不变（ADR 0001）。新建行 `status` 默认 `active`、`version=0`，并在同事务写一条 `audit_events`（`action='grant'`）。付款审核触发的 grant，其审计事件与付款 `approve` 事件共享 `correlation_id`，并把 `causation_id` 指向该 approve 事件 id（ADR 0002，#6）。
+
+> 注意：续费叠加时新行 `startsAt = 现有 endsAt`（未来时刻），即该 grant 一开始即为派生态 `scheduled`。这是 scheduled 态的真实来源，#4 实现与测试需覆盖「叠加产生的未来 grant」。
 
 ## 8. 测试清单（#4 验收）
 
