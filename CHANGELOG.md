@@ -4,6 +4,12 @@
 
 Initial open-source preview release for a self-hosted single-creator membership site.
 
+### Membership Lifecycle
+
+- Added explicit `active`, `suspended`, and `revoked` membership states with optimistic locking.
+- Added transactional grant, suspend, resume, revoke, and extend audit history.
+- Disabled or hidden tiers no longer revoke access from existing paid memberships; tier availability now controls selling and display only.
+
 ### MVP
 
 - Site initialization and admin setup.
