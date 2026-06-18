@@ -14,12 +14,10 @@ import {
   users,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
-import { logger } from "@/lib/logger";
 import { recordAudit } from "@/modules/audit";
-import { getSmtpConfig } from "@/modules/config";
-import { sendMembershipActivatedEmail, sendPaymentRejectedEmail } from "@/modules/mail";
 import { grantMembership, revokeMembership } from "@/modules/membership";
 import { recordEvent } from "@/modules/system/events";
+import { enqueueTask } from "@/modules/tasks";
 
 // ---------- 收款方式 ----------
 
@@ -281,7 +279,7 @@ export async function approvePaymentRequest(
 
   // 状态流转与会员开通在同一事务内完成；
   // 条件更新作为并发守卫，重复审核（双击/重试）只会有一次成功
-  const { updated, tier, membership } = await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
     const [row] = await tx
       .update(paymentRequests)
       .set({
@@ -323,23 +321,23 @@ export async function approvePaymentRequest(
       .where(eq(paymentRequests.id, row.id))
       .returning();
     if (!updated) throw new Error("Failed to link granted membership");
-    return { updated, ...granted };
+    const [user] = await tx.select().from(users).where(eq(users.id, row.userId)).limit(1);
+    if (!user) throw new Error("Payment request user not found");
+    await enqueueTask(tx, {
+      kind: "email",
+      dedupeKey: `email:membership_activated:${requestId}`,
+      payload: {
+        template: "membership_activated",
+        to: user.email,
+        locale: user.locale,
+        params: {
+          tierName: granted.tier.name,
+          endsAt: granted.membership.endsAt.toISOString(),
+        },
+      },
+    });
+    return updated;
   });
-
-  if ((await getSmtpConfig()).configured) {
-    const [user] = await db.select().from(users).where(eq(users.id, request.userId)).limit(1);
-    if (user) {
-      try {
-        await sendMembershipActivatedEmail(user.email, tier.name, membership.endsAt, user.locale);
-      } catch (err) {
-        logger.error("会员开通邮件发送失败", {
-          requestId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  }
-  return updated;
 }
 
 export async function rejectPaymentRequest(
@@ -351,15 +349,16 @@ export async function rejectPaymentRequest(
   const request = await getPaymentRequest(requestId);
   if (!request) throw new ApiError(404, "paymentRequestNotFound");
   const correlationId = randomUUID();
-  const updated = await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
+    const reviewedAt = new Date();
     const [row] = await tx
       .update(paymentRequests)
       .set({
         status: "rejected",
         reviewNote: reviewNote ?? null,
         reviewedBy: reviewerId,
-        reviewedAt: new Date(),
-        updatedAt: new Date(),
+        reviewedAt,
+        updatedAt: reviewedAt,
       })
       .where(and(eq(paymentRequests.id, requestId), eq(paymentRequests.status, "pending_review")))
       .returning();
@@ -374,28 +373,28 @@ export async function rejectPaymentRequest(
       after: { status: "rejected" },
       correlationId,
     });
+    const [recipient] = await tx
+      .select({ email: users.email, locale: users.locale, tierName: membershipTiers.name })
+      .from(users)
+      .innerJoin(membershipTiers, eq(membershipTiers.id, row.tierId))
+      .where(eq(users.id, row.userId))
+      .limit(1);
+    if (!recipient) throw new Error("Payment request recipient not found");
+    await enqueueTask(tx, {
+      kind: "email",
+      dedupeKey: `email:payment_rejected:${requestId}:${reviewedAt.toISOString()}`,
+      payload: {
+        template: "payment_rejected",
+        to: recipient.email,
+        locale: recipient.locale,
+        params: {
+          tierName: recipient.tierName,
+          reviewNote: reviewNote ?? null,
+        },
+      },
+    });
     return row;
   });
-
-  if ((await getSmtpConfig()).configured) {
-    const [user] = await db.select().from(users).where(eq(users.id, request.userId)).limit(1);
-    const [tier] = await db
-      .select()
-      .from(membershipTiers)
-      .where(eq(membershipTiers.id, request.tierId))
-      .limit(1);
-    if (user && tier) {
-      try {
-        await sendPaymentRejectedEmail(user.email, tier.name, reviewNote, user.locale);
-      } catch (err) {
-        logger.error("驳回邮件发送失败", {
-          requestId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  }
-  return updated;
 }
 
 export async function reversePaymentApproval(

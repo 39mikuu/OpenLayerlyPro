@@ -9,6 +9,7 @@ import {
   memberships,
   membershipTiers,
   paymentRequests,
+  tasks,
   users,
 } from "@/db/schema";
 import { getActiveMembership } from "@/modules/membership";
@@ -28,6 +29,7 @@ describeWithDatabase("payment review audit integration", () => {
   const db = getDb();
 
   beforeEach(async () => {
+    await db.delete(tasks);
     await db.delete(auditEvents);
     await db.delete(paymentRequests);
     await db.delete(memberships);
@@ -123,6 +125,18 @@ describeWithDatabase("payment review audit integration", () => {
     expect(grantEvent).toMatchObject({
       correlationId: approveEvent?.correlationId,
       causationId: approveEvent?.id,
+    });
+    const queued = await db.select().from(tasks);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({
+      kind: "email",
+      dedupeKey: `email:membership_activated:${request.id}`,
+      status: "pending",
+      payloadJson: {
+        template: "membership_activated",
+        to: user.email,
+        locale: user.locale,
+      },
     });
   });
 
@@ -262,6 +276,19 @@ describeWithDatabase("payment review audit integration", () => {
       beforeJson: { status: "pending_review" },
       afterJson: { status: "cancelled" },
     });
+    const [rejectionTask] = await db.select().from(tasks).where(eq(tasks.kind, "email"));
+    expect(rejectionTask).toMatchObject({
+      status: "pending",
+      payloadJson: {
+        template: "payment_rejected",
+        to: rejectedSeed.user.email,
+        locale: rejectedSeed.user.locale,
+        params: {
+          tierName: rejectedSeed.tier.name,
+          reviewNote: "proof is unclear",
+        },
+      },
+    });
   });
 
   it("rolls back approval when its audit event cannot be inserted", async () => {
@@ -299,9 +326,53 @@ describeWithDatabase("payment review audit integration", () => {
       .where(eq(paymentRequests.id, request.id));
     const grants = await db.select().from(memberships).where(eq(memberships.userId, user.id));
     const events = await db.select().from(auditEvents).where(eq(auditEvents.entityId, request.id));
+    const queued = await db.select().from(tasks);
     expect(stored).toMatchObject({ status: "pending_review", grantedMembershipId: null });
     expect(grants).toHaveLength(0);
     expect(events).toHaveLength(0);
+    expect(queued).toHaveLength(0);
+  });
+
+  it("rolls back approval and membership grant when outbox enqueue fails", async () => {
+    const { admin, request, user } = await seedRequest();
+    await db.execute(
+      sql.raw(`
+      create function fail_email_task_enqueue() returns trigger as $$
+      begin
+        if new.kind = 'email' then
+          raise exception 'forced outbox failure';
+        end if;
+        return new;
+      end;
+      $$ language plpgsql;
+      create trigger fail_email_task_enqueue_trigger
+      before insert on tasks
+      for each row execute function fail_email_task_enqueue();
+    `),
+    );
+
+    try {
+      await expect(approvePaymentRequest(request.id, admin.id)).rejects.toThrow();
+    } finally {
+      await db.execute(
+        sql.raw(`
+        drop trigger if exists fail_email_task_enqueue_trigger on tasks;
+        drop function if exists fail_email_task_enqueue();
+      `),
+      );
+    }
+
+    const [stored] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, request.id));
+    const grants = await db.select().from(memberships).where(eq(memberships.userId, user.id));
+    const events = await db.select().from(auditEvents).where(eq(auditEvents.entityId, request.id));
+    const queued = await db.select().from(tasks);
+    expect(stored).toMatchObject({ status: "pending_review", grantedMembershipId: null });
+    expect(grants).toHaveLength(0);
+    expect(events).toHaveLength(0);
+    expect(queued).toHaveLength(0);
   });
 
   it("rolls back reversal when membership revoke auditing fails", async () => {

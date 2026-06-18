@@ -21,6 +21,7 @@ const NAV = [
   { href: "/admin/payments/methods", key: "paymentMethods" },
   { href: "/admin/payments/reviews", key: "paymentReviews" },
   { href: "/admin/downloads", key: "downloads" },
+  { href: "/admin/tasks", key: "tasks" },
   { href: "/admin/settings", key: "settings" },
   { href: "/admin/system", key: "system" },
 ];
