@@ -153,7 +153,7 @@ export const paymentRequests = pgTable(
     status: text("status", {
       enum: ["pending_review", "approved", "rejected", "cancelled", "reversed"],
     }).notNull(),
-    grantedMembershipId: uuid("granted_membership_id"),
+    grantedMembershipId: uuid("granted_membership_id").references(() => memberships.id),
     amountLabel: text("amount_label").notNull(),
     durationDays: integer("duration_days").notNull(),
     proofFileId: uuid("proof_file_id"),
@@ -168,6 +168,7 @@ export const paymentRequests = pgTable(
     index("payment_requests_user_created_idx").on(table.userId, table.createdAt.desc()),
     index("payment_requests_status_created_idx").on(table.status, table.createdAt),
     index("payment_requests_pending_user_tier_idx").on(table.userId, table.tierId, table.status),
+    uniqueIndex("payment_requests_granted_membership_id_unique").on(table.grantedMembershipId),
   ],
 );
 

@@ -637,6 +637,8 @@ export const en: Messages = {
     cancelPendingOnly: "Only pending requests can be cancelled",
     paymentNotPending: "This request is no longer pending review",
     paymentNotApproved: "This request is not approved or has already been reversed",
+    paymentGrantLinkMissing:
+      "This approval is missing its membership grant link and cannot be reversed safely",
     reviewReasonRequired: "A reason is required to reverse a payment approval",
     siteInitialized: "The site is already initialized",
     accessDenied: "You do not have access to this file",

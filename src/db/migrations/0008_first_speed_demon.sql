@@ -1,0 +1,3 @@
+ALTER TABLE "payment_requests" ADD COLUMN "granted_membership_id" uuid;--> statement-breakpoint
+ALTER TABLE "payment_requests" ADD CONSTRAINT "payment_requests_granted_membership_id_memberships_id_fk" FOREIGN KEY ("granted_membership_id") REFERENCES "public"."memberships"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "payment_requests_granted_membership_id_unique" ON "payment_requests" USING btree ("granted_membership_id");

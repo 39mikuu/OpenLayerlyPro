@@ -618,6 +618,7 @@ export const zh = {
     cancelPendingOnly: "只有待审核的申请可以取消",
     paymentNotPending: "该申请不在待审核状态",
     paymentNotApproved: "该申请未通过审核或已经被反转",
+    paymentGrantLinkMissing: "该审核缺少会员授权关联，无法安全反转",
     reviewReasonRequired: "反转付款审核必须填写原因",
     siteInitialized: "站点已初始化",
     accessDenied: "无权访问该文件",

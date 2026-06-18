@@ -633,6 +633,8 @@ export const ja: Messages = {
     cancelPendingOnly: "確認待ちの申請のみキャンセルできます",
     paymentNotPending: "この申請は確認待ちではありません",
     paymentNotApproved: "この申請は承認済みではないか、すでに取り消されています",
+    paymentGrantLinkMissing:
+      "この承認にはメンバーシップ付与の関連付けがないため、安全に取り消せません",
     reviewReasonRequired: "支払い承認の取り消し理由を入力してください",
     siteInitialized: "サイトはすでに初期設定されています",
     accessDenied: "このファイルにアクセスする権限がありません",

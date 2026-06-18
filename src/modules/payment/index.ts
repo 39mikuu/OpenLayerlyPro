@@ -436,26 +436,27 @@ export async function reversePaymentApproval(
       correlationId,
     });
 
-    if (updated.grantedMembershipId) {
-      const [membership] = await tx
-        .select()
-        .from(memberships)
-        .where(eq(memberships.id, updated.grantedMembershipId))
-        .limit(1);
-      if (!membership) throw new ApiError(404, "membershipNotFound");
-      if (membership.status !== "revoked") {
-        await revokeMembership(
-          membership.id,
-          {
-            reason: trimmedReason,
-            actor: { type: "admin", id: reviewerId },
-            expectedVersion: membership.version,
-            correlationId,
-            causationId: reverseEvent.id,
-          },
-          tx,
-        );
-      }
+    if (!updated.grantedMembershipId) {
+      throw new ApiError(409, "paymentGrantLinkMissing");
+    }
+    const [membership] = await tx
+      .select()
+      .from(memberships)
+      .where(eq(memberships.id, updated.grantedMembershipId))
+      .limit(1);
+    if (!membership) throw new ApiError(404, "membershipNotFound");
+    if (membership.status !== "revoked") {
+      await revokeMembership(
+        membership.id,
+        {
+          reason: trimmedReason,
+          actor: { type: "admin", id: reviewerId },
+          expectedVersion: membership.version,
+          correlationId,
+          causationId: reverseEvent.id,
+        },
+        tx,
+      );
     }
     return updated;
   });

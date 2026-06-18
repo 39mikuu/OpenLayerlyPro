@@ -1,5 +1,5 @@
 {
-  "id": "c1571f41-0cfe-4ac4-b01c-d14ab308d080",
+  "id": "23e0cad1-e0e2-4b37-92c4-7bd7faf5b101",
   "prevId": "11a164cf-7c70-4556-9f62-1e7ed20b03cf",
   "version": "7",
   "dialect": "postgresql",
@@ -995,6 +995,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "payment_requests_granted_membership_id_unique": {
+          "name": "payment_requests_granted_membership_id_unique",
+          "columns": [
+            {
+              "expression": "granted_membership_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1017,6 +1032,19 @@
           "tableTo": "membership_tiers",
           "columnsFrom": [
             "tier_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payment_requests_granted_membership_id_memberships_id_fk": {
+          "name": "payment_requests_granted_membership_id_memberships_id_fk",
+          "tableFrom": "payment_requests",
+          "tableTo": "memberships",
+          "columnsFrom": [
+            "granted_membership_id"
           ],
           "columnsTo": [
             "id"

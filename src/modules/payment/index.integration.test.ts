@@ -169,6 +169,46 @@ describeWithDatabase("payment review audit integration", () => {
     });
   });
 
+  it("refuses to reverse an approval without a membership grant link", async () => {
+    const { admin, request, tier, user } = await seedRequest("approved");
+    const [membership] = await db
+      .insert(memberships)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        source: "payment_review",
+        startsAt: new Date(),
+        endsAt: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+        status: "active",
+        createdBy: admin.id,
+      })
+      .returning();
+
+    await expect(
+      reversePaymentApproval(request.id, admin.id, "legacy approval"),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "paymentGrantLinkMissing",
+    });
+
+    const [storedRequest] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, request.id));
+    const [storedMembership] = await db
+      .select()
+      .from(memberships)
+      .where(eq(memberships.id, membership.id));
+    const reverseEvents = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.entityId, request.id), eq(auditEvents.action, "reverse")));
+
+    expect(storedRequest?.status).toBe("approved");
+    expect(storedMembership).toMatchObject({ status: "active", version: 0 });
+    expect(reverseEvents).toHaveLength(0);
+  });
+
   it("audits reject, resubmit, and cancel with the correct actors", async () => {
     const rejectedSeed = await seedRequest();
     const rejected = await rejectPaymentRequest(
