@@ -216,8 +216,9 @@ export async function resumeMembership(
 export async function revokeMembership(
   id: string,
   command: StateChangeCommand,
+  dbc?: DbClient,
 ): Promise<Membership> {
-  return changeMembership(id, "revoke", command);
+  return changeMembership(id, "revoke", command, dbc);
 }
 
 export async function extendMembership(id: string, command: ExtendCommand): Promise<Membership> {
@@ -231,6 +232,7 @@ async function changeMembership(
   id: string,
   action: MembershipLifecycleAction,
   command: StateChangeCommand | ExtendCommand,
+  dbc?: DbClient,
 ): Promise<Membership> {
   const now = new Date();
   const reason = "reason" in command ? command.reason.trim() : null;
@@ -238,69 +240,83 @@ async function changeMembership(
     throw new ApiError(400, "membershipReasonRequired");
   }
 
-  return getDb().transaction(async (tx) => {
-    const before = await getMembershipById(id, tx);
-    if (!before) throw new ApiError(404, "membershipNotFound");
-    if (before.version !== command.expectedVersion) {
-      throw new ApiError(409, "membershipStale");
-    }
-    const evaluation = evaluateTransition(before, action, now);
-    if (!evaluation.ok) throw new ApiError(409, evaluation.errorCode);
+  if (dbc) {
+    return changeMembershipWithClient(dbc, id, action, command, now, reason);
+  }
+  return getDb().transaction((tx) =>
+    changeMembershipWithClient(tx, id, action, command, now, reason),
+  );
+}
 
-    const status =
-      action === "suspend"
-        ? "suspended"
-        : action === "resume"
-          ? "active"
-          : action === "revoke"
-            ? "revoked"
-            : before.status;
-    const endsAt =
-      action === "extend" ? addDays(before.endsAt, (command as ExtendCommand).days) : before.endsAt;
-    const allowedStatus =
-      action === "suspend"
+async function changeMembershipWithClient(
+  tx: DbClient,
+  id: string,
+  action: MembershipLifecycleAction,
+  command: StateChangeCommand | ExtendCommand,
+  now: Date,
+  reason: string | null,
+): Promise<Membership> {
+  const before = await getMembershipById(id, tx);
+  if (!before) throw new ApiError(404, "membershipNotFound");
+  if (before.version !== command.expectedVersion) {
+    throw new ApiError(409, "membershipStale");
+  }
+  const evaluation = evaluateTransition(before, action, now);
+  if (!evaluation.ok) throw new ApiError(409, evaluation.errorCode);
+
+  const status =
+    action === "suspend"
+      ? "suspended"
+      : action === "resume"
         ? "active"
-        : action === "resume"
-          ? "suspended"
-          : action === "revoke"
-            ? before.status
-            : before.status;
+        : action === "revoke"
+          ? "revoked"
+          : before.status;
+  const endsAt =
+    action === "extend" ? addDays(before.endsAt, (command as ExtendCommand).days) : before.endsAt;
+  const allowedStatus =
+    action === "suspend"
+      ? "active"
+      : action === "resume"
+        ? "suspended"
+        : action === "revoke"
+          ? before.status
+          : before.status;
 
-    const conditions = [
-      eq(memberships.id, id),
-      eq(memberships.version, command.expectedVersion),
-      eq(memberships.status, allowedStatus),
-    ];
-    if (action === "extend") conditions.push(gt(memberships.endsAt, now));
+  const conditions = [
+    eq(memberships.id, id),
+    eq(memberships.version, command.expectedVersion),
+    eq(memberships.status, allowedStatus),
+  ];
+  if (action === "extend") conditions.push(gt(memberships.endsAt, now));
 
-    const [updated] = await tx
-      .update(memberships)
-      .set({
-        status,
-        endsAt,
-        version: sql`${memberships.version} + 1`,
-        updatedAt: now,
-      })
-      .where(and(...conditions))
-      .returning();
+  const [updated] = await tx
+    .update(memberships)
+    .set({
+      status,
+      endsAt,
+      version: sql`${memberships.version} + 1`,
+      updatedAt: now,
+    })
+    .where(and(...conditions))
+    .returning();
 
-    if (!updated) {
-      await throwTransitionFailure(tx, id, command.expectedVersion, action, now);
-    }
+  if (!updated) {
+    await throwTransitionFailure(tx, id, command.expectedVersion, action, now);
+  }
 
-    await recordAudit(tx, {
-      entityType: "membership",
-      entityId: id,
-      action,
-      actor: command.actor,
-      reason,
-      before: pickMembershipAudit(before),
-      after: pickMembershipAudit(updated),
-      correlationId: command.correlationId ?? randomUUID(),
-      causationId: command.causationId ?? null,
-    });
-    return updated;
+  await recordAudit(tx, {
+    entityType: "membership",
+    entityId: id,
+    action,
+    actor: command.actor,
+    reason,
+    before: pickMembershipAudit(before),
+    after: pickMembershipAudit(updated),
+    correlationId: command.correlationId ?? randomUUID(),
+    causationId: command.causationId ?? null,
   });
+  return updated;
 }
 
 async function getMembershipById(id: string, dbc: DbClient): Promise<Membership | null> {

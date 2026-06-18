@@ -1,8 +1,10 @@
+import { randomUUID } from "crypto";
 import { and, asc, desc, eq } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
   files,
+  memberships,
   type MembershipTier,
   membershipTiers,
   type PaymentMethod,
@@ -13,9 +15,10 @@ import {
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { logger } from "@/lib/logger";
+import { recordAudit } from "@/modules/audit";
 import { getSmtpConfig } from "@/modules/config";
 import { sendMembershipActivatedEmail, sendPaymentRejectedEmail } from "@/modules/mail";
-import { grantMembership } from "@/modules/membership";
+import { grantMembership, revokeMembership } from "@/modules/membership";
 import { recordEvent } from "@/modules/system/events";
 
 // ---------- 收款方式 ----------
@@ -207,41 +210,64 @@ export async function resubmitPaymentProof(input: {
     throw new ApiError(404, "paymentRequestNotFound");
   }
   await assertOwnProofFile(input.proofFileId, input.userId);
-  // 单语句条件更新作为并发守卫：仅 rejected 状态可重新提交
-  const [updated] = await getDb()
-    .update(paymentRequests)
-    .set({
-      status: "pending_review",
-      proofFileId: input.proofFileId,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(paymentRequests.id, input.requestId),
-        eq(paymentRequests.userId, input.userId),
-        eq(paymentRequests.status, "rejected"),
-      ),
-    )
-    .returning();
-  if (!updated) throw new ApiError(400, "resubmitRejectedOnly");
-  return updated;
+  const correlationId = randomUUID();
+  return getDb().transaction(async (tx) => {
+    const [updated] = await tx
+      .update(paymentRequests)
+      .set({
+        status: "pending_review",
+        proofFileId: input.proofFileId,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(paymentRequests.id, input.requestId),
+          eq(paymentRequests.userId, input.userId),
+          eq(paymentRequests.status, "rejected"),
+        ),
+      )
+      .returning();
+    if (!updated) throw new ApiError(400, "resubmitRejectedOnly");
+    await recordAudit(tx, {
+      entityType: "payment_request",
+      entityId: updated.id,
+      action: "resubmit",
+      actor: { type: "user", id: input.userId },
+      before: { status: "rejected", proofFileId: request.proofFileId },
+      after: { status: "pending_review", proofFileId: updated.proofFileId },
+      correlationId,
+    });
+    return updated;
+  });
 }
 
 export async function cancelPaymentRequest(requestId: string, userId: string): Promise<void> {
   const request = await getPaymentRequest(requestId);
   if (!request || request.userId !== userId) throw new ApiError(404, "paymentRequestNotFound");
-  const [updated] = await getDb()
-    .update(paymentRequests)
-    .set({ status: "cancelled", updatedAt: new Date() })
-    .where(
-      and(
-        eq(paymentRequests.id, requestId),
-        eq(paymentRequests.userId, userId),
-        eq(paymentRequests.status, "pending_review"),
-      ),
-    )
-    .returning();
-  if (!updated) throw new ApiError(400, "cancelPendingOnly");
+  const correlationId = randomUUID();
+  await getDb().transaction(async (tx) => {
+    const [updated] = await tx
+      .update(paymentRequests)
+      .set({ status: "cancelled", updatedAt: new Date() })
+      .where(
+        and(
+          eq(paymentRequests.id, requestId),
+          eq(paymentRequests.userId, userId),
+          eq(paymentRequests.status, "pending_review"),
+        ),
+      )
+      .returning();
+    if (!updated) throw new ApiError(400, "cancelPendingOnly");
+    await recordAudit(tx, {
+      entityType: "payment_request",
+      entityId: updated.id,
+      action: "cancel",
+      actor: { type: "user", id: userId },
+      before: { status: "pending_review" },
+      after: { status: "cancelled" },
+      correlationId,
+    });
+  });
 }
 
 export async function approvePaymentRequest(
@@ -251,6 +277,7 @@ export async function approvePaymentRequest(
   const db = getDb();
   const request = await getPaymentRequest(requestId);
   if (!request) throw new ApiError(404, "paymentRequestNotFound");
+  const correlationId = randomUUID();
 
   // 状态流转与会员开通在同一事务内完成；
   // 条件更新作为并发守卫，重复审核（双击/重试）只会有一次成功
@@ -267,6 +294,15 @@ export async function approvePaymentRequest(
       .returning();
     if (!row) throw new ApiError(400, "paymentNotPending");
 
+    const approveEvent = await recordAudit(tx, {
+      entityType: "payment_request",
+      entityId: row.id,
+      action: "approve",
+      actor: { type: "admin", id: reviewerId },
+      before: { status: "pending_review" },
+      after: { status: "approved" },
+      correlationId,
+    });
     const granted = await grantMembership(
       {
         userId: row.userId,
@@ -275,13 +311,20 @@ export async function approvePaymentRequest(
         durationDays: row.durationDays,
         note: `付款申请 ${row.id} 审核通过`,
         createdBy: reviewerId,
+        actor: { type: "admin", id: reviewerId },
+        correlationId,
+        causationId: approveEvent.id,
       },
       tx,
     );
-    return { updated: row, ...granted };
+    const [updated] = await tx
+      .update(paymentRequests)
+      .set({ grantedMembershipId: granted.membership.id })
+      .where(eq(paymentRequests.id, row.id))
+      .returning();
+    if (!updated) throw new Error("Failed to link granted membership");
+    return { updated, ...granted };
   });
-
-  await recordEvent("payment_request_approved", { requestId, userId: request.userId });
 
   if ((await getSmtpConfig()).configured) {
     const [user] = await db.select().from(users).where(eq(users.id, request.userId)).limit(1);
@@ -307,20 +350,32 @@ export async function rejectPaymentRequest(
   const db = getDb();
   const request = await getPaymentRequest(requestId);
   if (!request) throw new ApiError(404, "paymentRequestNotFound");
-  const [updated] = await db
-    .update(paymentRequests)
-    .set({
-      status: "rejected",
-      reviewNote: reviewNote ?? null,
-      reviewedBy: reviewerId,
-      reviewedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(and(eq(paymentRequests.id, requestId), eq(paymentRequests.status, "pending_review")))
-    .returning();
-  if (!updated) throw new ApiError(400, "paymentNotPending");
-
-  await recordEvent("payment_request_rejected", { requestId, userId: request.userId });
+  const correlationId = randomUUID();
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(paymentRequests)
+      .set({
+        status: "rejected",
+        reviewNote: reviewNote ?? null,
+        reviewedBy: reviewerId,
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(paymentRequests.id, requestId), eq(paymentRequests.status, "pending_review")))
+      .returning();
+    if (!row) throw new ApiError(400, "paymentNotPending");
+    await recordAudit(tx, {
+      entityType: "payment_request",
+      entityId: row.id,
+      action: "reject",
+      actor: { type: "admin", id: reviewerId },
+      reason: reviewNote?.trim() || null,
+      before: { status: "pending_review" },
+      after: { status: "rejected" },
+      correlationId,
+    });
+    return row;
+  });
 
   if ((await getSmtpConfig()).configured) {
     const [user] = await db.select().from(users).where(eq(users.id, request.userId)).limit(1);
@@ -341,4 +396,67 @@ export async function rejectPaymentRequest(
     }
   }
   return updated;
+}
+
+export async function reversePaymentApproval(
+  requestId: string,
+  reviewerId: string,
+  reason: string,
+): Promise<PaymentRequest> {
+  const trimmedReason = reason.trim();
+  if (!trimmedReason) throw new ApiError(400, "reviewReasonRequired");
+
+  const db = getDb();
+  const request = await getPaymentRequest(requestId);
+  if (!request) throw new ApiError(404, "paymentRequestNotFound");
+  const correlationId = randomUUID();
+
+  return db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(paymentRequests)
+      .set({
+        status: "reversed",
+        reviewNote: trimmedReason,
+        reviewedBy: reviewerId,
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(paymentRequests.id, requestId), eq(paymentRequests.status, "approved")))
+      .returning();
+    if (!updated) throw new ApiError(409, "paymentNotApproved");
+
+    const reverseEvent = await recordAudit(tx, {
+      entityType: "payment_request",
+      entityId: updated.id,
+      action: "reverse",
+      actor: { type: "admin", id: reviewerId },
+      reason: trimmedReason,
+      before: { status: "approved" },
+      after: { status: "reversed" },
+      correlationId,
+    });
+
+    if (updated.grantedMembershipId) {
+      const [membership] = await tx
+        .select()
+        .from(memberships)
+        .where(eq(memberships.id, updated.grantedMembershipId))
+        .limit(1);
+      if (!membership) throw new ApiError(404, "membershipNotFound");
+      if (membership.status !== "revoked") {
+        await revokeMembership(
+          membership.id,
+          {
+            reason: trimmedReason,
+            actor: { type: "admin", id: reviewerId },
+            expectedVersion: membership.version,
+            correlationId,
+            causationId: reverseEvent.id,
+          },
+          tx,
+        );
+      }
+    }
+    return updated;
+  });
 }

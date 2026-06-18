@@ -151,8 +151,9 @@ export const paymentRequests = pgTable(
       .references(() => membershipTiers.id),
     paymentMethodId: uuid("payment_method_id"),
     status: text("status", {
-      enum: ["pending_review", "approved", "rejected", "cancelled"],
+      enum: ["pending_review", "approved", "rejected", "cancelled", "reversed"],
     }).notNull(),
+    grantedMembershipId: uuid("granted_membership_id"),
     amountLabel: text("amount_label").notNull(),
     durationDays: integer("duration_days").notNull(),
     proofFileId: uuid("proof_file_id"),
