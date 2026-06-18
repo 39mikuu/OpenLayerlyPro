@@ -10,6 +10,23 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HUSKY: 0
+      DATABASE_URL: postgresql://artist:artist_password@localhost:5432/artist_member
+      RUN_DB_INTEGRATION_TESTS: true
+      SESSION_SECRET: ci-membership-lifecycle-session-secret
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: artist_member
+          POSTGRES_USER: artist
+          POSTGRES_PASSWORD: artist_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U artist -d artist_member"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -21,6 +38,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm exec tsc --noEmit
+      - run: pnpm db:migrate
       - run: pnpm test
       - run: pnpm build:migrator
       - run: pnpm build

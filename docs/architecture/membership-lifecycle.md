@@ -1,6 +1,6 @@
 # 会员生命周期设计稿（#4）
 
-> 🚧 计划中。本稿为 issue #4 的实现蓝图，落地决策见 [ADR 0001](../adr/0001-membership-lifecycle-model.md)（会员模型）与 [ADR 0002](../adr/0002-audit-and-event-strategy.md)（审计）。
+> ✅ 已实现。本稿为 issue #4 的实现蓝图，落地决策见 [ADR 0001](../adr/0001-membership-lifecycle-model.md)（会员模型）与 [ADR 0002](../adr/0002-audit-and-event-strategy.md)（审计）。
 >
 > 范围限定 service + schema 层，**不含**后台 UI（#5）、邮件（#7）、付款事件 schema（#6）。
 
