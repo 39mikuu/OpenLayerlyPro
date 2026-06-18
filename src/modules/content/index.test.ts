@@ -23,6 +23,9 @@ function post(overrides: Partial<Post> = {}): Post {
     requiredTierId: null,
     status: "published",
     publishedAt: new Date("2026-01-01T00:00:00Z"),
+    scheduledAt: null,
+    scheduleToken: null,
+    contentUpdatedAt: new Date("2026-02-01T00:00:00Z"),
     createdAt: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-02-01T00:00:00Z"),
     ...overrides,
@@ -191,12 +194,12 @@ describe("content localization", () => {
 });
 
 describe("translation lifecycle", () => {
-  it("upserts a draft with the source post update timestamp", async () => {
+  it("upserts a draft with the source post content timestamp", async () => {
     const sourcePost = post();
     const created = translation({
       status: "draft",
       publishedAt: null,
-      sourceUpdatedAt: sourcePost.updatedAt,
+      sourceUpdatedAt: sourcePost.contentUpdatedAt,
     });
     const fake = fakeDb({
       selectResults: [[sourcePost], []],
@@ -216,7 +219,7 @@ describe("translation lifecycle", () => {
       locale: "ja",
       title: "下書き",
       source: "machine",
-      sourceUpdatedAt: sourcePost.updatedAt,
+      sourceUpdatedAt: sourcePost.contentUpdatedAt,
     });
   });
 
@@ -245,7 +248,7 @@ describe("translation lifecycle", () => {
     expect(fake.db.insert).not.toHaveBeenCalled();
     expect(fake.updated[0]).toMatchObject({
       title: "更新后的下書き",
-      sourceUpdatedAt: sourcePost.updatedAt,
+      sourceUpdatedAt: sourcePost.contentUpdatedAt,
     });
   });
 

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Task } from "@/db/schema";
 
 import { dispatchClaimedTask, dispatchTaskBatch } from "./dispatcher";
-import { TASK_BATCH_SIZE, TASK_LEASE_MS } from "./index";
+import { PermanentTaskError, TASK_BATCH_SIZE, TASK_LEASE_MS } from "./index";
 
 function task(id: string, lockToken = `claim-${id}`): Task {
   const now = new Date();
@@ -36,6 +36,8 @@ describe("task dispatcher", () => {
       run: vi.fn(),
       succeed: vi.fn(),
       fail: vi.fn(),
+      dead: vi.fn(),
+      defer: vi.fn(),
       renew: vi.fn().mockResolvedValue(true),
     };
   }
@@ -96,6 +98,33 @@ describe("task dispatcher", () => {
     await expect(dispatchTaskBatch(deps)).resolves.toBe(2);
     expect(deps.fail).toHaveBeenCalledWith(first.id, first.lockedBy, error);
     expect(deps.succeed).toHaveBeenCalledWith(second.id, second.lockedBy, undefined);
+  });
+
+  it("defers an early task without marking it succeeded or failed", async () => {
+    const claimed = task("11111111-1111-4111-8111-111111111111");
+    const deferUntil = new Date("2026-06-20T12:00:00.000Z");
+    const deps = dependencies();
+    deps.run.mockResolvedValue({ note: "not due", deferUntil });
+    deps.defer.mockResolvedValue(true);
+
+    await dispatchClaimedTask(claimed, deps);
+
+    expect(deps.defer).toHaveBeenCalledWith(claimed.id, claimed.lockedBy, deferUntil);
+    expect(deps.succeed).not.toHaveBeenCalled();
+    expect(deps.fail).not.toHaveBeenCalled();
+  });
+
+  it("marks permanent handler errors dead without retrying", async () => {
+    const claimed = task("11111111-1111-4111-8111-111111111111");
+    const error = new PermanentTaskError("Invalid publish_post payload");
+    const deps = dependencies();
+    deps.run.mockRejectedValue(error);
+    deps.dead.mockResolvedValue(true);
+
+    await dispatchClaimedTask(claimed, deps);
+
+    expect(deps.dead).toHaveBeenCalledWith(claimed.id, claimed.lockedBy, error);
+    expect(deps.fail).not.toHaveBeenCalled();
   });
 
   it("renews long-running work and clears the heartbeat after completion", async () => {

@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -186,10 +187,30 @@ export const posts = pgTable(
     requiredTierId: uuid("required_tier_id").references(() => membershipTiers.id),
     status: text("status", { enum: ["draft", "published", "archived"] }).notNull(),
     publishedAt: timestamp("published_at", { withTimezone: true }),
+    scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
+    scheduleToken: uuid("schedule_token"),
+    contentUpdatedAt: timestamp("content_updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (table) => [index("posts_status_published_idx").on(table.status, table.publishedAt.desc())],
+  (table) => [
+    index("posts_status_published_idx").on(table.status, table.publishedAt.desc()),
+    index("posts_status_scheduled_idx").on(table.status, table.scheduledAt),
+    check(
+      "posts_schedule_pair_check",
+      sql`(${table.scheduledAt} is null) = (${table.scheduleToken} is null)`,
+    ),
+    check(
+      "posts_schedule_draft_only_check",
+      sql`${table.status} = 'draft' or (${table.scheduledAt} is null and ${table.scheduleToken} is null)`,
+    ),
+    check(
+      "posts_published_at_check",
+      sql`${table.status} <> 'published' or ${table.publishedAt} is not null`,
+    ),
+  ],
 );
 
 export const postTranslations = pgTable(

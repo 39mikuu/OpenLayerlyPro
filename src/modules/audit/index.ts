@@ -1,5 +1,5 @@
 import type { DbClient } from "@/db";
-import { auditEvents, type Membership } from "@/db/schema";
+import { auditEvents, type Membership, type Post } from "@/db/schema";
 
 export type AuditActor = {
   type: "admin" | "user" | "system";
@@ -47,5 +47,16 @@ export function pickMembershipAudit(
     startsAt: membership.startsAt.toISOString(),
     endsAt: membership.endsAt.toISOString(),
     tierId: membership.tierId,
+  };
+}
+
+export function pickPostPublishingAudit(
+  post: Pick<Post, "status" | "publishedAt" | "scheduledAt" | "scheduleToken">,
+): Record<string, unknown> {
+  return {
+    status: post.status,
+    publishedAt: post.publishedAt?.toISOString() ?? null,
+    scheduledAt: post.scheduledAt?.toISOString() ?? null,
+    scheduleToken: post.scheduleToken,
   };
 }

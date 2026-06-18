@@ -42,6 +42,9 @@ const sourcePost: Post = {
   requiredTierId: null,
   status: "published",
   publishedAt: new Date("2026-01-01T00:00:00Z"),
+  scheduledAt: null,
+  scheduleToken: null,
+  contentUpdatedAt: new Date("2026-02-01T00:00:00Z"),
   createdAt: new Date("2026-01-01T00:00:00Z"),
   updatedAt: new Date("2026-02-01T00:00:00Z"),
 };
@@ -55,7 +58,7 @@ const machineDraft: PostTranslation = {
   body: "第一段の翻訳\n\n第二段の翻訳",
   status: "draft",
   source: "machine",
-  sourceUpdatedAt: sourcePost.updatedAt,
+  sourceUpdatedAt: sourcePost.contentUpdatedAt,
   publishedAt: null,
   createdAt: new Date("2026-02-01T00:00:00Z"),
   updatedAt: new Date("2026-02-01T00:00:00Z"),

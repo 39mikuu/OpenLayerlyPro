@@ -30,6 +30,7 @@ const patchSchema = z.object({
     .optional(),
   summary: z.string().max(1000).nullable().optional(),
   body: z.string().max(100000).nullable().optional(),
+  originalLocale: z.enum(["zh", "en", "ja"]).optional(),
   coverFileId: z.string().uuid().nullable().optional(),
   visibility: z.enum(["public", "login", "member"]).optional(),
   requiredTierId: z.string().uuid().nullable().optional(),

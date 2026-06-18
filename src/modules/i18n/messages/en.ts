@@ -659,6 +659,9 @@ export const en: Messages = {
     turnstileRequired: "Please complete the human verification",
     turnstileFailed: "Human verification failed. Please try again.",
     postNotFound: "Content not found",
+    postNotEditable: "Published or archived content cannot be edited directly",
+    postPublishingStale: "The publishing state changed. Refresh and try again.",
+    postScheduleTooSoon: "The scheduled publishing time must be in the future",
     unsupportedLocale: "Unsupported locale: {locale}",
     translationOriginalLocale:
       "{locale} is the original content locale and cannot be used for a translation",

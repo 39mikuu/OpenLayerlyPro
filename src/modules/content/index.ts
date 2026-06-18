@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import {
@@ -17,13 +17,13 @@ import {
 import { ApiError } from "@/lib/api";
 import { isLocale, type Locale } from "@/modules/i18n";
 import { getActiveLevel } from "@/modules/membership";
-import { recordEvent } from "@/modules/system/events";
 
 export type PostInput = {
   title: string;
   slug: string;
   summary?: string | null;
   body?: string | null;
+  originalLocale?: string;
   coverFileId?: string | null;
   visibility: "public" | "login" | "member";
   requiredTierId?: string | null;
@@ -39,22 +39,36 @@ export async function createPost(input: PostInput): Promise<Post> {
 }
 
 export async function updatePost(id: string, input: Partial<PostInput>): Promise<Post> {
-  if (input.visibility === "member" || input.requiredTierId !== undefined) {
-    const existing = await getPostById(id);
+  return getDb().transaction(async (tx) => {
+    const [existing] = await tx.select().from(posts).where(eq(posts.id, id)).limit(1).for("update");
     if (!existing) throw new ApiError(404, "postNotFound");
-    await assertValidTier({
-      visibility: input.visibility ?? existing.visibility,
-      requiredTierId:
-        input.requiredTierId !== undefined ? input.requiredTierId : existing.requiredTierId,
-    });
-  }
-  const [post] = await getDb()
-    .update(posts)
-    .set({ ...input, updatedAt: new Date() })
-    .where(eq(posts.id, id))
-    .returning();
-  if (!post) throw new ApiError(404, "postNotFound");
-  return post;
+    if (existing.status !== "draft") throw new ApiError(409, "postNotEditable");
+
+    if (input.visibility === "member" || input.requiredTierId !== undefined) {
+      await assertValidTier({
+        visibility: input.visibility ?? existing.visibility,
+        requiredTierId:
+          input.requiredTierId !== undefined ? input.requiredTierId : existing.requiredTierId,
+      });
+    }
+
+    const contentChanged =
+      (input.title !== undefined && input.title !== existing.title) ||
+      (input.summary !== undefined && input.summary !== existing.summary) ||
+      (input.body !== undefined && input.body !== existing.body) ||
+      (input.originalLocale !== undefined && input.originalLocale !== existing.originalLocale);
+    const [post] = await tx
+      .update(posts)
+      .set({
+        ...input,
+        updatedAt: sql`now()`,
+        ...(contentChanged ? { contentUpdatedAt: sql`now()` } : {}),
+      })
+      .where(and(eq(posts.id, id), eq(posts.status, "draft")))
+      .returning();
+    if (!post) throw new ApiError(409, "postNotEditable");
+    return post;
+  });
 }
 
 async function assertValidTier(input: {
@@ -64,22 +78,6 @@ async function assertValidTier(input: {
   if (input.visibility === "member" && !input.requiredTierId) {
     throw new ApiError(400, "memberTierRequired");
   }
-}
-
-export async function setPostStatus(
-  id: string,
-  status: "draft" | "published" | "archived",
-): Promise<Post> {
-  const patch: Partial<typeof posts.$inferInsert> = { status, updatedAt: new Date() };
-  if (status === "published") {
-    patch.publishedAt = new Date();
-  }
-  const [post] = await getDb().update(posts).set(patch).where(eq(posts.id, id)).returning();
-  if (!post) throw new ApiError(404, "postNotFound");
-  if (status === "published") {
-    await recordEvent("post_published", { postId: id, slug: post.slug });
-  }
-  return post;
 }
 
 export async function deletePost(id: string): Promise<void> {
@@ -93,6 +91,15 @@ export async function getPostById(id: string): Promise<Post | null> {
 
 export async function getPostBySlug(slug: string): Promise<Post | null> {
   const [post] = await getDb().select().from(posts).where(eq(posts.slug, slug)).limit(1);
+  return post ?? null;
+}
+
+export async function getPublishedPostBySlug(slug: string): Promise<Post | null> {
+  const [post] = await getDb()
+    .select()
+    .from(posts)
+    .where(and(eq(posts.slug, slug), eq(posts.status, "published")))
+    .limit(1);
   return post ?? null;
 }
 
@@ -261,7 +268,7 @@ export async function upsertDraftTranslation(
       summary: input.summary ?? null,
       body: input.body ?? null,
       source: input.source ?? "manual",
-      sourceUpdatedAt: post.updatedAt,
+      sourceUpdatedAt: post.contentUpdatedAt,
       updatedAt: new Date(),
     } as const;
 
@@ -415,17 +422,39 @@ export async function attachFileToPost(input: {
   kind: PostFile["kind"];
   sortOrder?: number;
 }): Promise<PostFile> {
-  const [link] = await getDb()
-    .insert(postFiles)
-    .values({ ...input, sortOrder: input.sortOrder ?? 0 })
-    .returning();
-  return link;
+  return getDb().transaction(async (tx) => {
+    const [post] = await tx
+      .select({ id: posts.id, status: posts.status })
+      .from(posts)
+      .where(eq(posts.id, input.postId))
+      .limit(1)
+      .for("update");
+    if (!post) throw new ApiError(404, "postNotFound");
+    if (post.status !== "draft") throw new ApiError(409, "postNotEditable");
+
+    const [link] = await tx
+      .insert(postFiles)
+      .values({ ...input, sortOrder: input.sortOrder ?? 0 })
+      .returning();
+    return link;
+  });
 }
 
 export async function detachFileFromPost(postId: string, fileId: string): Promise<void> {
-  await getDb()
-    .delete(postFiles)
-    .where(and(eq(postFiles.postId, postId), eq(postFiles.fileId, fileId)));
+  await getDb().transaction(async (tx) => {
+    const [post] = await tx
+      .select({ id: posts.id, status: posts.status })
+      .from(posts)
+      .where(eq(posts.id, postId))
+      .limit(1)
+      .for("update");
+    if (!post) throw new ApiError(404, "postNotFound");
+    if (post.status !== "draft") throw new ApiError(409, "postNotEditable");
+
+    await tx
+      .delete(postFiles)
+      .where(and(eq(postFiles.postId, postId), eq(postFiles.fileId, fileId)));
+  });
 }
 
 /** 文件所关联的 posts（用于下载鉴权） */
@@ -437,3 +466,15 @@ export async function listPostsForFile(fileId: string): Promise<Post[]> {
     .where(eq(postFiles.fileId, fileId));
   return rows.map((r) => r.post);
 }
+
+export type { DerivedPostState, PublishingActor, ScheduledPublishResult } from "./publishing";
+export {
+  archivePost,
+  cancelPostSchedule,
+  derivePostState,
+  executeScheduledPublish,
+  publishPostNow,
+  reschedulePost,
+  restorePost,
+  schedulePost,
+} from "./publishing";

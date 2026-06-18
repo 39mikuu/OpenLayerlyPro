@@ -2,8 +2,11 @@ import { z } from "zod";
 
 import type { Task } from "@/db/schema";
 import { getSmtpConfig } from "@/modules/config";
+import { executeScheduledPublish } from "@/modules/content/publishing";
 import { SUPPORTED_LOCALES } from "@/modules/i18n";
 import { sendMembershipActivatedEmail, sendPaymentRejectedEmail } from "@/modules/mail";
+
+import { PermanentTaskError } from "./errors";
 
 const emailPayloadSchema = z.discriminatedUnion("template", [
   z.object({
@@ -26,10 +29,16 @@ const emailPayloadSchema = z.discriminatedUnion("template", [
   }),
 ]);
 
-export type TaskHandlerResult = { note?: string };
+const publishPostPayloadSchema = z.object({
+  postId: z.string().uuid(),
+  scheduleToken: z.string().uuid(),
+  correlationId: z.string().uuid(),
+  schedulingAuditId: z.string().uuid(),
+});
 
-export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
-  if (task.kind !== "email") throw new Error(`Unsupported task kind: ${task.kind}`);
+export type TaskHandlerResult = { note?: string; deferUntil?: Date };
+
+async function runEmailTask(task: Task): Promise<TaskHandlerResult> {
   const payload = emailPayloadSchema.parse(task.payloadJson);
   const smtp = await getSmtpConfig();
   if (!smtp.configured) return { note: "SMTP not configured; delivery skipped" };
@@ -50,4 +59,28 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
     );
   }
   return {};
+}
+
+async function runPublishPostTask(task: Task): Promise<TaskHandlerResult> {
+  const parsed = publishPostPayloadSchema.safeParse(task.payloadJson);
+  if (!parsed.success) {
+    throw new PermanentTaskError("Invalid publish_post payload");
+  }
+
+  const result = await executeScheduledPublish(parsed.data);
+  if (result.outcome === "defer") {
+    return { note: result.note, deferUntil: result.deferUntil };
+  }
+  return { note: result.note };
+}
+
+export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
+  switch (task.kind) {
+    case "email":
+      return runEmailTask(task);
+    case "publish_post":
+      return runPublishPostTask(task);
+    default:
+      throw new PermanentTaskError("Unsupported task kind");
+  }
 }
