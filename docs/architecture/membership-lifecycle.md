@@ -43,31 +43,38 @@ version: integer("version").notNull().default(0),
 
 ## 4. 状态模型
 
-**有效性判定（唯一入口）**：
+**grant 有效性判定（唯一入口）**——注意**不含 `tier.isActive`**（见 ADR 0001，对现状的有意修正）：
 
 ```txt
-有效 ⇔ status = 'active' ∧ startsAt <= now < endsAt ∧ tier.isActive
+有效 ⇔ status = 'active' ∧ startsAt <= now < endsAt
 ```
+
+`tier.isActive` / `tier.purchaseEnabled` 只决定该等级**能否售卖/是否展示**，不影响已发放权益。停售/隐藏等级不取消已付费用户的会员。
 
 派生态（仅用于展示，不落库）：
 
 - `expired`：`endsAt <= now`
 - `scheduled`：`startsAt > now`（预留，当前 grant 默认即时生效）
 
-**允许的转移**（非法转移抛 `ApiError(409, "invalidMembershipTransition")`）：
+**允许的转移**（非法转移抛 `ApiError(409, "invalidMembershipTransition")`）。状态转移只改存储态、与时间窗正交；`extend` 只改窗、保持状态：
 
-| 当前 | suspend | resume | revoke | extend |
+| 当前存储态 | suspend | resume | revoke | extend |
 |---|:--:|:--:|:--:|:--:|
-| active | → suspended | — | → revoked | → active |
-| suspended | — | → active | → revoked | → active |
+| active | → suspended | — | → revoked | endsAt 延长，**仍 active** |
+| suspended | — | → active | → revoked | endsAt 延长，**仍 suspended** |
 | revoked（终态） | — | — | — | — |
 
-- `revoked` 终态不可逆；过期会员重新开通走新的 `grantMembership`。
-- `extend` 仅延长 `endsAt`，不改 status；revoked 不可 extend。
+派生态前置条件（消除歧义，完整口径见 ADR 0001）：
+
+- **过期记录（endsAt ≤ now）不可 extend**；要再开通走新的 `grantMembership`（renew = 新增 grant 行）。
+- `extend` 仅在 `endsAt > now` 时允许，`endsAt = endsAt + days`（不从 now 重新计）。
+- scheduled（startsAt > now）grant 可 suspend / resume / revoke / extend。
+- `resume` 只恢复存储态，不改时间窗；对已过期记录 resume 后仍无访问权（无害）。
+- `revoked` 终态不可逆（含 extend）。
 
 ## 5. Service API
 
-所有写操作：单事务内「条件更新（含 version 守卫）+ `recordAudit(tx, ...)`」，共享 `correlation_id`。
+所有写操作：单事务内「条件更新（含 version 守卫）+ `recordAudit(tx, ...)`」，共享 `correlation_id`；被上游触发时携带 `causationId`（指向上游审计事件 id，见 ADR 0002）。审计写入失败整笔回滚。
 
 ```ts
 type LifecycleActor = { type: "admin" | "system"; id: string | null };
@@ -88,13 +95,13 @@ extendMembership(id,  { days,   actor, expectedVersion }): Promise<Membership>
 
 ## 6. 权限判定改造
 
-`getActiveMembership` / `getActiveLevel` 增加 `status='active'` 过滤。需全量排查所有「有效会员」读取点：
+`getActiveMembership` / `getActiveLevel`：**去掉 `tier.isActive` 过滤**、**加 `status='active'` 过滤**。需全量排查所有「有效会员」读取点：
 
 - 付款开通后的等级比较（`grantMembership` 内的 `getActiveMembership`）。
 - 内容三级权限的 member 判定（content 模块）。
 - `/me`、tiers、checkout 等前台页面。
 
-> ⚠️ 这是最容易遗漏的一致性面：任何绕过 `getActiveMembership` 直接查 `memberships` 的地方都必须补 `status` 过滤。#12 应有针对「suspended/revoked 用户不得访问 member 内容」的回归测试。
+> ⚠️ 这是最容易遗漏的一致性面，且**改变了现有行为**（停用 tier 不再砍权益）。任何绕过 `getActiveMembership` 直接查 `memberships` 或额外 join `tier.isActive` 的地方都要改。#12 应有回归测试：①「suspended/revoked 用户不得访问 member 内容」；②「停用 tier 后，存量有效会员仍可访问」。
 
 ## 7. 与 grantMembership 的关系
 
@@ -102,12 +109,12 @@ extendMembership(id,  { days,   actor, expectedVersion }): Promise<Membership>
 
 ## 8. 测试清单（#4 验收）
 
-- 合法转移：active→suspended→active、active→revoked、extend 延长 endsAt。
-- 非法转移：revoked→任何、suspended→revoke 后再 resume → 拒绝。
+- 合法转移：active→suspended→active；active→revoked；active extend 后仍 active；suspended extend 后**仍 suspended**（不被恢复）。
+- 非法转移：revoked→任何（含 extend）拒绝；过期记录 extend 拒绝。
 - 幂等：重复 suspend 为 no-op；带 dedupeKey 的 extend 只生效一次。
 - 并发：旧 version 提交 → `membershipStale`，不覆盖新态。
 - 回滚：审计写入失败时状态一并回滚（注入失败模拟）。
-- 权限：suspended/revoked 会员 `getActiveMembership` 返回 null。
+- 权限：suspended/revoked 会员 `getActiveMembership` 返回 null；**停用 tier 后存量有效会员仍返回有效**（验证已去掉 `tier.isActive` 过滤）。
 
 ## 9. 不在本稿范围
 
