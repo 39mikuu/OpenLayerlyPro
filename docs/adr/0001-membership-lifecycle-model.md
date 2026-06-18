@@ -30,6 +30,10 @@
    - 即：**停售 / 隐藏一个等级，不会取消已付款用户的权益**。这是对现状的有意修正——当前 `getActiveMembership` 带 `tier.isActive` 过滤，会导致停用等级即砍掉存量会员权限。
    - `getActiveMembership` / `getActiveLevel` 改用「grant 是否有效」规则，作为唯一的权限判定入口；等级名称/level 仍按 grant 记录的 `tierId` 关联读取（即便该 tier 已停用）。
 6. **并发防覆盖**：`memberships` 增加 `version integer not null default 0`（乐观锁）。所有生命周期写操作走 `where id = ? and version = ?` 条件更新，命中 0 行即抛 stale 错误，满足 #5「不得静默覆盖更新态」。
+7. **幂等口径（#4 采用精简方案）**：
+   - **不设「目标态相同就静默 no-op」**。每个命令严格校验来源态 + `expectedVersion`，**绝不因目标态相同而跳过乐观锁**（否则掩盖并发修改）。已是该态的命令返回确定性 `ApiError(409, "alreadyInState")`。
+   - 有害的重复副作用由乐观锁兜底（双击 extend 第二次持旧 version → `membershipStale`，不重复延期）。
+   - **#4 不引入幂等键**。基于 idempotency key 的「重试返回首次结果」推迟到后续 API 层 PR；届时按 ADR 0002 落为 `audit_events.idempotency_key` + `UNIQUE(actor_type, actor_id, action, idempotency_key)`。避免「验收要求有、schema 没承载」的悬空。
 
 ### 允许的状态转移
 

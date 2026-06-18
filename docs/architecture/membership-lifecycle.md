@@ -11,7 +11,7 @@
 - 显式且校验的状态转移；非法转移确定性拒绝。
 - 会员状态变更与历史记录同提交或同回滚。
 - 权限判定收敛到唯一的「有效会员」规则。
-- 适当场景幂等，并发不静默覆盖。
+- 并发不静默覆盖（乐观锁强制校验）；幂等键去重推迟到后续 PR（见 §5）。
 
 ## 2. 现状与差距
 
@@ -86,12 +86,19 @@ revokeMembership(id,  { reason, actor, expectedVersion }): Promise<Membership>
 extendMembership(id,  { days,   actor, expectedVersion }): Promise<Membership>
 ```
 
-返回前 `version` 自增。命中 0 行区分两种错因：
+返回前 `version` 自增。命中 0 行区分三种错因（再查该行判断）：
 
+- 行不存在 → `ApiError(404, "membershipNotFound")`。
 - 行存在但 version 不符 → `ApiError(409, "membershipStale")`（#5 据此提示「已被他人修改，请刷新」）。
-- 行存在但 status 不在允许来源态 → `ApiError(409, "invalidMembershipTransition")`。
+- 行存在、version 相符但已是该目标态 → `ApiError(409, "alreadyInState")`。
+- 行存在但来源态不允许该转移（非上一条） → `ApiError(409, "invalidMembershipTransition")`。
 
-幂等：`extend` 携带可选 `dedupeKey` 时，重复请求只生效一次（防双击叠加）。`suspend/resume/revoke` 天然幂等于目标态（已是 suspended 再 suspend 返回当前态而非报错，需在实现中明确选择——本稿取「目标态相同则视为成功 no-op」）。
+并发与幂等（ADR 0001 决策 7，#4 采用精简方案）：
+
+- **不设「目标态相同就静默 no-op」**。每个命令一律严格校验来源态 + `expectedVersion`，**绝不因目标态相同而跳过乐观锁**——否则会掩盖并发修改。
+- 对已是该态的命令返回确定性 `alreadyInState`，而非假装成功。
+- **有害的重复副作用由乐观锁兜底**：双击 extend 时第二次请求持旧 version，条件更新命中 0 行 → `membershipStale`，不会重复延期。
+- **不在 #4 引入 `dedupeKey`/幂等键**。基于幂等键的「重试返回首次结果」推迟到后续 API 层 PR；届时按 ADR 0002 加 `audit_events.idempotency_key` + `UNIQUE(actor_type, actor_id, action, idempotency_key)`。
 
 ## 6. 权限判定改造
 
@@ -113,7 +120,7 @@ extendMembership(id,  { days,   actor, expectedVersion }): Promise<Membership>
 
 - 合法转移：active→suspended→active；active→revoked；active extend 后仍 active；suspended extend 后**仍 suspended**（不被恢复）。
 - 非法转移：revoked→任何（含 extend）拒绝；过期记录 extend 拒绝。
-- 幂等：重复 suspend 为 no-op；带 dedupeKey 的 extend 只生效一次。
+- 幂等/并发：对已 suspended 再 suspend → `alreadyInState`（不静默 no-op）；双击 extend 第二次因旧 version → `membershipStale`，不重复延期。
 - 并发：旧 version 提交 → `membershipStale`，不覆盖新态。
 - 回滚：审计写入失败时状态一并回滚（注入失败模拟）。
 - 权限：suspended/revoked 会员 `getActiveMembership` 返回 null；**停用 tier 后存量有效会员仍返回有效**（验证已去掉 `tier.isActive` 过滤）。
