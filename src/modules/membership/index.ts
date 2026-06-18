@@ -3,6 +3,8 @@ import { and, asc, desc, eq, gt, lte, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import {
+  type AuditEvent,
+  auditEvents,
   type Membership,
   memberships,
   type MembershipTier,
@@ -336,21 +338,33 @@ export async function listMemberships(): Promise<
   return rows;
 }
 
-export async function updateMembership(
+export async function getMembershipDetail(
   id: string,
-  patch: { startsAt?: Date; endsAt?: Date; note?: string | null },
-): Promise<Membership> {
-  const [updated] = await getDb()
-    .update(memberships)
-    .set({ ...patch, updatedAt: new Date() })
+  dbc: DbClient = getDb(),
+): Promise<{
+  membership: Membership;
+  tier: MembershipTier;
+  userEmail: string;
+} | null> {
+  const [detail] = await dbc
+    .select({ membership: memberships, tier: membershipTiers, userEmail: users.email })
+    .from(memberships)
+    .innerJoin(membershipTiers, eq(memberships.tierId, membershipTiers.id))
+    .innerJoin(users, eq(memberships.userId, users.id))
     .where(eq(memberships.id, id))
-    .returning();
-  if (!updated) throw new ApiError(404, "membershipNotFound");
-  return updated;
+    .limit(1);
+  return detail ?? null;
 }
 
-export async function deleteMembership(id: string): Promise<void> {
-  await getDb().delete(memberships).where(eq(memberships.id, id));
+export async function listMembershipHistory(
+  id: string,
+  dbc: DbClient = getDb(),
+): Promise<AuditEvent[]> {
+  return dbc
+    .select()
+    .from(auditEvents)
+    .where(and(eq(auditEvents.entityType, "membership"), eq(auditEvents.entityId, id)))
+    .orderBy(desc(auditEvents.createdAt));
 }
 
 export async function listTiersOrdered(): Promise<MembershipTier[]> {

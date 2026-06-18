@@ -8,7 +8,9 @@ import { auditEvents, memberships, membershipTiers, users } from "@/db/schema";
 import {
   extendMembership,
   getActiveMembership,
+  getMembershipDetail,
   grantMembership,
+  listMembershipHistory,
   resumeMembership,
   revokeMembership,
   suspendMembership,
@@ -150,6 +152,21 @@ describeWithDatabase("membership lifecycle integration", () => {
       "resume",
       "revoke",
       "suspend",
+    ]);
+
+    const detail = await getMembershipDetail(membership.id);
+    const history = await listMembershipHistory(membership.id);
+    expect(detail).toMatchObject({
+      membership: { id: membership.id, status: "revoked", version: 4 },
+      tier: { id: tier.id, name: "Supporter" },
+      userEmail: user.email,
+    });
+    expect(history.map((event) => event.action)).toEqual([
+      "revoke",
+      "resume",
+      "extend",
+      "suspend",
+      "grant",
     ]);
   });
 
