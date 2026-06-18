@@ -117,7 +117,7 @@ export async function recordAudit(
 suspendMembership(id, { reason, actor, expectedVersion, correlationId?, causationId? })
 resumeMembership(id,  { reason, actor, expectedVersion, ... })
 revokeMembership(id,  { reason, actor, expectedVersion, ... })
-extendMembership(id,  { days,   actor, expectedVersion, dedupeKey?, ... })
+extendMembership(id,  { days,   actor, expectedVersion, correlationId?, causationId? })
 ```
 
 条件更新示例（suspend，仅 active→suspended）：
@@ -133,14 +133,15 @@ returning *
 
 - 行不存在 → `ApiError(404, "membershipNotFound")`
 - version 不符 → `ApiError(409, "membershipStale")`
-- status 不在允许来源态 → `ApiError(409, "invalidMembershipTransition")`
+- 已是该目标态 → `ApiError(409, "alreadyInState")`
+- 来源态不允许该转移 → `ApiError(409, "invalidMembershipTransition")`
 
-规则要点（完整见 ADR 0001 两张表）：
+规则要点（完整见 ADR 0001 两张表 + 决策 7）：
 
 - **extend**：仅 `endsAt > now` 允许，`endsAt = endsAt + days`，**保持原 status**（suspended extend 后仍 suspended，不恢复）；过期记录拒绝 extend，改走 `grantMembership` 续期。
 - **suspend / resume / revoke**：只改存储态，与时间窗正交。
 - **revoked 终态**：任何操作（含 extend）拒绝。
-- **幂等**：目标态相同视为成功 no-op（已 suspended 再 suspend 返回当前态）；`extend` 带 `dedupeKey` 只生效一次。
+- **幂等/并发（精简方案，ADR 0001 决策 7）**：**不做静默 no-op**，已是该态返回 `alreadyInState`；**绝不因目标态相同跳过乐观锁**。有害重复由乐观锁兜底（双击 extend 第二次 → `membershipStale`）。**#4 不引入 `dedupeKey`/幂等键**，键去重推迟到后续 API 层 PR。
 - **抽纯函数** `evaluateTransition({ status, startsAt, endsAt }, action, now) => { ok, errorCode }`，供单测（Step 6）。
 
 ### Step 5 — 权限判定改造（最易漏，重点）
@@ -183,7 +184,7 @@ pnpm test && pnpm build:migrator && pnpm build
 ## 6. 验收 checklist（对应 issue #4）
 
 - [ ] 非法转移确定性拒绝（409）
-- [ ] 适当幂等（重复 suspend no-op；dedupeKey extend 只一次）
+- [ ] 并发/幂等:已是该态 → `alreadyInState`(不静默 no-op);双击 extend 第二次 → `membershipStale`;乐观锁始终校验(#4 不含幂等键)
 - [ ] 状态与审计同提交 / 同回滚（审计失败回滚整笔）
 - [ ] 权限判定用新规则（status=active，去 tier.isActive）
 - [ ] 测试覆盖：合法 / 非法转移、stale version、duplicate、rollback、停用 tier 存量有效、suspended/revoked 无访问权
