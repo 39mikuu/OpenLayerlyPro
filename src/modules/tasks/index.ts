@@ -5,6 +5,7 @@ import { type DbClient, getDb } from "@/db";
 import { type Task, tasks } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 
+// Total execution limit: failures 1-4 retry after 1m/2m/4m/8m; failure 5 is dead.
 export const DEFAULT_MAX_ATTEMPTS = 5;
 export const TASK_LEASE_MS = 60_000;
 export const TASK_BATCH_SIZE = 20;
@@ -41,11 +42,11 @@ export async function enqueueTask(
 
 export async function claimDueTasks(
   limit: number,
-  options: { workerId?: string; now?: Date; leaseMs?: number } = {},
+  options: { lockToken?: string; now?: Date; leaseMs?: number } = {},
 ): Promise<Task[]> {
   if (!Number.isInteger(limit) || limit <= 0) return [];
   const now = options.now ?? new Date();
-  const workerId = options.workerId ?? randomUUID();
+  const lockToken = options.lockToken ?? randomUUID();
   const leaseUntil = new Date(now.getTime() + (options.leaseMs ?? TASK_LEASE_MS));
 
   return getDb().transaction(async (tx) => {
@@ -68,7 +69,7 @@ export async function claimDueTasks(
       .set({
         status: "processing",
         lockedAt: now,
-        lockedBy: workerId,
+        lockedBy: lockToken,
         leaseUntil,
         updatedAt: now,
       })
@@ -82,8 +83,29 @@ export async function claimDueTasks(
   });
 }
 
-export async function markTaskSucceeded(id: string, note?: string | null): Promise<void> {
-  await getDb()
+export async function renewTaskLease(
+  id: string,
+  lockToken: string,
+  leaseMs = TASK_LEASE_MS,
+): Promise<boolean> {
+  const now = new Date();
+  const [renewed] = await getDb()
+    .update(tasks)
+    .set({
+      leaseUntil: new Date(now.getTime() + leaseMs),
+      updatedAt: now,
+    })
+    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .returning({ id: tasks.id });
+  return Boolean(renewed);
+}
+
+export async function markTaskSucceeded(
+  id: string,
+  lockToken: string,
+  note?: string | null,
+): Promise<boolean> {
+  const [updated] = await getDb()
     .update(tasks)
     .set({
       status: "succeeded",
@@ -93,24 +115,36 @@ export async function markTaskSucceeded(id: string, note?: string | null): Promi
       lastError: note?.slice(0, TASK_ERROR_MAX_LENGTH) ?? null,
       updatedAt: new Date(),
     })
-    .where(eq(tasks.id, id));
+    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .returning({ id: tasks.id });
+  return Boolean(updated);
 }
 
 export function taskBackoffMs(attempts: number): number {
   return 60_000 * 2 ** Math.max(0, attempts - 1);
 }
 
-export async function markTaskFailed(id: string, error: unknown, now = new Date()): Promise<void> {
-  await getDb().transaction(async (tx) => {
-    const [task] = await tx.select().from(tasks).where(eq(tasks.id, id)).limit(1).for("update");
-    if (!task) return;
+export async function markTaskFailed(
+  id: string,
+  lockToken: string,
+  error: unknown,
+  now = new Date(),
+): Promise<boolean> {
+  return getDb().transaction(async (tx) => {
+    const ownership = and(
+      eq(tasks.id, id),
+      eq(tasks.status, "processing"),
+      eq(tasks.lockedBy, lockToken),
+    );
+    const [task] = await tx.select().from(tasks).where(ownership).limit(1).for("update");
+    if (!task) return false;
     const attempts = task.attempts + 1;
     const dead = attempts >= task.maxAttempts;
-    await tx
+    const [updated] = await tx
       .update(tasks)
       .set({
         attempts,
-        status: dead ? "dead" : "pending",
+        status: dead ? "dead" : "failed",
         runAfter: dead ? task.runAfter : new Date(now.getTime() + taskBackoffMs(attempts)),
         lockedAt: null,
         lockedBy: null,
@@ -118,7 +152,9 @@ export async function markTaskFailed(id: string, error: unknown, now = new Date(
         lastError: String(error).slice(0, TASK_ERROR_MAX_LENGTH),
         updatedAt: now,
       })
-      .where(eq(tasks.id, id));
+      .where(ownership)
+      .returning({ id: tasks.id });
+    return Boolean(updated);
   });
 }
 
@@ -144,7 +180,18 @@ export async function listTasks(options: {
     : query.orderBy(desc(tasks.createdAt)).limit(limit);
 }
 
-export async function retryTask(id: string): Promise<Task> {
+const taskAdminSelection = {
+  id: tasks.id,
+  kind: tasks.kind,
+  status: tasks.status,
+  attempts: tasks.attempts,
+  maxAttempts: tasks.maxAttempts,
+  runAfter: tasks.runAfter,
+  lastError: tasks.lastError,
+  createdAt: tasks.createdAt,
+};
+
+export async function retryTask(id: string): Promise<TaskAdminView> {
   const now = new Date();
   const [task] = await getDb()
     .update(tasks)
@@ -159,7 +206,7 @@ export async function retryTask(id: string): Promise<Task> {
       updatedAt: now,
     })
     .where(and(eq(tasks.id, id), inArray(tasks.status, ["failed", "dead"])))
-    .returning();
+    .returning(taskAdminSelection);
   if (!task) throw new ApiError(409, "taskNotRetryable");
   return task;
 }

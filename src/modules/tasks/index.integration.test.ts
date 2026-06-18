@@ -5,7 +5,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { getDb } from "@/db";
 import { tasks } from "@/db/schema";
 
-import { claimDueTasks, enqueueTask, markTaskFailed, retryTask, taskBackoffMs } from "./index";
+import {
+  claimDueTasks,
+  enqueueTask,
+  markTaskFailed,
+  markTaskSucceeded,
+  renewTaskLease,
+  retryTask,
+  taskBackoffMs,
+} from "./index";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -66,7 +74,7 @@ describeWithDatabase("durable tasks integration", () => {
       .returning();
 
     const claimed = await claimDueTasks(10, {
-      workerId: "worker-a",
+      lockToken: "worker-a",
       now,
       leaseMs: 60_000,
     });
@@ -90,8 +98,8 @@ describeWithDatabase("durable tasks integration", () => {
     ]);
 
     const [first, second] = await Promise.all([
-      claimDueTasks(1, { workerId: "worker-a", now }),
-      claimDueTasks(1, { workerId: "worker-b", now }),
+      claimDueTasks(1, { lockToken: "worker-a", now }),
+      claimDueTasks(1, { lockToken: "worker-b", now }),
     ]);
 
     expect(first).toHaveLength(1);
@@ -113,7 +121,7 @@ describeWithDatabase("durable tasks integration", () => {
       })
       .returning();
 
-    const claimed = await claimDueTasks(1, { workerId: "worker-b", now });
+    const claimed = await claimDueTasks(1, { lockToken: "worker-b", now });
 
     expect(claimed[0]).toMatchObject({
       id: expiredLease!.id,
@@ -122,37 +130,150 @@ describeWithDatabase("durable tasks integration", () => {
     });
   });
 
-  it("reschedules failures with exponential backoff and eventually marks them dead", async () => {
+  it("fences stale success and failure updates after another worker reclaims the task", async () => {
     const now = new Date("2026-06-18T10:00:00.000Z");
-    const [task] = await db
+    const [created] = await db
       .insert(tasks)
       .values({
         kind: "email",
         payloadJson: {},
-        status: "processing",
-        maxAttempts: 2,
+        runAfter: now,
       })
       .returning();
 
-    await markTaskFailed(task!.id, new Error("temporary SMTP failure"), now);
-    const [retrying] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
-    expect(retrying).toMatchObject({
-      status: "pending",
-      attempts: 1,
-      runAfter: new Date(now.getTime() + taskBackoffMs(1)),
-      lockedBy: null,
+    const [claimedByA] = await claimDueTasks(1, {
+      lockToken: "claim-a",
+      now,
+      leaseMs: 1_000,
     });
-    expect(retrying?.lastError).toContain("temporary SMTP failure");
+    const [claimedByB] = await claimDueTasks(1, {
+      lockToken: "claim-b",
+      now: new Date(now.getTime() + 2_000),
+    });
+    expect(claimedByA?.id).toBe(created!.id);
+    expect(claimedByB).toMatchObject({ id: created!.id, lockedBy: "claim-b" });
 
-    await markTaskFailed(task!.id, "still failing", new Date(now.getTime() + 1_000));
-    const [dead] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
-    expect(dead).toMatchObject({ status: "dead", attempts: 2, lockedBy: null });
+    await expect(markTaskSucceeded(created!.id, "claim-a")).resolves.toBe(false);
+    const [stillOwnedByB] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(stillOwnedByB).toMatchObject({ status: "processing", lockedBy: "claim-b" });
 
-    const retried = await retryTask(task!.id);
-    expect(retried).toMatchObject({
-      status: "pending",
+    await expect(markTaskSucceeded(created!.id, "claim-b")).resolves.toBe(true);
+    await expect(
+      markTaskFailed(
+        created!.id,
+        "claim-a",
+        new Error("late failure"),
+        new Date(now.getTime() + 3_000),
+      ),
+    ).resolves.toBe(false);
+    const [completed] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(completed).toMatchObject({
+      status: "succeeded",
       attempts: 0,
+      lockedBy: null,
       lastError: null,
     });
+  });
+
+  it("renews a lease only for the current claim token", async () => {
+    const now = new Date(Date.now() - 1_000);
+    const [created] = await db
+      .insert(tasks)
+      .values({ kind: "email", payloadJson: {}, runAfter: now })
+      .returning();
+    await claimDueTasks(1, { lockToken: "current-claim", now, leaseMs: 2_000 });
+    const [before] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+
+    await expect(renewTaskLease(created!.id, "stale-claim", 60_000)).resolves.toBe(false);
+    await expect(renewTaskLease(created!.id, "current-claim", 60_000)).resolves.toBe(true);
+
+    const [renewed] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(renewed?.leaseUntil?.getTime()).toBeGreaterThan(before!.leaseUntil!.getTime());
+    expect(renewed).toMatchObject({ status: "processing", lockedBy: "current-claim" });
+  });
+
+  it("uses failed while waiting, reclaims only when due, and enters dead on attempt five", async () => {
+    const start = new Date("2026-06-18T10:00:00.000Z");
+    const [created] = await db
+      .insert(tasks)
+      .values({ kind: "email", payloadJson: {}, runAfter: start, maxAttempts: 5 })
+      .returning();
+    const expectedBackoffs = [60_000, 120_000, 240_000, 480_000];
+    let claimTime = start;
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const lockToken = `claim-${attempt}`;
+      const [claimed] = await claimDueTasks(1, { lockToken, now: claimTime });
+      expect(claimed).toMatchObject({ id: created!.id, lockedBy: lockToken });
+
+      const failedAt = new Date(claimTime.getTime() + 1_000);
+      await expect(
+        markTaskFailed(created!.id, lockToken, `failure-${attempt}`, failedAt),
+      ).resolves.toBe(true);
+      const [stored] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+
+      if (attempt === 5) {
+        expect(stored).toMatchObject({ status: "dead", attempts: 5, lockedBy: null });
+        break;
+      }
+
+      const backoff = expectedBackoffs[attempt - 1]!;
+      const expectedRunAfter = new Date(failedAt.getTime() + backoff);
+      expect(taskBackoffMs(attempt)).toBe(backoff);
+      expect(stored).toMatchObject({
+        status: "failed",
+        attempts: attempt,
+        runAfter: expectedRunAfter,
+        lockedBy: null,
+      });
+
+      await expect(
+        claimDueTasks(1, {
+          lockToken: `too-early-${attempt}`,
+          now: new Date(expectedRunAfter.getTime() - 1),
+        }),
+      ).resolves.toEqual([]);
+      claimTime = expectedRunAfter;
+    }
+  });
+
+  it("allows manual retry for failed and dead tasks and returns only the admin view", async () => {
+    const now = new Date("2026-06-18T10:00:00.000Z");
+    const [failed, dead] = await db
+      .insert(tasks)
+      .values([
+        {
+          kind: "email",
+          dedupeKey: "private-dedupe",
+          payloadJson: { to: "private@example.com" },
+          status: "failed",
+          attempts: 2,
+          runAfter: new Date(now.getTime() + 60_000),
+          lastError: "temporary",
+        },
+        {
+          kind: "email",
+          payloadJson: { to: "private@example.com" },
+          status: "dead",
+          attempts: 5,
+          lastError: "exhausted",
+        },
+      ])
+      .returning();
+
+    for (const task of [failed!, dead!]) {
+      const retried = await retryTask(task.id);
+      expect(retried).toMatchObject({
+        id: task.id,
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+      });
+      expect(retried).not.toHaveProperty("payloadJson");
+      expect(retried).not.toHaveProperty("dedupeKey");
+      expect(retried).not.toHaveProperty("lockedBy");
+      expect(retried).not.toHaveProperty("lockedAt");
+      expect(retried).not.toHaveProperty("leaseUntil");
+    }
   });
 });

@@ -3,7 +3,9 @@ import {
   claimDueTasks,
   markTaskFailed,
   markTaskSucceeded,
+  renewTaskLease,
   TASK_BATCH_SIZE,
+  TASK_LEASE_MS,
   TASK_POLL_INTERVAL_MS,
 } from "@/modules/tasks";
 import { runTaskHandler } from "@/modules/tasks/handlers";
@@ -13,6 +15,7 @@ type DispatcherDependencies = {
   run: typeof runTaskHandler;
   succeed: typeof markTaskSucceeded;
   fail: typeof markTaskFailed;
+  renew: typeof renewTaskLease;
 };
 
 const defaultDependencies: DispatcherDependencies = {
@@ -20,21 +23,65 @@ const defaultDependencies: DispatcherDependencies = {
   run: runTaskHandler,
   succeed: markTaskSucceeded,
   fail: markTaskFailed,
+  renew: renewTaskLease,
 };
+
+export async function dispatchClaimedTask(
+  task: Awaited<ReturnType<typeof claimDueTasks>>[number],
+  dependencies: DispatcherDependencies = defaultDependencies,
+): Promise<void> {
+  const lockToken = task.lockedBy;
+  if (!lockToken) {
+    logger.warn("Claimed task is missing its lock token", { taskId: task.id });
+    return;
+  }
+
+  let leaseLost = false;
+  const heartbeat = setInterval(
+    async () => {
+      try {
+        const renewed = await dependencies.renew(task.id, lockToken);
+        if (!renewed && !leaseLost) {
+          leaseLost = true;
+          logger.warn("Task lease was lost during execution", { taskId: task.id });
+        }
+      } catch (error) {
+        logger.error("Task lease renewal failed", {
+          taskId: task.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    Math.floor(TASK_LEASE_MS / 3),
+  );
+  heartbeat.unref();
+
+  try {
+    const result = await dependencies.run(task);
+    const completed = await dependencies.succeed(task.id, lockToken, result.note);
+    if (!completed && !leaseLost) {
+      logger.warn("Task completion ignored because the lease was lost", { taskId: task.id });
+    }
+  } catch (error) {
+    const failed = await dependencies.fail(task.id, lockToken, error);
+    if (!failed && !leaseLost) {
+      logger.warn("Task failure ignored because the lease was lost", { taskId: task.id });
+    }
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
 
 export async function dispatchTaskBatch(
   dependencies: DispatcherDependencies = defaultDependencies,
 ): Promise<number> {
-  const due = await dependencies.claim(TASK_BATCH_SIZE);
-  for (const task of due) {
-    try {
-      const result = await dependencies.run(task);
-      await dependencies.succeed(task.id, result.note);
-    } catch (error) {
-      await dependencies.fail(task.id, error);
-    }
+  let processed = 0;
+  for (; processed < TASK_BATCH_SIZE; processed += 1) {
+    const [task] = await dependencies.claim(1);
+    if (!task) break;
+    await dispatchClaimedTask(task, dependencies);
   }
-  return due.length;
+  return processed;
 }
 
 let started = false;

@@ -81,10 +81,24 @@ describe("admin tasks API", () => {
   });
 
   it("retries a failed or dead task through the task service", async () => {
+    mocks.retryTask.mockResolvedValue({
+      id: "task-1",
+      kind: "email",
+      status: "pending",
+      attempts: 0,
+      maxAttempts: 5,
+      runAfter: new Date("2026-06-18T10:00:00.000Z"),
+      lastError: null,
+      createdAt: new Date("2026-06-18T09:00:00.000Z"),
+    });
     const response = await POST(request(), context());
+    const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(mocks.retryTask).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
+    for (const field of ["payloadJson", "dedupeKey", "lockedBy", "lockedAt", "leaseUntil"]) {
+      expect(body.data).not.toHaveProperty(field);
+    }
   });
 
   it("preserves the stable not-retryable error", async () => {
