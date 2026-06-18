@@ -232,6 +232,8 @@ pnpm build
 - [产品需求文档](docs/PRD.md)
 - [路线图](docs/roadmap.md)
 - [架构文档](docs/architecture/core-system.md)
+- [架构决策记录（ADR）](docs/adr/README.md)
+- [会员生命周期设计稿（#4）](docs/architecture/membership-lifecycle.md)
 - [开发工作流](docs/development/dev-workflow.md)
 - [贡献指南](CONTRIBUTING.md)
 
