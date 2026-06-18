@@ -82,6 +82,7 @@ describeWithDatabase("durable tasks integration", () => {
     expect(claimed.map((task) => task.id)).toEqual([due!.id]);
     expect(claimed[0]).toMatchObject({
       status: "processing",
+      attempts: 1,
       lockedBy: "worker-a",
       lockedAt: now,
       leaseUntil: new Date(now.getTime() + 60_000),
@@ -115,6 +116,7 @@ describeWithDatabase("durable tasks integration", () => {
         kind: "email",
         payloadJson: {},
         status: "processing",
+        attempts: 1,
         lockedBy: "dead-worker",
         lockedAt: new Date(now.getTime() - 120_000),
         leaseUntil: new Date(now.getTime() - 1_000),
@@ -126,7 +128,49 @@ describeWithDatabase("durable tasks integration", () => {
     expect(claimed[0]).toMatchObject({
       id: expiredLease!.id,
       status: "processing",
+      attempts: 2,
       lockedBy: "worker-b",
+    });
+  });
+
+  it("counts lease recovery as a new execution and does not exceed max attempts", async () => {
+    const now = new Date("2026-06-18T10:00:00.000Z");
+    const [created] = await db
+      .insert(tasks)
+      .values({
+        kind: "email",
+        payloadJson: {},
+        runAfter: now,
+        maxAttempts: 2,
+      })
+      .returning();
+
+    const [claimedByA] = await claimDueTasks(1, {
+      lockToken: "claim-a",
+      now,
+      leaseMs: 1_000,
+    });
+    expect(claimedByA).toMatchObject({ id: created!.id, attempts: 1 });
+
+    const recoveryTime = new Date(now.getTime() + 2_000);
+    const [claimedByB] = await claimDueTasks(1, {
+      lockToken: "claim-b",
+      now: recoveryTime,
+      leaseMs: 1_000,
+    });
+    expect(claimedByB).toMatchObject({ id: created!.id, attempts: 2 });
+
+    const afterFinalLease = new Date(recoveryTime.getTime() + 2_000);
+    await expect(claimDueTasks(1, { lockToken: "claim-c", now: afterFinalLease })).resolves.toEqual(
+      [],
+    );
+    const [stored] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(stored).toMatchObject({
+      status: "dead",
+      attempts: 2,
+      lockedBy: null,
+      leaseUntil: null,
+      lastError: "Task lease expired after the final execution attempt",
     });
   });
 
@@ -169,7 +213,7 @@ describeWithDatabase("durable tasks integration", () => {
     const [completed] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
     expect(completed).toMatchObject({
       status: "succeeded",
-      attempts: 0,
+      attempts: 2,
       lockedBy: null,
       lastError: null,
     });
@@ -204,7 +248,11 @@ describeWithDatabase("durable tasks integration", () => {
     for (let attempt = 1; attempt <= 5; attempt += 1) {
       const lockToken = `claim-${attempt}`;
       const [claimed] = await claimDueTasks(1, { lockToken, now: claimTime });
-      expect(claimed).toMatchObject({ id: created!.id, lockedBy: lockToken });
+      expect(claimed).toMatchObject({
+        id: created!.id,
+        attempts: attempt,
+        lockedBy: lockToken,
+      });
 
       const failedAt = new Date(claimTime.getTime() + 1_000);
       await expect(

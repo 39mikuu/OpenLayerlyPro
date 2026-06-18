@@ -25,7 +25,7 @@ function task(payloadJson: Record<string, unknown>): Task {
     payloadJson,
     runAfter: now,
     status: "processing",
-    attempts: 0,
+    attempts: 1,
     maxAttempts: 5,
     lockedAt: now,
     lockedBy: "worker",

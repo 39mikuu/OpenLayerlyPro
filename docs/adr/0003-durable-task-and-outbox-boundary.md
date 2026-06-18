@@ -24,18 +24,22 @@
    | `payload_json` | jsonb，任务参数（如邮件收件人/模板、待发布 post id） |
    | `run_after` | 时间戳，最早执行时间（即时任务 = now，定时发布 = 发布时刻） |
    | `status` | `pending` / `processing` / `succeeded` / `failed` / `dead` |
-   | `attempts` / `max_attempts` | 重试计数与上限 |
-   | `locked_at` / `locked_by` | 领取时刻与领取者标识（进程/实例） |
+   | `attempts` / `max_attempts` | 已开始执行次数与总执行次数上限 |
+   | `locked_at` / `locked_by` | 领取时刻与本次 claim 的唯一 token |
    | `lease_until` | 租约到期时刻；processing 超过它视为卡死，可被重新领取 |
    | `last_error` | 失败原因 |
    | `created_at` / `updated_at` | 时间戳 |
 
 2. **入队必须在业务事务内**：状态变更与「插入 tasks 行」同提交。这样「状态成了但任务没排上」不可能发生。
 3. **派发器（dispatcher）单实例、数据库轮询 + 租约（lease）**：
-   - 领取条件：`status='pending' and run_after <= now`，**或** `status='processing' and lease_until < now`（回收卡死任务）。
-   - 用 `for update skip locked` 选行，置 `status='processing'`、`locked_at=now`、`locked_by=<id>`、`lease_until=now+租约时长`。
-   - 执行成功置 `succeeded`；失败按指数退避重排为 `pending`；超过 `max_attempts` 置 `dead`。
+   - 领取条件：`status in ('pending', 'failed') and run_after <= now`，**或** `status='processing' and lease_until < now`（回收卡死任务），且 `attempts < max_attempts`。
+   - 用 `for update skip locked` 选行，原子执行 `attempts=attempts+1`，并置 `status='processing'`、`locked_at=now`、`locked_by=<claim token>`、`lease_until=now+租约时长`。
+   - `attempts` 在 claim 时计数，而不是在失败时计数；因此 worker 在执行中崩溃也已消耗一次执行预算，lease recovery 的新 claim 会再消耗一次。
+   - 执行成功置 `succeeded`；未耗尽次数的失败置 `failed` 并按指数退避设置 `run_after`；最后一次执行失败置 `dead`。过期 lease 已耗尽执行预算时也直接置 `dead`，不会产生超限执行。
+   - 默认 `max_attempts=5` 表示总共最多执行 5 次：第 1/2/3/4 次失败分别退避 1m/2m/4m/8m，第 5 次失败进入 `dead`。
+   - 完成、失败与续租更新都必须匹配 `id + status='processing' + locked_by=<claim token>`；旧 worker 的迟到结果不能覆盖重新领取后的状态。
    - **租约是必须的**：`skip locked` 只保护「领取那一刻」。若任务进入 `processing` 后进程崩溃，没有租约它会永久卡住；`lease_until` 让超时任务可被重新领取。长任务需在执行中续租。
+   - 派发器每次只领取一条并立即执行，每个 tick 最多处理 20 条，避免批量预领取导致后排任务在执行前 lease 已过期。
    - 首版跑在应用进程内的定时器即可，符合 #7「single-instance」。
 4. **`kind` 区分处理器**：`email` 处理器发信；`publish_post` 处理器执行定时发布（见第 5 点）。两者共用领取/租约/重试/幂等骨架。
 5. **定时发布不给 post 增加 `scheduled` 状态**：保持 `posts.status` 为 `draft / published / archived`，新增 `posts.scheduled_at` 时间戳。`publish_post` 处理器做条件更新 `where status='draft' and scheduled_at <= now` → 置 `published`、`published_at=now`、清空 `scheduled_at`。这样**不扩展翻译状态机**，也不触及 `post_translations` 的「每语言一条 published」唯一索引。

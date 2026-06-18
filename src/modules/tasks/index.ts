@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, asc, desc, eq, inArray, lt, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, lte, or, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import { type Task, tasks } from "@/db/schema";
@@ -50,13 +50,36 @@ export async function claimDueTasks(
   const leaseUntil = new Date(now.getTime() + (options.leaseMs ?? TASK_LEASE_MS));
 
   return getDb().transaction(async (tx) => {
+    // A crashed worker consumed its attempt when it claimed the task. Once the
+    // final lease expires, recovery must not create an execution over the limit.
+    await tx
+      .update(tasks)
+      .set({
+        status: "dead",
+        lockedAt: null,
+        lockedBy: null,
+        leaseUntil: null,
+        lastError: "Task lease expired after the final execution attempt",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(tasks.status, "processing"),
+          lt(tasks.leaseUntil, now),
+          sql`${tasks.attempts} >= ${tasks.maxAttempts}`,
+        ),
+      );
+
     const due = await tx
       .select({ id: tasks.id })
       .from(tasks)
       .where(
-        or(
-          and(inArray(tasks.status, ["pending", "failed"]), lte(tasks.runAfter, now)),
-          and(eq(tasks.status, "processing"), lt(tasks.leaseUntil, now)),
+        and(
+          sql`${tasks.attempts} < ${tasks.maxAttempts}`,
+          or(
+            and(inArray(tasks.status, ["pending", "failed"]), lte(tasks.runAfter, now)),
+            and(eq(tasks.status, "processing"), lt(tasks.leaseUntil, now)),
+          ),
         ),
       )
       .orderBy(asc(tasks.runAfter))
@@ -68,6 +91,7 @@ export async function claimDueTasks(
       .update(tasks)
       .set({
         status: "processing",
+        attempts: sql`${tasks.attempts} + 1`,
         lockedAt: now,
         lockedBy: lockToken,
         leaseUntil,
@@ -138,14 +162,12 @@ export async function markTaskFailed(
     );
     const [task] = await tx.select().from(tasks).where(ownership).limit(1).for("update");
     if (!task) return false;
-    const attempts = task.attempts + 1;
-    const dead = attempts >= task.maxAttempts;
+    const dead = task.attempts >= task.maxAttempts;
     const [updated] = await tx
       .update(tasks)
       .set({
-        attempts,
         status: dead ? "dead" : "failed",
-        runAfter: dead ? task.runAfter : new Date(now.getTime() + taskBackoffMs(attempts)),
+        runAfter: dead ? task.runAfter : new Date(now.getTime() + taskBackoffMs(task.attempts)),
         lockedAt: null,
         lockedBy: null,
         leaseUntil: null,

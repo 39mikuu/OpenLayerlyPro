@@ -26,7 +26,7 @@
 | D3 | **payload 存「模板 + 参数」，不存渲染后 HTML**：`{ template: 'membership_activated' | 'payment_rejected', to, locale, params }`，派发时调现有 `renderX`/`sendX` 渲染发送。 | 模板变更不影响在途任务；payload 体积小。 |
 | D4 | **SMTP 未配置时，email 任务记为 `succeeded` 并附 note（视为 no-op），不重试**。 | 避免无 SMTP 环境下任务永久失败堆积；与现有「未配置即跳过」语义一致。 |
 | D5 | **本任务包含最小「管理员任务视图 + 手动重试」**（issue #7 明确要求 retry view）：列表 + 对 `failed`/`dead` 手动重排。**不做花哨 UI**。 | issue 验收项。 |
-| D6 | **重试参数**：`max_attempts=5`，指数退避（如 1m/2m/4m/8m/16m），`lease` 时长 60s，轮询间隔 ~10s。可放常量便于调整。 | 合理默认；单实例足够。 |
+| D6 | **执行与重试参数**：`max_attempts=5` 表示总执行次数上限；每次 claim（包括 lease recovery）原子增加 `attempts`。第 1/2/3/4 次失败分别退避 1m/2m/4m/8m，第 5 次失败进入 `dead`。`lease` 时长 60s，轮询间隔 ~10s。 | 崩溃执行也消耗预算，避免 lease recovery 绕过上限。 |
 
 ## 2. Schema 变更 `src/db/schema/index.ts`
 
@@ -73,18 +73,25 @@ export type Task = typeof tasks.$inferSelect;
 enqueueTask(tx, { kind, dedupeKey?, payload, runAfter? }): Promise<void>
 //   insert ... on conflict (dedupe_key) do nothing  —— 幂等入队
 
-// 领取（派发器用）：原子领取一批到期任务
+// 领取（派发器用）：原子领取到期任务
 claimDueTasks(limit): Promise<Task[]>
-//   update tasks set status='processing', locked_at=now, locked_by=:id, lease_until=now+lease
+//   每次调用生成新的 claim token；领取时 attempts=attempts+1
+//   update tasks set status='processing', attempts=attempts+1,
+//     locked_at=now, locked_by=:claimToken, lease_until=now+lease
 //   where id in (
 //     select id from tasks
-//     where (status='pending' and run_after<=now)
+//     where attempts < max_attempts
+//       and ((status in ('pending','failed') and run_after<=now)
 //        or (status='processing' and lease_until < now)   -- 回收卡死
+//       )
 //     order by run_after limit :limit for update skip locked
 //   ) returning *
 
-markSucceeded(id) / markFailed(id, error): Promise<void>
-//   失败：attempts+1；attempts<max → status='pending', run_after=now+backoff(attempts)；否则 status='dead'
+renewTaskLease(id, claimToken): Promise<boolean>
+markSucceeded(id, claimToken) / markFailed(id, claimToken, error): Promise<boolean>
+//   三者最终 update 都匹配 id + processing + locked_by，防止旧 worker 迟到覆盖新状态
+//   失败：attempts<max → status='failed', run_after=now+backoff(attempts)；否则 status='dead'
+//   最终一次执行的 lease 若过期，也直接 dead，不允许产生 maxAttempts+1 次执行
 ```
 
 `enqueueTask` 用 `onConflictDoNothing({ target: tasks.dedupeKey })` 实现幂等入队。
@@ -116,10 +123,11 @@ export function startTaskDispatcher() {
   started = true;
   const tick = async () => {
     try {
-      const due = await claimDueTasks(BATCH);
-      for (const task of due) {
-        try { await runHandler(task); await markSucceeded(task.id); }
-        catch (e) { await markFailed(task.id, String(e)); }
+      for (let i = 0; i < BATCH; i += 1) {
+        const [task] = await claimDueTasks(1);
+        if (!task) break;
+        try { await runHandlerWithLeaseHeartbeat(task); await markSucceeded(task.id, task.lockedBy); }
+        catch (e) { await markFailed(task.id, task.lockedBy, e); }
       }
     } catch (e) { logger.error("task dispatcher tick failed", { error: String(e) }); }
   };
@@ -156,8 +164,10 @@ approve / reject 当前是**事务后** `if ((await getSmtpConfig()).configured)
 - `enqueueTask` 在事务回滚时不留任务；提交后任务存在。
 - 幂等入队：相同 `dedupeKey` 重复入队只产生一行。
 - `claimDueTasks`：到期任务被领取并置 `processing` + `lease_until`；未到期不被领取。
-- **租约回收**：`processing` 且 `lease_until<now` 的任务可被重新领取。
-- 失败重试：失败 → `attempts+1` 且按退避重排;超 `max_attempts` → `dead`。
+- **执行计数**：首次 claim 后 `attempts=1`；lease recovery 再次 claim 后 `attempts=2`，崩溃不能绕过总执行次数上限。
+- **租约回收**：`processing` 且 `lease_until<now`、仍有执行预算的任务可被重新领取；预算耗尽则进入 `dead`。
+- fencing：旧 claim token 的迟到成功/失败不能覆盖新 worker 的状态；续租也只允许当前 token。
+- 失败重试：未耗尽时置 `failed` 并按 1m/2m/4m/8m 退避；第 5 次执行失败进入 `dead`。
 - approve/reject 现在**事务内入队**：审核成功后存在对应 email 任务；审核回滚时无任务。
 - SMTP 未配置：email 任务 → `succeeded`（no-op）。
 - 派发器：纯函数/可注入 handler 的单测（避免真发邮件）。
