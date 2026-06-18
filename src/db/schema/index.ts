@@ -114,6 +114,10 @@ export const memberships = pgTable(
     startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
     endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
     note: text("note"),
+    status: text("status", { enum: ["active", "suspended", "revoked"] })
+      .notNull()
+      .default("active"),
+    version: integer("version").notNull().default(0),
     createdBy: uuid("created_by"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -283,6 +287,29 @@ export const appEvents = pgTable("app_events", {
   createdAt: createdAt(),
 });
 
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    entityType: text("entity_type").notNull(),
+    entityId: uuid("entity_id").notNull(),
+    action: text("action").notNull(),
+    actorType: text("actor_type", { enum: ["admin", "user", "system"] }).notNull(),
+    actorId: uuid("actor_id"),
+    reason: text("reason"),
+    beforeJson: jsonb("before_json"),
+    afterJson: jsonb("after_json"),
+    correlationId: uuid("correlation_id").notNull(),
+    causationId: uuid("causation_id"),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index("audit_events_entity_idx").on(table.entityType, table.entityId, table.createdAt.desc()),
+    index("audit_events_correlation_idx").on(table.correlationId),
+    index("audit_events_causation_idx").on(table.causationId),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type LoginCode = typeof loginCodes.$inferSelect;
@@ -297,3 +324,4 @@ export type FileRecord = typeof files.$inferSelect;
 export type PostFile = typeof postFiles.$inferSelect;
 export type DownloadLog = typeof downloadLogs.$inferSelect;
 export type AppEvent = typeof appEvents.$inferSelect;
+export type AuditEvent = typeof auditEvents.$inferSelect;
