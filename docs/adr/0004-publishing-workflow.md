@@ -1,6 +1,6 @@
 # ADR 0004：文章发布工作流——派生调度态 + token fencing
 
-- **Status**：Proposed ▶（2026-06-19）
+- **Status**：Accepted ✅（2026-06-19）
 - **相关 issue**：#9
 - **依赖**：ADR 0002（事务内审计）、ADR 0003（durable tasks）
 
