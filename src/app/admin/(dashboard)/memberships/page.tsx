@@ -1,4 +1,4 @@
-import { DeleteButton } from "@/components/admin/delete-button";
+import { MembershipActions } from "@/components/admin/membership-actions";
 import { MembershipGrantForm } from "@/components/admin/membership-grant-form";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -12,6 +12,10 @@ import {
 import { formatDate } from "@/lib/dates";
 import { getT } from "@/modules/i18n/server";
 import { listMemberships, listTiers } from "@/modules/membership";
+import {
+  getMembershipDisplayState,
+  type MembershipDisplayState,
+} from "@/modules/membership/admin-model";
 
 export const dynamic = "force-dynamic";
 
@@ -22,9 +26,16 @@ const SOURCE_KEYS: Record<string, string> = {
   external: "admin.memberships.sourceExternal",
 };
 
+const STATE_KEYS: Record<MembershipDisplayState, string> = {
+  active: "admin.memberships.active",
+  scheduled: "admin.memberships.scheduled",
+  expired: "admin.memberships.expired",
+  suspended: "admin.memberships.suspended",
+  revoked: "admin.memberships.revoked",
+};
+
 export default async function AdminMembershipsPage() {
   const [records, tiers] = await Promise.all([listMemberships(), listTiers({ activeOnly: true })]);
-  const now = new Date();
   const t = await getT();
 
   return (
@@ -44,7 +55,7 @@ export default async function AdminMembershipsPage() {
         </TableHeader>
         <TableBody>
           {records.map(({ membership, tier, userEmail }) => {
-            const active = membership.startsAt <= now && membership.endsAt > now;
+            const state = getMembershipDisplayState(membership);
             return (
               <TableRow key={membership.id}>
                 <TableCell>{userEmail}</TableCell>
@@ -58,20 +69,12 @@ export default async function AdminMembershipsPage() {
                   {formatDate(membership.startsAt)} ~ {formatDate(membership.endsAt)}
                 </TableCell>
                 <TableCell>
-                  {active ? (
-                    <Badge>{t("admin.memberships.active")}</Badge>
-                  ) : (
-                    <Badge variant="secondary">{t("admin.memberships.expired")}</Badge>
-                  )}
+                  <Badge variant={state === "active" ? "default" : "secondary"}>
+                    {t(STATE_KEYS[state])}
+                  </Badge>
                 </TableCell>
                 <TableCell>
-                  <DeleteButton
-                    path={`/api/admin/memberships/${membership.id}`}
-                    confirmText={t("admin.memberships.confirmDelete", {
-                      email: userEmail,
-                      tier: tier.name,
-                    })}
-                  />
+                  <MembershipActions membershipId={membership.id} />
                 </TableCell>
               </TableRow>
             );
