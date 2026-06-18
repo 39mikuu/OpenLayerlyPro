@@ -53,7 +53,13 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     db
       .select({ c: sql<number>`count(distinct ${memberships.userId})` })
       .from(memberships)
-      .where(and(lte(memberships.startsAt, now), gt(memberships.endsAt, now))),
+      .where(
+        and(
+          eq(memberships.status, "active"),
+          lte(memberships.startsAt, now),
+          gt(memberships.endsAt, now),
+        ),
+      ),
     db
       .select({ c: count() })
       .from(paymentRequests)
