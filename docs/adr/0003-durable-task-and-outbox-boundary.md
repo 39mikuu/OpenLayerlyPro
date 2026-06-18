@@ -1,6 +1,6 @@
 # ADR 0003：持久化任务与 outbox 边界
 
-- **Status**：Proposed ▶
+- **Status**：Accepted ✅（2026-06-18）
 - **相关 issue**：#7（事务性邮件 outbox）、#9（定时发布）
 
 ## Context
@@ -58,4 +58,4 @@
 - ⚠️ 显式假设单实例。多实例下 `skip locked` + 租约可并发安全领取，但应用内定时器会重复触发，需到 HA 阶段再处理（已 deferred）。
 - ⚠️ #7 落地时要同时把 `payment/index.ts` 现有内联发信改为入队，属于行为变更，需测试。
 - ⚠️ 命名按通用任务（`tasks`）而非 `mail_outbox`，#7 的 issue 标题虽叫 outbox，但实现是通用任务表的一个 kind，PR 描述需说明这一取舍。
-- ⚠️ **本 ADR 不阻塞 #4**，可继续保持 Proposed；但租约与 `scheduled_at` 两项必须在 #7 开工前补齐确认。
+- ✅ 租约（`locked_at`/`locked_by`/`lease_until`）与定时发布 `scheduled_at` 两项已补齐，本 ADR 于 #7 开工前定稿为 Accepted。

@@ -30,4 +30,4 @@ ADR 一旦 Accepted 不在原地大改语义；要推翻就新写一条并把旧
 |---|---|---|---|
 | [0001](0001-membership-lifecycle-model.md) | 会员生命周期模型：叠加时间窗 + 存储状态态 | Accepted ✅ | #4 #5 #6 |
 | [0002](0002-audit-and-event-strategy.md) | 审计与事件策略：统一审计表 + 因果引用 | Accepted ✅ | #4 #6 #8 |
-| [0003](0003-durable-task-and-outbox-boundary.md) | 持久化任务与 outbox 边界 | Proposed ▶ | #7 #9 |
+| [0003](0003-durable-task-and-outbox-boundary.md) | 持久化任务与 outbox 边界 | Accepted ✅ | #7 #9 |
