@@ -23,7 +23,7 @@ Issue #7 已合并，当前 `main` 已有：
 
 - `src/db/schema/index.ts`
   - `posts.status` 已是 `draft | published | archived`；
-  - 目前没有 `scheduledAt` / `scheduleToken`；
+  - 目前没有 `scheduledAt` / `scheduleToken` / `contentUpdatedAt`；
   - translation 有独立 `draft | published | archived`；
   - `post_files` 支持 cover/image/attachment/preview/thumbnail；
   - `tasks.kind` 是开放 text，可直接增加 `publish_post`。
@@ -50,6 +50,7 @@ Issue #7 已合并，当前 `main` 已有：
 ### Public and admin UI
 
 - `src/app/(site)/posts/[slug]/page.tsx` 已用 active theme `PostDetail`；
+- 当前 public page/API 对 admin 放行非 published post，必须删除该直通；
 - `src/modules/theme/types.ts` 的 `PostDetailView` 已包含权限、正文、图片和附件；
 - `src/components/admin/post-editor.tsx` 目前只有 publish/archive；
 - `src/app/admin/(dashboard)/posts/[id]/page.tsx` 只显示存储 status；
@@ -69,6 +70,9 @@ Issue #7 已合并，当前 `main` 已有：
 ```ts
 scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
 scheduleToken: uuid("schedule_token"),
+contentUpdatedAt: timestamp("content_updated_at", { withTimezone: true })
+  .notNull()
+  .defaultNow(),
 ```
 
 增加：
@@ -93,13 +97,15 @@ OR published_at IS NOT NULL
 
 1. 修改 Drizzle schema；
 2. `pnpm exec drizzle-kit generate`；
-3. 人工检查 migration 只增加两列、constraints 和索引；
-4. 不新增 `scheduled` enum 值；
-5. 不修改 translation schema。
+3. 人工检查 migration 只增加预期字段、constraints 和索引；
+4. 用现有 `updated_at` 回填 `content_updated_at`；
+5. 不新增 `scheduled` enum 值；
+6. 不修改 translation schema。
 
-现有数据的两个新字段均为 null，迁移无需回填。
+现有数据的两个调度字段均为 null；`content_updated_at` 必须回填。
 
-`Post` test fixtures、view models 和 API mocks 必须补两个 nullable 字段。
+`Post` test fixtures、view models 和 API mocks 必须补两个 nullable 调度字段和
+`contentUpdatedAt`。
 
 ## 3. Publishing service
 
@@ -179,6 +185,10 @@ export async function restorePost(
 `scheduledAt` 必须是有效未来时间（`scheduledAt > server/database now`），否则返回
 `400 postScheduleTooSoon`。不要在 UI 时钟上做唯一校验。
 
+生产 task 调度时间必须统一到 PostgreSQL：`claimDueTasks`、lease expiry、新 lease、
+renewal、failure backoff 和 scheduled handler due check 都使用数据库 `now()`。现有
+`options.now` 只保留为测试辅助，不进入生产默认路径。
+
 ## 4. Transition matrix 与写入值
 
 | 命令 | 来源条件 | 写入 |
@@ -197,16 +207,27 @@ schedule/reschedule 每次生成 `randomUUID()` token，并在同一事务：
 await enqueueTask(tx, {
   kind: "publish_post",
   dedupeKey: `publish_post:${post.id}:${scheduleToken}`,
-  payload: { postId: post.id, scheduleToken },
+  payload: {
+    postId: post.id,
+    scheduleToken,
+    correlationId,
+    schedulingAuditId: schedulingAudit.id,
+  },
   runAfter: scheduledAt,
 });
 ```
 
-顺序可以是 update → audit → enqueue，但三者必须在同一 transaction。任何一步抛错，全部
-回滚。
+顺序为 update → audit → enqueue；task payload 需要 audit id，因此 audit 必须先写。三者
+在同一 transaction，任何一步抛错全部回滚。
 
-普通 `updatePost()` 允许编辑 draft/scheduled 内容，但不得写 `status`、`publishedAt`、
-`scheduledAt` 或 `scheduleToken`。
+普通 `updatePost()`：
+
+- 只允许 draft/scheduled；
+- published/archived 返回 `409 postNotEditable`；
+- 不得写 `status`、`publishedAt`、`scheduledAt` 或 `scheduleToken`；
+- title/summary/body/originalLocale 实际变化时更新 `contentUpdatedAt`；
+- visibility/requiredTierId/coverFileId 只更新 `updatedAt`；
+- attach/detach 也必须先检查 post editable，避免旁路修改线上附件。
 
 ## 5. Audit
 
@@ -236,10 +257,16 @@ scheduleToken
 | archive | `post.archived` | admin |
 | restore | `post.restored` | admin |
 
-每个命令生成一个 correlation id。task 发布的 `causationId=task.id`。这会推广 ADR 0002
-对 causation 的原始窄定义；ADR review 若要求 audit-only causation，则实施前改用独立
-`sourceTaskId` 字段，不能省略 task 因果引用。task no-op 不写 audit。audit 失败必须让
-post update 和 enqueue 一起回滚。
+schedule/reschedule 先生成 correlation id 并写 scheduling audit；task payload 保存该
+`correlationId` 和 `schedulingAuditId`。task 发布审计使用：
+
+```ts
+correlationId: payload.correlationId,
+causationId: payload.schedulingAuditId,
+```
+
+`causationId` 继续严格指向 audit event，符合 ADR 0002。task id 只用于运行追踪。task
+no-op 不写 audit。audit 失败必须让 post update 和 enqueue 一起回滚。
 
 ## 6. `publish_post` task
 
@@ -249,6 +276,8 @@ post update 和 enqueue 一起回滚。
 const publishPostPayloadSchema = z.object({
   postId: z.string().uuid(),
   scheduleToken: z.string().uuid(),
+  correlationId: z.string().uuid(),
+  schedulingAuditId: z.string().uuid(),
 });
 ```
 
@@ -261,6 +290,8 @@ executeScheduledPublish({
   taskId: task.id,
   postId: payload.postId,
   scheduleToken: payload.scheduleToken,
+  correlationId: payload.correlationId,
+  schedulingAuditId: payload.schedulingAuditId,
 });
 ```
 
@@ -278,14 +309,41 @@ schedule_token = scheduleToken
 - post 不存在：success no-op；
 - token 不同/null：success no-op；
 - status 非 draft：success no-op；
-- token 相同但 scheduledAt > now：抛 retryable not-due error；
+- token 相同但 scheduledAt > database now：返回 defer result，不标记 failure；
 - 命中：success published。
 
 返回结果可为：
 
 ```ts
-{ note: "published" | "stale schedule; skipped" | "post missing; skipped" }
+{
+  outcome: "published" | "noop" | "defer";
+  note?: string;
+  deferUntil?: Date;
+}
 ```
+
+### PostgreSQL task time
+
+修改 task module 的生产默认路径：
+
+- due/expired 条件使用 SQL `now()`；
+- claim 的 `locked_at` / `lease_until` 使用 SQL 时间；
+- renewal 使用 SQL 时间；
+- failure backoff 使用 SQL 时间；
+- handler 在同一 transaction 使用 PostgreSQL now。
+
+测试可通过独立 helper 或 transaction-local override 固定时间；不要把生产逻辑继续建立在
+应用 `new Date()` 上。
+
+增加：
+
+```ts
+deferTask(id, lockToken, runAfter): Promise<boolean>
+```
+
+它必须匹配 `id + processing + locked_by`，恢复 pending、清 lease、将 runAfter 设置为准确的
+scheduledAt，并撤销本次 claim 增加的 attempt（不得低于 0）。这是手工数据或注入时间造成
+提前领取时的防御，不是普通 retry。
 
 ### Permanent task failure
 
@@ -346,8 +404,9 @@ export function evaluatePostAudience(
 4. 映射 audience；
 5. 调纯函数。
 
-公开 page/API 仍必须在调用权限核心前要求 parent post 为 published。不要把 status 判断偷偷
-塞进 preview audience，否则 preview 无法模拟未发布文章。
+公开 page/API 必须在调用权限核心前无条件要求 parent post 为 published，admin 也不例外。
+删除当前 `(post.status !== "published" && user?.role !== "admin")` 直通。不要把 status
+判断塞进 preview audience，否则 preview 无法模拟未发布文章。
 
 ## 8. Preview view builder
 
@@ -399,6 +458,7 @@ src/app/admin/(preview)/posts/[id]/preview/page.tsx
 - query 支持 `locale=zh|en|ja`、
   `audience=guest|logged_in_without_membership|tier`、`tierLevel=<int>`；
 - tier selector 可用真实 tiers 生成 level 选项，但不创建 membership。
+- admin 访问普通 draft/scheduled/archived slug 或 public post API 仍是 404。
 
 文件 endpoint：
 
@@ -450,6 +510,7 @@ postNotFound                 404
 postScheduleTooSoon          400
 postPublishingStale          409
 invalidPostTransition        409
+postNotEditable              409
 invalidPreviewAudience       400
 previewFileNotLinked         404
 ```
@@ -470,6 +531,7 @@ previewFileNotLinked         404
 - mutation 后 refresh，409 显示稳定 i18n 错误并提示重新加载；
 - schedule/reschedule UI 提交带 timezone 的 ISO；
 - scheduled 内容编辑区显示“继续保存会影响最终发布内容”；
+- published/archived editor 为只读或隐藏保存/附件 mutation，并解释需 restore to draft；
 - preview 入口支持 locale 和 guest/login/tier audience；
 - zh/en/ja 全部补齐；
 - 不修改主题组件实现，只传现有 `PostDetailView`。
@@ -486,6 +548,9 @@ previewFileNotLinked         404
 - archive/restore 不更新 `post_translations`；
 - restore 后 published translation 保持已批准但因 parent draft 不公开；
 - 再次 publish 后可重新公开；
+- translation `sourceUpdatedAt` 保存 `post.contentUpdatedAt`；
+- review stale 比较 `contentUpdatedAt`，不再比较 `updatedAt`；
+- 原文变化不自动下架 published translation，只显示 stale warning；
 - preview locale 也只用 published translation，draft translation 继续在现有翻译 editor 审核。
 
 ### Attachment
@@ -493,6 +558,7 @@ previewFileNotLinked         404
 - 现有 public `canAccessFile()` 继续要求至少一个关联 post published 且真实用户有权限；
 - schedule 不复制/冻结 `post_files`；
 - schedule 后 attach/detach 在执行时生效；
+- published/archived 的 attach/detach/cover update 返回 `postNotEditable`；
 - preview builder 只在模拟 allowed 时给出 admin preview URL；
 - preview endpoint 必须验证 post-file 关联，不能只凭 file id；
 - 不让 guest/tier preview 改变真实 download API 的用户权限。
@@ -501,26 +567,34 @@ previewFileNotLinked         404
 
 实施 PR 1 至少覆盖：
 
-1. migration 后旧 post 字段为 null，constraints 生效；
-2. draft schedule 同事务写 post、audit、task；
-3. enqueue 失败回滚 post 和 audit；
-4. audit 失败回滚 post 和 task；
-5. reschedule 生成新 token 和新 dedupe key；
-6. stale reschedule/cancel token 返回 409；
-7. cancel 后旧 task success no-op；
-8. reschedule 后旧 task success no-op，新 task 到期发布；
-9. scheduled immediate publish 清 schedule，旧 task no-op；
-10. task 与 immediate publish 并发只发布一次、只写一条 publish audit；
-11. 第一次 handler 成功发布，重复 handler no-op；
-12. archive/restore 与旧 task 竞争不会重新发布；
-13. restore 清 publishedAt，保留 translation 行；
-14. scheduled 内容/附件修改后，最终公开读取最新数据；
-15. parent draft/scheduled/archived 时 published translation 不公开；
-16. parent published 时 published translation 可见，draft translation 不可见；
-17. non-published post 的附件普通用户不可下载；
-18. published post 附件仍按 guest/login/tier 权限；
-19. malformed payload 直接 dead，不走五次 retry；
-20. transient DB/too-early error 仍进入 failed/backoff。
+1. migration 后旧 post 调度字段为 null，constraints 生效；
+2. `content_updated_at` 从旧 `updated_at` 回填；
+3. draft schedule 同事务写 post、audit、task；
+4. task payload 带 scheduling audit id/correlation id，publish audit 因果链正确；
+5. enqueue 失败回滚 post 和 audit；
+6. audit 失败回滚 post 和 task；
+7. reschedule 生成新 token 和新 dedupe key；
+8. stale reschedule/cancel token 返回 409；
+9. cancel 后旧 task success no-op；
+10. reschedule 后旧 task success no-op，新 task 到期发布；
+11. scheduled immediate publish 清 schedule，旧 task no-op；
+12. task 与 immediate publish 并发只发布一次、只写一条 publish audit；
+13. 第一次 handler 成功发布，重复 handler no-op；
+14. archive/restore 与旧 task 竞争不会重新发布；
+15. restore 清 publishedAt，保留 translation 行；
+16. scheduled 内容/附件修改后，最终公开读取最新数据；
+17. schedule/publish/archive 不改变 contentUpdatedAt；
+18. 原文内容变化更新 contentUpdatedAt 并标记 draft/published translation stale；
+19. parent draft/scheduled/archived 时 published translation 不公开；
+20. parent published 时 published translation 可见，draft translation 不可见；
+21. published translation stale 后继续公开；
+22. non-published post 的附件普通用户不可下载；
+23. published post 附件仍按 guest/login/tier 权限；
+24. published/archived 内容、cover 和附件 mutation 返回 postNotEditable；
+25. malformed payload 直接 dead，不走五次 retry；
+26. production claim/lease/backoff 使用 PostgreSQL 时间；
+27. 提前领取防御路径精确 defer 且不消耗 attempt；
+28. transient DB error 仍进入 failed/backoff。
 
 测试必须使用真实 PostgreSQL 验证条件更新、row lock、事务回滚和 task/audit 原子性。
 
@@ -529,6 +603,7 @@ previewFileNotLinked         404
 实施 PR 2 至少覆盖：
 
 - 所有 publishing/preview API 未登录 401、非 admin 403；
+- admin 访问普通 draft/scheduled/archived slug 和 public API 仍为 404；
 - schedule/reschedule/cancel/publish/archive/restore 请求体校验；
 - stale token/state 映射为 409 稳定 code；
 - admin GET post 返回派生状态所需字段；
@@ -540,6 +615,7 @@ previewFileNotLinked         404
 - allowed preview 使用 admin preview URL；
 - preview file endpoint 拒绝未关联文件和非 admin；
 - S3 preview 不返回 signed redirect；
+- draft 的 preview builder 不使用普通文件下载 URL，也不会产生 S3 signed redirect；
 - preview 页面调用当前 active theme 的 `PostDetail`；
 - preview banner 存在；
 - admin UI 在四种派生状态显示正确操作；
@@ -630,5 +706,11 @@ Closes #9
 - 不自动发布 translation draft；
 - 不为 preview 创建用户、session 或 membership；
 - 不让 preview 执行 custom footer code；
+- 不允许 public page/API 对 admin 直通非 published post；
 - 不给 preview 返回可脱离 admin session 使用的 S3 signed URL；
+- 不使用应用时钟判断生产 task due/lease；
+- 不用普通 retry/backoff 处理同 token 的提前领取；
+- 不用 `posts.updatedAt` 判断 translation stale；
+- 不把 task id 写入 audit `causationId`；
+- 不允许 published/archived 内容或附件 live edit；
 - 不新增外部队列、HA worker、tags/categories、SEO、通知或插件 API。
