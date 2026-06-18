@@ -57,6 +57,13 @@
       "when": 1781769090836,
       "tag": "0007_long_mystique",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781774558637,
+      "tag": "0008_first_speed_demon",
+      "breakpoints": true
     }
   ]
 }

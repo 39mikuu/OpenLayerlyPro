@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
-import { auditEvents, memberships, membershipTiers, users } from "@/db/schema";
+import { auditEvents, memberships, membershipTiers, paymentRequests, users } from "@/db/schema";
 
 import {
   extendMembership,
@@ -24,6 +24,7 @@ describeWithDatabase("membership lifecycle integration", () => {
 
   beforeEach(async () => {
     await db.delete(auditEvents);
+    await db.delete(paymentRequests);
     await db.delete(memberships);
     await db.delete(membershipTiers);
     await db.delete(users);

@@ -38,6 +38,12 @@ const STATUS: Record<OrderStatus, StatusMeta> = {
     className: "border-border bg-muted/50 text-muted-foreground",
     icon: RotateCcw,
   },
+  reversed: {
+    key: "order.statusReversed",
+    className:
+      "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300",
+    icon: RotateCcw,
+  },
 };
 
 export function MeOrders({ view, t }: { view: MeOrdersView; t: Translate }) {

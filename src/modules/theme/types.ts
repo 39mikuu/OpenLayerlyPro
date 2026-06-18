@@ -96,7 +96,7 @@ export type MeView = {
   membership: MembershipSummary | null;
 };
 
-export type OrderStatus = "pending_review" | "approved" | "rejected" | "cancelled";
+export type OrderStatus = "pending_review" | "approved" | "rejected" | "cancelled" | "reversed";
 
 export type OrderView = {
   id: string;

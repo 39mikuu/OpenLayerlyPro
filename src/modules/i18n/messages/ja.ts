@@ -103,6 +103,7 @@ export const ja: Messages = {
     statusApproved: "承認済み",
     statusRejected: "却下",
     statusCancelled: "キャンセル済み",
+    statusReversed: "取り消し済み",
     meta: "{amount}・{days} 日間・{date} に送信",
     planMeta: "{amount}・{days} 日間",
     paymentMethod: "支払い方法",
@@ -669,6 +670,10 @@ export const ja: Messages = {
     resubmitRejectedOnly: "却下された申請のみ再送信できます",
     cancelPendingOnly: "確認待ちの申請のみキャンセルできます",
     paymentNotPending: "この申請は確認待ちではありません",
+    paymentNotApproved: "この申請は承認済みではないか、すでに取り消されています",
+    paymentGrantLinkMissing:
+      "この承認にはメンバーシップ付与の関連付けがないため、安全に取り消せません",
+    reviewReasonRequired: "支払い承認の取り消し理由を入力してください",
     siteInitialized: "サイトはすでに初期設定されています",
     accessDenied: "このファイルにアクセスする権限がありません",
     fileUnlinked: "このファイルはコンテンツに関連付けられていません",
