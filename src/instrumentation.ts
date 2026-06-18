@@ -8,6 +8,8 @@ export async function register() {
     try {
       const { getEnv } = await import("@/lib/env");
       getEnv();
+      const { startTaskDispatcher } = await import("@/modules/tasks/dispatcher");
+      startTaskDispatcher();
     } catch (err) {
       console.error(err instanceof Error ? err.message : err);
       process.exit(1);

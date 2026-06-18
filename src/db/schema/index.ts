@@ -312,6 +312,34 @@ export const auditEvents = pgTable(
   ],
 );
 
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kind: text("kind").notNull(),
+    dedupeKey: text("dedupe_key"),
+    payloadJson: jsonb("payload_json").notNull(),
+    runAfter: timestamp("run_after", { withTimezone: true }).notNull().defaultNow(),
+    status: text("status", {
+      enum: ["pending", "processing", "succeeded", "failed", "dead"],
+    })
+      .notNull()
+      .default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    lockedBy: text("locked_by"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("tasks_dedupe_key_unique").on(table.dedupeKey),
+    index("tasks_claim_idx").on(table.status, table.runAfter),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type LoginCode = typeof loginCodes.$inferSelect;
@@ -327,3 +355,4 @@ export type PostFile = typeof postFiles.$inferSelect;
 export type DownloadLog = typeof downloadLogs.$inferSelect;
 export type AppEvent = typeof appEvents.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;
+export type Task = typeof tasks.$inferSelect;

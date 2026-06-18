@@ -18,6 +18,9 @@ function getTransporter(cfg: ResolvedSmtpConfig): Transporter {
     port: cfg.port,
     secure: cfg.secure,
     auth: cfg.user ? { user: cfg.user, pass: cfg.password } : undefined,
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 45_000,
   });
   cached = { key, transporter };
   return transporter;
