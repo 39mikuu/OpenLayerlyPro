@@ -12,7 +12,7 @@ RUN corepack enable pnpm
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm build && pnpm build:migrator
+RUN pnpm build && pnpm build:migrator && pnpm build:admin-reset
 
 # ---- 运行 ----
 FROM node:22-bookworm-slim AS runner
@@ -28,9 +28,10 @@ RUN groupadd --system --gid 1001 nodejs \
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-# 迁移 SQL 与自包含迁移脚本，由 entrypoint 在启动应用前显式执行
+# 迁移 SQL、自包含迁移脚本与管理员恢复脚本
 COPY --from=builder --chown=nextjs:nodejs /app/src/db/migrations ./src/db/migrations
 COPY --from=builder --chown=nextjs:nodejs /app/dist/migrate.mjs ./dist/migrate.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/dist/admin-reset.mjs ./dist/admin-reset.mjs
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
   && mkdir -p /app/uploads /app/secrets \

@@ -14,6 +14,8 @@
     "test:watch": "vitest",
     "db:migrate": "node scripts/migrate.mjs",
     "build:migrator": "esbuild scripts/migrate.mjs --bundle --platform=node --format=esm --outfile=dist/migrate.mjs",
+    "admin:reset": "node scripts/admin-reset.mjs",
+    "build:admin-reset": "esbuild scripts/admin-reset.mjs --bundle --platform=node --format=esm --outfile=dist/admin-reset.mjs",
     "prepare": "husky"
   },
   "dependencies": {
