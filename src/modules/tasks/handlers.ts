@@ -4,7 +4,11 @@ import type { Task } from "@/db/schema";
 import { getSmtpConfig } from "@/modules/config";
 import { executeScheduledPublish } from "@/modules/content/publishing";
 import { SUPPORTED_LOCALES } from "@/modules/i18n";
-import { sendMembershipActivatedEmail, sendPaymentRejectedEmail } from "@/modules/mail";
+import {
+  sendMembershipActivatedEmail,
+  sendMembershipRevokedEmail,
+  sendPaymentRejectedEmail,
+} from "@/modules/mail";
 
 import { PermanentTaskError } from "./errors";
 
@@ -16,6 +20,14 @@ const emailPayloadSchema = z.discriminatedUnion("template", [
     params: z.object({
       tierName: z.string(),
       endsAt: z.string().datetime(),
+    }),
+  }),
+  z.object({
+    template: z.literal("membership_revoked"),
+    to: z.string().email(),
+    locale: z.enum(SUPPORTED_LOCALES),
+    params: z.object({
+      tierName: z.string(),
     }),
   }),
   z.object({
@@ -50,6 +62,8 @@ async function runEmailTask(task: Task): Promise<TaskHandlerResult> {
       new Date(payload.params.endsAt),
       payload.locale,
     );
+  } else if (payload.template === "membership_revoked") {
+    await sendMembershipRevokedEmail(payload.to, payload.params.tierName, payload.locale);
   } else {
     await sendPaymentRejectedEmail(
       payload.to,

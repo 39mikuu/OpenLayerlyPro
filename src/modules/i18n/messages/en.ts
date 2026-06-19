@@ -815,6 +815,10 @@ export const en: Messages = {
     pendingAutoPaymentExists: "An online payment is already pending for this tier",
     paymentCheckoutChanged: "The online checkout changed; refresh and try again",
     paymentAmountMismatch: "The confirmed payment amount or currency does not match the order",
+    paymentReferenceMismatch: "The provider payment reference does not match this order",
+    paymentProviderUnsupported: "This payment provider is not supported",
+    paymentReversalTargetUnavailable:
+      "The payment to reverse is temporarily unavailable; please try again later",
     pendingPaymentExists:
       "A pending request already exists for this tier. Wait for review or cancel it first.",
     resubmitRejectedOnly: "Only rejected requests can be resubmitted",
@@ -853,6 +857,9 @@ export const en: Messages = {
     membershipTier: "Membership tier: {tier}",
     membershipUntil: "Valid until: {date}",
     membershipReady: "You can now sign in to view and download members-only content.",
+    membershipRevokedSubject: "Membership access disabled",
+    membershipRevokedBody: "Your membership access has been disabled.",
+    membershipRevokedHelp: "Contact the site administrator if you have questions.",
     rejectedSubject: "Payment request rejected",
     rejectedBody: "Your payment request for “{tier}” was not approved.",
     rejectedReason: "Reason: {reason}",

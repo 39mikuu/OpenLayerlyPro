@@ -14,12 +14,18 @@ import {
   users,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import { logger } from "@/lib/logger";
 import { recordAudit } from "@/modules/audit";
 import { grantMembership, revokeMembership } from "@/modules/membership";
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask } from "@/modules/tasks";
 
-import { type ExpiredPaymentEvent, getPaymentProvider, type PaidPaymentEvent } from "./providers";
+import {
+  type ExpiredPaymentEvent,
+  getPaymentProvider,
+  type PaidPaymentEvent,
+  type ReversalPaymentEvent,
+} from "./providers";
 
 // ---------- 收款方式 ----------
 
@@ -526,7 +532,12 @@ export async function confirmAutoPayment(
     const [processed] = await tx
       .select({ id: paymentRequests.id })
       .from(paymentRequests)
-      .where(eq(paymentRequests.providerEventId, event.providerEventId))
+      .where(
+        and(
+          eq(paymentRequests.provider, providerId),
+          eq(paymentRequests.providerEventId, event.providerEventId),
+        ),
+      )
       .limit(1);
     if (processed) return;
 
@@ -542,13 +553,48 @@ export async function confirmAutoPayment(
       .where(and(eq(paymentRequests.provider, providerId), lookup))
       .limit(1)
       .for("update");
-    if (!request || request.status !== "pending_payment") return;
+    if (!request) return;
+
+    if (event.requestId && request.id !== event.requestId) {
+      throw new ApiError(409, "paymentReferenceMismatch");
+    }
+    if (
+      request.providerRef &&
+      !request.providerRef.startsWith("creating:") &&
+      request.providerRef !== event.providerRef
+    ) {
+      throw new ApiError(409, "paymentReferenceMismatch");
+    }
     if (
       request.amountMinor !== event.amountMinor ||
       request.currency?.toLowerCase() !== event.currency.toLowerCase()
     ) {
       throw new ApiError(409, "paymentAmountMismatch");
     }
+    if (request.providerPaymentRef && request.providerPaymentRef !== event.paymentRef) {
+      throw new ApiError(409, "paymentReferenceMismatch");
+    }
+
+    if (request.status === "reversed") {
+      if (request.providerEventId) return;
+      await tx
+        .update(paymentRequests)
+        .set({
+          providerRef: event.providerRef,
+          providerEventId: event.providerEventId,
+          providerPaymentRef: event.paymentRef,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(paymentRequests.id, request.id),
+            eq(paymentRequests.status, "reversed"),
+            sql`${paymentRequests.providerEventId} is null`,
+          ),
+        );
+      return;
+    }
+    if (request.status !== "pending_payment") return;
 
     const correlationId = randomUUID();
     const reviewedAt = new Date();
@@ -558,6 +604,7 @@ export async function confirmAutoPayment(
         status: "approved",
         providerRef: event.providerRef,
         providerEventId: event.providerEventId,
+        providerPaymentRef: event.paymentRef,
         reviewedAt,
         updatedAt: reviewedAt,
       })
@@ -574,6 +621,7 @@ export async function confirmAutoPayment(
         status: "approved",
         provider: providerId,
         providerEventId: event.providerEventId,
+        paymentRef: event.paymentRef,
       },
       correlationId,
     });
@@ -701,6 +749,251 @@ export async function rejectPaymentRequest(
   });
 }
 
+type ApprovedPaymentReversalContext = {
+  actor: { type: "admin"; id: string } | { type: "system"; id: null };
+  reason: string;
+  auditAction: "reverse" | "payment_auto_refunded" | "payment_auto_disputed";
+  correlationId: string;
+  auditAfterExtra?: Record<string, unknown>;
+  notifyMember: boolean;
+};
+
+async function applyApprovedPaymentReversal(
+  tx: DbClient,
+  reversed: PaymentRequest,
+  context: ApprovedPaymentReversalContext,
+): Promise<void> {
+  if (!reversed.grantedMembershipId) {
+    throw new ApiError(409, "paymentGrantLinkMissing");
+  }
+
+  const reverseEvent = await recordAudit(tx, {
+    entityType: "payment_request",
+    entityId: reversed.id,
+    action: context.auditAction,
+    actor: context.actor,
+    reason: context.reason,
+    before: { status: "approved" },
+    after: { status: "reversed", ...(context.auditAfterExtra ?? {}) },
+    correlationId: context.correlationId,
+  });
+
+  const [membership] = await tx
+    .select()
+    .from(memberships)
+    .where(eq(memberships.id, reversed.grantedMembershipId))
+    .limit(1)
+    .for("update");
+  if (!membership) throw new ApiError(404, "membershipNotFound");
+  if (membership.status === "revoked") return;
+
+  await revokeMembership(
+    membership.id,
+    {
+      reason: context.reason,
+      actor: context.actor,
+      expectedVersion: membership.version,
+      correlationId: context.correlationId,
+      causationId: reverseEvent.id,
+    },
+    tx,
+  );
+
+  if (!context.notifyMember) return;
+  const [recipient] = await tx
+    .select({ email: users.email, locale: users.locale, tierName: membershipTiers.name })
+    .from(users)
+    .innerJoin(membershipTiers, eq(membershipTiers.id, reversed.tierId))
+    .where(eq(users.id, reversed.userId))
+    .limit(1);
+  if (!recipient) throw new Error("Payment reversal recipient not found");
+  await enqueueTask(tx, {
+    kind: "email",
+    dedupeKey: `email:membership_revoked:${reversed.id}`,
+    payload: {
+      template: "membership_revoked",
+      to: recipient.email,
+      locale: recipient.locale,
+      params: { tierName: recipient.tierName },
+    },
+  });
+}
+
+export async function reverseAutoPayment(
+  providerId: string,
+  event: ReversalPaymentEvent,
+): Promise<void> {
+  const db = getDb();
+  const [mappedPayment] = await db
+    .select({ id: paymentRequests.id })
+    .from(paymentRequests)
+    .where(
+      and(
+        eq(paymentRequests.provider, providerId),
+        eq(paymentRequests.providerPaymentRef, event.paymentRef),
+      ),
+    )
+    .limit(1);
+
+  let checkout: Awaited<
+    ReturnType<
+      NonNullable<Awaited<ReturnType<typeof getPaymentProvider>>>["resolveCheckoutByPaymentIntent"]
+    >
+  > = null;
+  if (!mappedPayment) {
+    const provider = await getPaymentProvider(providerId);
+    if (!provider) throw new ApiError(400, "paymentProviderUnsupported");
+    checkout = await provider.resolveCheckoutByPaymentIntent(event.paymentRef);
+  }
+
+  await db.transaction(async (tx) => {
+    const [processed] = await tx
+      .select({ id: paymentRequests.id })
+      .from(paymentRequests)
+      .where(
+        and(
+          eq(paymentRequests.provider, providerId),
+          eq(paymentRequests.reversalEventId, event.providerEventId),
+        ),
+      )
+      .limit(1);
+    if (processed) return;
+
+    let [request] = await tx
+      .select()
+      .from(paymentRequests)
+      .where(
+        and(
+          eq(paymentRequests.provider, providerId),
+          eq(paymentRequests.providerPaymentRef, event.paymentRef),
+        ),
+      )
+      .limit(1)
+      .for("update");
+
+    if (!request && checkout) {
+      [request] = await tx
+        .select()
+        .from(paymentRequests)
+        .where(
+          and(
+            eq(paymentRequests.provider, providerId),
+            eq(paymentRequests.providerRef, checkout.providerRef),
+          ),
+        )
+        .limit(1)
+        .for("update");
+    }
+    if (!request && checkout?.owned && checkout.requestId) {
+      [request] = await tx
+        .select()
+        .from(paymentRequests)
+        .where(
+          and(eq(paymentRequests.provider, providerId), eq(paymentRequests.id, checkout.requestId)),
+        )
+        .limit(1)
+        .for("update");
+    }
+
+    if (!request) {
+      if (mappedPayment || checkout?.owned) {
+        logger.error("Payment reversal target unavailable", {
+          providerId,
+          category: "owned_target_missing",
+        });
+        throw new ApiError(503, "paymentReversalTargetUnavailable");
+      }
+      logger.warn("Payment reversal ignored", {
+        providerId,
+        category: checkout ? "external_checkout" : "checkout_not_found",
+      });
+      return;
+    }
+
+    if (checkout?.owned && checkout.requestId && checkout.requestId !== request.id) {
+      throw new ApiError(409, "paymentReferenceMismatch");
+    }
+    if (
+      checkout &&
+      request.providerRef &&
+      !request.providerRef.startsWith("creating:") &&
+      request.providerRef !== checkout.providerRef
+    ) {
+      throw new ApiError(409, "paymentReferenceMismatch");
+    }
+    if (request.providerPaymentRef && request.providerPaymentRef !== event.paymentRef) {
+      throw new ApiError(409, "paymentReferenceMismatch");
+    }
+    if (request.status === "reversed") return;
+    if (request.status === "rejected" || request.status === "cancelled") {
+      logger.warn("Payment reversal ignored for terminal request", {
+        providerId,
+        requestId: request.id,
+        category: request.status,
+      });
+      return;
+    }
+    if (request.status !== "pending_payment" && request.status !== "approved") {
+      logger.warn("Payment reversal ignored for incompatible request", {
+        providerId,
+        requestId: request.id,
+        category: request.status,
+      });
+      return;
+    }
+
+    const correlationId = randomUUID();
+    const reviewedAt = new Date();
+    const auditAction =
+      event.type === "refunded" ? "payment_auto_refunded" : "payment_auto_disputed";
+    const reason =
+      event.type === "refunded" ? "Stripe full refund confirmed" : "Stripe dispute created";
+    const previousStatus = request.status;
+    const [reversed] = await tx
+      .update(paymentRequests)
+      .set({
+        status: "reversed",
+        providerPaymentRef: event.paymentRef,
+        reversalEventId: event.providerEventId,
+        reviewNote: reason,
+        reviewedAt,
+        updatedAt: reviewedAt,
+      })
+      .where(and(eq(paymentRequests.id, request.id), eq(paymentRequests.status, previousStatus)))
+      .returning();
+    if (!reversed) throw new ApiError(409, "paymentCheckoutChanged");
+
+    const auditAfterExtra = {
+      provider: providerId,
+      paymentRef: event.paymentRef,
+      reversalEventId: event.providerEventId,
+      kind: event.type,
+    };
+    if (previousStatus === "pending_payment") {
+      await recordAudit(tx, {
+        entityType: "payment_request",
+        entityId: reversed.id,
+        action: auditAction,
+        actor: { type: "system", id: null },
+        reason,
+        before: { status: "pending_payment" },
+        after: { status: "reversed", ...auditAfterExtra },
+        correlationId,
+      });
+      return;
+    }
+
+    await applyApprovedPaymentReversal(tx, reversed, {
+      actor: { type: "system", id: null },
+      reason,
+      auditAction,
+      correlationId,
+      auditAfterExtra,
+      notifyMember: true,
+    });
+  });
+}
+
 export async function reversePaymentApproval(
   requestId: string,
   reviewerId: string,
@@ -728,39 +1021,13 @@ export async function reversePaymentApproval(
       .returning();
     if (!updated) throw new ApiError(409, "paymentNotApproved");
 
-    const reverseEvent = await recordAudit(tx, {
-      entityType: "payment_request",
-      entityId: updated.id,
-      action: "reverse",
+    await applyApprovedPaymentReversal(tx, updated, {
       actor: { type: "admin", id: reviewerId },
       reason: trimmedReason,
-      before: { status: "approved" },
-      after: { status: "reversed" },
+      auditAction: "reverse",
       correlationId,
+      notifyMember: false,
     });
-
-    if (!updated.grantedMembershipId) {
-      throw new ApiError(409, "paymentGrantLinkMissing");
-    }
-    const [membership] = await tx
-      .select()
-      .from(memberships)
-      .where(eq(memberships.id, updated.grantedMembershipId))
-      .limit(1);
-    if (!membership) throw new ApiError(404, "membershipNotFound");
-    if (membership.status !== "revoked") {
-      await revokeMembership(
-        membership.id,
-        {
-          reason: trimmedReason,
-          actor: { type: "admin", id: reviewerId },
-          expectedVersion: membership.version,
-          correlationId,
-          causationId: reverseEvent.id,
-        },
-        tx,
-      );
-    }
     return updated;
   });
 }

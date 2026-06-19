@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getPaymentProvider: vi.fn(),
   confirmAutoPayment: vi.fn(),
   expireAutoPayment: vi.fn(),
+  reverseAutoPayment: vi.fn(),
 }));
 
 vi.mock("@/modules/payment/providers", () => ({
@@ -16,6 +17,7 @@ vi.mock("@/modules/payment/providers", () => ({
 vi.mock("@/modules/payment", () => ({
   confirmAutoPayment: mocks.confirmAutoPayment,
   expireAutoPayment: mocks.expireAutoPayment,
+  reverseAutoPayment: mocks.reverseAutoPayment,
 }));
 
 import { POST } from "./route";
@@ -30,6 +32,7 @@ describe("Stripe webhook route", () => {
     const event = {
       type: "paid" as const,
       providerRef: "cs_paid",
+      paymentRef: "pi_paid",
       providerEventId: "evt_paid",
       amountMinor: 500,
       currency: "usd",
@@ -77,6 +80,44 @@ describe("Stripe webhook route", () => {
     expect(response.status).toBe(200);
     expect(mocks.expireAutoPayment).toHaveBeenCalledWith("stripe", event);
     expect(mocks.confirmAutoPayment).not.toHaveBeenCalled();
+  });
+
+  it("routes signed refund and dispute events to automatic reversal", async () => {
+    const event = {
+      type: "refunded" as const,
+      paymentRef: "pi_refunded",
+      providerEventId: "evt_refunded",
+    };
+    mocks.parseWebhook.mockResolvedValue(event);
+
+    const response = await POST(
+      new Request("http://localhost/api/payments/webhook/stripe", {
+        method: "POST",
+        headers: { "stripe-signature": "signed" },
+        body: '{"refund":true}',
+      }) as NextRequest,
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.reverseAutoPayment).toHaveBeenCalledWith("stripe", event);
+    expect(mocks.confirmAutoPayment).not.toHaveBeenCalled();
+
+    const dispute = {
+      type: "disputed" as const,
+      paymentRef: "pi_disputed",
+      providerEventId: "evt_disputed",
+    };
+    mocks.parseWebhook.mockResolvedValue(dispute);
+    const disputeResponse = await POST(
+      new Request("http://localhost/api/payments/webhook/stripe", {
+        method: "POST",
+        headers: { "stripe-signature": "signed" },
+        body: '{"dispute":true}',
+      }) as NextRequest,
+    );
+
+    expect(disputeResponse.status).toBe(200);
+    expect(mocks.reverseAutoPayment).toHaveBeenLastCalledWith("stripe", dispute);
   });
 
   it("returns a retryable server error when Stripe webhook configuration is unavailable", async () => {

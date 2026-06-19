@@ -165,6 +165,8 @@ export const paymentRequests = pgTable(
     provider: text("provider"),
     providerRef: text("provider_ref"),
     providerEventId: text("provider_event_id"),
+    providerPaymentRef: text("provider_payment_ref"),
+    reversalEventId: text("reversal_event_id"),
     amountMinor: bigint("amount_minor", { mode: "number" }),
     currency: text("currency"),
     grantedMembershipId: uuid("granted_membership_id").references(() => memberships.id),
@@ -184,6 +186,12 @@ export const paymentRequests = pgTable(
     index("payment_requests_pending_user_tier_idx").on(table.userId, table.tierId, table.status),
     uniqueIndex("payment_requests_granted_membership_id_unique").on(table.grantedMembershipId),
     uniqueIndex("payment_requests_provider_event_id_unique").on(table.providerEventId),
+    uniqueIndex("payment_requests_provider_payment_ref_unique")
+      .on(table.provider, table.providerPaymentRef)
+      .where(sql`${table.provider} is not null and ${table.providerPaymentRef} is not null`),
+    uniqueIndex("payment_requests_reversal_event_id_unique")
+      .on(table.provider, table.reversalEventId)
+      .where(sql`${table.provider} is not null and ${table.reversalEventId} is not null`),
     index("payment_requests_provider_ref_idx").on(table.providerRef),
   ],
 );
