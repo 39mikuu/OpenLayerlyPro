@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, exists, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, exists, getTableColumns, inArray, lt, or, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import {
@@ -130,14 +130,9 @@ export async function getPublishedPostBySlug(slug: string): Promise<Post | null>
   return post ?? null;
 }
 
-export async function listPosts(opts?: {
-  publishedOnly?: boolean;
-  categorySlug?: string;
-  tagSlug?: string;
-}): Promise<Post[]> {
+function taxonomyFilterConditions(opts?: { categorySlug?: string; tagSlug?: string }) {
   const db = getDb();
-  const conditions = [
-    ...(opts?.publishedOnly ? [eq(posts.status, "published")] : []),
+  return [
     ...(opts?.categorySlug
       ? [
           exists(
@@ -163,9 +158,107 @@ export async function listPosts(opts?: {
         ]
       : []),
   ];
+}
+
+export async function listPosts(opts?: {
+  publishedOnly?: boolean;
+  categorySlug?: string;
+  tagSlug?: string;
+}): Promise<Post[]> {
+  const db = getDb();
+  const conditions = [
+    ...(opts?.publishedOnly ? [eq(posts.status, "published")] : []),
+    ...taxonomyFilterConditions(opts),
+  ];
   const query = db.select().from(posts);
   const filtered = conditions.length > 0 ? query.where(and(...conditions)) : query;
   return filtered.orderBy(opts?.publishedOnly ? desc(posts.publishedAt) : desc(posts.createdAt));
+}
+
+export const POSTS_PAGE_SIZE = 12;
+
+export type PostCursor = { publishedAt: string; id: string };
+
+const PRECISE_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function encodeCursor(cursor: PostCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+export function decodeCursor(value: string | null | undefined): PostCursor | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(value, "base64url").toString("utf8"),
+    ) as Partial<PostCursor>;
+    if (
+      typeof parsed.publishedAt !== "string" ||
+      !PRECISE_TIMESTAMP_PATTERN.test(parsed.publishedAt) ||
+      typeof parsed.id !== "string" ||
+      !UUID_PATTERN.test(parsed.id)
+    ) {
+      return null;
+    }
+    return { publishedAt: parsed.publishedAt, id: parsed.id };
+  } catch {
+    return null;
+  }
+}
+
+export async function listPublishedPostsPage(opts: {
+  limit?: number;
+  cursor?: string | null;
+  categorySlug?: string;
+  tagSlug?: string;
+}): Promise<{ posts: Post[]; nextCursor: string | null }> {
+  const db = getDb();
+  const requestedLimit = opts.limit ?? POSTS_PAGE_SIZE;
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(1, Math.min(Math.trunc(requestedLimit), 100))
+    : POSTS_PAGE_SIZE;
+  const cursor = decodeCursor(opts.cursor);
+  const precisePublishedAt = sql<string>`to_char(
+    ${posts.publishedAt} at time zone 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+  )`;
+  const conditions = [
+    eq(posts.status, "published"),
+    ...taxonomyFilterConditions(opts),
+    ...(cursor
+      ? [
+          or(
+            lt(posts.publishedAt, sql`${cursor.publishedAt}::timestamptz`),
+            and(
+              eq(posts.publishedAt, sql`${cursor.publishedAt}::timestamptz`),
+              lt(posts.id, cursor.id),
+            ),
+          )!,
+        ]
+      : []),
+  ];
+  const rows = await db
+    .select({
+      ...getTableColumns(posts),
+      cursorPublishedAt: precisePublishedAt,
+    })
+    .from(posts)
+    .where(and(...conditions))
+    .orderBy(desc(posts.publishedAt), desc(posts.id))
+    .limit(limit + 1);
+  const pageRows = rows.slice(0, limit);
+  const pagePosts = pageRows.map(({ cursorPublishedAt, ...post }) => {
+    void cursorPublishedAt;
+    return post;
+  });
+  const last = pageRows.at(-1);
+  return {
+    posts: pagePosts,
+    nextCursor:
+      rows.length > limit && last
+        ? encodeCursor({ publishedAt: last.cursorPublishedAt, id: last.id })
+        : null,
+  };
 }
 
 export type LocalizedPost = Post & {

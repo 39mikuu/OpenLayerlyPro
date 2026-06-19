@@ -1,5 +1,5 @@
 import { getCurrentUser } from "@/modules/auth/session";
-import { listPosts, localizePostCards } from "@/modules/content";
+import { listPublishedPostsPage, localizePostCards, POSTS_PAGE_SIZE } from "@/modules/content";
 import { getT, resolveLocale } from "@/modules/i18n/server";
 import { listTiers } from "@/modules/membership";
 import { getPublicSiteInfo } from "@/modules/site";
@@ -8,16 +8,16 @@ import { getActiveTheme, type HomePostView, type TierCardView } from "@/modules/
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const [site, posts, tiers, user, theme, t, locale] = await Promise.all([
+  const [site, postPage, tiers, user, theme, t, locale] = await Promise.all([
     getPublicSiteInfo(),
-    listPosts({ publishedOnly: true }),
+    listPublishedPostsPage({ limit: POSTS_PAGE_SIZE }),
     listTiers({ activeOnly: true }),
     getCurrentUser(),
     getActiveTheme(),
     getT(),
     resolveLocale(),
   ]);
-  const localizedPosts = await localizePostCards(posts.slice(0, 6), locale);
+  const localizedPosts = await localizePostCards(postPage.posts, locale);
 
   const latestPosts: HomePostView[] = localizedPosts.map((post) => ({
     slug: post.slug,

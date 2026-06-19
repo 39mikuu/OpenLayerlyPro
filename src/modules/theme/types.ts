@@ -46,6 +46,7 @@ export type HomeView = {
 
 export type PostListView = {
   posts: PostCardView[];
+  nextHref?: string | null;
 };
 
 export type PostImageView = { url: string; alt: string };
