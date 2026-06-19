@@ -78,6 +78,13 @@
       "when": 1781805563343,
       "tag": "0010_nostalgic_killraven",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1781838240618,
+      "tag": "0011_closed_wolfsbane",
+      "breakpoints": true
     }
   ]
 }

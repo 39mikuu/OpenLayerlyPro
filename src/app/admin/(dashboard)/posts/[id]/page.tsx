@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { getPostById, listPostFiles } from "@/modules/content";
 import { getT } from "@/modules/i18n/server";
 import { listTiers } from "@/modules/membership";
+import { getPostTaxonomy, listCategories, listTags } from "@/modules/taxonomy";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,13 @@ export default async function EditPostPage({ params }: { params: Promise<{ id: s
   const { id } = await params;
   const post = await getPostById(id);
   if (!post) notFound();
-  const [tiers, files] = await Promise.all([listTiers({ activeOnly: true }), listPostFiles(id)]);
+  const [tiers, files, categories, tags, taxonomy] = await Promise.all([
+    listTiers({ activeOnly: true }),
+    listPostFiles(id),
+    listCategories(),
+    listTags(),
+    getPostTaxonomy(id),
+  ]);
   const t = await getT();
 
   return (
@@ -48,6 +55,10 @@ export default async function EditPostPage({ params }: { params: Promise<{ id: s
             originalName: f.file.originalName,
             sizeBytes: f.file.sizeBytes,
           }))}
+        categories={categories}
+        tags={tags}
+        selectedCategoryIds={taxonomy.categories.map((category) => category.id)}
+        selectedTagIds={taxonomy.tags.map((tag) => tag.id)}
       />
     </div>
   );

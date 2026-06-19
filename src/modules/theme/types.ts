@@ -6,6 +6,7 @@ import type { Translate } from "@/modules/i18n";
 export type ThemeId = "builtin";
 
 export type PostVisibility = "public" | "login" | "member";
+export type TaxonomyLinkView = { name: string; slug: string };
 
 /** 列表/卡片用的内容摘要（Core 已算好封面下载 URL）。 */
 export type PostCardView = {
@@ -15,6 +16,8 @@ export type PostCardView = {
   coverUrl: string | null;
   visibility: PostVisibility;
   publishedAt: Date | null;
+  categories?: TaxonomyLinkView[];
+  tags?: TaxonomyLinkView[];
 };
 
 /** 站点外壳（header/nav/footer）所需数据。 */
@@ -66,6 +69,8 @@ export type PostDetailView = {
   images: PostImageView[];
   attachments: PostAttachmentView[];
   machineTranslated: boolean;
+  categories: TaxonomyLinkView[];
+  tags: TaxonomyLinkView[];
 };
 
 export type MembershipSummary = { tierName: string; endsAt: Date };

@@ -39,6 +39,20 @@ export function PostCard({ post, t }: { post: PostCardView; t: Translate }) {
             {post.summary}
           </p>
         )}
+        {(post.categories?.length || post.tags?.length) && (
+          <div className="mt-2 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+            {post.categories?.map((category) => (
+              <span key={category.slug} className="rounded-full bg-primary/10 px-2 py-0.5">
+                {category.name}
+              </span>
+            ))}
+            {post.tags?.map((tag) => (
+              <span key={tag.slug} className="rounded-full border px-2 py-0.5">
+                #{tag.name}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </Link>
   );

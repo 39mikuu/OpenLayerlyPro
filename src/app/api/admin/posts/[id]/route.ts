@@ -4,6 +4,7 @@ import { z } from "zod";
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/modules/auth/session";
 import { deletePost, getPostById, listPostFiles, updatePost } from "@/modules/content";
+import { getPostTaxonomy } from "@/modules/taxonomy";
 
 export const runtime = "nodejs";
 
@@ -13,8 +14,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     const { id } = await ctx.params;
     const post = await getPostById(id);
     if (!post) return jsonError(404, "postNotFound");
-    const files = await listPostFiles(id);
-    return jsonOk({ post, files });
+    const [files, taxonomy] = await Promise.all([listPostFiles(id), getPostTaxonomy(id)]);
+    return jsonOk({ post, files, taxonomy });
   } catch (err) {
     return handleApiError(err);
   }
@@ -34,14 +35,16 @@ const patchSchema = z.object({
   coverFileId: z.string().uuid().nullable().optional(),
   visibility: z.enum(["public", "login", "member"]).optional(),
   requiredTierId: z.string().uuid().nullable().optional(),
+  categoryIds: z.array(z.string().uuid()).optional(),
+  tagIds: z.array(z.string().uuid()).optional(),
 });
 
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
     await requireAdmin();
     const { id } = await ctx.params;
-    const input = patchSchema.parse(await req.json());
-    return jsonOk(await updatePost(id, input));
+    const { categoryIds, tagIds, ...input } = patchSchema.parse(await req.json());
+    return jsonOk(await updatePost(id, input, { categoryIds, tagIds }));
   } catch (err) {
     return handleApiError(err);
   }

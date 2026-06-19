@@ -10,6 +10,7 @@ import {
   listPostFiles,
 } from "@/modules/content";
 import { getT, resolveLocale } from "@/modules/i18n/server";
+import { getPostTaxonomy } from "@/modules/taxonomy";
 import { getActiveTheme, type PostAttachmentView, type PostImageView } from "@/modules/theme";
 import { shouldShowMachineTranslationLabel } from "@/modules/translation/policy";
 
@@ -24,14 +25,16 @@ export default async function PostDetailPage({ params }: { params: Promise<{ slu
   ]);
   if (!post) notFound();
 
-  const [localizedPost, allowed, requiredTier, theme, t, translationConfig] = await Promise.all([
-    getLocalizedPost(post, locale),
-    canAccessPost(user, post),
-    getRequiredTier(post),
-    getActiveTheme(),
-    getT(),
-    getTranslationConfig(),
-  ]);
+  const [localizedPost, allowed, requiredTier, theme, t, translationConfig, taxonomy] =
+    await Promise.all([
+      getLocalizedPost(post, locale),
+      canAccessPost(user, post),
+      getRequiredTier(post),
+      getActiveTheme(),
+      getT(),
+      getTranslationConfig(),
+      getPostTaxonomy(post.id),
+    ]);
 
   let body: string | null = null;
   let images: PostImageView[] = [];
@@ -71,6 +74,8 @@ export default async function PostDetailPage({ params }: { params: Promise<{ slu
           translationConfig,
           localizedPost.translationSource,
         ),
+        categories: taxonomy.categories,
+        tags: taxonomy.tags,
       }}
     />
   );

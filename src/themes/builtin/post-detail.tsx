@@ -45,6 +45,23 @@ export function PostDetail({ view, t }: { view: PostDetailView; t: Translate }) 
             {view.summary}
           </p>
         )}
+        {(view.categories.length > 0 || view.tags.length > 0) && (
+          <div className="flex flex-wrap gap-2">
+            {view.categories.map((category) => (
+              <Link
+                key={category.slug}
+                href={`/posts?category=${encodeURIComponent(category.slug)}`}
+              >
+                <Badge>{category.name}</Badge>
+              </Link>
+            ))}
+            {view.tags.map((tag) => (
+              <Link key={tag.slug} href={`/posts?tag=${encodeURIComponent(tag.slug)}`}>
+                <Badge variant="outline">#{tag.name}</Badge>
+              </Link>
+            ))}
+          </div>
+        )}
       </header>
 
       {view.coverUrl && (
