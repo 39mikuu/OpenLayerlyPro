@@ -144,9 +144,9 @@
 - 用户语言偏好持久化：`users.locale`、`PUT /api/me/locale`、验证码登录及语言切换后同步；会员开通与付款驳回邮件按收件人语言发送
 - 内容数据（作品标题、摘要、正文等）仍保持原文，不属于本阶段
 
-## Phase 7：Content i18n + AI Translation 🚧
+## Phase 7：Content i18n + AI Translation ✅
 
-按 7·0 → 7·4 串行推进：
+已按 7·0 → 7·4 完成：
 
 - **7·0A Japanese locale foundation ✅**：`SUPPORTED_LOCALES`、类型、cookie / Accept-Language 解析、`users.locale`、`PUT /api/me/locale` 与语言切换器支持 `ja`；默认语言仍为 `zh`
 - **7·0B Japanese dictionaries ✅**：公开站点、admin/setup、API 错误与系统邮件的日语字典已补齐，zh/en/ja key 保持同构
@@ -154,9 +154,9 @@
 - **7·1B 前台内容 locale 渲染与回退 ✅**：home / posts / posts/[slug] 按 locale 选择 published 译文，缺失时回落原文；填入现有 view-model，主题零改动；仅 posts，slug 不本地化
 - **7·2A 后台译文管理 API ✅**：支持 en/ja 草稿概览与保存、发布、取消发布、删除工作草稿；全部 requireAdmin，校验 locale、标题与正文完整性并返回结构化错误
 - **7·2B 后台手动译文 UI ✅**：post 编辑器支持 en/ja 译文草稿保存、发布、撤回和丢弃，并显示未翻译/草稿/已发布/机器生成草稿状态
-- **7·3A Translation Integration + provider config ✅**：新增默认关闭的 translation 配置组、加密 API key、OpenAI-compatible provider 抽象和 Integration 状态；本步不生成译文、不调用 provider
-- **7·3B AI 译文草稿（创作者控制）**：后台显式触发 provider，生成 `draft(source=machine)`；红线由「默认关闭 + 仅 admin 触发 + 前台只读 published + 不自动发布」保证
-- **7·4 审核/发布 + 策略**：草稿审核 → 发布（事务归档旧版）、机翻标注、`source_updated_at` 过期标记、发布策略（草稿待审默认 / 显式开启直接发布）
+- **7·3A Translation Integration + provider config ✅**：新增默认关闭的 translation 配置组、加密 API key、OpenAI-compatible provider 抽象和 Integration 状态
+- **7·3B AI 译文草稿（创作者控制）✅**：后台显式触发 provider，生成 `draft(source=machine)`；默认关闭、仅 admin 可触发、前台只读 published，访客无法触发
+- **7·4 审核/发布 + 策略 ✅**：机器草稿进入审核列表；发布事务归档旧版，支持机翻标注、`source_updated_at` stale 检测，以及默认待审 / 显式 direct publish 策略
 - 不在范围：SEO/hreflang、archived 保留策略、posts 以外内容（tier 等）的多语言 —— 后续单独评估
 
 详见 [docs/architecture/i18n-ai-translation.md](./architecture/i18n-ai-translation.md)。
