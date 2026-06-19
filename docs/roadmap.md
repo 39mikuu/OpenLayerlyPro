@@ -144,9 +144,9 @@
 - 用户语言偏好持久化：`users.locale`、`PUT /api/me/locale`、验证码登录及语言切换后同步；会员开通与付款驳回邮件按收件人语言发送
 - 内容数据（作品标题、摘要、正文等）仍保持原文，不属于本阶段
 
-## Phase 7：Content i18n + AI Translation 🚧
+## Phase 7：Content i18n + AI Translation ✅
 
-按 7·0 → 7·4 串行推进：
+已按 7·0 → 7·4 完成：
 
 - **7·0A Japanese locale foundation ✅**：`SUPPORTED_LOCALES`、类型、cookie / Accept-Language 解析、`users.locale`、`PUT /api/me/locale` 与语言切换器支持 `ja`；默认语言仍为 `zh`
 - **7·0B Japanese dictionaries ✅**：公开站点、admin/setup、API 错误与系统邮件的日语字典已补齐，zh/en/ja key 保持同构
@@ -154,9 +154,9 @@
 - **7·1B 前台内容 locale 渲染与回退 ✅**：home / posts / posts/[slug] 按 locale 选择 published 译文，缺失时回落原文；填入现有 view-model，主题零改动；仅 posts，slug 不本地化
 - **7·2A 后台译文管理 API ✅**：支持 en/ja 草稿概览与保存、发布、取消发布、删除工作草稿；全部 requireAdmin，校验 locale、标题与正文完整性并返回结构化错误
 - **7·2B 后台手动译文 UI ✅**：post 编辑器支持 en/ja 译文草稿保存、发布、撤回和丢弃，并显示未翻译/草稿/已发布/机器生成草稿状态
-- **7·3A Translation Integration + provider config ✅**：新增默认关闭的 translation 配置组、加密 API key、OpenAI-compatible provider 抽象和 Integration 状态；本步不生成译文、不调用 provider
-- **7·3B AI 译文草稿（创作者控制）**：后台显式触发 provider，生成 `draft(source=machine)`；红线由「默认关闭 + 仅 admin 触发 + 前台只读 published + 不自动发布」保证
-- **7·4 审核/发布 + 策略**：草稿审核 → 发布（事务归档旧版）、机翻标注、`source_updated_at` 过期标记、发布策略（草稿待审默认 / 显式开启直接发布）
+- **7·3A Translation Integration + provider config ✅**：新增默认关闭的 translation 配置组、加密 API key、OpenAI-compatible provider 抽象和 Integration 状态
+- **7·3B AI 译文草稿（创作者控制）✅**：后台显式触发 provider，生成 `draft(source=machine)`；默认关闭、仅 admin 可触发、前台只读 published，访客无法触发
+- **7·4 审核/发布 + 策略 ✅**：机器草稿进入审核列表；发布事务归档旧版，支持机翻标注、`source_updated_at` stale 检测，以及默认待审 / 显式 direct publish 策略
 - 不在范围：SEO/hreflang、archived 保留策略、posts 以外内容（tier 等）的多语言 —— 后续单独评估
 
 详见 [docs/architecture/i18n-ai-translation.md](./architecture/i18n-ai-translation.md)。
@@ -175,18 +175,20 @@
 - **#11 备份/恢复/升级**：`backup.sh` / `restore.sh`（DB + uploads + 加密密钥三件套）+ 已验证的干净环境恢复演练
 - **#12 跨切面回归测试**：下载授权全矩阵、因果链、幂等投递、stale/重复、端到端回滚
 
-## v0.2：自动变现 + 规模化 ▶（进行中）
+## v0.2：自动变现 + 规模化 ▶（最终验收）
 
-发布 v0.1.0 后的下一阶段。以「自动收付款」为旗舰，叠加两项生产硬化。
+v0.2 的代码范围已经完成，当前只等待真实 Stripe、local 与 S3/R2 环境验收。发布门槛见 [v0.2.0 最终验收清单](./release-v0.2-checklist.md)。
 
-- **自动收付款（旗舰）▶**：可插拔 `PaymentProvider` 抽象，首个适配器 **Stripe**（支付宝/微信留作扩展，需 ICP 备案域名 + 资质）。决策见 [ADR 0005](./adr/0005-auto-payments.md)。
-  - 切片 #1 ▶：配置 + 在线下单 + Stripe 托管 checkout + webhook 验签确认 → 走与人工 approve 同一事务开通会员（交接 `docs/handoff/payments-1-stripe-onetime.md`）
-  - 切片 #2 🚧：退款 / chargeback → 复用 #6 `reversePaymentApproval` 撤销会员
-  - 仅一次性付款；自动续费 / 订阅推迟
-- **列表分页（A）🚧**：首页/作品列表改 keyset 游标分页（`published_at, id`），消除全量加载；主题 `PostList` 契约支持「加载更多」
-- **流式上传（B1）🚧**：上传改流式（local 流盘 / S3 multipart），消除「整文件读入内存」限制
+- **Stripe 一次性自动支付 ✅**：可插拔 `PaymentProvider` 抽象，首个适配器为 Stripe；包含加密配置、托管 Checkout、原始 body webhook 验签、事件幂等、金额/币种校验、事务内会员开通和 durable outbox。
+  - 切片 #1 ✅：卡支付 happy path、稳定 Stripe 幂等键、过期 session 清理，以及带 PostgreSQL 时间和 fencing 的 stale `creating:*` claim 恢复。
+  - 切片 #2 🚧：退款 / chargeback / reconciliation → 复用 #6 `reversePaymentApproval` 撤销会员；不属于 v0.2.0 发布阻塞项。
+  - 仅一次性付款；自动续费 / 订阅推迟。
+- **列表分页（A）✅**：首页限量，作品列表使用 `(published_at, id)` keyset cursor；保留分类、标签、可见性和 locale，并对非法时间戳安全回退第一页。
+- **流式上传（B1）✅**：`content_attachment` 使用 raw-body 流式上传；local `.part` + 原子重命名，S3/R2 有界 multipart，流式 SHA-256 / 字节计数，以及 abort、超限、空文件和 DB 失败补偿。
+- **视频附件基础支持 ✅**：`mp4` / `webm` / `mov` / `m4v` 可流式上传、持久化、权限校验和下载。
+- **发布验收 ▶**：按 `docs/release-v0.2-checklist.md` 完成升级、Stripe Test Mode、local 和真实 S3/R2 smoke test 后创建 tag / Release。
 
-**明确推迟**：视频/大文件媒体管理（B2，v0.3）、订阅续费、Plugin/Hub/HA、截图/demo 与评审遗留小项（收尾阶段统一处理）。
+**明确推迟**：local HTTP Range/206、浏览器内视频拖动播放、封面/时长/缩略图/转码（B2）、退款与 chargeback 自动联动、订阅续费、Plugin/Hub/HA。
 
 ## Phase 8：Plugin v0 🚧
 

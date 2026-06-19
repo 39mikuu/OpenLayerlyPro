@@ -2,9 +2,9 @@
 
 开源、自托管、单画师会员站系统。
 
-OpenLayerlyPro helps independent illustrators and creators run their own membership site: publish posts, offer membership tiers through manual payment review, and deliver member-only files from a self-hosted deployment.
+OpenLayerlyPro helps independent illustrators and creators run their own membership site: publish posts, offer membership tiers through manual review or Stripe hosted one-time checkout, and deliver member-only files from a self-hosted deployment.
 
-Current status: **v0.1 preview / alpha**. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, and backups.
+Current status: **v0.2.0 release candidate / final acceptance**. The code scope is complete; operators should finish the real-environment checks in [the v0.2.0 acceptance checklist](docs/release-v0.2-checklist.md) before creating a production release tag. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, payments, and backups.
 
 ## 核心特性
 
@@ -14,11 +14,15 @@ Current status: **v0.1 preview / alpha**. The project is intended for technical 
 - 粉丝邮箱验证码登录
 - 人工审核收银台
 - 收款码配置、付款截图上传与审核
-- 审核通过后自动开通会员并发送邮件
+- Stripe 托管一次性 Checkout（可选，卡支付）
+- 签名 webhook 事务化确认付款、开通会员并写入 durable outbox
+- 审核通过或自动支付确认后开通会员并发送邮件
 - `public` / `login` / `member` 三级内容权限
-- 高清图、PSD、ZIP、笔刷包等附件下载
-- 本地文件存储
-- S3 / Cloudflare R2 对象存储（可选）
+- 首页限量与作品列表 keyset 游标分页
+- 高清图、PSD、ZIP、笔刷包与 `mp4` / `webm` / `mov` / `m4v` 视频附件下载
+- 内容附件 raw-body 流式上传、流式 SHA-256 与大小统计
+- 本地文件存储（`.part` + 原子重命名）
+- S3 / Cloudflare R2 对象存储与有界 multipart 上传（可选）
 - 下载权限控制与下载记录
 - zh / en / ja UI i18n
 - 内容多语言与 AI 辅助翻译草稿（默认关闭，管理员手动触发）
@@ -30,19 +34,21 @@ Current status: **v0.1 preview / alpha**. The project is intended for technical 
 ## 适合谁
 
 - 想自托管单画师或单创作者会员站的个人创作者。
-- 想采用收款码、付款截图和人工审核开通会员的创作者。
-- 能维护 Docker Compose、PostgreSQL、SMTP、反向代理和备份的自托管用户。
+- 想采用收款码人工审核、Stripe 一次性付款，或同时保留两种方式的创作者。
+- 能维护 Docker Compose、PostgreSQL、SMTP、反向代理、对象存储、支付 webhook 和备份的自托管用户。
 
 ## 非目标
 
-v0.1 不包含：
+当前版本不包含：
 
 - 多画师入驻平台
 - 内容广场或推荐流
 - 评论、点赞、收藏、关注
-- 自动支付 provider、webhook、自动对账
+- 自动续费或订阅
+- 退款 / chargeback 自动联动与后台 reconciliation
 - OAuth 或粉丝密码注册
 - 插件 runtime 或主题市场
+- local HTTP Range/206 与完整视频媒体处理（封面、时长、缩略图、转码）
 - 移动 App
 
 ## 快速启动
@@ -73,9 +79,9 @@ http://localhost:3000
 ## 核心闭环
 
 ```txt
-创作者初始化站点 → 配置 SMTP → 配置收款码 → 创建会员等级 → 发布会员作品
-粉丝邮箱验证码登录 → 选择会员等级 → 扫码付款并上传截图
-创作者审核付款 → 系统自动开通会员并发邮件 → 粉丝按权限访问和下载内容
+创作者初始化站点 → 配置 SMTP / 存储 → 配置收款码和/或 Stripe → 创建会员等级 → 发布会员作品
+粉丝邮箱验证码登录 → 选择会员等级 → 上传付款截图，或进入 Stripe 托管 Checkout
+创作者人工审核，或签名 webhook 自动确认 → 系统事务化开通会员并入队邮件 → 粉丝按权限访问和下载内容
 ```
 
 ## Cloudflare Tunnel 部署
@@ -136,7 +142,7 @@ docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | Turnstile 密钥对 |
 | `CONFIG_ENCRYPTION_KEY` / `CONFIG_ENCRYPTION_KEY_FILE` | 后台敏感配置加密根密钥 |
 
-AI translation provider settings are configured in the admin settings UI and stored encrypted. Do not place provider API keys in `NEXT_PUBLIC_*` variables.
+Stripe and AI translation provider settings are configured in the admin settings UI and stored encrypted. Do not place provider API keys or webhook secrets in `NEXT_PUBLIC_*` variables.
 
 ## 安全配置
 
@@ -273,6 +279,7 @@ pnpm build
 
 - [Security Policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
+- [v0.2.0 最终验收清单](docs/release-v0.2-checklist.md)
 - [v0.1 readiness audit](docs/releases/v0.1-readiness-audit.md)
 - [v0.1 release checklist](docs/releases/v0.1-release-checklist.md)
 
