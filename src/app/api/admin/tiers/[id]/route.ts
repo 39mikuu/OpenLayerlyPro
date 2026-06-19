@@ -19,6 +19,14 @@ const patchSchema = z.object({
     .optional(),
   description: z.string().max(2000).nullable().optional(),
   priceLabel: z.string().min(1).max(100).optional(),
+  priceAmountMinor: z.number().int().positive().nullable().optional(),
+  currency: z
+    .string()
+    .trim()
+    .length(3)
+    .transform((value) => value.toLowerCase())
+    .nullable()
+    .optional(),
   level: z.number().int().min(1).optional(),
   durationDays: z.number().int().min(1).optional(),
   purchaseEnabled: z.boolean().optional(),

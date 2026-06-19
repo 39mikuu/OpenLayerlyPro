@@ -1,5 +1,6 @@
 import { Check, Clock3, ReceiptText } from "lucide-react";
 
+import { AutoCheckoutButton } from "@/components/payment/auto-checkout-button";
 import { CheckoutForm } from "@/components/payment/checkout-form";
 import type { Translate } from "@/modules/i18n";
 import type { CheckoutView } from "@/modules/theme/types";
@@ -12,7 +13,11 @@ export function Checkout({ view, t }: { view: CheckoutView; t: Translate }) {
           {t("checkout.title", { tier: view.tier.name })}
         </h1>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-          {t("checkout.manualReviewIntro")}
+          {t(
+            view.autoPaymentAvailable
+              ? "checkout.paymentChoiceIntro"
+              : "checkout.manualReviewIntro",
+          )}
         </p>
       </header>
 
@@ -24,7 +29,7 @@ export function Checkout({ view, t }: { view: CheckoutView; t: Translate }) {
             </p>
             <h2 className="mt-2 text-xl font-semibold">{view.tier.name}</h2>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              {t("checkout.reviewNotice")}
+              {t(view.autoPaymentAvailable ? "checkout.oneTimeNotice" : "checkout.reviewNotice")}
             </p>
           </div>
           <div className="shrink-0 sm:text-right">
@@ -37,9 +42,25 @@ export function Checkout({ view, t }: { view: CheckoutView; t: Translate }) {
 
         <div className="mt-5 flex items-start gap-2 rounded-lg border border-pink-100 bg-pink-50/60 px-3 py-2.5 text-sm text-pink-800 dark:border-pink-900 dark:bg-pink-950/20 dark:text-pink-200">
           <Clock3 className="mt-0.5 size-4 shrink-0" />
-          <span>{t("checkout.activationNotice")}</span>
+          <span>
+            {t(
+              view.autoPaymentAvailable
+                ? "checkout.activationOptionsNotice"
+                : "checkout.activationNotice",
+            )}
+          </span>
         </div>
       </section>
+
+      {view.autoPaymentAvailable && (
+        <section className="space-y-4 rounded-xl border bg-card p-5 sm:p-6">
+          <div>
+            <h2 className="font-semibold">{t("checkout.onlinePaymentTitle")}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{t("checkout.onlinePaymentHint")}</p>
+          </div>
+          <AutoCheckoutButton tierId={view.tier.id} />
+        </section>
+      )}
 
       <section aria-labelledby="checkout-steps-title">
         <h2 id="checkout-steps-title" className="text-base font-semibold">
@@ -78,7 +99,7 @@ export function Checkout({ view, t }: { view: CheckoutView; t: Translate }) {
 
       <p className="flex items-center justify-center gap-2 text-center text-xs text-muted-foreground">
         <Check className="size-3.5" />
-        {t("checkout.manualOnly")}
+        {t(view.autoPaymentAvailable ? "checkout.paymentOptions" : "checkout.manualOnly")}
       </p>
     </div>
   );

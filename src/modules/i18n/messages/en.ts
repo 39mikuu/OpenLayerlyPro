@@ -95,11 +95,12 @@ export const en: Messages = {
   },
   order: {
     title: "My payment requests",
-    subtitle: "Track the status of your manually reviewed payment requests.",
+    subtitle: "Track your online payments and manually reviewed payment requests.",
     none: "No payment requests yet.",
     noneTitle: "No payment requests",
     browseTiers: "Browse membership tiers",
     statusPending: "Pending review",
+    statusPaymentPending: "Payment pending",
     statusApproved: "Approved",
     statusRejected: "Rejected",
     statusCancelled: "Cancelled",
@@ -114,16 +115,25 @@ export const en: Messages = {
     rejectReason: "Reason: {note}",
     cancel: "Cancel request",
     resubmit: "Resubmit screenshot",
+    paymentProcessing: "Payment confirmation is processing",
+    paymentProcessingHint:
+      "Stripe will notify the site after payment. Refresh shortly to see the activated membership.",
   },
   checkout: {
     title: "Join “{tier}”",
     info: "Price {price} · valid for {days} days · activated after manual review",
     manualReviewIntro:
       "After you pay and upload a screenshot, the creator will review it and activate your membership.",
+    paymentChoiceIntro:
+      "Make a one-time Stripe payment online, or submit a payment screenshot for creator review.",
     tierSummary: "Membership tier",
     reviewNotice: "This is a manual review flow with no automatic charge or renewal.",
+    oneTimeNotice:
+      "Online checkout is a one-time payment with no automatic renewal. Manual review remains available.",
     activationNotice:
       "Please wait for the creator to review your screenshot. Membership starts after approval.",
+    activationOptionsNotice:
+      "Stripe payments activate after signed confirmation. Screenshot payments activate after creator approval.",
     stepsTitle: "Payment steps",
     stepChoose: "Choose a payment method",
     stepPay: "Complete payment",
@@ -132,6 +142,14 @@ export const en: Messages = {
     paymentSectionHint:
       "Choose a payment method provided by the creator, then upload a screenshot after paying.",
     manualOnly: "Only manually reviewed payments are supported right now.",
+    onlinePaymentTitle: "Pay online",
+    onlinePaymentHint:
+      "Use Stripe's hosted checkout for a one-time payment. Membership starts only after the signed payment confirmation arrives.",
+    payOnline: "Continue to Stripe",
+    redirecting: "Redirecting…",
+    stripeHosted: "Secure hosted checkout. This site never receives your card details.",
+    autoFailed: "Online checkout could not be started",
+    paymentOptions: "Choose online payment or the creator's manual payment flow.",
     noMethodsTitle: "Payment is unavailable",
     noMethods:
       "The creator hasn’t set up a payment method yet. Contact the creator or try again later.",
@@ -470,6 +488,9 @@ export const en: Messages = {
       new: "New membership tier",
       name: "Name",
       price: "Price label",
+      onlineAmount: "Online amount (minor units)",
+      onlineAmountHint: "For example, 500 means $5.00 for USD.",
+      currency: "Online currency (ISO 4217)",
       level: "Level (higher grants more access)",
       duration: "Duration in days",
       description: "Description",
@@ -498,9 +519,11 @@ export const en: Messages = {
       submittedAt: "Submitted",
       viewProof: "View screenshot",
       pendingStatus: "Pending review",
+      pendingPayment: "Awaiting Stripe confirmation",
       approved: "Approved",
       rejected: "Rejected",
       cancelled: "Cancelled",
+      reversed: "Reversed",
       approve: "Approve",
       reject: "Reject",
       confirmApprove: "Confirm payment and approve? This grants membership immediately.",
@@ -562,6 +585,9 @@ export const en: Messages = {
       storage: "File storage",
       storageDescription:
         "Configure local storage or S3/R2/MinIO. Both access credentials are encrypted and never returned to the browser.",
+      stripe: "Stripe online payments",
+      stripeDescription:
+        "Configure one-time hosted checkout. Secret keys are encrypted and never returned to the browser.",
       upload: "Upload limits",
       uploadDescription:
         "Per-file limits for content and payment images. Changes apply immediately to new uploads.",
@@ -603,6 +629,7 @@ export const en: Messages = {
       integrations: "Integrations",
       smtp: "SMTP email",
       storage: "File storage",
+      stripe: "Stripe payments",
       translation: "AI translation",
       sourceDatabase: "Admin settings",
       sourceEnvironment: "Environment variables",
@@ -630,6 +657,22 @@ export const en: Messages = {
       pending: "Testing...",
       success: "Connection test succeeded",
       failed: "Test failed",
+    },
+    stripe: {
+      enable: "Enable Stripe online payments",
+      currency: "Default currency",
+      publishableKey: "Publishable key (optional)",
+      secretKey: "Secret key",
+      webhookSecret: "Webhook signing secret",
+      secretSet: "Already set; leave blank to keep it",
+      secretKeyPlaceholder: "sk_test_...",
+      webhookSecretPlaceholder: "whsec_...",
+      securityHint:
+        "Use Stripe test keys while validating. Webhooks are authoritative; the success page does not activate memberships.",
+      clear: "Clear Stripe configuration",
+      cleared: "Stripe configuration cleared",
+      test: "Test Stripe connection",
+      testSuccess: "Stripe connection succeeded",
     },
     smtp: {
       host: "SMTP host",
@@ -760,6 +803,15 @@ export const en: Messages = {
     memberTierRequired: "Members-only content must specify a membership tier",
     invalidPaymentProof: "Invalid payment screenshot. Please upload it again.",
     tierUnavailable: "This membership tier is not available for purchase",
+    tierNotPayable: "This membership tier is not configured for online payment",
+    stripeConfigIncomplete: "Stripe secret key and webhook signing secret are required",
+    stripeDisabled: "Stripe online payments are disabled",
+    stripeCheckoutUnavailable: "Stripe did not return a checkout URL",
+    stripeSignatureInvalid: "Stripe webhook signature is invalid",
+    stripeEventInvalid: "Stripe webhook event is missing required payment data",
+    pendingAutoPaymentExists: "An online payment is already pending for this tier",
+    paymentCheckoutChanged: "The online checkout changed; refresh and try again",
+    paymentAmountMismatch: "The confirmed payment amount or currency does not match the order",
     pendingPaymentExists:
       "A pending request already exists for this tier. Wait for review or cancel it first.",
     resubmitRejectedOnly: "Only rejected requests can be resubmitted",

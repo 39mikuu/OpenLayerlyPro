@@ -7,7 +7,11 @@ import { getActiveTheme, type OrderView } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
 
-export default async function MyOrdersPage() {
+export default async function MyOrdersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ paid?: string }>;
+}) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
   const [orders, theme, t] = await Promise.all([
@@ -19,7 +23,7 @@ export default async function MyOrdersPage() {
   const orderViews: OrderView[] = orders.map(({ request, tier, paymentMethod }) => ({
     id: request.id,
     tierName: tier.name,
-    paymentMethodName: paymentMethod?.name ?? null,
+    paymentMethodName: request.flow === "auto" ? "Stripe" : (paymentMethod?.name ?? null),
     status: request.status,
     amountLabel: request.amountLabel,
     durationDays: request.durationDays,
@@ -28,6 +32,7 @@ export default async function MyOrdersPage() {
     reviewNote: request.reviewNote,
   }));
 
+  const { paid } = await searchParams;
   const MeOrders = theme.components.MeOrders;
-  return <MeOrders view={{ orders: orderViews }} t={t} />;
+  return <MeOrders view={{ orders: orderViews, paymentProcessing: paid === "1" }} t={t} />;
 }

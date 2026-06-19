@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 
 import { getCurrentUser } from "@/modules/auth/session";
+import { getStripeConfig } from "@/modules/config";
 import { getT } from "@/modules/i18n/server";
 import { getTierById } from "@/modules/membership";
 import { listPaymentMethods } from "@/modules/payment";
@@ -16,8 +17,9 @@ export default async function CheckoutPage({ params }: { params: Promise<{ tierI
   const tier = await getTierById(tierId);
   if (!tier || !tier.isActive || !tier.purchaseEnabled) notFound();
 
-  const [methods, theme, t] = await Promise.all([
+  const [methods, stripe, theme, t] = await Promise.all([
     listPaymentMethods({ activeOnly: true }),
+    getStripeConfig(),
     getActiveTheme(),
     getT(),
   ]);
@@ -41,6 +43,9 @@ export default async function CheckoutPage({ params }: { params: Promise<{ tierI
           durationDays: tier.durationDays,
         },
         methods: methodViews,
+        autoPaymentAvailable: Boolean(
+          stripe.enabled && stripe.configured && tier.priceAmountMinor !== null && tier.currency,
+        ),
       }}
     />
   );

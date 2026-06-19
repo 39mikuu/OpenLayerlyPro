@@ -10,6 +10,7 @@ export const dynamic = "force-dynamic";
 const INTEGRATION_KEYS: Record<IntegrationId, string> = {
   smtp: "admin.system.smtp",
   storage: "admin.system.storage",
+  stripe: "admin.system.stripe",
   turnstile: "Cloudflare Turnstile",
   translation: "admin.system.translation",
   tunnel: "Cloudflare Tunnel",

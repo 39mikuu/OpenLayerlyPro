@@ -6,7 +6,14 @@ import { listPaymentRequests } from "@/modules/payment";
 
 export const runtime = "nodejs";
 
-const STATUSES = ["pending_review", "approved", "rejected", "cancelled", "reversed"] as const;
+const STATUSES = [
+  "pending_review",
+  "pending_payment",
+  "approved",
+  "rejected",
+  "cancelled",
+  "reversed",
+] as const;
 
 export async function GET(req: NextRequest) {
   try {
