@@ -5,6 +5,10 @@ import { type DbClient, getDb } from "@/db";
 import { type Task, tasks } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 
+import { PermanentTaskError } from "./errors";
+
+export { PermanentTaskError };
+
 // Total execution limit: failures 1-4 retry after 1m/2m/4m/8m; failure 5 is dead.
 export const DEFAULT_MAX_ATTEMPTS = 5;
 export const TASK_LEASE_MS = 60_000;
@@ -34,20 +38,29 @@ export async function enqueueTask(
       kind: input.kind,
       dedupeKey: input.dedupeKey ?? null,
       payloadJson: input.payload,
-      runAfter: input.runAfter ?? new Date(),
+      runAfter: input.runAfter ?? sql`now()`,
       maxAttempts: input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
     })
     .onConflictDoNothing({ target: tasks.dedupeKey });
 }
 
-export async function claimDueTasks(
+type ClaimOptions = { lockToken?: string; leaseMs?: number };
+type ClaimInternalOptions = ClaimOptions & { now?: Date };
+
+async function claimDueTasksInternal(
   limit: number,
-  options: { lockToken?: string; now?: Date; leaseMs?: number } = {},
+  options: ClaimInternalOptions,
 ): Promise<Task[]> {
   if (!Number.isInteger(limit) || limit <= 0) return [];
-  const now = options.now ?? new Date();
   const lockToken = options.lockToken ?? randomUUID();
-  const leaseUntil = new Date(now.getTime() + (options.leaseMs ?? TASK_LEASE_MS));
+  const leaseMs = options.leaseMs ?? TASK_LEASE_MS;
+  const clock = options.now;
+  const updatedAt = clock ?? sql<Date>`now()`;
+  const leaseUntil = clock
+    ? new Date(clock.getTime() + leaseMs)
+    : sql<Date>`now() + (${leaseMs} * interval '1 millisecond')`;
+  const leaseExpired = clock ? lt(tasks.leaseUntil, clock) : sql`${tasks.leaseUntil} < now()`;
+  const dueToRun = clock ? lte(tasks.runAfter, clock) : sql`${tasks.runAfter} <= now()`;
 
   return getDb().transaction(async (tx) => {
     // A crashed worker consumed its attempt when it claimed the task. Once the
@@ -60,12 +73,12 @@ export async function claimDueTasks(
         lockedBy: null,
         leaseUntil: null,
         lastError: "Task lease expired after the final execution attempt",
-        updatedAt: now,
+        updatedAt,
       })
       .where(
         and(
           eq(tasks.status, "processing"),
-          lt(tasks.leaseUntil, now),
+          leaseExpired,
           sql`${tasks.attempts} >= ${tasks.maxAttempts}`,
         ),
       );
@@ -77,8 +90,8 @@ export async function claimDueTasks(
         and(
           sql`${tasks.attempts} < ${tasks.maxAttempts}`,
           or(
-            and(inArray(tasks.status, ["pending", "failed"]), lte(tasks.runAfter, now)),
-            and(eq(tasks.status, "processing"), lt(tasks.leaseUntil, now)),
+            and(inArray(tasks.status, ["pending", "failed"]), dueToRun),
+            and(eq(tasks.status, "processing"), leaseExpired),
           ),
         ),
       )
@@ -92,10 +105,10 @@ export async function claimDueTasks(
       .set({
         status: "processing",
         attempts: sql`${tasks.attempts} + 1`,
-        lockedAt: now,
+        lockedAt: updatedAt,
         lockedBy: lockToken,
         leaseUntil,
-        updatedAt: now,
+        updatedAt,
       })
       .where(
         inArray(
@@ -107,17 +120,30 @@ export async function claimDueTasks(
   });
 }
 
+/** Production claim path. All due, lease and lock timestamps come from PostgreSQL. */
+export async function claimDueTasks(limit: number, options: ClaimOptions = {}): Promise<Task[]> {
+  return claimDueTasksInternal(limit, options);
+}
+
+/** Test-only deterministic clock path; production callers must use claimDueTasks(). */
+export async function claimDueTasksAt(
+  limit: number,
+  now: Date,
+  options: ClaimOptions = {},
+): Promise<Task[]> {
+  return claimDueTasksInternal(limit, { ...options, now });
+}
+
 export async function renewTaskLease(
   id: string,
   lockToken: string,
   leaseMs = TASK_LEASE_MS,
 ): Promise<boolean> {
-  const now = new Date();
   const [renewed] = await getDb()
     .update(tasks)
     .set({
-      leaseUntil: new Date(now.getTime() + leaseMs),
-      updatedAt: now,
+      leaseUntil: sql`now() + (${leaseMs} * interval '1 millisecond')`,
+      updatedAt: sql`now()`,
     })
     .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
     .returning({ id: tasks.id });
@@ -137,7 +163,7 @@ export async function markTaskSucceeded(
       lockedBy: null,
       leaseUntil: null,
       lastError: note?.slice(0, TASK_ERROR_MAX_LENGTH) ?? null,
-      updatedAt: new Date(),
+      updatedAt: sql`now()`,
     })
     .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
     .returning({ id: tasks.id });
@@ -148,11 +174,11 @@ export function taskBackoffMs(attempts: number): number {
   return 60_000 * 2 ** Math.max(0, attempts - 1);
 }
 
-export async function markTaskFailed(
+async function markTaskFailedInternal(
   id: string,
   lockToken: string,
   error: unknown,
-  now = new Date(),
+  now?: Date,
 ): Promise<boolean> {
   return getDb().transaction(async (tx) => {
     const ownership = and(
@@ -163,21 +189,85 @@ export async function markTaskFailed(
     const [task] = await tx.select().from(tasks).where(ownership).limit(1).for("update");
     if (!task) return false;
     const dead = task.attempts >= task.maxAttempts;
+    const backoff = taskBackoffMs(task.attempts);
+    const runAfter = dead
+      ? task.runAfter
+      : now
+        ? new Date(now.getTime() + backoff)
+        : sql<Date>`now() + (${backoff} * interval '1 millisecond')`;
     const [updated] = await tx
       .update(tasks)
       .set({
         status: dead ? "dead" : "failed",
-        runAfter: dead ? task.runAfter : new Date(now.getTime() + taskBackoffMs(task.attempts)),
+        runAfter,
         lockedAt: null,
         lockedBy: null,
         leaseUntil: null,
         lastError: String(error).slice(0, TASK_ERROR_MAX_LENGTH),
-        updatedAt: now,
+        updatedAt: now ?? sql`now()`,
       })
       .where(ownership)
       .returning({ id: tasks.id });
     return Boolean(updated);
   });
+}
+
+/** Production failure path. Retry backoff is calculated by PostgreSQL. */
+export async function markTaskFailed(
+  id: string,
+  lockToken: string,
+  error: unknown,
+): Promise<boolean> {
+  return markTaskFailedInternal(id, lockToken, error);
+}
+
+/** Test-only deterministic clock path. */
+export async function markTaskFailedAt(
+  id: string,
+  lockToken: string,
+  error: unknown,
+  now: Date,
+): Promise<boolean> {
+  return markTaskFailedInternal(id, lockToken, error, now);
+}
+
+export async function deferTask(id: string, lockToken: string, runAfter: Date): Promise<boolean> {
+  const [updated] = await getDb()
+    .update(tasks)
+    .set({
+      status: "pending",
+      attempts: sql`greatest(${tasks.attempts} - 1, 0)`,
+      runAfter,
+      lockedAt: null,
+      lockedBy: null,
+      leaseUntil: null,
+      lastError: null,
+      updatedAt: sql`now()`,
+    })
+    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .returning({ id: tasks.id });
+  return Boolean(updated);
+}
+
+export async function markTaskDead(
+  id: string,
+  lockToken: string,
+  error: unknown,
+): Promise<boolean> {
+  const safeError = error instanceof PermanentTaskError ? error.message : "Task failed permanently";
+  const [updated] = await getDb()
+    .update(tasks)
+    .set({
+      status: "dead",
+      lockedAt: null,
+      lockedBy: null,
+      leaseUntil: null,
+      lastError: safeError.slice(0, TASK_ERROR_MAX_LENGTH),
+      updatedAt: sql`now()`,
+    })
+    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .returning({ id: tasks.id });
+  return Boolean(updated);
 }
 
 export async function listTasks(options: {
@@ -214,18 +304,17 @@ const taskAdminSelection = {
 };
 
 export async function retryTask(id: string): Promise<TaskAdminView> {
-  const now = new Date();
   const [task] = await getDb()
     .update(tasks)
     .set({
       status: "pending",
       attempts: 0,
-      runAfter: now,
+      runAfter: sql`now()`,
       lockedAt: null,
       lockedBy: null,
       leaseUntil: null,
       lastError: null,
-      updatedAt: now,
+      updatedAt: sql`now()`,
     })
     .where(and(eq(tasks.id, id), inArray(tasks.status, ["failed", "dead"])))
     .returning(taskAdminSelection);

@@ -2,16 +2,21 @@ import { NextRequest } from "next/server";
 
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
 import { getCurrentUser } from "@/modules/auth/session";
-import { canAccessPost, getPostBySlug, getRequiredTier, listPostFiles } from "@/modules/content";
+import {
+  canAccessPost,
+  getPublishedPostBySlug,
+  getRequiredTier,
+  listPostFiles,
+} from "@/modules/content";
 
 export const runtime = "nodejs";
 
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ slug: string }> }) {
   try {
     const { slug } = await ctx.params;
-    const post = await getPostBySlug(slug);
+    const post = await getPublishedPostBySlug(slug);
     const user = await getCurrentUser();
-    if (!post || (post.status !== "published" && user?.role !== "admin")) {
+    if (!post) {
       return jsonError(404, "postNotFound");
     }
     const allowed = await canAccessPost(user, post);

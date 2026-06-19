@@ -1,6 +1,8 @@
 import { logger } from "@/lib/logger";
 import {
   claimDueTasks,
+  deferTask,
+  markTaskDead,
   markTaskFailed,
   markTaskSucceeded,
   renewTaskLease,
@@ -8,6 +10,7 @@ import {
   TASK_LEASE_MS,
   TASK_POLL_INTERVAL_MS,
 } from "@/modules/tasks";
+import { PermanentTaskError } from "@/modules/tasks/errors";
 import { runTaskHandler } from "@/modules/tasks/handlers";
 
 type DispatcherDependencies = {
@@ -15,6 +18,8 @@ type DispatcherDependencies = {
   run: typeof runTaskHandler;
   succeed: typeof markTaskSucceeded;
   fail: typeof markTaskFailed;
+  dead: typeof markTaskDead;
+  defer: typeof deferTask;
   renew: typeof renewTaskLease;
 };
 
@@ -23,6 +28,8 @@ const defaultDependencies: DispatcherDependencies = {
   run: runTaskHandler,
   succeed: markTaskSucceeded,
   fail: markTaskFailed,
+  dead: markTaskDead,
+  defer: deferTask,
   renew: renewTaskLease,
 };
 
@@ -58,12 +65,17 @@ export async function dispatchClaimedTask(
 
   try {
     const result = await dependencies.run(task);
-    const completed = await dependencies.succeed(task.id, lockToken, result.note);
+    const completed = result.deferUntil
+      ? await dependencies.defer(task.id, lockToken, result.deferUntil)
+      : await dependencies.succeed(task.id, lockToken, result.note);
     if (!completed && !leaseLost) {
       logger.warn("Task completion ignored because the lease was lost", { taskId: task.id });
     }
   } catch (error) {
-    const failed = await dependencies.fail(task.id, lockToken, error);
+    const failed =
+      error instanceof PermanentTaskError
+        ? await dependencies.dead(task.id, lockToken, error)
+        : await dependencies.fail(task.id, lockToken, error);
     if (!failed && !leaseLost) {
       logger.warn("Task failure ignored because the lease was lost", { taskId: task.id });
     }

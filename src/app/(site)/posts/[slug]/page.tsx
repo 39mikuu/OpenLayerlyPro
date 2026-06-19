@@ -5,7 +5,7 @@ import { getTranslationConfig } from "@/modules/config";
 import {
   canAccessPost,
   getLocalizedPost,
-  getPostBySlug,
+  getPublishedPostBySlug,
   getRequiredTier,
   listPostFiles,
 } from "@/modules/content";
@@ -18,11 +18,11 @@ export const dynamic = "force-dynamic";
 export default async function PostDetailPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const [post, user, locale] = await Promise.all([
-    getPostBySlug(slug),
+    getPublishedPostBySlug(slug),
     getCurrentUser(),
     resolveLocale(),
   ]);
-  if (!post || (post.status !== "published" && user?.role !== "admin")) notFound();
+  if (!post) notFound();
 
   const [localizedPost, allowed, requiredTier, theme, t, translationConfig] = await Promise.all([
     getLocalizedPost(post, locale),

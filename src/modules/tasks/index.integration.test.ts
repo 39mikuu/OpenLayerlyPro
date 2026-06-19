@@ -1,15 +1,21 @@
 import { randomUUID } from "crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
 import { tasks } from "@/db/schema";
 
+import { dispatchClaimedTask } from "./dispatcher";
 import {
   claimDueTasks,
+  claimDueTasksAt,
+  deferTask,
   enqueueTask,
+  markTaskDead,
   markTaskFailed,
+  markTaskFailedAt,
   markTaskSucceeded,
+  PermanentTaskError,
   renewTaskLease,
   retryTask,
   taskBackoffMs,
@@ -73,9 +79,8 @@ describeWithDatabase("durable tasks integration", () => {
       ])
       .returning();
 
-    const claimed = await claimDueTasks(10, {
+    const claimed = await claimDueTasksAt(10, now, {
       lockToken: "worker-a",
-      now,
       leaseMs: 60_000,
     });
 
@@ -99,8 +104,8 @@ describeWithDatabase("durable tasks integration", () => {
     ]);
 
     const [first, second] = await Promise.all([
-      claimDueTasks(1, { lockToken: "worker-a", now }),
-      claimDueTasks(1, { lockToken: "worker-b", now }),
+      claimDueTasksAt(1, now, { lockToken: "worker-a" }),
+      claimDueTasksAt(1, now, { lockToken: "worker-b" }),
     ]);
 
     expect(first).toHaveLength(1);
@@ -123,7 +128,7 @@ describeWithDatabase("durable tasks integration", () => {
       })
       .returning();
 
-    const claimed = await claimDueTasks(1, { lockToken: "worker-b", now });
+    const claimed = await claimDueTasksAt(1, now, { lockToken: "worker-b" });
 
     expect(claimed[0]).toMatchObject({
       id: expiredLease!.id,
@@ -145,23 +150,21 @@ describeWithDatabase("durable tasks integration", () => {
       })
       .returning();
 
-    const [claimedByA] = await claimDueTasks(1, {
+    const [claimedByA] = await claimDueTasksAt(1, now, {
       lockToken: "claim-a",
-      now,
       leaseMs: 1_000,
     });
     expect(claimedByA).toMatchObject({ id: created!.id, attempts: 1 });
 
     const recoveryTime = new Date(now.getTime() + 2_000);
-    const [claimedByB] = await claimDueTasks(1, {
+    const [claimedByB] = await claimDueTasksAt(1, recoveryTime, {
       lockToken: "claim-b",
-      now: recoveryTime,
       leaseMs: 1_000,
     });
     expect(claimedByB).toMatchObject({ id: created!.id, attempts: 2 });
 
     const afterFinalLease = new Date(recoveryTime.getTime() + 2_000);
-    await expect(claimDueTasks(1, { lockToken: "claim-c", now: afterFinalLease })).resolves.toEqual(
+    await expect(claimDueTasksAt(1, afterFinalLease, { lockToken: "claim-c" })).resolves.toEqual(
       [],
     );
     const [stored] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
@@ -185,14 +188,12 @@ describeWithDatabase("durable tasks integration", () => {
       })
       .returning();
 
-    const [claimedByA] = await claimDueTasks(1, {
+    const [claimedByA] = await claimDueTasksAt(1, now, {
       lockToken: "claim-a",
-      now,
       leaseMs: 1_000,
     });
-    const [claimedByB] = await claimDueTasks(1, {
+    const [claimedByB] = await claimDueTasksAt(1, new Date(now.getTime() + 2_000), {
       lockToken: "claim-b",
-      now: new Date(now.getTime() + 2_000),
     });
     expect(claimedByA?.id).toBe(created!.id);
     expect(claimedByB).toMatchObject({ id: created!.id, lockedBy: "claim-b" });
@@ -203,7 +204,7 @@ describeWithDatabase("durable tasks integration", () => {
 
     await expect(markTaskSucceeded(created!.id, "claim-b")).resolves.toBe(true);
     await expect(
-      markTaskFailed(
+      markTaskFailedAt(
         created!.id,
         "claim-a",
         new Error("late failure"),
@@ -225,7 +226,7 @@ describeWithDatabase("durable tasks integration", () => {
       .insert(tasks)
       .values({ kind: "email", payloadJson: {}, runAfter: now })
       .returning();
-    await claimDueTasks(1, { lockToken: "current-claim", now, leaseMs: 2_000 });
+    await claimDueTasksAt(1, now, { lockToken: "current-claim", leaseMs: 2_000 });
     const [before] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
 
     await expect(renewTaskLease(created!.id, "stale-claim", 60_000)).resolves.toBe(false);
@@ -247,7 +248,7 @@ describeWithDatabase("durable tasks integration", () => {
 
     for (let attempt = 1; attempt <= 5; attempt += 1) {
       const lockToken = `claim-${attempt}`;
-      const [claimed] = await claimDueTasks(1, { lockToken, now: claimTime });
+      const [claimed] = await claimDueTasksAt(1, claimTime, { lockToken });
       expect(claimed).toMatchObject({
         id: created!.id,
         attempts: attempt,
@@ -256,7 +257,7 @@ describeWithDatabase("durable tasks integration", () => {
 
       const failedAt = new Date(claimTime.getTime() + 1_000);
       await expect(
-        markTaskFailed(created!.id, lockToken, `failure-${attempt}`, failedAt),
+        markTaskFailedAt(created!.id, lockToken, `failure-${attempt}`, failedAt),
       ).resolves.toBe(true);
       const [stored] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
 
@@ -276,13 +277,127 @@ describeWithDatabase("durable tasks integration", () => {
       });
 
       await expect(
-        claimDueTasks(1, {
+        claimDueTasksAt(1, new Date(expectedRunAfter.getTime() - 1), {
           lockToken: `too-early-${attempt}`,
-          now: new Date(expectedRunAfter.getTime() - 1),
         }),
       ).resolves.toEqual([]);
       claimTime = expectedRunAfter;
     }
+  });
+
+  it("uses PostgreSQL time for production claim, lease, and failure backoff", async () => {
+    const [due, future] = await db
+      .insert(tasks)
+      .values([
+        { kind: "email", payloadJson: {}, runAfter: sql`now() - interval '1 second'` },
+        { kind: "email", payloadJson: {}, runAfter: sql`now() + interval '1 hour'` },
+      ])
+      .returning();
+
+    const [claimed] = await claimDueTasks(1, { lockToken: "database-clock", leaseMs: 30_000 });
+    expect(claimed).toMatchObject({
+      id: due!.id,
+      status: "processing",
+      attempts: 1,
+      lockedBy: "database-clock",
+    });
+    expect(claimed!.lockedAt).toBeInstanceOf(Date);
+    expect(claimed!.leaseUntil!.getTime() - claimed!.lockedAt!.getTime()).toBe(30_000);
+    const [storedFuture] = await db.select().from(tasks).where(eq(tasks.id, future!.id));
+    expect(storedFuture).toMatchObject({ status: "pending", attempts: 0 });
+
+    await expect(
+      markTaskFailed(due!.id, "database-clock", new Error("temporary database error")),
+    ).resolves.toBe(true);
+    const [failed] = await db.select().from(tasks).where(eq(tasks.id, due!.id));
+    expect(failed).toMatchObject({ status: "failed", attempts: 1 });
+    expect(failed!.runAfter.getTime() - failed!.updatedAt.getTime()).toBe(60_000);
+  });
+
+  it("defers precisely with fencing and restores the claimed attempt budget", async () => {
+    const deferUntil = new Date("2026-06-20T12:34:56.000Z");
+    const [created] = await db
+      .insert(tasks)
+      .values({
+        kind: "publish_post",
+        payloadJson: {},
+        status: "processing",
+        attempts: 1,
+        lockedBy: "current-claim",
+        lockedAt: new Date(),
+        leaseUntil: new Date(Date.now() + 60_000),
+      })
+      .returning();
+
+    await expect(deferTask(created!.id, "stale-claim", deferUntil)).resolves.toBe(false);
+    await expect(deferTask(created!.id, "current-claim", deferUntil)).resolves.toBe(true);
+    const [deferred] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(deferred).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      runAfter: deferUntil,
+      lockedAt: null,
+      lockedBy: null,
+      leaseUntil: null,
+      lastError: null,
+    });
+
+    await db
+      .update(tasks)
+      .set({ status: "processing", attempts: 0, lockedBy: "zero-claim" })
+      .where(eq(tasks.id, created!.id));
+    await expect(deferTask(created!.id, "zero-claim", deferUntil)).resolves.toBe(true);
+    const [zero] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(zero!.attempts).toBe(0);
+  });
+
+  it("marks permanent failures dead with claim fencing and a safe summary", async () => {
+    const [created] = await db
+      .insert(tasks)
+      .values({
+        kind: "publish_post",
+        payloadJson: { secret: "must-not-leak" },
+        status: "processing",
+        attempts: 1,
+        lockedBy: "current-claim",
+      })
+      .returning();
+    const error = new PermanentTaskError("Invalid publish_post payload");
+
+    await expect(markTaskDead(created!.id, "stale-claim", error)).resolves.toBe(false);
+    await expect(markTaskDead(created!.id, "current-claim", error)).resolves.toBe(true);
+    const [dead] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(dead).toMatchObject({
+      status: "dead",
+      attempts: 1,
+      lockedBy: null,
+      lastError: "Invalid publish_post payload",
+    });
+    expect(dead!.lastError).not.toContain("must-not-leak");
+  });
+
+  it("sends malformed publish_post payload directly to dead on its first claim", async () => {
+    const [created] = await db
+      .insert(tasks)
+      .values({
+        kind: "publish_post",
+        payloadJson: { postId: "not-a-uuid", privateValue: "must-not-leak" },
+        runAfter: sql`now() - interval '1 second'`,
+      })
+      .returning();
+    const [claimed] = await claimDueTasks(1, { lockToken: "malformed-claim" });
+    expect(claimed).toMatchObject({ id: created!.id, attempts: 1 });
+
+    await dispatchClaimedTask(claimed!);
+
+    const [dead] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(dead).toMatchObject({
+      status: "dead",
+      attempts: 1,
+      lockedBy: null,
+      lastError: "Invalid publish_post payload",
+    });
+    expect(dead!.lastError).not.toContain("must-not-leak");
   });
 
   it("allows manual retry for failed and dead tasks and returns only the admin view", async () => {

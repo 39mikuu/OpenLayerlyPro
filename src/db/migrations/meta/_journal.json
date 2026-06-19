@@ -71,6 +71,13 @@
       "when": 1781777593838,
       "tag": "0009_modern_absorbing_man",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1781805563343,
+      "tag": "0010_nostalgic_killraven",
+      "breakpoints": true
     }
   ]
 }

@@ -36,7 +36,7 @@ export async function listMachineTranslationDrafts(
       originalTitle: posts.title,
       originalSummary: posts.summary,
       originalBody: posts.body,
-      postUpdatedAt: posts.updatedAt,
+      postUpdatedAt: posts.contentUpdatedAt,
       translationId: postTranslations.id,
       locale: postTranslations.locale,
       title: postTranslations.title,
