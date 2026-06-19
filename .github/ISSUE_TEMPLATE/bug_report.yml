@@ -6,12 +6,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. Do not include secrets, session tokens, SMTP passwords, S3 keys, or private payment screenshots.
+        Thanks for reporting a bug. Do not include secrets, session tokens, SMTP passwords, S3 keys, Stripe secrets, webhook signatures, or private payment screenshots.
   - type: input
     id: version
     attributes:
       label: Version or commit
-      description: "Example: v0.1.0-preview or a commit SHA."
+      description: "Example: v0.2.0 or a commit SHA."
     validations:
       required: true
   - type: dropdown
