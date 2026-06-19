@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-OpenLayerlyPro v0.1 is a preview/alpha self-hosted release. Security fixes are expected to land on `main` and in the newest preview release line.
+OpenLayerlyPro v0.2 is the current release-candidate line. Security fixes land on `main` and, after release, in the newest supported release line. Older preview versions may require upgrading before a fix can be applied.
 
 ## Reporting a Vulnerability
 
@@ -30,9 +30,10 @@ If private vulnerability reporting is temporarily unavailable, contact the maint
 - Configure `TRUSTED_PROXY_HEADER` and `TRUSTED_PROXY_HOPS` only for proxy layers you control.
 - Do not expose the origin port directly when trusting single-value headers such as `cf-connecting-ip`.
 - Configure SMTP before allowing fan login in production.
-- Keep upload size limits aligned with available memory. v0.1 reads uploaded files into memory before writing them to storage.
+- Keep attachment and payment-proof upload limits aligned with reverse-proxy and storage limits. Content attachments stream to local or S3/R2 storage; image and payment-proof uploads are still buffered for Sharp validation.
+- Use S3/R2 for large production files when possible, and configure an abort-incomplete-multipart lifecycle rule.
 - Keep payment proof files private. They are only accessible to the submitting user and admins through the download API.
-- Use S3/R2 for large production downloads when possible.
+- Keep Stripe secret keys and webhook secrets encrypted, use HTTPS for webhook delivery, and never grant membership from browser redirects alone.
 - Review custom footer code before saving it.
 
 ## Custom Footer Code Risk
@@ -50,6 +51,7 @@ Do not commit real values for:
 - SMTP passwords
 - S3/R2 access keys
 - Turnstile secret keys
+- Stripe secret keys and webhook secrets
 - AI translation provider keys
 - Cloudflare Tunnel tokens
 
