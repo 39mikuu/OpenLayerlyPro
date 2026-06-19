@@ -1,14 +1,40 @@
 # Changelog
 
-## v0.1.0-preview
+## v0.1.0
 
-Initial open-source preview release for a self-hosted single-creator membership site.
+Initial open-source preview/alpha release for a self-hosted single-creator membership site. This release completes the v1 Core readiness hardening: all state changes are transactional and auditable, with regression-test coverage.
 
 ### Membership Lifecycle
 
-- Added explicit `active`, `suspended`, and `revoked` membership states with optimistic locking.
-- Added transactional grant, suspend, resume, revoke, and extend audit history.
+- Added explicit `active`, `suspended`, and `revoked` membership states with optimistic locking (`version`).
+- Added transactional grant, suspend, resume, revoke, and extend with audit history; invalid transitions and stale writes are rejected deterministically.
 - Disabled or hidden tiers no longer revoke access from existing paid memberships; tier availability now controls selling and display only.
+- Added admin lifecycle controls (state + audit timeline, confirm + reason) and removed the legacy unaudited membership write/delete routes.
+
+### Payments, Audit & Reliable Delivery
+
+- Added a shared `audit_events` table and in-transaction `recordAudit`, with `correlation_id` / `causation_id` causal linkage; sensitive snapshots use field whitelists (no secrets).
+- Payment approve / reject / resubmit / cancel now write durable audit events in the same transaction; approval records the exact granted membership.
+- Added payment reversal: reverses an approved payment and revokes the linked membership atomically; legacy approvals without a grant link are rejected rather than silently skipped.
+- Added a durable, single-instance task outbox (database-backed, lease + claim fencing, bounded retries, admin retry view). Activation and rejection emails are now enqueued in-transaction instead of best-effort inline sends.
+
+### Content Publishing & Organization
+
+- Added scheduled publishing via `posts.scheduled_at` + `schedule_token` (no new post status), with token fencing so superseded/cancelled schedules cannot publish; early-firing tasks defer without consuming retry budget.
+- Decoupled translation staleness from row updates via `content_updated_at`.
+- Added tags and categories (separate tables + join tables), admin management, post association, public display, and `?category=` / `?tag=` filtering. Taxonomy is organizational only and does not affect access control.
+
+### Admin Account, Sessions & Recovery
+
+- Added admin email/password maintenance with current-password re-authentication; password changes revoke other sessions while preserving the current one.
+- Added active-session visibility and revocation (single / others) and an admin account-action audit timeline.
+- Added a non-interactive `scripts/admin-reset.mjs` recovery command for lockout, which also revokes all sessions for the recovered account.
+
+### Operations & Hardening
+
+- Added `scripts/backup.sh` / `scripts/restore.sh` covering the database, local uploads, and the config encryption key in a single archive, with a verified clean-environment restore drill, S3/R2 handling, and backup-based upgrade rollback.
+- Added a PostgreSQL-backed cross-cutting regression suite for download/file authorization (purpose × role × post status × visibility × membership state), audit causality, idempotent delivery, stale/duplicate handling, and end-to-end rollback.
+- Bumped `nodemailer` to `^9.0.1` (the v9 remote-content TLS change does not affect SMTP-only email sending).
 
 ### MVP
 

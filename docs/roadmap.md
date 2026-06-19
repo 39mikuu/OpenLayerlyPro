@@ -161,6 +161,20 @@
 
 详见 [docs/architecture/i18n-ai-translation.md](./architecture/i18n-ai-translation.md)。
 
+## v1 Core 硬化（#3 readiness epic）✅
+
+把 Core 主链路从「能跑通」提升到「状态可审计、事务一致、有回归测试兜底」。决策见 [ADR 0001–0004](./adr/README.md)，逐项交接见 `docs/handoff/issue-*.md`。
+
+- **#4 会员生命周期**：`active/suspended/revoked` 存储态 + `version` 乐观锁；grant/suspend/resume/revoke/extend 事务化 + `audit_events`；停用 tier 不再吊销存量会员
+- **#5 后台生命周期控制**：状态 + 历史时间线、确认 + 理由、`expectedVersion` 并发；移除遗留无审计写/删路由
+- **#6 付款审计 + 反转**：approve/reject/resubmit/cancel 事务内审计；`granted_membership_id` 关联；reverse 原子撤销会员；`correlation_id` / `causation_id` 因果链
+- **#7 durable outbox**：通用 `tasks` 表（单实例、DB 轮询、lease + claim fencing、有界重试、管理员重试视图）；付款邮件改为事务内入队
+- **#9 定时发布**：`posts.scheduled_at` + `schedule_token`（不新增状态），token fencing 防过期任务误发；`content_updated_at` 解耦翻译 stale
+- **#8 管理员账号/会话/恢复**：改密改邮箱 re-auth + 改密踢其它会话、会话可见与吊销、操作审计；`admin-reset` 锁死恢复脚本
+- **#10 标签/分类**：独立表 + join；与发布态/权限隔离；后台管理 + 前台过滤
+- **#11 备份/恢复/升级**：`backup.sh` / `restore.sh`（DB + uploads + 加密密钥三件套）+ 已验证的干净环境恢复演练
+- **#12 跨切面回归测试**：下载授权全矩阵、因果链、幂等投递、stale/重复、端到端回滚
+
 ## Phase 8：Plugin v0 🚧
 
 - 插件加载机制、生命周期、权限边界的最小可用版本
