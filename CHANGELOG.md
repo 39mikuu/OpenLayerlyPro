@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.2.0
+
+Release candidate for automatic one-time payments and production-scale content delivery. The release remains pending final external smoke tests listed in `docs/release-v0.2-checklist.md`.
+
+### Stripe One-Time Checkout
+
+- Added a pluggable `PaymentProvider` abstraction with Stripe as the first hosted one-time checkout provider.
+- Added encrypted Stripe configuration, admin configuration UI, integration status, and connection testing.
+- Added authenticated Checkout Session creation with server-owned success/cancel URLs; OpenLayerlyPro never receives card details.
+- Added raw-body Stripe webhook signature verification, provider-event idempotency, amount/currency validation, and transactional membership activation.
+- Kept the existing manual screenshot payment flow available alongside automatic checkout.
+- Restricted v0.2 Checkout to synchronous card payments; unpaid completion events do not grant membership.
+- Added signed `checkout.session.expired` handling for stale `pending_payment` requests.
+- Added stable `checkout:<requestId>` Stripe idempotency keys so network retries cannot create duplicate sessions.
+- Added a two-minute PostgreSQL-time lease for temporary `creating:*` claims, with advisory-lock recovery and fencing so crashed or delayed processes cannot overwrite a newer checkout.
+
+### List Pagination
+
+- Added keyset pagination for published post lists ordered by `published_at DESC, id DESC`.
+- Limited the home page to the latest posts instead of loading the full catalog.
+- Preserved category, tag, visibility, and locale behavior across paginated requests.
+- Preserved PostgreSQL microsecond precision in opaque cursors.
+- Added semantic timestamp validation so malformed or impossible cursor dates safely fall back to the first page instead of reaching PostgreSQL casts.
+
+### Streamed Attachments and Video
+
+- Added a dedicated raw-body streaming endpoint for `content_attachment` uploads while preserving buffered Sharp validation for images and payment proofs.
+- Added streamed byte counting and SHA-256 calculation with an authoritative server-side size limit.
+- Added `mp4`, `webm`, `mov`, and `m4v` attachment support with canonical MIME types.
+- Added local same-directory `.part` writes, atomic rename, catchable-failure cleanup, and stale-part cleanup.
+- Added bounded S3/R2 multipart uploads using 8 MiB parts, queue size 2, and incomplete-part abort behavior.
+- Added cleanup compensation for aborts, oversize uploads, empty bodies, storage failures, and database insert failures.
+
+### Upgrade and Compatibility
+
+- Existing manual payments, image uploads, payment-proof uploads, authorization, and historical local/S3 file access remain supported.
+- Existing deployments must back up PostgreSQL, local uploads, and the configuration encryption key before upgrading.
+- Docker startup continues to apply database migrations before serving traffic.
+- Final release acceptance is documented in `docs/release-v0.2-checklist.md`.
+
+### Known Limitations
+
+- Refund, chargeback, and automatic payment reconciliation workflows are not included in v0.2.0.
+- Automatic renewals and subscriptions are not included.
+- Local downloads do not yet implement HTTP Range/206 seeking; authenticated video upload and download are supported, while inline seeking/player polish remains B2.
+- S3/R2 operators should configure an abort-incomplete-multipart lifecycle rule as crash-recovery defense in depth.
+- Process-local rate limiting is still not sufficient for multi-instance production.
+
 ## v0.1.0
 
 Initial open-source preview/alpha release for a self-hosted single-creator membership site. This release completes the v1 Core readiness hardening: all state changes are transactional and auditable, with regression-test coverage.
