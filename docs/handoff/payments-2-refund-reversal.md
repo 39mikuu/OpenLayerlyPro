@@ -37,7 +37,7 @@
 | D4 | **查不到行时,经 Stripe 反查 session 判定归属,绝不无差别 200**:`sessions.list({ payment_intent })` →(a) 查到 session(是我们的)→ 用 `session.id` 匹配 `provider_ref`、并**回填** `provider_payment_ref`;(b) 查不到任何 session(非我们的)→ `ignored` 返回 200;(c) session 是我们的但 DB 无对应 request / 未就绪 → **抛错让 Stripe 重试**(覆盖 confirm/refund 竞态),不静默吞。 | **修正①④**:无差别 200 会静默丢失「本该撤销」的事件;经 session 反查同时解决历史无回填行(切片 #1 已存 `provider_ref=session.id`)与外部事件判定,**无需数据迁移** |
 | D5 | **退款与 dispute 拆成两个归一化事件类型**(`RefundedPaymentEvent` / `DisputedPaymentEvent`)+ **两个审计动作**(`payment_auto_refunded` / `payment_auto_disputed`),共用同一个反转核心。 | **修正③**:二者语义不同(退款=主动、终态;拒付=对抗、有 won/lost 生命周期),不可用一个 `reason` 标志混过去 |
 | D6 | **只对「全额退款」与「拒付创建(dispute.created)」反转**;部分退款(`amount_refunded < amount`)→ `ignored`(本切片不做按比例)。 | v0.2 不做对账/部分退款 |
-| D7 | **⚠️ 待你确认的产品取舍**:dispute 在 **`charge.dispute.created`** 即撤销会员(因资金已被冻结/扣回、应立即停止付费内容访问),且 **dispute 后续判赢(won)不自动复权**,需人工处理。 | 推荐「created 即撤销」(对小创作者更安全);若你希望「仅 `dispute.closed` 且 `status=lost` 才撤销」,告诉我即翻转。无论哪种,won 自动复权都在范围外 |
+| D7 | **dispute 在 `charge.dispute.created` 即撤销会员**(资金已被冻结/扣回,应立即停止付费内容访问)。dispute 后续判赢(won)**不自动复权**,需人工处理。 | 已确认(2026-06-19):created 即撤销对小创作者更安全;won 自动复权在范围外 |
 | D8 | **反转核心抽成共享 helper**,管理员手动反转与自动退款/拒付都调它;差异只在 actor、reason 来源、审计动作、幂等键。`reversePaymentApproval` 对外行为不变。 | DRY;`paymentGrantLinkMissing` / 「已 revoked 跳过」逻辑只维护一处 |
 
 ## 2. Schema 变更 `src/db/schema/index.ts` + 迁移
