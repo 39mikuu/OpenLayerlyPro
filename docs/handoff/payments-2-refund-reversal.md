@@ -1,81 +1,93 @@
 # 交接：自动收付款 #2 — 退款 / 拒付联动撤销会员
 
-> 给执行 agent 的自包含实现说明。**前置依赖:切片 #1(Stripe 一次性付款)已在 main**(`createAutoCheckout` / `confirmAutoPayment` / `expireAutoPayment` / webhook 路由 / `reversePaymentApproval` 均已合并)。落地决策见 [ADR 0005](../adr/0005-auto-payments.md) §6(Accepted)。
+> 给执行 agent 的自包含实现说明。前置依赖：切片 #1（Stripe 一次性付款）已经在 `main`，包括 `createAutoCheckout`、`confirmAutoPayment`、`expireAutoPayment`、Stripe webhook 路由和管理员手动 `reversePaymentApproval`。架构决策见 [ADR 0005](../adr/0005-auto-payments.md) §6。
 >
-> 开工前在 GitHub 建一个 issue(如「feat(payments): refund/dispute auto-reversal」),PR 关联它。
+> 开工前创建独立 Issue，例如 `feat(payments): refund/dispute auto-reversal`，实现 PR 关联该 Issue，并保持 Draft 直到真实 PostgreSQL 集成测试与完整 CI 全绿。
 
-这是自动支付的**第二个垂直切片**:Stripe 退款 / 拒付回调 → **复用 #6 的会员撤销逻辑** → 自动把对应会员 revoke + 审计因果。**零新增状态机**(沿用 `payment_requests.status='reversed'`)。
+本切片处理：Stripe 全额退款或拒付创建事件 → 定位付款请求 → 原子写入 `payment_requests.status='reversed'` → 如会员已开通则复用 #6 的撤销核心 revoke 对应会员 → 写审计因果链与 durable outbox 通知。
 
-> ⚠️ **本文档已根据评审修正四个早期缺陷**(见每条 D 决策的「修正」标注):① 未匹配事件不可无差别 200;② payment_intent→request 映射必须唯一;③ 退款与 dispute 语义必须分离;④ 不能假设历史行都有回填字段。实现时务必按修正后的设计落地。
+## 0. 红线
 
-## 0. 必读 / 现状
+1. **浏览器 redirect 永远不是付款或退款权威来源**，只处理已验签 Stripe webhook。
+2. **事件顺序不可信**。退款/拒付可能先于 `checkout.session.completed` 到达；不能只抛错等待未来重试，必须把已确认的反转事实持久化，使后到的 paid 事件绝不能开通会员。
+3. `provider_event_id` 已用于 paid/expired 事件；退款/拒付必须使用独立的 `reversal_event_id`。
+4. `payment_intent → payment_request` 必须是数据库层一对一映射，不能普通索引后 `.limit(1)`。
+5. 同一 Stripe 账户可能被其他产品共用；查到 Checkout Session 不等于属于 OpenLayerlyPro，必须校验归属标记或现有 DB 映射。
+6. Stripe API 网络调用不得放在持有数据库事务或行锁的代码段内。
+7. 管理员手动反转的公开行为、错误码和旧回归测试不得改变。
 
-- 切片 #1 已落地的代码(本切片直接扩展,**别重写**):
-  - `src/modules/payment/index.ts`
-    - `confirmAutoPayment(providerId, event)` —— 已验签事件的**幂等确认**范式(`providerEventId` 去重 + `FOR UPDATE` + 条件更新 `pending_payment→approved` + grant + 审计 + outbox)。本切片的 `reverseAutoPayment` **照抄这套幂等骨架**。
-    - `reversePaymentApproval(requestId, reviewerId, reason)` —— **管理员手动**反转:条件更新 `approved→reversed` + 审计 `reverse` + `revokeMembership(tx)`,含 `paymentGrantLinkMissing` 守卫与「会员已 revoked 则跳过」判断。本切片把它的**核心反转逻辑抽成共享 helper**,管理员路径与自动退款路径都调它。
-    - `finalizeApprovedPayment(tx, row, context)` —— grant + 回写 `granted_membership_id` + 邮件入队的共享 helper(参考其抽取范式)。
-  - `src/modules/payment/providers/index.ts` —— `PaymentProvider` 契约 + `NormalizedPaymentEvent` 联合(`PaidPaymentEvent` / `ExpiredPaymentEvent` / `ignored`)。本切片**新增 `RefundedPaymentEvent` 与 `DisputedPaymentEvent`(分开)**。
-  - `src/modules/payment/providers/stripe.ts` —— `parseWebhook` 已处理 `checkout.session.completed` / `checkout.session.expired`,并有 `getCheckoutState(providerRef)`(经 `sessions.retrieve`)。本切片**新增 `charge.refunded` / `charge.dispute.created` 分支 + `resolveCheckoutByPaymentIntent`**。
-  - `src/app/api/payments/webhook/stripe/route.ts` —— 已 dispatch `paid` / `expired`。本切片**新增 `refunded` / `disputed` dispatch**。
-  - `src/modules/membership/index.ts`:`revokeMembership(id, { reason, actor, expectedVersion, correlationId, causationId }, tx)`。
-  - `src/modules/audit`:`recordAudit(tx, ...)`;`src/modules/tasks`:`enqueueTask(tx, ...)`。
-  - `src/modules/tasks/handlers.ts` + `src/modules/mail`:邮件模板的 discriminated union + 发送函数(本切片**可选**新增 `membership_revoked` 模板,见 §7)。
-- 现状关键事实(本切片设计依赖这几条):
-  1. **切片 #1 的 `createCheckout` 已把 `session.id` 存进 `payment_requests.provider_ref`**,且 Checkout Session 带 `metadata.requestId`。→ 即使没有新字段,退款事件也能经 Stripe API 用 `payment_intent` 反查到 session、再回到 `provider_ref`(**这是回填/外部事件判定的基石**)。
-  2. `payment_requests.provider_event_id` 是**单列 + 唯一索引**,已被 `confirmAutoPayment`(paid)或 `expireAutoPayment`(expired)占用。**退款是 `approved` 之后的第二个权威事件,不能复用该列**,需独立幂等键。
-  3. **Stripe 退款/拒付事件不带 Checkout Session id**。`charge.refunded` / `charge.dispute.created` 的对象只有 `payment_intent`,**没有 `session.id`**。
-  4. 一个 `payment_intent` 对应唯一一次 Checkout Session、唯一一个 request → payment_intent→request 是 **1:1**,应在 DB 层用唯一约束钉死。
+## 1. 当前实现中可复用的部分
 
-## 1. 已锁定决策(动工前若有异议先提)
+- `src/modules/payment/index.ts`
+  - `confirmAutoPayment(providerId, event)`：paid 事件幂等确认、`FOR UPDATE`、条件更新、grant、审计和 outbox。
+  - `reversePaymentApproval(requestId, reviewerId, reason)`：管理员手动 `approved → reversed`、grant-link 守卫、会员 revoke 与审计。
+  - `finalizeApprovedPayment(tx, row, context)`：批准后的会员开通与邮件入队。
+- `src/modules/payment/providers/index.ts`：`PaymentProvider` 与 `NormalizedPaymentEvent`。
+- `src/modules/payment/providers/stripe.ts`：Checkout 创建、webhook 验签与 paid/expired 解析。
+- `src/modules/membership/index.ts`：`revokeMembership(...)`。
+- `src/modules/audit`：`recordAudit(...)`。
+- `src/modules/tasks`：事务内 `enqueueTask(...)`。
 
-| # | 决策 | 理由 / 修正 |
-|---|---|---|
-| D1 | **退款/拒付 → 复用反转核心,撤销 `granted_membership_id` 对应会员**。沿用 `status='reversed'`,**不新增状态**。 | ADR 0005 §6;零新增状态机 |
-| D2 | **新增反转事件幂等列 `reversal_event_id text` + partial uniqueIndex**(独立于 paid 占用的 `provider_event_id`)。退款与 dispute 共用此列:一个 request 只会被反转一次(refund 或 dispute 其一先到即 `reversed`,后到者撞 `approved` 守卫 no-op)。 | ②③ 退款是第二事件需独立幂等键;单列足够因「一次反转/请求」是本切片明确范围 |
-| D3 | **payment_intent → request 映射唯一**:新增 `provider_payment_ref`(= payment_intent)**partial uniqueIndex(WHERE not null)**;confirm 时落库。退款先按它快查。 | **修正②**:原设计用普通 index + `.limit(1)`,映射非唯一、查询不确定;改为 DB 层唯一约束,1:1 钉死 |
-| D4 | **查不到行时,经 Stripe 反查 session + 归属标记判定,绝不无差别 200**:`sessions.list({ payment_intent })` →(a) 无 session(该 PI 名下无 Checkout)→ `ignored` 200;(b) 有 session 且命中我们的 request → 匹配 `provider_ref`、**回填** `provider_payment_ref`;(c) 有 session 但 DB 无对应 request → 看**归属标记** `session.metadata.app==="openlayerlypro"`:是→确属本应用、行缺失/未就绪 → **抛错让 Stripe 重试**;否→同账号下其它集成的 session(外部)→ 200 忽略不重试。 | **修正①②④**:仅有 session 不等于「是我们的」(共用 Stripe 账号时别的产品也会查到)→ 必须显式归属判定;同时解决历史无回填行(切片 #1 已存 `provider_ref=session.id`),**无需数据迁移** |
-| D5 | **退款与 dispute 拆成两个归一化事件类型**(`RefundedPaymentEvent` / `DisputedPaymentEvent`)+ **两个审计动作**(`payment_auto_refunded` / `payment_auto_disputed`),共用同一个反转核心。 | **修正③**:二者语义不同(退款=主动、终态;拒付=对抗、有 won/lost 生命周期),不可用一个 `reason` 标志混过去 |
-| D6 | **只对「全额退款」与「拒付创建(dispute.created)」反转**;部分退款(`amount_refunded < amount`)→ `ignored`(本切片不做按比例)。 | v0.2 不做对账/部分退款 |
-| D7 | **dispute 在 `charge.dispute.created` 即撤销会员**(资金已被冻结/扣回,应立即停止付费内容访问)。dispute 后续判赢(won)**不自动复权**,需人工处理。 | 已确认(2026-06-19):created 即撤销对小创作者更安全;won 自动复权在范围外 |
-| D8 | **反转核心抽成共享 helper**,管理员手动反转与自动退款/拒付都调它;差异只在 actor、reason 来源、审计动作、幂等键。`reversePaymentApproval` 对外行为不变。 | DRY;`paymentGrantLinkMissing` / 「已 revoked 跳过」逻辑只维护一处 |
+## 2. 锁定决策
 
-## 2. Schema 变更 `src/db/schema/index.ts` + 迁移
+| # | 决策 |
+|---|---|
+| D1 | 沿用现有 `payment_requests.status='reversed'`，不新增付款状态。 |
+| D2 | 新增 `provider_payment_ref`（Stripe `payment_intent`）与 `reversal_event_id`；两者均使用 **provider-scoped partial unique index**。 |
+| D3 | refund 与 dispute 使用独立归一化事件类型、独立审计动作，但共用同一自动反转服务。 |
+| D4 | 只处理全额退款与 `charge.dispute.created`；部分退款 ignored。dispute won 不自动复权。 |
+| D5 | 新 Checkout 写入 `metadata.app='openlayerlypro'`；历史 Checkout 仍可通过 `provider_ref=session.id` 命中。 |
+| D6 | 已确认属于本应用的 reversal 命中 `pending_payment` 时，必须原子写成 `reversed` 并返回 200；后到 paid 事件只能记录幂等信息，禁止 grant。 |
+| D7 | paid 已先完成时，reversal 执行 `approved → reversed` 并撤销 `granted_membership_id` 对应会员。 |
+| D8 | 找不到 DB 行但 Session 明确 `owned=true` 时返回可重试错误；外部事件或无 Checkout Session 的事件返回 200 ignored。 |
 
-`payment_requests` 加两列:
+## 3. Schema 与迁移
+
+`src/db/schema/index.ts` 的 `payment_requests` 新增：
 
 ```ts
-providerPaymentRef: text("provider_payment_ref"), // Stripe payment_intent；confirm 时落库；退款/拒付回查；1:1
-reversalEventId: text("reversal_event_id"),        // 退款或拒付事件幂等键（独立于 provider_event_id）
+providerPaymentRef: text("provider_payment_ref"), // Stripe payment_intent
+reversalEventId: text("reversal_event_id"), // refund/dispute Stripe event id
 ```
 
-索引/约束(追加到现有 `(table) => [ ... ]`,**均为 partial unique**,manual / 未支付行的 NULL 不冲突):
+使用 provider-scoped partial unique index，避免未来不同 provider 的 ID 命名空间碰撞：
 
 ```ts
 uniqueIndex("payment_requests_provider_payment_ref_unique")
-  .on(table.providerPaymentRef)
-  .where(sql`${table.providerPaymentRef} is not null`),
+  .on(table.provider, table.providerPaymentRef)
+  .where(
+    sql`${table.provider} is not null and ${table.providerPaymentRef} is not null`,
+  ),
+
 uniqueIndex("payment_requests_reversal_event_id_unique")
-  .on(table.reversalEventId)
-  .where(sql`${table.reversalEventId} is not null`),
+  .on(table.provider, table.reversalEventId)
+  .where(
+    sql`${table.provider} is not null and ${table.reversalEventId} is not null`,
+  ),
 ```
 
-迁移:`pnpm exec drizzle-kit generate`(纯加列 + 加 partial unique 索引,增量低风险,**无数据回填**——历史行的回填走 §5.3 运行时 lazy 回填,不在迁移里)。
+生成增量迁移：
 
-## 3. provider 抽象 `src/modules/payment/providers/index.ts`(扩展)
+```bash
+pnpm exec drizzle-kit generate
+```
 
-退款与拒付**分开**两个事件类型(修正③);并入联合:
+迁移只加列与索引，不全表调用 Stripe 回填。历史自动付款在首次退款/拒付时通过 Checkout Session lazy backfill `provider_payment_ref`。
+
+## 4. Provider 契约
+
+`src/modules/payment/providers/index.ts`：
 
 ```ts
 export type RefundedPaymentEvent = {
   type: "refunded";
-  paymentRef: string;        // Stripe payment_intent
-  providerEventId: string;   // 写入 reversal_event_id 做幂等
+  paymentRef: string;
+  providerEventId: string;
 };
 
 export type DisputedPaymentEvent = {
   type: "disputed";
-  paymentRef: string;        // Stripe payment_intent
+  paymentRef: string;
   providerEventId: string;
 };
 
@@ -87,308 +99,365 @@ export type NormalizedPaymentEvent =
   | { type: "ignored"; providerEventId: string };
 ```
 
-`PaidPaymentEvent` 增加 `paymentRef: string`(见 §4.1)。
-
-`PaymentProvider` 契约新增归属解析方法:
+`PaidPaymentEvent` 增加：
 
 ```ts
-// 经 payment_intent 反查 Checkout Session：
-//   null = 该 PI 名下无 Checkout Session（非本应用）；
-//   否则返回 session 信息 + owned 归属标记（用于「session 存在但 DB 无行」时区分本应用/外部）
+paymentRef: string; // Stripe payment_intent
+```
+
+`PaymentProvider` 增加：
+
+```ts
 resolveCheckoutByPaymentIntent(paymentRef: string): Promise<
-  { providerRef: string; requestId?: string; owned: boolean } | null
+  | {
+      providerRef: string;
+      requestId?: string;
+      owned: boolean;
+    }
+  | null
 >;
 ```
 
-## 4. Stripe 适配器 `src/modules/payment/providers/stripe.ts`(扩展)
+## 5. Stripe 适配器
 
-### 4.0 createCheckout 增加归属标记(slice #1 小改)
+### 5.1 Checkout 归属标记
 
-为支撑 §4.4 的归属判定,`createCheckout`(切片 #1 已有)的 session metadata 增加一个**应用归属标记**:
+创建 Checkout Session 时保留 `requestId` 并增加应用标记：
 
 ```ts
-metadata: { requestId: input.requestId, app: "openlayerlypro" },
+metadata: {
+  requestId: input.requestId,
+  app: "openlayerlypro",
+},
 ```
 
-这是对已合并代码的**纯增量**改动(不改行为)。历史(本改动前创建的)session 没有该标记,但它们在 DB 里恒有对应 request(`provider_ref=session.id`),走 §5.3 的「命中 DB 行」分支,不依赖标记;标记只用于「session 存在但 DB 无行」时区分本应用 vs 外部。
+历史 Session 没有 `app` 标记时，只要 `provider_ref=session.id` 能命中 DB 行，仍视为本应用历史付款。
 
-### 4.1 paid 事件补存 payment_intent
+### 5.2 paid 事件
 
-`checkout.session.completed`(已有分支)的 `PaidPaymentEvent` 增加 `paymentRef: session.payment_intent`(`mode:"payment"` 下为字符串 id)。`payment_intent` 为空视为异常 → `ApiError(422, "stripeEventInvalid")`(同步卡支付恒有)。`confirmAutoPayment` 把它写入 `provider_payment_ref`(§5.1)。
+`checkout.session.completed` 的 `session.payment_intent` 必须存在；标准化为 `PaidPaymentEvent.paymentRef`。同步卡支付缺少 PaymentIntent 属于本应用事件结构异常，返回非 2xx。
 
-### 4.2 退款分支(全额)
+### 5.3 全额退款
 
 ```ts
 if (event.type === "charge.refunded") {
   const charge = event.data.object as Stripe.Charge;
+
   if (!charge.refunded || charge.amount_refunded !== charge.amount) {
-    return { type: "ignored", providerEventId: event.id }; // 部分退款不处理
+    return { type: "ignored", providerEventId: event.id };
   }
-  // payment_intent 可空：我们的 Checkout（mode=payment）必有 PI，
-  // 无 PI ⟹ 同账号下非 Checkout 的外部 charge ⟹ ignored 200，绝不抛错（否则 Stripe 无限重试一个永远映射不了的事件）。
-  if (!charge.payment_intent) return { type: "ignored", providerEventId: event.id };
+
+  // Charge.payment_intent 合法可空。同一 Stripe 账户中的旧 charge 或
+  // 非 Checkout 集成无法映射到本应用，必须 ignored，不能永久重试。
+  if (!charge.payment_intent) {
+    return { type: "ignored", providerEventId: event.id };
+  }
+
   return {
     type: "refunded",
-    paymentRef: typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent.id,
+    paymentRef:
+      typeof charge.payment_intent === "string"
+        ? charge.payment_intent
+        : charge.payment_intent.id,
     providerEventId: event.id,
   };
 }
 ```
 
-### 4.3 拒付分支(创建)
+### 5.4 拒付创建
 
 ```ts
 if (event.type === "charge.dispute.created") {
   const dispute = event.data.object as Stripe.Dispute;
-  // 同上：payment_intent 可空，无 PI ⟹ 非 Checkout 的外部拒付 ⟹ ignored 200，不抛错。
-  if (!dispute.payment_intent) return { type: "ignored", providerEventId: event.id };
+
+  if (!dispute.payment_intent) {
+    return { type: "ignored", providerEventId: event.id };
+  }
+
   return {
     type: "disputed",
-    paymentRef: typeof dispute.payment_intent === "string" ? dispute.payment_intent : dispute.payment_intent.id,
+    paymentRef:
+      typeof dispute.payment_intent === "string"
+        ? dispute.payment_intent
+        : dispute.payment_intent.id,
     providerEventId: event.id,
   };
 }
 ```
 
-其余事件继续走现有 `ignored` 兜底。
-
-### 4.4 归属解析
+### 5.5 PaymentIntent 反查
 
 ```ts
 async resolveCheckoutByPaymentIntent(paymentRef: string) {
-  const list = await this.client.checkout.sessions.list({ payment_intent: paymentRef, limit: 1 });
+  const list = await this.client.checkout.sessions.list({
+    payment_intent: paymentRef,
+    limit: 1,
+  });
   const session = list.data[0];
-  if (!session) return null; // 该 payment_intent 名下无 Checkout Session → 非本应用
+  if (!session) return null;
+
   return {
     providerRef: session.id,
     requestId: session.metadata?.requestId || undefined,
-    owned: session.metadata?.app === "openlayerlypro", // 归属标记（评审②：必须显式判定）
+    owned: session.metadata?.app === "openlayerlypro",
   };
 }
 ```
 
-> `sessions.list` 需要 `checkout` 资源权限(已有)。`StripeClient` 类型 `Pick` 已含 `checkout`,无需扩。
+## 6. `confirmAutoPayment` 必须处理 reversal-first
 
-## 5. Service `src/modules/payment/index.ts`(扩展)
+现有 paid 路径增加 `providerPaymentRef: event.paymentRef`。在 grant 前锁定请求并执行：
 
-### 5.1 confirm 时落库 payment_intent
+1. 校验 provider、Checkout Session、金额、币种与 `paymentRef` 一致性。
+2. 若 `status='pending_payment'` 且没有 reversal，沿用现有批准路径。
+3. 若 `status='reversed'`：
+   - **绝不 grant 会员**；
+   - 如果 `provider_event_id` 为空，则只回写 paid event ID 与一致的 `provider_payment_ref`，用于重放幂等；
+   - 如果已是同一 paid event，直接 no-op；
+   - 如果 paymentRef 冲突，抛错并回滚。
+4. 其他终态继续沿用现有幂等/冲突处理。
 
-`confirmAutoPayment` 的条件更新 `pending_payment→approved` 里顺带写 `providerPaymentRef: event.paymentRef`。其它不变。
+必须保证以下顺序成立：
 
-### 5.2 抽取共享反转核心(重构 `reversePaymentApproval`)
+```text
+reversal webhook → pending_payment 变 reversed → paid webhook 后到 → 仍为 reversed，会员从未 active
+```
 
-把「grant-link 守卫 + 撤销会员」抽成内部 helper,两个调用方共用(调用方各自先做 `approved→reversed` 条件更新并拿到 `reversed` 行):
+## 7. 共享的已批准付款反转核心
+
+从 `reversePaymentApproval` 抽出只针对 **已批准且存在 grant link** 的 helper：
 
 ```ts
-async function applyMembershipReversal(
+async function applyApprovedPaymentReversal(
   tx: DbClient,
   reversed: PaymentRequest,
-  ctx: {
+  context: {
     actor: { type: "admin"; id: string } | { type: "system"; id: null };
     reason: string;
-    auditAction: "reverse" | "payment_auto_refunded" | "payment_auto_disputed";
+    auditAction:
+      | "reverse"
+      | "payment_auto_refunded"
+      | "payment_auto_disputed";
     correlationId: string;
     auditAfterExtra?: Record<string, unknown>;
   },
 ): Promise<void> {
-  const reverseEvent = await recordAudit(tx, {
-    entityType: "payment_request", entityId: reversed.id,
-    action: ctx.auditAction, actor: ctx.actor, reason: ctx.reason,
+  if (!reversed.grantedMembershipId) {
+    throw new ApiError(409, "paymentGrantLinkMissing");
+  }
+
+  const reverseAudit = await recordAudit(tx, {
+    entityType: "payment_request",
+    entityId: reversed.id,
+    action: context.auditAction,
+    actor: context.actor,
+    reason: context.reason,
     before: { status: "approved" },
-    after: { status: "reversed", ...(ctx.auditAfterExtra ?? {}) },
-    correlationId: ctx.correlationId,
+    after: { status: "reversed", ...(context.auditAfterExtra ?? {}) },
+    correlationId: context.correlationId,
   });
-  if (!reversed.grantedMembershipId) throw new ApiError(409, "paymentGrantLinkMissing");
-  const [membership] = await tx.select().from(memberships)
-    .where(eq(memberships.id, reversed.grantedMembershipId)).limit(1);
-  if (!membership) throw new ApiError(404, "membershipNotFound");
+
+  const membership = await loadGrantedMembershipForUpdate(
+    tx,
+    reversed.grantedMembershipId,
+  );
+
   if (membership.status !== "revoked") {
-    await revokeMembership(membership.id, {
-      reason: ctx.reason, actor: ctx.actor, expectedVersion: membership.version,
-      correlationId: ctx.correlationId, causationId: reverseEvent.id,
-    }, tx);
+    await revokeMembership(
+      membership.id,
+      {
+        reason: context.reason,
+        actor: context.actor,
+        expectedVersion: membership.version,
+        correlationId: context.correlationId,
+        causationId: reverseAudit.id,
+      },
+      tx,
+    );
   }
 }
 ```
 
-`reversePaymentApproval` 改为做完 `approved→reversed` 条件更新后调 `applyMembershipReversal(..., { actor:{type:"admin",id:reviewerId}, reason:trimmedReason, auditAction:"reverse", correlationId })`。**对外行为不变,旧回归测试逐条须全绿**(先重构跑绿,再加新逻辑)。
+管理员 `reversePaymentApproval` 仍先执行 `approved → reversed` 条件更新，再调用该 helper。对外行为、审计动作 `reverse`、错误码和旧测试不变。
 
-### 5.3 新增自动反转(webhook 调用,退款与拒付共用)
+## 8. `reverseAutoPayment`
+
+### 8.1 不要在事务内调用 Stripe
+
+先进行无锁快查；确实缺少 `provider_payment_ref` 映射时，在数据库事务外调用 `resolveCheckoutByPaymentIntent`。随后进入事务，重新检查幂等、重新查询并 `FOR UPDATE` 锁行。事务中的查询结果才是最终依据。
+
+### 8.2 状态处理
+
+事务内按以下顺序：
+
+1. 以 `(provider, reversal_event_id)` 检查事件幂等。
+2. 以 `(provider, provider_payment_ref)` 快查并锁行。
+3. 未命中时使用事务外得到的 Session 信息，按 `provider_ref` 或合法 `requestId` 查找并锁行。
+4. 无 DB 行：
+   - 无 Session 或 `owned=false`：外部事件，200 ignored；
+   - `owned=true`：本应用数据尚未就绪或损坏，返回 503 让 Stripe 重试并触发告警。
+5. 对历史行 lazy backfill `provider_payment_ref`，冲突由 unique index 阻止。
+6. 按状态执行：
+
+#### `reversed`
+
+直接 200 no-op。一个请求只反转一次；后续不同 refund/dispute 事件不得重复修改会员。
+
+#### `pending_payment`
+
+**不能只抛错等待 Stripe 重试。** 原子执行：
 
 ```ts
-export async function reverseAutoPayment(
-  providerId: string,
-  event: RefundedPaymentEvent | DisputedPaymentEvent,
-): Promise<void> {
-  const provider = await getPaymentProvider(providerId);
-  const auditAction = event.type === "disputed" ? "payment_auto_disputed" : "payment_auto_refunded";
-  const reasonText = event.type === "disputed" ? "stripe dispute" : "stripe refund";
+const [reversed] = await tx
+  .update(paymentRequests)
+  .set({
+    status: "reversed",
+    providerPaymentRef: event.paymentRef,
+    reversalEventId: event.providerEventId,
+    reviewNote: reasonText,
+    reviewedAt: now,
+    updatedAt: now,
+  })
+  .where(
+    and(
+      eq(paymentRequests.id, request.id),
+      eq(paymentRequests.status, "pending_payment"),
+    ),
+  )
+  .returning();
+```
 
-  await getDb().transaction(async (tx) => {
-    // 1) 幂等：reversal_event_id 去重（注意不是 provider_event_id）
-    const [processed] = await tx.select({ id: paymentRequests.id })
-      .from(paymentRequests)
-      .where(eq(paymentRequests.reversalEventId, event.providerEventId)).limit(1);
-    if (processed) return;
+成功后写 `payment_auto_refunded` 或 `payment_auto_disputed` 审计：
 
-    // 2) 快查：provider_payment_ref（新行）
-    let [request] = await tx.select().from(paymentRequests)
-      .where(and(
-        eq(paymentRequests.provider, providerId),
-        eq(paymentRequests.providerPaymentRef, event.paymentRef),
-      )).limit(1).for("update");
+```ts
+before: { status: "pending_payment" },
+after: {
+  status: "reversed",
+  provider: providerId,
+  paymentRef: event.paymentRef,
+  reversalEventId: event.providerEventId,
+  kind: event.type,
+},
+actor: { type: "system", id: null },
+```
 
-    // 3) 查不到 → 经 Stripe 反查 session + 归属标记判定（修正①②④）
-    if (!request) {
-      const resolved = await provider!.resolveCheckoutByPaymentIntent(event.paymentRef);
-      if (!resolved) return; // (a) 该 PI 名下无 Checkout Session → 非本应用 → 200 ignore
-      const lookup = resolved.requestId
-        ? or(eq(paymentRequests.providerRef, resolved.providerRef), eq(paymentRequests.id, resolved.requestId))
-        : eq(paymentRequests.providerRef, resolved.providerRef);
-      [request] = await tx.select().from(paymentRequests)
-        .where(and(eq(paymentRequests.provider, providerId), lookup)).limit(1).for("update");
-      if (!request) {
-        // session 存在但 DB 无对应 request → 用归属标记区分（评审②）：
-        //  - owned（session.metadata.app==="openlayerlypro"）= 确属本应用、行缺失/confirm 尚未落库
-        //    → 抛错让 Stripe 重试（覆盖 refund/dispute 早于 confirm 的竞态）
-        //  - 否则 = 同账号下其它集成创建的 Checkout Session（外部）→ 200 忽略，不重试
-        if (resolved.owned) throw new ApiError(409, "paymentRequestNotFound");
-        return;
-      }
-      // (b) 命中（含历史无标记行）：lazy 回填 provider_payment_ref（partial unique 保证不冲突）
-      if (!request.providerPaymentRef) {
-        await tx.update(paymentRequests)
-          .set({ providerPaymentRef: event.paymentRef })
-          .where(eq(paymentRequests.id, request.id));
-      }
-    }
+此时尚未 grant 会员，因此**不调用** `applyApprovedPaymentReversal`。事务提交后返回 200。后到 paid webhook 由 §6 拦截，不能开通会员。
 
-    // 4) 状态守卫（评审：pending_payment 绝不静默 200）
-    if (request.status === "reversed") return;            // 已反转（管理员或另一事件）→ 幂等 200
-    if (request.status === "pending_payment") {
-      // confirm 尚未把它转成 approved（refund/dispute 早于 confirm 的竞态）。
-      // 绝不静默 200：抛错让 Stripe 重试，待 confirm 落库后重投即可正确反转。
-      throw new ApiError(409, "paymentNotConfirmedYet");
-    }
-    if (request.status !== "approved") {
-      // rejected/cancelled 等：真实退款/拒付与这些终态矛盾 → 视为异常，
-      // 抛错以经 Stripe 失败重投视图暴露，不静默吞（无可撤会员但也不掩盖矛盾）。
-      throw new ApiError(409, "paymentNotReversible");
-    }
+#### `approved`
 
-    // 5) 条件更新 approved→reversed + 写 reversal_event_id
-    const reversedAt = new Date();
-    const [reversed] = await tx.update(paymentRequests)
-      .set({ status: "reversed", reversalEventId: event.providerEventId, reviewNote: reasonText, reviewedAt: reversedAt, updatedAt: reversedAt })
-      .where(and(eq(paymentRequests.id, request.id), eq(paymentRequests.status, "approved")))
-      .returning();
-    if (!reversed) return; // 竞态：被并发抢先
+条件更新 `approved → reversed`，同时写 `providerPaymentRef`、`reversalEventId` 和 review metadata；随后调用 `applyApprovedPaymentReversal` 撤销关联会员并写因果审计。
 
-    // 6) 复用反转核心：审计（refunded / disputed 区分）+ 撤销会员
-    await applyMembershipReversal(tx, reversed, {
-      actor: { type: "system", id: null },
-      reason: reasonText,
-      auditAction,
-      correlationId: randomUUID(),
-      auditAfterExtra: { provider: providerId, reversalEventId: event.providerEventId, kind: event.type },
-    });
+#### `rejected` / `cancelled`
 
-    // 7)（可选）通知用户会员已撤销，见 §7
-  });
+没有有效会员可撤销，重试无法修复。记录不含敏感信息的结构化 warning 后返回 200 no-op，避免 Stripe 永久重试。不得误撤其他会员。
+
+## 9. Webhook 路由
+
+```ts
+if (event.type === "paid") {
+  await confirmAutoPayment("stripe", event);
+}
+if (event.type === "expired") {
+  await expireAutoPayment("stripe", event);
+}
+if (event.type === "refunded" || event.type === "disputed") {
+  await reverseAutoPayment("stripe", event);
 }
 ```
 
-要点(直接回应四条修正):
-- **① 不无差别 200**:三态分明——外部事件(反查无 session)→ ignore 200;我们的但行查不到/未就绪 → throw → Stripe 重试(覆盖 refund 早于 confirm 落库的竞态);已 reversed → 幂等 200。
-- **② 唯一映射**:`provider_payment_ref` partial unique,快查确定单行。
-- **③ 退款≠拒付**:同一函数但 `auditAction`/`reasonText`/`kind` 区分;审计可分别检索。
-- **④ 回填**:历史 approved 行(切片 #1 留下、无 `provider_payment_ref`)经 `provider_ref=session.id` 命中后 **lazy 回填**,无需数据迁移。
-- 「我们的但行查不到」抛错由 Stripe 重试兜底(约 3 天);真·永久异常 Stripe 最终放弃,建议接监控告警(对账留作后续)。
+只有以下瞬时/需人工修复情形返回非 2xx：
 
-## 6. Webhook 路由 `src/app/api/payments/webhook/stripe/route.ts`(扩展)
+- 明确 `owned=true` 但 DB 行不存在；
+- Stripe API 临时失败；
+- approved 行缺少 grant link；
+- unique/paymentRef 冲突或数据库失败。
 
-```ts
-if (event.type === "paid") await confirmAutoPayment("stripe", event);
-if (event.type === "expired") await expireAutoPayment("stripe", event);
-if (event.type === "refunded" || event.type === "disputed") await reverseAutoPayment("stripe", event);
-```
+Stripe Dashboard webhook 必须勾选：
 
-其余(验签 401、`stripeConfigIncomplete` 503、已验签事件 2xx、处理抛错 5xx 让 Stripe 重试)不变。
+- `checkout.session.completed`
+- `checkout.session.expired`
+- `charge.refunded`
+- `charge.dispute.created`
 
-> Stripe Dashboard webhook 需勾选:`checkout.session.completed`、`checkout.session.expired`、**`charge.refunded`**、**`charge.dispute.created`**。在 PR 描述与 `docs/admin/payment-review.md` / Stripe 配置文档注明。
+同步更新 `docs/admin/payment-review.md` 与 Stripe 配置说明。
 
-## 7. 邮件通知(推荐做,可标注后续)
+## 10. 用户通知
 
-退款/拒付撤销会员后通知用户。新增 outbox 模板 `membership_revoked`:
-- `src/modules/tasks/handlers.ts`:`emailPayloadSchema` 加 `template: z.literal("membership_revoked")`(params:`tierName`);`runEmailTask` dispatch。
-- `src/modules/mail`:`sendMembershipRevokedEmail(to, tierName, locale)`,文案中性(「您的会员已停用」),**不暴露内部 reason**。
-- `reverseAutoPayment` 事务内 `enqueueTask(tx, { kind:"email", dedupeKey:\`email:membership_revoked:${reversed.id}\`, ... })`(取 user+tier,参照 `finalizeApprovedPayment` / `rejectPaymentRequest`)。
-- i18n 三语补文案。
+自动反转会在无管理员操作的情况下停止访问，建议作为本切片必做：
 
-不做则 PR 注明留后续(撤销已审计、会员状态已更新,但**推荐做**以对齐 reject/activate 的用户感知)。
+- 新增 outbox 邮件模板 `membership_revoked`；
+- en/zh/ja 文案使用中性表述，例如“您的会员访问已停用”；
+- 不向用户暴露内部事件 ID、拒付原因或敏感 provider 数据；
+- dedupe key 使用付款请求 ID，例如 `email:membership_revoked:<requestId>`；
+- pending_payment reversal 尚未开通过会员，可发送“付款已取消/退款”类通知，或在 PR 中明确暂不发送；不得错误发送“会员被撤销”。
 
-## 8. i18n
+## 11. 测试
 
-`{zh,en,ja}.ts` 补(若做邮件)`membership_revoked` 文案;新增错误码 `paymentNotConfirmedYet` / `paymentNotReversible`(webhook 内部用,会让 Stripe 重投,面向用户的文案非必需但补全更一致),其余复用已有 `paymentGrantLinkMissing` / `membershipNotFound` / `paymentRequestNotFound`。
+### Provider 单测
 
-## 9. 测试
-
-provider 单测(mock `stripe` SDK):
-- `charge.refunded` **全额** → `refunded`(`paymentRef`=payment_intent);**部分**(`amount_refunded<amount`)→ `ignored`。
+- 全额 `charge.refunded` → `refunded`。
+- 部分退款 → `ignored`。
 - `charge.dispute.created` → `disputed`。
-- `payment_intent` 缺失 → `422`。
-- `checkout.session.completed` 现带 `paymentRef`(回归)。
-- `resolveCheckoutByPaymentIntent`:有 session → `{providerRef, requestId}`;无 → `null`。
+- refund/dispute 缺少 `payment_intent` → `ignored`，不是 422。
+- paid 事件包含 `paymentRef`。
+- Session 反查分别覆盖 `owned=true`、`owned=false`、无 Session。
 
-真实 PG 集成(参照 `auto-payment.integration.test.ts`):
-- 先 `confirmAutoPayment` 造一个 approved + 会员 + `provider_payment_ref` 的请求,再:
-  - `reverseAutoPayment` 退款一次成功:`approved→reversed`、写 `reversal_event_id`、会员被 revoke、审计 `payment_auto_refunded`(causation 完整)。
-  - dispute 路径成功:审计 `payment_auto_disputed`(**与退款审计动作不同**)。
-  - **幂等**:同 `reversal_event_id` 二次 → no-op,会员不重复 revoke、不报错。
-  - **唯一映射**:两个 request 不可写入同一 `provider_payment_ref`(partial unique 拒绝)。
-  - **① 外部:PI 无 session**:`resolveCheckoutByPaymentIntent` 返回 null(mock)→ no-op、**不报错、不动任何行**。
-  - **② 外部:有 session 但非本应用**(mock 反查到 session、`owned=false`、DB 无 request)→ no-op 200、**不抛错**(不让 Stripe 死循环重试外部事件)。
-  - **② 本应用但行缺失**(mock 反查到 session、`owned=true`、DB 无 request)→ **抛错**让 Stripe 重试。
-  - **pending_payment 竞态**:request 仍是 `pending_payment`(confirm 未落库)→ **抛错 `paymentNotConfirmedYet`**(让 Stripe 重投),**不返回 200**;模拟「先 confirm 再重投」最终成功反转。
-  - **非可反转终态**:request 为 `rejected`/`cancelled` → 抛错 `paymentNotReversible`,不静默。
-  - **④ 历史回填**:构造一条 approved 但 `provider_payment_ref=NULL`(仅有 `provider_ref=session.id`、session 无 `app` 标记)→ 反查命中 DB 行并 **lazy 回填** + 成功反转。
-  - **管理员已手动 reverse 后** webhook 到达 → no-op(status 已 reversed),会员仍 revoked。
-  - `paymentGrantLinkMissing`:approved 但 `granted_membership_id` 为空 → throw 409、回滚、不误撤其它会员。
-- 回归:**`reversePaymentApproval` 重构后所有旧用例逐条仍通过**。
-- webhook 路由:`charge.refunded` / `charge.dispute.created` 已验签 → 触发反转并 200;伪造签名 → 401。
+### 真实 PostgreSQL 集成测试
 
-## 10. 提交前验证
+必须覆盖：
+
+1. paid 先到：`pending_payment → approved`，会员 active；随后 refund → request reversed、会员 revoked、因果审计完整。
+2. dispute 路径使用 `payment_auto_disputed`，与 refund 审计动作分离。
+3. **reversal 先到**：
+   - request 原为 `pending_payment`；
+   - reversal 在一个事务内把它改成 `reversed` 并写审计；
+   - 返回 200，不依赖未来重试；
+   - paid 后到不得 grant 会员；
+   - 重放 paid/reversal 均幂等。
+4. paid 与 reversal 并发：最终只能是 `reversed`；如果曾 grant，则关联会员最终 revoked；不存在错误的其他会员变更。
+5. 同一 `reversal_event_id` 重放只处理一次。
+6. 同一 `provider_payment_ref` 不可关联两个同 provider 请求。
+7. 不同 provider 可使用相同外部 ID，不发生跨 provider 冲突。
+8. 外部 PaymentIntent：无 Session或 `owned=false` → 200 no-op。
+9. `owned=true` 但 DB 无行 → 可重试错误。
+10. 历史 approved 行只有 `provider_ref=session.id` → lazy backfill 后成功反转。
+11. 管理员已手动 reverse 后 webhook 到达 → no-op。
+12. approved 但 `granted_membership_id` 缺失 → 事务回滚，不误撤其他会员。
+13. `reversePaymentApproval` 全部旧回归测试逐条通过。
+14. webhook 伪造签名 → 401。
+
+## 12. 提交前验证
 
 ```bash
-pnpm lint && pnpm format:check && pnpm exec tsc --noEmit
+pnpm lint
+pnpm format:check
+pnpm exec tsc --noEmit
 RUN_DB_INTEGRATION_TESTS=true pnpm test
-pnpm build:migrator && pnpm build
+pnpm build:migrator
+pnpm build
 ```
 
-## 11. PR
+## 13. 实现 PR 验收清单
 
-- base `main`,draft,标题 `feat(payments): refund/dispute auto-reversal`。
-- 描述:新增 `provider_payment_ref`(partial unique)/ `reversal_event_id`(partial unique)两列 + 迁移;`createCheckout` 加 `metadata.app` 归属标记;`RefundedPaymentEvent` / `DisputedPaymentEvent`(分离);Stripe 全额退款 / dispute.created 解析 + `resolveCheckoutByPaymentIntent`(带 `owned`);`reverseAutoPayment`(幂等 + 唯一快查 + session 反查 + 归属判定 + lazy 回填 + 状态不静默,`pending_payment` 抛错重试);webhook dispatch;(可选)`membership_revoked` 邮件;Stripe Dashboard 需勾选两个新事件。
-- 关联对应 issue。
+- [ ] 两个新增字段与 provider-scoped partial unique index 已生成迁移
+- [ ] Checkout metadata 带 `app=openlayerlypro`
+- [ ] paid 写入 `provider_payment_ref`
+- [ ] refund/dispute 缺失 PaymentIntent 安全 ignored
+- [ ] Session 反查可区分本应用与同账号外部集成
+- [ ] Stripe API 调用不在数据库事务/行锁内
+- [ ] pending reversal 原子持久化为 `reversed`
+- [ ] paid 后到不会开通会员
+- [ ] approved reversal 复用管理员反转核心并 revoke 精确 grant link
+- [ ] refund/dispute 审计动作分离，actor=system，causation 完整
+- [ ] 重放、乱序和并发测试全绿
+- [ ] 管理员手动反转行为与旧测试不变
+- [ ] Stripe Dashboard 与管理员文档已更新
+- [ ] 不记录或输出密钥、签名、完整 Stripe payload 等敏感信息
 
-## 12. 验收 checklist
+## 不在本切片
 
-- [ ] confirm 落 `provider_payment_ref`(payment_intent),partial **unique**,退款按它快查
-- [ ] 反转幂等用独立 `reversal_event_id`(不污染 paid 的 `provider_event_id`),重放只撤销一次
-- [ ] **未匹配事件不无差别 200**:PI 无 session / 有 session 但 `owned=false`(外部)→ ignore;`owned=true` 但行缺失、或 `pending_payment`(confirm 未落库)→ 抛错让 Stripe 重试;已 reversed → 幂等 200
-- [ ] **`pending_payment` 绝不返回 200**:抛 `paymentNotConfirmedYet`,重投覆盖 refund/dispute 早于 confirm 的竞态
-- [ ] **Session 反查带归属判定**:`createCheckout` 写 `metadata.app="openlayerlypro"`;`resolveCheckoutByPaymentIntent` 返回 `owned`,据此区分本应用/外部
-- [ ] **退款与 dispute 语义分离**:独立事件类型 + 独立审计动作 `payment_auto_refunded` / `payment_auto_disputed`
-- [ ] **历史无回填行可处理**:经 `provider_ref=session.id` 反查命中并 lazy 回填,无需数据迁移
-- [ ] 全额退款 / dispute.created → 撤销 `granted_membership_id` 对应会员;部分退款 → ignored
-- [ ] 反转核心由管理员手动与自动**共用**;`reversePaymentApproval` 行为不变、旧测试全绿
-- [ ] 自动反转 actor=system、causation 链完整;不误伤其它会员
-- [ ]（推荐)用户收到会员撤销通知邮件
-- [ ] 无敏感数据落库/入日志
-
-## 不在本切片(后续)
-
-- dispute 判赢(won)后**自动复权**会员;dispute 生命周期与对账。
-- 部分退款的按比例 / 缩短会员时长。
-- 「我们的但永久查不到」事件的自动对账/告警面板(现仅靠 Stripe 重试 + 日志)。
-- 订阅/自动续费的失败扣款联动;多 provider(alipay/wechat)退款。
+- dispute won 后自动复权
+- 部分退款按比例处理
+- 自动 reconciliation / 告警面板
+- 订阅续费与失败扣款联动
+- 支付宝、微信等其他 provider 的退款实现
