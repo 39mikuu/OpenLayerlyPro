@@ -1,22 +1,27 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, exists, inArray, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import {
+  categories,
   type FileRecord,
   files,
   type MembershipTier,
   membershipTiers,
   type Post,
+  postCategories,
   type PostFile,
   postFiles,
   posts,
+  postTags,
   type PostTranslation,
   postTranslations,
+  tags,
   type User,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { isLocale, type Locale } from "@/modules/i18n";
 import { getActiveLevel } from "@/modules/membership";
+import { setPostCategories, setPostTags } from "@/modules/taxonomy";
 
 export type PostInput = {
   title: string;
@@ -29,16 +34,34 @@ export type PostInput = {
   requiredTierId?: string | null;
 };
 
-export async function createPost(input: PostInput): Promise<Post> {
+export type PostTaxonomyInput = {
+  categoryIds?: string[];
+  tagIds?: string[];
+};
+
+export async function createPost(
+  input: PostInput,
+  taxonomy: PostTaxonomyInput = {},
+): Promise<Post> {
   await assertValidTier(input);
-  const [post] = await getDb()
-    .insert(posts)
-    .values({ ...input, status: "draft" })
-    .returning();
-  return post;
+  return getDb().transaction(async (tx) => {
+    const [post] = await tx
+      .insert(posts)
+      .values({ ...input, status: "draft" })
+      .returning();
+    if (taxonomy.categoryIds !== undefined) {
+      await setPostCategories(post.id, taxonomy.categoryIds, tx);
+    }
+    if (taxonomy.tagIds !== undefined) await setPostTags(post.id, taxonomy.tagIds, tx);
+    return post;
+  });
 }
 
-export async function updatePost(id: string, input: Partial<PostInput>): Promise<Post> {
+export async function updatePost(
+  id: string,
+  input: Partial<PostInput>,
+  taxonomy: PostTaxonomyInput = {},
+): Promise<Post> {
   return getDb().transaction(async (tx) => {
     const [existing] = await tx.select().from(posts).where(eq(posts.id, id)).limit(1).for("update");
     if (!existing) throw new ApiError(404, "postNotFound");
@@ -67,6 +90,10 @@ export async function updatePost(id: string, input: Partial<PostInput>): Promise
       .where(and(eq(posts.id, id), eq(posts.status, "draft")))
       .returning();
     if (!post) throw new ApiError(409, "postNotEditable");
+    if (taxonomy.categoryIds !== undefined) {
+      await setPostCategories(id, taxonomy.categoryIds, tx);
+    }
+    if (taxonomy.tagIds !== undefined) await setPostTags(id, taxonomy.tagIds, tx);
     return post;
   });
 }
@@ -103,16 +130,42 @@ export async function getPublishedPostBySlug(slug: string): Promise<Post | null>
   return post ?? null;
 }
 
-export async function listPosts(opts?: { publishedOnly?: boolean }): Promise<Post[]> {
+export async function listPosts(opts?: {
+  publishedOnly?: boolean;
+  categorySlug?: string;
+  tagSlug?: string;
+}): Promise<Post[]> {
   const db = getDb();
-  if (opts?.publishedOnly) {
-    return db
-      .select()
-      .from(posts)
-      .where(eq(posts.status, "published"))
-      .orderBy(desc(posts.publishedAt));
-  }
-  return db.select().from(posts).orderBy(desc(posts.createdAt));
+  const conditions = [
+    ...(opts?.publishedOnly ? [eq(posts.status, "published")] : []),
+    ...(opts?.categorySlug
+      ? [
+          exists(
+            db
+              .select({ value: sql`1` })
+              .from(postCategories)
+              .innerJoin(categories, eq(postCategories.categoryId, categories.id))
+              .where(
+                and(eq(postCategories.postId, posts.id), eq(categories.slug, opts.categorySlug)),
+              ),
+          ),
+        ]
+      : []),
+    ...(opts?.tagSlug
+      ? [
+          exists(
+            db
+              .select({ value: sql`1` })
+              .from(postTags)
+              .innerJoin(tags, eq(postTags.tagId, tags.id))
+              .where(and(eq(postTags.postId, posts.id), eq(tags.slug, opts.tagSlug))),
+          ),
+        ]
+      : []),
+  ];
+  const query = db.select().from(posts);
+  const filtered = conditions.length > 0 ? query.where(and(...conditions)) : query;
+  return filtered.orderBy(opts?.publishedOnly ? desc(posts.publishedAt) : desc(posts.createdAt));
 }
 
 export type LocalizedPost = Post & {

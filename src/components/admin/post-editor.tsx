@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { api, uploadFile } from "@/lib/client";
 
 type TierOption = { id: string; name: string; level: number };
+type TaxonomyOption = { id: string; name: string };
 
 type PostData = {
   id: string;
@@ -38,10 +39,18 @@ export function PostEditor({
   post,
   tiers,
   attachedFiles,
+  categories,
+  tags,
+  selectedCategoryIds,
+  selectedTagIds,
 }: {
   post: PostData | null;
   tiers: TierOption[];
   attachedFiles: AttachedFile[];
+  categories: TaxonomyOption[];
+  tags: TaxonomyOption[];
+  selectedCategoryIds: string[];
+  selectedTagIds: string[];
 }) {
   const router = useRouter();
   const t = useT();
@@ -57,6 +66,8 @@ export function PostEditor({
   });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [categoryIds, setCategoryIds] = useState(selectedCategoryIds);
+  const [tagIds, setTagIds] = useState(selectedTagIds);
 
   async function run(fn: () => Promise<void>) {
     setLoading(true);
@@ -79,6 +90,8 @@ export function PostEditor({
       coverFileId: form.coverFileId,
       visibility: form.visibility,
       requiredTierId: form.visibility === "member" ? form.requiredTierId || null : null,
+      categoryIds,
+      tagIds,
     };
   }
 
@@ -96,6 +109,18 @@ export function PostEditor({
         setMessage(t("admin.common.saved"));
         router.refresh();
       }
+    });
+  }
+
+  async function saveTaxonomy() {
+    if (!post) return;
+    await run(async () => {
+      await api(`/api/admin/posts/${post.id}/taxonomy`, {
+        method: "PUT",
+        body: { categoryIds, tagIds },
+      });
+      setMessage(t("admin.taxonomy.saved"));
+      router.refresh();
     });
   }
 
@@ -131,6 +156,61 @@ export function PostEditor({
             <Input value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} />
           </div>
         </div>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">{t("admin.taxonomy.title")}</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>{t("admin.taxonomy.categories")}</Label>
+              <div className="space-y-1">
+                {categories.map((category) => (
+                  <label key={category.id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={categoryIds.includes(category.id)}
+                      onChange={(event) =>
+                        setCategoryIds((current) =>
+                          event.target.checked
+                            ? [...current, category.id]
+                            : current.filter((id) => id !== category.id),
+                        )
+                      }
+                    />
+                    {category.name}
+                  </label>
+                ))}
+                {categories.length === 0 && (
+                  <p className="text-sm text-muted-foreground">{t("admin.taxonomy.none")}</p>
+                )}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>{t("admin.taxonomy.tags")}</Label>
+              <div className="space-y-1">
+                {tags.map((tag) => (
+                  <label key={tag.id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={tagIds.includes(tag.id)}
+                      onChange={(event) =>
+                        setTagIds((current) =>
+                          event.target.checked
+                            ? [...current, tag.id]
+                            : current.filter((id) => id !== tag.id),
+                        )
+                      }
+                    />
+                    {tag.name}
+                  </label>
+                ))}
+                {tags.length === 0 && (
+                  <p className="text-sm text-muted-foreground">{t("admin.taxonomy.none")}</p>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
         <div className="space-y-1">
           <Label>{t("admin.posts.summary")}</Label>
           <Input
@@ -238,6 +318,11 @@ export function PostEditor({
               }
             >
               {t("admin.posts.archive")}
+            </Button>
+          )}
+          {!isNew && (
+            <Button variant="outline" disabled={loading} onClick={saveTaxonomy}>
+              {t("admin.taxonomy.saveAssociations")}
             </Button>
           )}
           {!isNew && (

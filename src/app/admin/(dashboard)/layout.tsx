@@ -14,6 +14,7 @@ const NAV = [
   { href: "/admin/site", key: "site" },
   { href: "/admin/tiers", key: "tiers" },
   { href: "/admin/posts", key: "posts" },
+  { href: "/admin/taxonomy", key: "taxonomy" },
   { href: "/admin/translations", key: "translations" },
   { href: "/admin/files", key: "files" },
   { href: "/admin/users", key: "users" },

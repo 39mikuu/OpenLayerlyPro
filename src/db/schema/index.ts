@@ -7,6 +7,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -213,6 +214,55 @@ export const posts = pgTable(
   ],
 );
 
+export const categories = pgTable("categories", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  slug: text("slug").unique().notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const tags = pgTable("tags", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  slug: text("slug").unique().notNull(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const postCategories = pgTable(
+  "post_categories",
+  {
+    postId: uuid("post_id")
+      .notNull()
+      .references(() => posts.id, { onDelete: "cascade" }),
+    categoryId: uuid("category_id")
+      .notNull()
+      .references(() => categories.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.postId, table.categoryId] }),
+    index("post_categories_category_idx").on(table.categoryId),
+  ],
+);
+
+export const postTags = pgTable(
+  "post_tags",
+  {
+    postId: uuid("post_id")
+      .notNull()
+      .references(() => posts.id, { onDelete: "cascade" }),
+    tagId: uuid("tag_id")
+      .notNull()
+      .references(() => tags.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.postId, table.tagId] }),
+    index("post_tags_tag_idx").on(table.tagId),
+  ],
+);
+
 export const postTranslations = pgTable(
   "post_translations",
   {
@@ -370,6 +420,10 @@ export type Membership = typeof memberships.$inferSelect;
 export type PaymentMethod = typeof paymentMethods.$inferSelect;
 export type PaymentRequest = typeof paymentRequests.$inferSelect;
 export type Post = typeof posts.$inferSelect;
+export type Category = typeof categories.$inferSelect;
+export type Tag = typeof tags.$inferSelect;
+export type PostCategory = typeof postCategories.$inferSelect;
+export type PostTag = typeof postTags.$inferSelect;
 export type PostTranslation = typeof postTranslations.$inferSelect;
 export type FileRecord = typeof files.$inferSelect;
 export type PostFile = typeof postFiles.$inferSelect;
