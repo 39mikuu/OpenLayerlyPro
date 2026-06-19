@@ -20,9 +20,11 @@ const STATUS_KEYS: Record<
   { key: string; variant: "default" | "secondary" | "destructive" | "outline" }
 > = {
   pending_review: { key: "admin.reviews.pendingStatus", variant: "outline" },
+  pending_payment: { key: "admin.reviews.pendingPayment", variant: "outline" },
   approved: { key: "admin.reviews.approved", variant: "default" },
   rejected: { key: "admin.reviews.rejected", variant: "destructive" },
   cancelled: { key: "admin.reviews.cancelled", variant: "secondary" },
+  reversed: { key: "admin.reviews.reversed", variant: "secondary" },
 };
 
 export default async function AdminPaymentReviewsPage() {

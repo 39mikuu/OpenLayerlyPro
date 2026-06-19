@@ -93,6 +93,8 @@ export const membershipTiers = pgTable("membership_tiers", {
   slug: text("slug").unique().notNull(),
   description: text("description"),
   priceLabel: text("price_label").notNull(),
+  priceAmountMinor: bigint("price_amount_minor", { mode: "number" }),
+  currency: text("currency"),
   level: integer("level").notNull(),
   durationDays: integer("duration_days").notNull().default(31),
   purchaseEnabled: boolean("purchase_enabled").notNull().default(true),
@@ -112,7 +114,9 @@ export const memberships = pgTable(
     tierId: uuid("tier_id")
       .notNull()
       .references(() => membershipTiers.id),
-    source: text("source", { enum: ["manual", "payment_review", "gift", "external"] }).notNull(),
+    source: text("source", {
+      enum: ["manual", "payment_review", "payment_auto", "gift", "external"],
+    }).notNull(),
     startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
     endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
     note: text("note"),
@@ -153,8 +157,16 @@ export const paymentRequests = pgTable(
       .references(() => membershipTiers.id),
     paymentMethodId: uuid("payment_method_id"),
     status: text("status", {
-      enum: ["pending_review", "approved", "rejected", "cancelled", "reversed"],
+      enum: ["pending_review", "pending_payment", "approved", "rejected", "cancelled", "reversed"],
     }).notNull(),
+    flow: text("flow", { enum: ["manual", "auto"] })
+      .notNull()
+      .default("manual"),
+    provider: text("provider"),
+    providerRef: text("provider_ref"),
+    providerEventId: text("provider_event_id"),
+    amountMinor: bigint("amount_minor", { mode: "number" }),
+    currency: text("currency"),
     grantedMembershipId: uuid("granted_membership_id").references(() => memberships.id),
     amountLabel: text("amount_label").notNull(),
     durationDays: integer("duration_days").notNull(),
@@ -171,6 +183,8 @@ export const paymentRequests = pgTable(
     index("payment_requests_status_created_idx").on(table.status, table.createdAt),
     index("payment_requests_pending_user_tier_idx").on(table.userId, table.tierId, table.status),
     uniqueIndex("payment_requests_granted_membership_id_unique").on(table.grantedMembershipId),
+    uniqueIndex("payment_requests_provider_event_id_unique").on(table.providerEventId),
+    index("payment_requests_provider_ref_idx").on(table.providerRef),
   ],
 );
 

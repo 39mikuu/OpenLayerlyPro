@@ -5,10 +5,12 @@ import { getEnv } from "@/lib/env";
 import {
   getSmtpAdminView,
   getStorageAdminView,
+  getStripeAdminView,
   getTranslationAdminView,
   getTurnstileAdminView,
 } from "@/modules/config";
 import { sendTestEmail } from "@/modules/mail";
+import { testStripeConnection } from "@/modules/payment/providers";
 import { testS3Connection } from "@/modules/storage";
 
 import type { Integration, IntegrationId, IntegrationStatus } from "./types";
@@ -67,6 +69,24 @@ const storageIntegration: Integration = {
   },
 };
 
+const stripeIntegration: Integration = {
+  id: "stripe",
+  kind: "service",
+  async getStatus() {
+    const view = await getStripeAdminView();
+    return {
+      id: "stripe",
+      kind: "service",
+      configured: view.configured,
+      enabled: view.enabled,
+      source: view.hasDbOverride ? "database" : "none",
+    };
+  },
+  async test() {
+    await testStripeConnection();
+  },
+};
+
 const turnstileIntegration: Integration = {
   id: "turnstile",
   kind: "service",
@@ -115,6 +135,7 @@ const tunnelIntegration: Integration = {
 export const integrations: Integration[] = [
   smtpIntegration,
   storageIntegration,
+  stripeIntegration,
   turnstileIntegration,
   translationIntegration,
   tunnelIntegration,

@@ -27,6 +27,14 @@ const bodySchema = z.object({
     .regex(/^[a-z0-9-]+$/, "slug 只能包含小写字母、数字和连字符"),
   description: z.string().max(2000).nullable().optional(),
   priceLabel: z.string().min(1).max(100),
+  priceAmountMinor: z.number().int().positive().nullable().optional(),
+  currency: z
+    .string()
+    .trim()
+    .length(3)
+    .transform((value) => value.toLowerCase())
+    .nullable()
+    .optional(),
   level: z.number().int().min(1),
   durationDays: z.number().int().min(1).default(31),
   purchaseEnabled: z.boolean().default(true),

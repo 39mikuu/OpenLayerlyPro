@@ -130,7 +130,7 @@ type ExtendCommand = LifecycleCommand & {
 type GrantMembershipInput = {
   userId: string;
   tierId: string;
-  source: "manual" | "payment_review" | "gift" | "external";
+  source: "manual" | "payment_review" | "payment_auto" | "gift" | "external";
   durationDays?: number;
   note?: string | null;
   createdBy?: string | null;

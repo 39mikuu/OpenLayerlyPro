@@ -16,6 +16,8 @@ export type TierData = {
   slug: string;
   description: string | null;
   priceLabel: string;
+  priceAmountMinor: number | null;
+  currency: string | null;
   level: number;
   durationDays: number;
   purchaseEnabled: boolean;
@@ -39,6 +41,8 @@ function TierEditor({
     slug: tier.slug ?? "",
     description: tier.description ?? "",
     priceLabel: tier.priceLabel ?? "",
+    priceAmountMinor: tier.priceAmountMinor == null ? "" : String(tier.priceAmountMinor),
+    currency: tier.currency ?? "",
     level: tier.level ?? 10,
     durationDays: tier.durationDays ?? 31,
     purchaseEnabled: tier.purchaseEnabled ?? true,
@@ -86,6 +90,26 @@ function TierEditor({
             type="number"
             value={form.level}
             onChange={(e) => setForm({ ...form, level: Number(e.target.value) })}
+          />
+        </div>
+        <div className="space-y-1">
+          <Label>{t("admin.tiers.onlineAmount")}</Label>
+          <Input
+            type="number"
+            min={1}
+            placeholder="500"
+            value={form.priceAmountMinor}
+            onChange={(e) => setForm({ ...form, priceAmountMinor: e.target.value })}
+          />
+          <p className="text-xs text-muted-foreground">{t("admin.tiers.onlineAmountHint")}</p>
+        </div>
+        <div className="space-y-1">
+          <Label>{t("admin.tiers.currency")}</Label>
+          <Input
+            maxLength={3}
+            placeholder="usd"
+            value={form.currency}
+            onChange={(e) => setForm({ ...form, currency: e.target.value.toLowerCase() })}
           />
         </div>
         <div className="space-y-1">
@@ -140,6 +164,8 @@ function TierEditor({
               onSubmit({
                 ...form,
                 description: form.description || null,
+                priceAmountMinor: form.priceAmountMinor ? Number(form.priceAmountMinor) : null,
+                currency: form.currency || null,
               }),
             )
           }
@@ -156,7 +182,13 @@ function TierEditor({
   );
 }
 
-export function TierManager({ tiers }: { tiers: TierData[] }) {
+export function TierManager({
+  tiers,
+  defaultCurrency,
+}: {
+  tiers: TierData[];
+  defaultCurrency: string;
+}) {
   const router = useRouter();
   const t = useT();
   const [showCreate, setShowCreate] = useState(false);
@@ -196,7 +228,7 @@ export function TierManager({ tiers }: { tiers: TierData[] }) {
           </CardHeader>
           <CardContent>
             <TierEditor
-              tier={{}}
+              tier={{ currency: defaultCurrency }}
               submitLabel={t("admin.common.create")}
               onSubmit={async (data) => {
                 await api("/api/admin/tiers", { method: "POST", body: data });

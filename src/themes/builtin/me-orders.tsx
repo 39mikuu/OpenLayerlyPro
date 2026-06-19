@@ -21,6 +21,12 @@ const STATUS: Record<OrderStatus, StatusMeta> = {
       "border-pink-200 bg-pink-50 text-pink-700 dark:border-pink-900 dark:bg-pink-950/30 dark:text-pink-300",
     icon: Clock3,
   },
+  pending_payment: {
+    key: "order.statusPaymentPending",
+    className:
+      "border-pink-200 bg-pink-50 text-pink-700 dark:border-pink-900 dark:bg-pink-950/30 dark:text-pink-300",
+    icon: Clock3,
+  },
   approved: {
     key: "order.statusApproved",
     className:
@@ -53,6 +59,13 @@ export function MeOrders({ view, t }: { view: MeOrdersView; t: Translate }) {
         <h1 className="text-2xl font-bold tracking-tight">{t("order.title")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">{t("order.subtitle")}</p>
       </header>
+
+      {view.paymentProcessing && (
+        <section className="rounded-xl border border-blue-200 bg-blue-50 px-5 py-4 text-sm text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-200">
+          <p className="font-medium">{t("order.paymentProcessing")}</p>
+          <p className="mt-1">{t("order.paymentProcessingHint")}</p>
+        </section>
+      )}
 
       {view.orders.length === 0 ? (
         <section className="rounded-xl border border-dashed bg-card px-6 py-10 text-center">

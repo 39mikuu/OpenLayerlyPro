@@ -1,5 +1,6 @@
 import { SmtpConfigForm } from "@/components/admin/smtp-config-form";
 import { StorageConfigForm } from "@/components/admin/storage-config-form";
+import { StripeConfigForm } from "@/components/admin/stripe-config-form";
 import { TranslationConfigForm } from "@/components/admin/translation-config-form";
 import { TurnstileConfigForm } from "@/components/admin/turnstile-config-form";
 import { UploadConfigForm } from "@/components/admin/upload-config-form";
@@ -7,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import {
   getSmtpAdminView,
   getStorageAdminView,
+  getStripeAdminView,
   getTranslationAdminView,
   getTurnstileAdminView,
   getUploadAdminView,
@@ -16,10 +18,11 @@ import { getT } from "@/modules/i18n/server";
 export const dynamic = "force-dynamic";
 
 export default async function AdminSettingsPage() {
-  const [smtp, turnstile, storage, upload, translation] = await Promise.all([
+  const [smtp, turnstile, storage, stripe, upload, translation] = await Promise.all([
     getSmtpAdminView(),
     getTurnstileAdminView(),
     getStorageAdminView(),
+    getStripeAdminView(),
     getUploadAdminView(),
     getTranslationAdminView(),
   ]);
@@ -27,6 +30,15 @@ export default async function AdminSettingsPage() {
   return (
     <div className="space-y-6 max-w-2xl">
       <h1 className="text-xl font-bold">{t("admin.settings.title")}</h1>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t("admin.settings.stripe")}</CardTitle>
+          <CardDescription>{t("admin.settings.stripeDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <StripeConfigForm initial={stripe} />
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader>
           <CardTitle className="text-base">{t("admin.settings.translation")}</CardTitle>

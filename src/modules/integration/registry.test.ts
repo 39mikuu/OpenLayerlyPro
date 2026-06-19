@@ -5,10 +5,12 @@ import { getEnv } from "@/lib/env";
 import {
   getSmtpAdminView,
   getStorageAdminView,
+  getStripeAdminView,
   getTranslationAdminView,
   getTurnstileAdminView,
 } from "@/modules/config";
 import { sendTestEmail } from "@/modules/mail";
+import { testStripeConnection } from "@/modules/payment/providers";
 import { testS3Connection } from "@/modules/storage";
 
 vi.mock("fs/promises", () => ({
@@ -22,12 +24,17 @@ vi.mock("@/lib/env", () => ({
 vi.mock("@/modules/config", () => ({
   getSmtpAdminView: vi.fn(),
   getStorageAdminView: vi.fn(),
+  getStripeAdminView: vi.fn(),
   getTranslationAdminView: vi.fn(),
   getTurnstileAdminView: vi.fn(),
 }));
 
 vi.mock("@/modules/mail", () => ({
   sendTestEmail: vi.fn(),
+}));
+
+vi.mock("@/modules/payment/providers", () => ({
+  testStripeConnection: vi.fn(),
 }));
 
 vi.mock("@/modules/storage", () => ({
@@ -38,9 +45,11 @@ const mockedAccess = vi.mocked(access);
 const mockedGetEnv = vi.mocked(getEnv);
 const mockedGetSmtpAdminView = vi.mocked(getSmtpAdminView);
 const mockedGetStorageAdminView = vi.mocked(getStorageAdminView);
+const mockedGetStripeAdminView = vi.mocked(getStripeAdminView);
 const mockedGetTranslationAdminView = vi.mocked(getTranslationAdminView);
 const mockedGetTurnstileAdminView = vi.mocked(getTurnstileAdminView);
 const mockedSendTestEmail = vi.mocked(sendTestEmail);
+const mockedTestStripeConnection = vi.mocked(testStripeConnection);
 const mockedTestS3Connection = vi.mocked(testS3Connection);
 
 function mockEnv(tunnelToken?: string) {
@@ -108,6 +117,19 @@ function mockTurnstile(input?: {
   });
 }
 
+function mockStripe(input?: { enabled?: boolean; configured?: boolean; hasDbOverride?: boolean }) {
+  const configured = input?.configured ?? true;
+  mockedGetStripeAdminView.mockResolvedValue({
+    enabled: input?.enabled ?? true,
+    publishableKey: undefined,
+    currency: "usd",
+    configured,
+    secretKeySet: configured,
+    webhookSecretSet: configured,
+    hasDbOverride: input?.hasDbOverride ?? true,
+  });
+}
+
 function mockTranslation(input?: {
   enabled?: boolean;
   configured?: boolean;
@@ -133,6 +155,7 @@ describe("integration registry", () => {
     mockEnv();
     mockSmtp();
     mockStorage();
+    mockStripe();
     mockTurnstile();
     mockTranslation();
     mockedAccess.mockResolvedValue(undefined);
@@ -142,13 +165,14 @@ describe("integration registry", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns five integrations in stable order", async () => {
+  it("returns six integrations in stable order", async () => {
     const { getIntegrationStatuses } = await import("./registry");
     const statuses = await getIntegrationStatuses();
 
     expect(statuses.map((status) => status.id)).toEqual([
       "smtp",
       "storage",
+      "stripe",
       "turnstile",
       "translation",
       "tunnel",
@@ -224,7 +248,7 @@ describe("integration registry", () => {
   it("keeps Turnstile configured separate from enabled", async () => {
     mockTurnstile({ enabled: true, configured: true });
     const { getIntegrationStatuses } = await import("./registry");
-    let turnstile = (await getIntegrationStatuses())[2];
+    let turnstile = (await getIntegrationStatuses())[3];
     expect(turnstile).toMatchObject({
       configured: true,
       enabled: true,
@@ -232,7 +256,7 @@ describe("integration registry", () => {
     });
 
     mockTurnstile({ enabled: false, configured: true, hasDbOverride: true });
-    turnstile = (await getIntegrationStatuses())[2];
+    turnstile = (await getIntegrationStatuses())[3];
     expect(turnstile).toMatchObject({
       configured: true,
       enabled: false,
@@ -240,7 +264,7 @@ describe("integration registry", () => {
     });
 
     mockTurnstile({ enabled: true, configured: false });
-    turnstile = (await getIntegrationStatuses())[2];
+    turnstile = (await getIntegrationStatuses())[3];
     expect(turnstile).toMatchObject({
       configured: false,
       enabled: true,
@@ -250,7 +274,7 @@ describe("integration registry", () => {
   it("reports Tunnel token presence as environment deployment status", async () => {
     mockEnv(" tunnel-token ");
     const { getIntegrationStatuses } = await import("./registry");
-    let tunnel = (await getIntegrationStatuses())[4];
+    let tunnel = (await getIntegrationStatuses())[5];
     expect(tunnel).toEqual({
       id: "tunnel",
       kind: "deployment",
@@ -260,7 +284,7 @@ describe("integration registry", () => {
     });
 
     mockEnv(" ");
-    tunnel = (await getIntegrationStatuses())[4];
+    tunnel = (await getIntegrationStatuses())[5];
     expect(tunnel).toEqual({
       id: "tunnel",
       kind: "deployment",
@@ -273,7 +297,7 @@ describe("integration registry", () => {
   it("reports translation configured and enabled separately", async () => {
     mockTranslation({ enabled: false, configured: true, hasDbOverride: true });
     const { getIntegrationStatuses } = await import("./registry");
-    let translation = (await getIntegrationStatuses())[3];
+    let translation = (await getIntegrationStatuses())[4];
     expect(translation).toEqual({
       id: "translation",
       kind: "service",
@@ -283,7 +307,7 @@ describe("integration registry", () => {
     });
 
     mockTranslation({ enabled: true, configured: false, hasDbOverride: true });
-    translation = (await getIntegrationStatuses())[3];
+    translation = (await getIntegrationStatuses())[4];
     expect(translation).toMatchObject({
       configured: false,
       enabled: true,
@@ -296,9 +320,9 @@ describe("integration registry", () => {
     const { getIntegrationStatuses } = await import("./registry");
     const statuses = await getIntegrationStatuses();
 
-    expect(statuses).toHaveLength(5);
+    expect(statuses).toHaveLength(6);
     expect(statuses[0].error).toBeUndefined();
-    expect(statuses[2]).toEqual({
+    expect(statuses[3]).toEqual({
       id: "turnstile",
       kind: "service",
       configured: false,
@@ -306,12 +330,31 @@ describe("integration registry", () => {
       source: "none",
       error: true,
     });
-    expect(statuses[4].id).toBe("tunnel");
+    expect(statuses[5].id).toBe("tunnel");
   });
 
-  it("exposes only smtp and storage as testable", async () => {
+  it("reports Stripe configuration separately from its enabled state and tests connectivity", async () => {
+    mockStripe({ enabled: false, configured: true, hasDbOverride: true });
+    const { getIntegrationStatuses, integrations } = await import("./registry");
+    const stripe = (await getIntegrationStatuses())[2];
+    expect(stripe).toEqual({
+      id: "stripe",
+      kind: "service",
+      configured: true,
+      enabled: false,
+      source: "database",
+    });
+
+    await integrations.find((integration) => integration.id === "stripe")!.test!({
+      adminEmail: "admin@example.test",
+      locale: "en",
+    });
+    expect(mockedTestStripeConnection).toHaveBeenCalledOnce();
+  });
+
+  it("exposes smtp, storage, and Stripe as testable", async () => {
     const { testableIntegrationIds, integrations } = await import("./registry");
-    expect(testableIntegrationIds).toEqual(["smtp", "storage"]);
+    expect(testableIntegrationIds).toEqual(["smtp", "storage", "stripe"]);
     expect(
       integrations.find((integration) => integration.id === "turnstile")?.test,
     ).toBeUndefined();

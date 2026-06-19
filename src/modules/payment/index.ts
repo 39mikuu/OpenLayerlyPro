@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 
-import { getDb } from "@/db";
+import { type DbClient, getDb } from "@/db";
 import {
   files,
   memberships,
@@ -18,6 +18,8 @@ import { recordAudit } from "@/modules/audit";
 import { grantMembership, revokeMembership } from "@/modules/membership";
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask } from "@/modules/tasks";
+
+import { type ExpiredPaymentEvent, getPaymentProvider, type PaidPaymentEvent } from "./providers";
 
 // ---------- 收款方式 ----------
 
@@ -130,6 +132,7 @@ export async function createPaymentRequest(input: {
       tierId: input.tierId,
       paymentMethodId: input.paymentMethodId ?? null,
       status: "pending_review",
+      flow: "manual",
       amountLabel: tier.priceLabel,
       durationDays: tier.durationDays,
       proofFileId: input.proofFileId ?? null,
@@ -301,42 +304,343 @@ export async function approvePaymentRequest(
       after: { status: "approved" },
       correlationId,
     });
-    const granted = await grantMembership(
-      {
-        userId: row.userId,
-        tierId: row.tierId,
-        source: "payment_review",
-        durationDays: row.durationDays,
-        note: `付款申请 ${row.id} 审核通过`,
-        createdBy: reviewerId,
-        actor: { type: "admin", id: reviewerId },
-        correlationId,
-        causationId: approveEvent.id,
-      },
-      tx,
-    );
-    const [updated] = await tx
-      .update(paymentRequests)
-      .set({ grantedMembershipId: granted.membership.id })
-      .where(eq(paymentRequests.id, row.id))
-      .returning();
-    if (!updated) throw new Error("Failed to link granted membership");
-    const [user] = await tx.select().from(users).where(eq(users.id, row.userId)).limit(1);
-    if (!user) throw new Error("Payment request user not found");
-    await enqueueTask(tx, {
-      kind: "email",
-      dedupeKey: `email:membership_activated:${requestId}`,
-      payload: {
-        template: "membership_activated",
-        to: user.email,
-        locale: user.locale,
-        params: {
-          tierName: granted.tier.name,
-          endsAt: granted.membership.endsAt.toISOString(),
-        },
-      },
+    return finalizeApprovedPayment(tx, row, {
+      source: "payment_review",
+      actor: { type: "admin", id: reviewerId },
+      createdBy: reviewerId,
+      correlationId,
+      causationId: approveEvent.id,
     });
-    return updated;
+  });
+}
+
+type ApprovalContext = {
+  source: "payment_review" | "payment_auto";
+  actor: { type: "admin"; id: string } | { type: "system"; id: null };
+  createdBy: string | null;
+  correlationId: string;
+  causationId: string;
+};
+
+async function finalizeApprovedPayment(
+  tx: DbClient,
+  row: PaymentRequest,
+  context: ApprovalContext,
+): Promise<PaymentRequest> {
+  const granted = await grantMembership(
+    {
+      userId: row.userId,
+      tierId: row.tierId,
+      source: context.source,
+      durationDays: row.durationDays,
+      note: `付款申请 ${row.id} 已确认`,
+      createdBy: context.createdBy,
+      actor: context.actor,
+      correlationId: context.correlationId,
+      causationId: context.causationId,
+    },
+    tx,
+  );
+  const [updated] = await tx
+    .update(paymentRequests)
+    .set({ grantedMembershipId: granted.membership.id })
+    .where(eq(paymentRequests.id, row.id))
+    .returning();
+  if (!updated) throw new Error("Failed to link granted membership");
+
+  const [user] = await tx.select().from(users).where(eq(users.id, row.userId)).limit(1);
+  if (!user) throw new Error("Payment request user not found");
+  await enqueueTask(tx, {
+    kind: "email",
+    dedupeKey: `email:membership_activated:${row.id}`,
+    payload: {
+      template: "membership_activated",
+      to: user.email,
+      locale: user.locale,
+      params: {
+        tierName: granted.tier.name,
+        endsAt: granted.membership.endsAt.toISOString(),
+      },
+    },
+  });
+  return updated;
+}
+
+const AUTO_CHECKOUT_CLAIM_LEASE_MS = 2 * 60 * 1000;
+
+export async function createAutoCheckout(input: {
+  userId: string;
+  tierId: string;
+  successUrl: string;
+  cancelUrl: string;
+}): Promise<{ redirectUrl: string }> {
+  const db = getDb();
+  const [tier] = await db
+    .select()
+    .from(membershipTiers)
+    .where(eq(membershipTiers.id, input.tierId))
+    .limit(1);
+  if (
+    !tier ||
+    !tier.isActive ||
+    !tier.purchaseEnabled ||
+    tier.priceAmountMinor === null ||
+    !tier.currency
+  ) {
+    throw new ApiError(400, "tierNotPayable");
+  }
+  const amountMinor = tier.priceAmountMinor;
+  const currency = tier.currency.toLowerCase();
+
+  const provider = await getPaymentProvider("stripe", { requireEnabled: true });
+  const claimToken = `creating:${randomUUID()}`;
+  const checkoutClaim = await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`stripe:${input.userId}:${input.tierId}`}))`,
+    );
+    const [existing] = await tx
+      .select()
+      .from(paymentRequests)
+      .where(
+        and(
+          eq(paymentRequests.userId, input.userId),
+          eq(paymentRequests.tierId, input.tierId),
+          eq(paymentRequests.flow, "auto"),
+          eq(paymentRequests.provider, "stripe"),
+          eq(paymentRequests.status, "pending_payment"),
+        ),
+      )
+      .limit(1);
+    if (existing?.providerRef) {
+      if (existing.providerRef.startsWith("creating:")) {
+        const [reclaimed] = await tx
+          .update(paymentRequests)
+          .set({ providerRef: claimToken, updatedAt: sql`now()` })
+          .where(
+            and(
+              eq(paymentRequests.id, existing.id),
+              eq(paymentRequests.status, "pending_payment"),
+              eq(paymentRequests.providerRef, existing.providerRef),
+              sql`${paymentRequests.updatedAt} < now() - (${AUTO_CHECKOUT_CLAIM_LEASE_MS} * interval '1 millisecond')`,
+            ),
+          )
+          .returning();
+        if (!reclaimed) throw new ApiError(409, "paymentCheckoutChanged");
+        return { request: reclaimed, claimToken };
+      }
+      return { request: existing, claimToken: null };
+    }
+    if (existing) {
+      const [claimed] = await tx
+        .update(paymentRequests)
+        .set({ providerRef: claimToken, updatedAt: sql`now()` })
+        .where(
+          and(eq(paymentRequests.id, existing.id), eq(paymentRequests.status, "pending_payment")),
+        )
+        .returning();
+      if (!claimed) throw new ApiError(409, "paymentCheckoutChanged");
+      return { request: claimed, claimToken };
+    }
+    const [created] = await tx
+      .insert(paymentRequests)
+      .values({
+        userId: input.userId,
+        tierId: input.tierId,
+        status: "pending_payment",
+        flow: "auto",
+        provider: "stripe",
+        providerRef: claimToken,
+        amountMinor,
+        currency,
+        amountLabel: tier.priceLabel,
+        durationDays: tier.durationDays,
+      })
+      .returning();
+    return { request: created, claimToken };
+  });
+  const { request } = checkoutClaim;
+  if (!checkoutClaim.claimToken) {
+    const checkout = await provider!.getCheckoutState(request.providerRef!);
+    if (checkout.status === "open" && checkout.redirectUrl) {
+      return { redirectUrl: checkout.redirectUrl };
+    }
+    if (checkout.status === "complete") {
+      throw new ApiError(400, "pendingAutoPaymentExists");
+    }
+    await db
+      .update(paymentRequests)
+      .set({ status: "cancelled", updatedAt: new Date() })
+      .where(
+        and(
+          eq(paymentRequests.id, request.id),
+          eq(paymentRequests.status, "pending_payment"),
+          eq(paymentRequests.providerRef, request.providerRef!),
+        ),
+      );
+    return createAutoCheckout(input);
+  }
+
+  try {
+    const checkout = await provider!.createCheckout({
+      requestId: request.id,
+      amountMinor: request.amountMinor!,
+      currency: request.currency!,
+      tierName: tier.name,
+      successUrl: input.successUrl,
+      cancelUrl: input.cancelUrl,
+    });
+    const [updated] = await db
+      .update(paymentRequests)
+      .set({ providerRef: checkout.providerRef, updatedAt: new Date() })
+      .where(
+        and(
+          eq(paymentRequests.id, request.id),
+          eq(paymentRequests.status, "pending_payment"),
+          eq(paymentRequests.providerRef, checkoutClaim.claimToken),
+        ),
+      )
+      .returning({ id: paymentRequests.id });
+    if (!updated) throw new ApiError(409, "paymentCheckoutChanged");
+    return { redirectUrl: checkout.redirectUrl };
+  } catch (error) {
+    await db
+      .update(paymentRequests)
+      .set({ providerRef: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(paymentRequests.id, request.id),
+          eq(paymentRequests.status, "pending_payment"),
+          eq(paymentRequests.providerRef, checkoutClaim.claimToken),
+        ),
+      );
+    throw error;
+  }
+}
+
+export async function confirmAutoPayment(
+  providerId: string,
+  event: PaidPaymentEvent,
+): Promise<void> {
+  const db = getDb();
+  await db.transaction(async (tx) => {
+    const [processed] = await tx
+      .select({ id: paymentRequests.id })
+      .from(paymentRequests)
+      .where(eq(paymentRequests.providerEventId, event.providerEventId))
+      .limit(1);
+    if (processed) return;
+
+    const lookup = event.requestId
+      ? or(
+          eq(paymentRequests.providerRef, event.providerRef),
+          eq(paymentRequests.id, event.requestId),
+        )
+      : eq(paymentRequests.providerRef, event.providerRef);
+    const [request] = await tx
+      .select()
+      .from(paymentRequests)
+      .where(and(eq(paymentRequests.provider, providerId), lookup))
+      .limit(1)
+      .for("update");
+    if (!request || request.status !== "pending_payment") return;
+    if (
+      request.amountMinor !== event.amountMinor ||
+      request.currency?.toLowerCase() !== event.currency.toLowerCase()
+    ) {
+      throw new ApiError(409, "paymentAmountMismatch");
+    }
+
+    const correlationId = randomUUID();
+    const reviewedAt = new Date();
+    const [approved] = await tx
+      .update(paymentRequests)
+      .set({
+        status: "approved",
+        providerRef: event.providerRef,
+        providerEventId: event.providerEventId,
+        reviewedAt,
+        updatedAt: reviewedAt,
+      })
+      .where(and(eq(paymentRequests.id, request.id), eq(paymentRequests.status, "pending_payment")))
+      .returning();
+    if (!approved) return;
+    const paymentEvent = await recordAudit(tx, {
+      entityType: "payment_request",
+      entityId: approved.id,
+      action: "payment_auto_paid",
+      actor: { type: "system", id: null },
+      before: { status: "pending_payment" },
+      after: {
+        status: "approved",
+        provider: providerId,
+        providerEventId: event.providerEventId,
+      },
+      correlationId,
+    });
+    await finalizeApprovedPayment(tx, approved, {
+      source: "payment_auto",
+      actor: { type: "system", id: null },
+      createdBy: null,
+      correlationId,
+      causationId: paymentEvent.id,
+    });
+  });
+}
+
+export async function expireAutoPayment(
+  providerId: string,
+  event: ExpiredPaymentEvent,
+): Promise<void> {
+  const db = getDb();
+  await db.transaction(async (tx) => {
+    const [processed] = await tx
+      .select({ id: paymentRequests.id })
+      .from(paymentRequests)
+      .where(eq(paymentRequests.providerEventId, event.providerEventId))
+      .limit(1);
+    if (processed) return;
+
+    const lookup = event.requestId
+      ? or(
+          eq(paymentRequests.providerRef, event.providerRef),
+          eq(paymentRequests.id, event.requestId),
+        )
+      : eq(paymentRequests.providerRef, event.providerRef);
+    const [request] = await tx
+      .select()
+      .from(paymentRequests)
+      .where(and(eq(paymentRequests.provider, providerId), lookup))
+      .limit(1)
+      .for("update");
+    if (!request || request.status !== "pending_payment") return;
+
+    const correlationId = randomUUID();
+    const expiredAt = new Date();
+    const [cancelled] = await tx
+      .update(paymentRequests)
+      .set({
+        status: "cancelled",
+        providerRef: event.providerRef,
+        providerEventId: event.providerEventId,
+        updatedAt: expiredAt,
+      })
+      .where(and(eq(paymentRequests.id, request.id), eq(paymentRequests.status, "pending_payment")))
+      .returning();
+    if (!cancelled) return;
+
+    await recordAudit(tx, {
+      entityType: "payment_request",
+      entityId: cancelled.id,
+      action: "payment_auto_expired",
+      actor: { type: "system", id: null },
+      before: { status: "pending_payment" },
+      after: {
+        status: "cancelled",
+        provider: providerId,
+        providerEventId: event.providerEventId,
+      },
+      correlationId,
+    });
   });
 }
 

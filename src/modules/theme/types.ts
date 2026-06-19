@@ -102,7 +102,13 @@ export type MeView = {
   membership: MembershipSummary | null;
 };
 
-export type OrderStatus = "pending_review" | "approved" | "rejected" | "cancelled" | "reversed";
+export type OrderStatus =
+  | "pending_review"
+  | "pending_payment"
+  | "approved"
+  | "rejected"
+  | "cancelled"
+  | "reversed";
 
 export type OrderView = {
   id: string;
@@ -118,6 +124,7 @@ export type OrderView = {
 
 export type MeOrdersView = {
   orders: OrderView[];
+  paymentProcessing?: boolean;
 };
 
 export type CheckoutMethodView = {
@@ -130,6 +137,7 @@ export type CheckoutMethodView = {
 export type CheckoutView = {
   tier: { id: string; name: string; priceLabel: string; durationDays: number };
   methods: CheckoutMethodView[];
+  autoPaymentAvailable: boolean;
 };
 
 /** 主题需实现的组件槽（公开站点：外壳 + 首页 + 作品 + 会员/登录/账号/订单/收银台）。 */

@@ -96,11 +96,12 @@ export const ja: Messages = {
   },
   order: {
     title: "支払い申請",
-    subtitle: "手動確認中の支払い申請状況を確認できます。",
+    subtitle: "オンライン決済と手動確認中の支払い申請状況を確認できます。",
     none: "支払い申請はまだありません。",
     noneTitle: "支払い申請はありません",
     browseTiers: "メンバーシッププランを見る",
     statusPending: "確認待ち",
+    statusPaymentPending: "支払い確認待ち",
     statusApproved: "承認済み",
     statusRejected: "却下",
     statusCancelled: "キャンセル済み",
@@ -115,16 +116,24 @@ export const ja: Messages = {
     rejectReason: "理由：{note}",
     cancel: "申請をキャンセル",
     resubmit: "スクリーンショットを再送信",
+    paymentProcessing: "支払いを確認しています",
+    paymentProcessingHint:
+      "Stripe から確認通知が届くとメンバーシップが有効になります。しばらくしてから更新してください。",
   },
   checkout: {
     title: "「{tier}」に申し込む",
     info: "料金 {price}・{days} 日間有効・手動確認後に有効化",
     manualReviewIntro:
       "支払い後にスクリーンショットを送信すると、クリエイターが確認してメンバーシップを有効化します。",
+    paymentChoiceIntro: "Stripe の一回払い、またはスクリーンショットを送る手動確認を選べます。",
     tierSummary: "メンバーシッププラン",
     reviewNotice: "手動確認のため、自動課金や自動更新は行われません。",
+    oneTimeNotice:
+      "オンライン決済は自動更新のない一回払いです。手動確認の支払い方法も利用できます。",
     activationNotice:
       "スクリーンショット送信後は確認をお待ちください。承認後にメンバー特典が有効になります。",
+    activationOptionsNotice:
+      "Stripe は署名済み通知の確認後、スクリーンショット払いはクリエイターの承認後に有効になります。",
     stepsTitle: "支払いの流れ",
     stepChoose: "支払い方法を選ぶ",
     stepPay: "支払いを完了する",
@@ -133,6 +142,14 @@ export const ja: Messages = {
     paymentSectionHint:
       "クリエイターが用意した支払い方法を選び、支払い後にスクリーンショットをアップロードしてください。",
     manualOnly: "現在は手動確認による支払いのみ対応しています。",
+    onlinePaymentTitle: "オンライン決済",
+    onlinePaymentHint:
+      "Stripe のホスト型チェックアウトで一回払いを行います。署名済み通知の確認後にのみメンバーシップが有効になります。",
+    payOnline: "Stripe で支払う",
+    redirecting: "移動しています…",
+    stripeHosted: "Stripe が安全な決済画面を提供し、このサイトはカード情報を受け取りません。",
+    autoFailed: "オンライン決済を開始できませんでした",
+    paymentOptions: "オンライン決済またはクリエイターの手動支払い方法を選べます。",
     noMethodsTitle: "現在支払いできません",
     noMethods:
       "支払い方法がまだ設定されていません。クリエイターに連絡するか、しばらくしてから再度お試しください。",
@@ -465,6 +482,9 @@ export const ja: Messages = {
       new: "新規メンバーシッププラン",
       name: "名前",
       price: "料金表示",
+      onlineAmount: "オンライン金額（最小通貨単位）",
+      onlineAmountHint: "例：USD の 500 は 5.00 ドルです。",
+      currency: "オンライン通貨（ISO 4217）",
       level: "レベル（高いほどアクセス範囲が広くなります）",
       duration: "有効日数",
       description: "説明",
@@ -493,9 +513,11 @@ export const ja: Messages = {
       submittedAt: "送信日時",
       viewProof: "スクリーンショットを見る",
       pendingStatus: "確認待ち",
+      pendingPayment: "Stripe 確認待ち",
       approved: "承認済み",
       rejected: "却下",
       cancelled: "キャンセル済み",
+      reversed: "取り消し済み",
       approve: "承認",
       reject: "却下",
       confirmApprove: "入金を確認して承認しますか？承認するとすぐにメンバーシップが付与されます。",
@@ -556,6 +578,9 @@ export const ja: Messages = {
       storage: "ファイルストレージ",
       storageDescription:
         "ローカルストレージまたは S3/R2/MinIO を設定します。両方のアクセス認証情報は暗号化され、ブラウザには返されません。",
+      stripe: "Stripe オンライン決済",
+      stripeDescription:
+        "一回払いのホスト型チェックアウトを設定します。秘密鍵は暗号化され、ブラウザには返されません。",
       upload: "アップロード制限",
       uploadDescription:
         "コンテンツと支払い画像のファイルごとの上限です。変更は新しいアップロードにすぐ適用されます。",
@@ -597,6 +622,7 @@ export const ja: Messages = {
       integrations: "インテグレーション",
       smtp: "SMTP メール",
       storage: "ファイルストレージ",
+      stripe: "Stripe 決済",
       translation: "AI 翻訳",
       sourceDatabase: "管理画面の設定",
       sourceEnvironment: "環境変数",
@@ -624,6 +650,22 @@ export const ja: Messages = {
       pending: "テスト中…",
       success: "接続テストに成功しました",
       failed: "テストに失敗しました",
+    },
+    stripe: {
+      enable: "Stripe オンライン決済を有効にする",
+      currency: "既定の通貨",
+      publishableKey: "公開可能キー（任意）",
+      secretKey: "秘密鍵",
+      webhookSecret: "Webhook 署名シークレット",
+      secretSet: "設定済みです。空欄なら保持します",
+      secretKeyPlaceholder: "sk_test_...",
+      webhookSecretPlaceholder: "whsec_...",
+      securityHint:
+        "検証中は Stripe のテストキーを使用してください。成功ページではなく webhook 確認のみがメンバーシップを有効にします。",
+      clear: "Stripe 設定を削除",
+      cleared: "Stripe 設定を削除しました",
+      test: "Stripe 接続をテスト",
+      testSuccess: "Stripe 接続に成功しました",
     },
     smtp: {
       host: "SMTP ホスト",
@@ -753,6 +795,15 @@ export const ja: Messages = {
     memberTierRequired: "メンバー限定コンテンツにはメンバーシッププランの指定が必要です",
     invalidPaymentProof: "支払いスクリーンショットが無効です。再度アップロードしてください。",
     tierUnavailable: "このメンバーシッププランは現在購入できません",
+    tierNotPayable: "このプランにはオンライン決済の金額と通貨が設定されていません",
+    stripeConfigIncomplete: "Stripe の秘密鍵と Webhook 署名シークレットが必要です",
+    stripeDisabled: "Stripe オンライン決済は無効です",
+    stripeCheckoutUnavailable: "Stripe からチェックアウト URL が返されませんでした",
+    stripeSignatureInvalid: "Stripe webhook の署名が無効です",
+    stripeEventInvalid: "Stripe webhook に必要な支払い情報がありません",
+    pendingAutoPaymentExists: "このプランには確認待ちのオンライン決済があります",
+    paymentCheckoutChanged: "オンライン決済の状態が変わりました。更新して再試行してください",
+    paymentAmountMismatch: "確認された金額または通貨が注文と一致しません",
     pendingPaymentExists:
       "このプランには確認待ちの申請があります。確認を待つか、先にキャンセルしてください。",
     resubmitRejectedOnly: "却下された申請のみ再送信できます",
