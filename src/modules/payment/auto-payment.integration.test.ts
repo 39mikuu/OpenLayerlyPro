@@ -186,7 +186,7 @@ describeWithDatabase("Stripe automatic payment integration", () => {
     await expect(db.select().from(paymentRequests)).resolves.toHaveLength(1);
   });
 
-  it("does not send an in-progress local claim token to Stripe", async () => {
+  it("rejects a fresh in-progress checkout claim", async () => {
     const { user, tier } = await seed();
     await db.insert(paymentRequests).values({
       userId: user.id,
@@ -209,6 +209,49 @@ describeWithDatabase("Stripe automatic payment integration", () => {
         cancelUrl: "https://site.test/cancel",
       }),
     ).rejects.toMatchObject({ status: 409, code: "paymentCheckoutChanged" });
+    expect(providerMocks.getCheckoutState).not.toHaveBeenCalled();
+    expect(providerMocks.createCheckout).not.toHaveBeenCalled();
+  });
+
+  it("reclaims a stale checkout claim with the original request id", async () => {
+    const { user, tier } = await seed();
+    const [stale] = await db
+      .insert(paymentRequests)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        flow: "auto",
+        status: "pending_payment",
+        provider: "stripe",
+        providerRef: "creating:abandoned",
+        amountMinor: 500,
+        currency: "usd",
+        amountLabel: tier.priceLabel,
+        durationDays: tier.durationDays,
+        updatedAt: new Date(Date.now() - 10 * 60 * 1000),
+      })
+      .returning();
+
+    await expect(
+      createAutoCheckout({
+        userId: user.id,
+        tierId: tier.id,
+        successUrl: "https://site.test/success",
+        cancelUrl: "https://site.test/cancel",
+      }),
+    ).resolves.toEqual({ redirectUrl: "https://checkout.stripe.test/session" });
+
+    const rows = await db.select().from(paymentRequests);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: stale!.id,
+      status: "pending_payment",
+      providerRef: "cs_test_123",
+    });
+    expect(providerMocks.createCheckout).toHaveBeenCalledOnce();
+    expect(providerMocks.createCheckout).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: stale!.id }),
+    );
     expect(providerMocks.getCheckoutState).not.toHaveBeenCalled();
   });
 

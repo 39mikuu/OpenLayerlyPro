@@ -366,6 +366,8 @@ async function finalizeApprovedPayment(
   return updated;
 }
 
+const AUTO_CHECKOUT_CLAIM_LEASE_MS = 2 * 60 * 1000;
+
 export async function createAutoCheckout(input: {
   userId: string;
   tierId: string;
@@ -411,14 +413,27 @@ export async function createAutoCheckout(input: {
       .limit(1);
     if (existing?.providerRef) {
       if (existing.providerRef.startsWith("creating:")) {
-        throw new ApiError(409, "paymentCheckoutChanged");
+        const [reclaimed] = await tx
+          .update(paymentRequests)
+          .set({ providerRef: claimToken, updatedAt: sql`now()` })
+          .where(
+            and(
+              eq(paymentRequests.id, existing.id),
+              eq(paymentRequests.status, "pending_payment"),
+              eq(paymentRequests.providerRef, existing.providerRef),
+              sql`${paymentRequests.updatedAt} < now() - (${AUTO_CHECKOUT_CLAIM_LEASE_MS} * interval '1 millisecond')`,
+            ),
+          )
+          .returning();
+        if (!reclaimed) throw new ApiError(409, "paymentCheckoutChanged");
+        return { request: reclaimed, claimToken };
       }
       return { request: existing, claimToken: null };
     }
     if (existing) {
       const [claimed] = await tx
         .update(paymentRequests)
-        .set({ providerRef: claimToken, updatedAt: new Date() })
+        .set({ providerRef: claimToken, updatedAt: sql`now()` })
         .where(
           and(eq(paymentRequests.id, existing.id), eq(paymentRequests.status, "pending_payment")),
         )
