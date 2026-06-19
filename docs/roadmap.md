@@ -175,6 +175,19 @@
 - **#11 备份/恢复/升级**：`backup.sh` / `restore.sh`（DB + uploads + 加密密钥三件套）+ 已验证的干净环境恢复演练
 - **#12 跨切面回归测试**：下载授权全矩阵、因果链、幂等投递、stale/重复、端到端回滚
 
+## v0.2：自动变现 + 规模化 ▶（进行中）
+
+发布 v0.1.0 后的下一阶段。以「自动收付款」为旗舰，叠加两项生产硬化。
+
+- **自动收付款（旗舰）▶**：可插拔 `PaymentProvider` 抽象，首个适配器 **Stripe**（支付宝/微信留作扩展，需 ICP 备案域名 + 资质）。决策见 [ADR 0005](./adr/0005-auto-payments.md)。
+  - 切片 #1 ▶：配置 + 在线下单 + Stripe 托管 checkout + webhook 验签确认 → 走与人工 approve 同一事务开通会员（交接 `docs/handoff/payments-1-stripe-onetime.md`）
+  - 切片 #2 🚧：退款 / chargeback → 复用 #6 `reversePaymentApproval` 撤销会员
+  - 仅一次性付款；自动续费 / 订阅推迟
+- **列表分页（A）🚧**：首页/作品列表改 keyset 游标分页（`published_at, id`），消除全量加载；主题 `PostList` 契约支持「加载更多」
+- **流式上传（B1）🚧**：上传改流式（local 流盘 / S3 multipart），消除「整文件读入内存」限制
+
+**明确推迟**：视频/大文件媒体管理（B2，v0.3）、订阅续费、Plugin/Hub/HA、截图/demo 与评审遗留小项（收尾阶段统一处理）。
+
 ## Phase 8：Plugin v0 🚧
 
 - 插件加载机制、生命周期、权限边界的最小可用版本
