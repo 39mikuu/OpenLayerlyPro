@@ -23,7 +23,7 @@ import {
 } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 
-import { confirmAutoPayment, createAutoCheckout } from "./index";
+import { confirmAutoPayment, createAutoCheckout, expireAutoPayment } from "./index";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -146,6 +146,14 @@ describeWithDatabase("Stripe automatic payment integration", () => {
     const rows = await db.select().from(paymentRequests);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ id: failed!.id, providerRef: "cs_retry" });
+    expect(providerMocks.createCheckout).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ requestId: failed!.id }),
+    );
+    expect(providerMocks.createCheckout).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ requestId: failed!.id }),
+    );
   });
 
   it("reuses an existing open Stripe session instead of creating a duplicate", async () => {
@@ -283,6 +291,57 @@ describeWithDatabase("Stripe automatic payment integration", () => {
       status: "pending_payment",
       providerRef: "cs_complete",
     });
+  });
+
+  it("cancels an abandoned request when Stripe sends a signed expiration event", async () => {
+    const { user, tier } = await seed();
+    const [request] = await db
+      .insert(paymentRequests)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        flow: "auto",
+        status: "pending_payment",
+        provider: "stripe",
+        providerRef: "cs_expired_webhook",
+        amountMinor: 500,
+        currency: "usd",
+        amountLabel: tier.priceLabel,
+        durationDays: tier.durationDays,
+      })
+      .returning();
+    const event = {
+      type: "expired" as const,
+      providerRef: "cs_expired_webhook",
+      providerEventId: "evt_expired_webhook",
+    };
+
+    await expireAutoPayment("stripe", event);
+    await expireAutoPayment("stripe", event);
+
+    const [stored] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, request!.id));
+    expect(stored).toMatchObject({
+      status: "cancelled",
+      providerEventId: "evt_expired_webhook",
+      grantedMembershipId: null,
+    });
+    const events = await db.select().from(auditEvents).where(eq(auditEvents.entityId, request!.id));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      action: "payment_auto_expired",
+      actorType: "system",
+      beforeJson: { status: "pending_payment" },
+      afterJson: {
+        status: "cancelled",
+        provider: "stripe",
+        providerEventId: "evt_expired_webhook",
+      },
+    });
+    await expect(db.select().from(memberships)).resolves.toHaveLength(0);
+    await expect(db.select().from(tasks)).resolves.toHaveLength(0);
   });
 
   it("confirms once and commits membership, audit, and email outbox atomically", async () => {

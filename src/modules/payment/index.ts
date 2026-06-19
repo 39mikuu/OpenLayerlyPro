@@ -19,7 +19,7 @@ import { grantMembership, revokeMembership } from "@/modules/membership";
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask } from "@/modules/tasks";
 
-import { getPaymentProvider, type PaidPaymentEvent } from "./providers";
+import { type ExpiredPaymentEvent, getPaymentProvider, type PaidPaymentEvent } from "./providers";
 
 // ---------- 收款方式 ----------
 
@@ -568,6 +568,63 @@ export async function confirmAutoPayment(
       createdBy: null,
       correlationId,
       causationId: paymentEvent.id,
+    });
+  });
+}
+
+export async function expireAutoPayment(
+  providerId: string,
+  event: ExpiredPaymentEvent,
+): Promise<void> {
+  const db = getDb();
+  await db.transaction(async (tx) => {
+    const [processed] = await tx
+      .select({ id: paymentRequests.id })
+      .from(paymentRequests)
+      .where(eq(paymentRequests.providerEventId, event.providerEventId))
+      .limit(1);
+    if (processed) return;
+
+    const lookup = event.requestId
+      ? or(
+          eq(paymentRequests.providerRef, event.providerRef),
+          eq(paymentRequests.id, event.requestId),
+        )
+      : eq(paymentRequests.providerRef, event.providerRef);
+    const [request] = await tx
+      .select()
+      .from(paymentRequests)
+      .where(and(eq(paymentRequests.provider, providerId), lookup))
+      .limit(1)
+      .for("update");
+    if (!request || request.status !== "pending_payment") return;
+
+    const correlationId = randomUUID();
+    const expiredAt = new Date();
+    const [cancelled] = await tx
+      .update(paymentRequests)
+      .set({
+        status: "cancelled",
+        providerRef: event.providerRef,
+        providerEventId: event.providerEventId,
+        updatedAt: expiredAt,
+      })
+      .where(and(eq(paymentRequests.id, request.id), eq(paymentRequests.status, "pending_payment")))
+      .returning();
+    if (!cancelled) return;
+
+    await recordAudit(tx, {
+      entityType: "payment_request",
+      entityId: cancelled.id,
+      action: "payment_auto_expired",
+      actor: { type: "system", id: null },
+      before: { status: "pending_payment" },
+      after: {
+        status: "cancelled",
+        provider: providerId,
+        providerEventId: event.providerEventId,
+      },
+      correlationId,
     });
   });
 }

@@ -39,22 +39,26 @@ describe("Stripe payment provider", () => {
       redirectUrl: "https://checkout.stripe.test/session",
       providerRef: "cs_test_123",
     });
-    expect(create).toHaveBeenCalledWith({
-      mode: "payment",
-      line_items: [
-        {
-          price_data: {
-            currency: "usd",
-            unit_amount: 500,
-            product_data: { name: "Supporter" },
+    expect(create).toHaveBeenCalledWith(
+      {
+        mode: "payment",
+        payment_method_types: ["card"],
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              unit_amount: 500,
+              product_data: { name: "Supporter" },
+            },
+            quantity: 1,
           },
-          quantity: 1,
-        },
-      ],
-      metadata: { requestId: "11111111-1111-4111-8111-111111111111" },
-      success_url: "https://site.test/me/orders?paid=1",
-      cancel_url: "https://site.test/checkout/tier",
-    });
+        ],
+        metadata: { requestId: "11111111-1111-4111-8111-111111111111" },
+        success_url: "https://site.test/me/orders?paid=1",
+        cancel_url: "https://site.test/checkout/tier",
+      },
+      { idempotencyKey: "checkout:11111111-1111-4111-8111-111111111111" },
+    );
   });
 
   it("rejects missing or invalid signatures", async () => {
@@ -72,7 +76,7 @@ describe("Stripe payment provider", () => {
     });
   });
 
-  it("normalizes paid checkout completion and ignores other events", async () => {
+  it("normalizes paid checkout completion and ignores unpaid or unrelated events", async () => {
     const { instance, constructEvent } = provider();
     constructEvent.mockReturnValueOnce({
       id: "evt_paid",
@@ -97,6 +101,23 @@ describe("Stripe payment provider", () => {
     });
 
     constructEvent.mockReturnValueOnce({
+      id: "evt_unpaid",
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: "cs_unpaid",
+          payment_status: "unpaid",
+          amount_total: 500,
+          currency: "usd",
+        },
+      },
+    });
+    await expect(instance.parseWebhook("unpaid", "sig")).resolves.toEqual({
+      type: "ignored",
+      providerEventId: "evt_unpaid",
+    });
+
+    constructEvent.mockReturnValueOnce({
       id: "evt_other",
       type: "customer.created",
       data: { object: {} },
@@ -104,6 +125,27 @@ describe("Stripe payment provider", () => {
     await expect(instance.parseWebhook("other", "sig")).resolves.toEqual({
       type: "ignored",
       providerEventId: "evt_other",
+    });
+  });
+
+  it("normalizes expired checkout sessions for stale request cleanup", async () => {
+    const { instance, constructEvent } = provider();
+    constructEvent.mockReturnValue({
+      id: "evt_expired",
+      type: "checkout.session.expired",
+      data: {
+        object: {
+          id: "cs_expired",
+          metadata: { requestId: "11111111-1111-4111-8111-111111111111" },
+        },
+      },
+    });
+
+    await expect(instance.parseWebhook("expired", "sig")).resolves.toEqual({
+      type: "expired",
+      providerRef: "cs_expired",
+      requestId: "11111111-1111-4111-8111-111111111111",
+      providerEventId: "evt_expired",
     });
   });
 

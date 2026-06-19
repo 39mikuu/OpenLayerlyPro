@@ -12,8 +12,16 @@ export type PaidPaymentEvent = {
   currency: string;
 };
 
+export type ExpiredPaymentEvent = {
+  type: "expired";
+  providerRef: string;
+  requestId?: string;
+  providerEventId: string;
+};
+
 export type NormalizedPaymentEvent =
   | PaidPaymentEvent
+  | ExpiredPaymentEvent
   | { type: "ignored"; providerEventId: string };
 
 export interface PaymentProvider {

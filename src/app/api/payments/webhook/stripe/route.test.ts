@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   parseWebhook: vi.fn(),
   getPaymentProvider: vi.fn(),
   confirmAutoPayment: vi.fn(),
+  expireAutoPayment: vi.fn(),
 }));
 
 vi.mock("@/modules/payment/providers", () => ({
@@ -14,6 +15,7 @@ vi.mock("@/modules/payment/providers", () => ({
 }));
 vi.mock("@/modules/payment", () => ({
   confirmAutoPayment: mocks.confirmAutoPayment,
+  expireAutoPayment: mocks.expireAutoPayment,
 }));
 
 import { POST } from "./route";
@@ -53,6 +55,27 @@ describe("Stripe webhook route", () => {
     }) as NextRequest;
     const response = await POST(request);
     expect(response.status).toBe(401);
+    expect(mocks.confirmAutoPayment).not.toHaveBeenCalled();
+  });
+
+  it("cancels pending requests for signed expired-session events", async () => {
+    const event = {
+      type: "expired" as const,
+      providerRef: "cs_expired",
+      providerEventId: "evt_expired",
+    };
+    mocks.parseWebhook.mockResolvedValue(event);
+
+    const response = await POST(
+      new Request("http://localhost/api/payments/webhook/stripe", {
+        method: "POST",
+        headers: { "stripe-signature": "signed" },
+        body: '{"expired":true}',
+      }) as NextRequest,
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.expireAutoPayment).toHaveBeenCalledWith("stripe", event);
     expect(mocks.confirmAutoPayment).not.toHaveBeenCalled();
   });
 

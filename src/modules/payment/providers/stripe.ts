@@ -25,22 +25,26 @@ export class StripePaymentProvider implements PaymentProvider {
     successUrl: string;
     cancelUrl: string;
   }): Promise<{ redirectUrl: string; providerRef: string }> {
-    const session = await this.client.checkout.sessions.create({
-      mode: "payment",
-      line_items: [
-        {
-          price_data: {
-            currency: input.currency,
-            unit_amount: input.amountMinor,
-            product_data: { name: input.tierName },
+    const session = await this.client.checkout.sessions.create(
+      {
+        mode: "payment",
+        payment_method_types: ["card"],
+        line_items: [
+          {
+            price_data: {
+              currency: input.currency,
+              unit_amount: input.amountMinor,
+              product_data: { name: input.tierName },
+            },
+            quantity: 1,
           },
-          quantity: 1,
-        },
-      ],
-      metadata: { requestId: input.requestId },
-      success_url: input.successUrl,
-      cancel_url: input.cancelUrl,
-    });
+        ],
+        metadata: { requestId: input.requestId },
+        success_url: input.successUrl,
+        cancel_url: input.cancelUrl,
+      },
+      { idempotencyKey: `checkout:${input.requestId}` },
+    );
     if (!session.url) throw new ApiError(502, "stripeCheckoutUnavailable");
     return { redirectUrl: session.url, providerRef: session.id };
   }
@@ -55,6 +59,16 @@ export class StripePaymentProvider implements PaymentProvider {
       throw new ApiError(401, "stripeSignatureInvalid");
     }
 
+    if (event.type === "checkout.session.expired") {
+      const session = event.data.object as Stripe.Checkout.Session;
+      if (!session.id) throw new ApiError(422, "stripeEventInvalid");
+      return {
+        type: "expired",
+        providerRef: session.id,
+        requestId: session.metadata?.requestId || undefined,
+        providerEventId: event.id,
+      };
+    }
     if (event.type !== "checkout.session.completed") {
       return { type: "ignored", providerEventId: event.id };
     }
