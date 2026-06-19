@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { api, uploadFile } from "@/lib/client";
+import { api, uploadFile, uploadStreamFile } from "@/lib/client";
 
 type TierOption = { id: string; name: string; level: number };
 type TaxonomyOption = { id: string; name: string };
@@ -127,10 +127,12 @@ export function PostEditor({
   async function uploadAndAttach(file: File, kind: "image" | "attachment") {
     if (!post) return;
     await run(async () => {
-      const purpose = kind === "image" ? "content_image" : "content_attachment";
-      const record = await uploadFile<{ id: string }>("/api/admin/files/upload", file, {
-        purpose,
-      });
+      const record =
+        kind === "image"
+          ? await uploadFile<{ id: string }>("/api/admin/files/upload", file, {
+              purpose: "content_image",
+            })
+          : await uploadStreamFile<{ id: string }>("/api/admin/files/upload/stream", file);
       await api(`/api/admin/posts/${post.id}/files`, {
         method: "POST",
         body: { fileId: record.id, kind },
@@ -400,6 +402,7 @@ export function PostEditor({
                 <Label>{t("admin.posts.uploadAttachment")}</Label>
                 <Input
                   type="file"
+                  accept=".jpg,.jpeg,.png,.webp,.gif,.zip,.psd,.clip,.brush,.abr,.procreate,.pdf,.txt,.mp4,.webm,.mov,.m4v"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) uploadAndAttach(file, "attachment");

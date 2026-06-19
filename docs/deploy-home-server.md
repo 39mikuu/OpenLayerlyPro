@@ -36,7 +36,7 @@ docker compose logs -f app
 
 容器启动时由 entrypoint 执行数据库迁移。迁移失败时应用不会启动，日志会显示原因。访问 `http://服务器IP:3000` 完成站点初始化。
 
-> 上传文件会完整载入内存后再写入存储。请按机器内存调整 `MAX_UPLOAD_SIZE_MB`；小内存设备建议降低限制。S3/R2 可在后台系统配置中设置，环境变量继续作为回退来源。
+> 内容附件通过 raw-body 接口流式写入 local 或 S3/R2；图片与付款截图仍会缓冲以校验尺寸。`MAX_UPLOAD_SIZE_MB` 是流式实测上限。S3 multipart 每次上传采用 8 MiB × 2 路并发，并应在 bucket 上配置中止未完成 multipart upload 的生命周期规则。S3/R2 可在后台系统配置中设置，环境变量继续作为回退来源。
 
 ## 4. 公网访问
 

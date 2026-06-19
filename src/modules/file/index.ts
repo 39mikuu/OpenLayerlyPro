@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "crypto";
 import { and, count, desc, eq } from "drizzle-orm";
 import path from "path";
 import sharp from "sharp";
+import type { Readable } from "stream";
 
 import { getDb } from "@/db";
 import { type FileRecord, files, paymentMethods, paymentRequests, posts } from "@/db/schema";
@@ -9,6 +10,7 @@ import { ApiError } from "@/lib/api";
 import { getUploadConfig } from "@/modules/config";
 import { getSetting } from "@/modules/site";
 import { getStorage, getStorageForDriver } from "@/modules/storage";
+import { StorageObjectTooLargeError } from "@/modules/storage/stream";
 import { recordEvent } from "@/modules/system/events";
 
 export type FilePurpose = FileRecord["purpose"];
@@ -28,7 +30,30 @@ const CONTENT_EXTENSIONS = [
   "procreate",
   "pdf",
   "txt",
+  "mp4",
+  "webm",
+  "mov",
+  "m4v",
 ];
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+  zip: "application/zip",
+  pdf: "application/pdf",
+  txt: "text/plain",
+  mp4: "video/mp4",
+  webm: "video/webm",
+  mov: "video/quicktime",
+  m4v: "video/x-m4v",
+};
+
+const MAX_ORIGINAL_FILE_NAME_LENGTH = 255;
+const MAX_FILE_NAME_HEADER_LENGTH = 1024;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 const PURPOSE_RULES: Record<
   FilePurpose,
@@ -71,12 +96,65 @@ function getExtension(name: string): string {
   return path.extname(name).replace(".", "").toLowerCase();
 }
 
+function validateOriginalFileName(name: string): string {
+  if (!name || CONTROL_CHARACTERS.test(name) || name.includes("/") || name.includes("\\")) {
+    throw new ApiError(400, "fileNameInvalid");
+  }
+  const base = path.posix.basename(name);
+  if (!base || base === "." || base === ".." || base.length > MAX_ORIGINAL_FILE_NAME_LENGTH) {
+    throw new ApiError(400, "fileNameInvalid");
+  }
+  return base;
+}
+
+export function parseStreamFileName(headerValue: string | null): string {
+  if (!headerValue) throw new ApiError(400, "fileNameRequired");
+  if (headerValue.length > MAX_FILE_NAME_HEADER_LENGTH) {
+    throw new ApiError(400, "fileNameInvalid");
+  }
+
+  try {
+    return validateOriginalFileName(decodeURIComponent(headerValue));
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError(400, "fileNameInvalid");
+  }
+}
+
+function normalizedContentType(fileName: string): string {
+  return MIME_BY_EXTENSION[getExtension(fileName)] ?? "application/octet-stream";
+}
+
+async function getPurposeLimit(purpose: FilePurpose): Promise<{ maxMb: number; maxBytes: number }> {
+  const rules = PURPOSE_RULES[purpose];
+  if (!rules) throw new ApiError(400, "unsupportedFilePurpose");
+  const maxMb = await rules.maxSizeMb();
+  return { maxMb, maxBytes: maxMb * 1024 * 1024 };
+}
+
+export async function getContentAttachmentUploadLimit(): Promise<{
+  maxMb: number;
+  maxBytes: number;
+}> {
+  return getPurposeLimit("content_attachment");
+}
+
+function createObjectKey(purpose: FilePurpose, fileName: string): string {
+  const now = new Date();
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  return `${PURPOSE_DIRS[purpose]}/${yyyy}/${mm}/${randomUUID()}-${sanitizeFileName(fileName)}`;
+}
+
 export async function saveUploadedFile(input: {
   file: File;
   purpose: FilePurpose;
   createdBy?: string | null;
 }): Promise<FileRecord> {
   const { file, purpose } = input;
+  if (purpose === "content_attachment") {
+    throw new ApiError(400, "unsupportedFilePurpose");
+  }
   const rules = PURPOSE_RULES[purpose];
   if (!rules) throw new ApiError(400, "unsupportedFilePurpose");
 
@@ -111,11 +189,7 @@ export async function saveUploadedFile(input: {
     }
   }
 
-  const now = new Date();
-  const yyyy = String(now.getFullYear());
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const safeName = sanitizeFileName(file.name);
-  const objectKey = `${PURPOSE_DIRS[purpose]}/${yyyy}/${mm}/${randomUUID()}-${safeName}`;
+  const objectKey = createObjectKey(purpose, file.name);
 
   const storage = await getStorage();
   const stored = await storage.putObject({
@@ -145,6 +219,85 @@ export async function saveUploadedFile(input: {
     fileId: record.id,
     purpose,
     sizeBytes: file.size,
+  });
+
+  return record;
+}
+
+export async function saveStreamedFile(input: {
+  body: Readable;
+  fileName: string;
+  purpose: FilePurpose;
+  createdBy?: string | null;
+  signal?: AbortSignal;
+}): Promise<FileRecord> {
+  if (input.purpose !== "content_attachment") {
+    throw new ApiError(400, "unsupportedFilePurpose");
+  }
+
+  const fileName = validateOriginalFileName(input.fileName);
+  const rules = PURPOSE_RULES.content_attachment;
+  const extension = getExtension(fileName);
+  if (!rules.extensions.includes(extension)) {
+    throw new ApiError(400, "unsupportedFileType", {
+      extension,
+      allowed: rules.extensions.join(", "),
+    });
+  }
+
+  const { maxMb, maxBytes } = await getPurposeLimit("content_attachment");
+  const objectKey = createObjectKey("content_attachment", fileName);
+  const storage = await getStorage();
+  let streamed;
+  try {
+    streamed = await storage.putObjectStream({
+      objectKey,
+      body: input.body,
+      contentType: normalizedContentType(fileName),
+      maxBytes,
+      signal: input.signal,
+    });
+  } catch (err) {
+    if (err instanceof StorageObjectTooLargeError) {
+      throw new ApiError(413, "fileTooLarge", { maxMb });
+    }
+    throw err;
+  }
+
+  if (streamed.sizeBytes === 0) {
+    await storage.deleteObject(streamed.stored);
+    throw new ApiError(400, "fileEmpty");
+  }
+
+  let record: FileRecord;
+  try {
+    const [inserted] = await getDb()
+      .insert(files)
+      .values({
+        storageDriver: storage.driver,
+        bucket: streamed.stored.bucket,
+        objectKey: streamed.stored.objectKey,
+        originalName: fileName,
+        mimeType: normalizedContentType(fileName),
+        sizeBytes: streamed.sizeBytes,
+        sha256: streamed.sha256,
+        width: null,
+        height: null,
+        purpose: "content_attachment",
+        createdBy: input.createdBy ?? null,
+      })
+      .returning();
+    if (!inserted) throw new Error("文件记录写入失败");
+    record = inserted;
+  } catch (err) {
+    await storage.deleteObject(streamed.stored);
+    throw err;
+  }
+
+  await recordEvent("file_uploaded", {
+    fileId: record.id,
+    purpose: "content_attachment",
+    sizeBytes: streamed.sizeBytes,
   });
 
   return record;

@@ -767,6 +767,8 @@ export const zh = {
     paymentMethodNotFound: "收款方式不存在",
     paymentRequestNotFound: "付款申请不存在",
     fileRequired: "缺少文件",
+    fileNameRequired: "缺少文件名",
+    fileNameInvalid: "文件名无效",
     unsupportedFilePurpose: "不支持的文件用途",
     unsupportedFileType: "不允许的文件类型 .{extension}，允许：{allowed}",
     fileTooLarge: "文件超过大小限制 {maxMb}MB",
