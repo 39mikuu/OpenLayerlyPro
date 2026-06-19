@@ -6,7 +6,7 @@ import { getDb } from "@/db";
 import { categories, postCategories, posts, postTags, tags } from "@/db/schema";
 import { createCategory, createTag, setPostCategories, setPostTags } from "@/modules/taxonomy";
 
-import { listPublishedPostsPage } from "./index";
+import { encodeCursor, listPublishedPostsPage } from "./index";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -83,6 +83,19 @@ describeWithDatabase("published post pagination integration", () => {
     ];
 
     expect(await collectIds(1)).toEqual(expected);
+  });
+
+  it("treats a semantically invalid timestamp cursor as page one", async () => {
+    const newest = await seedPrecisePost("2026-06-19T12:00:02.000002Z");
+    await seedPrecisePost("2026-06-19T12:00:01.000001Z");
+    const invalidCursor = encodeCursor({
+      publishedAt: "2026-99-99T99:99:99.999999Z",
+      id: "11111111-1111-4111-8111-111111111111",
+    });
+
+    const page = await listPublishedPostsPage({ limit: 1, cursor: invalidCursor });
+
+    expect(page.posts.map((post) => post.id)).toEqual([newest]);
   });
 
   it("does not repeat or skip older rows when a newer post is inserted between pages", async () => {

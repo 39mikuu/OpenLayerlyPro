@@ -22,6 +22,24 @@ describe("published post cursor", () => {
     expect(decodeCursor(encodeCursor(cursor))).toEqual(cursor);
   });
 
+  it("rejects a semantically impossible full-precision timestamp", () => {
+    const cursor = encodeCursor({
+      publishedAt: "2026-99-99T99:99:99.999999Z",
+      id: "11111111-1111-4111-8111-111111111111",
+    });
+
+    expect(decodeCursor(cursor)).toBeNull();
+  });
+
+  it("accepts canonical UUID text without version or variant restrictions", () => {
+    const cursor = {
+      publishedAt: "2026-06-19T12:34:56.123456Z",
+      id: "11111111-1111-0111-0111-111111111111",
+    };
+
+    expect(decodeCursor(encodeCursor(cursor))).toEqual(cursor);
+  });
+
   it.each([
     ["not-base64"],
     [encodeCursor({ publishedAt: "2026-06-19T12:34:56.123Z", id: "not-a-uuid" })],
