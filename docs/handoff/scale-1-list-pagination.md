@@ -32,8 +32,10 @@
 ```ts
 export const POSTS_PAGE_SIZE = 12;
 
-export type PostCursor = { publishedAt: Date; id: string };
-export function encodeCursor(c: PostCursor): string;   // 见下方「游标精度」——勿用 Date.toISOString() 截断
+// ⚠️ 游标时间戳不要建模成 Date（drizzle 把 timestamptz 暴露为 JS Date，只到毫秒，会丢微秒）。
+// 用 SQL 选出的「UTC 规范化字符串」或 epoch 微秒原值,原样回传比较——见下方「游标精度」。
+export type PostCursor = { publishedAtRaw: string; id: string }; // publishedAtRaw = SQL 选出的全精度 UTC 值
+export function encodeCursor(c: PostCursor): string;   // base64(`${publishedAtRaw}|${id}`)，不经 Date
 export function decodeCursor(s: string): PostCursor | null; // 非法 → null（当作首页）
 
 // 公开已发布列表的一页：keyset
@@ -58,7 +60,7 @@ listPublishedPostsPage(opts: {
 
 - 公开列表的 `published_at` 目前恰好是毫秒(经 JS `Date` 写入),**暂时安全但脆弱**;**后台用的 `created_at` 是 `defaultNow()` = 微秒**,直接 `toISOString()` 游标**会漏行**。
 - 正确做法(任选其一,务必两侧一致):
-  - **A(推荐)**:游标保留完整精度——SQL 端取 `to_char(col, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`(或 epoch 微秒)编码,回比时以 `:cursorTs::timestamptz` 精确比较;不经 JS `Date` 截断。
+  - **A(推荐)**:游标保留完整精度,且**强制 UTC**——SQL 端取 `to_char(col AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`(**注意 `AT TIME ZONE 'UTC'`:`to_char` 默认按会话 TimeZone 格式化,DB 时区非 UTC 时硬加 `Z` 会解析成错误时刻 → 仍漏/重**),或直接用 epoch 微秒 `(extract(epoch from col)*1e6)::bigint`;回比时以 `:cursorTs::timestamptz`(或 epoch 微秒)精确比较;**全程不经 JS `Date`**。
   - **B**:两侧统一 `date_trunc('milliseconds', col)` 排序/比较 + `id` 兜底(同毫秒多行靠 id 决胜)。
 - 不管哪种,`id` 必须是最终决胜键(uuid 顺序无业务含义但作为稳定 tiebreak 足够)。
 
