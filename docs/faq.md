@@ -24,10 +24,11 @@ UPDATE site_settings SET value_json='false' WHERE key='initialized';
 ## 文件与下载
 
 **Q: 上传大文件失败？**
-- 默认单文件上限 500MB，可调 `MAX_UPLOAD_SIZE_MB`；
-- 当前版本上传时会将整个文件读入内存，`MAX_UPLOAD_SIZE_MB` 必须小于机器可用内存，小内存设备（1~2GB）建议调到 100~200，否则可能 OOM；
-- 经 Cloudflare Tunnel 上传受 Cloudflare 单请求约 100MB 限制，大文件建议在局域网内操作后台，或使用 S3/R2 存储；
-- 反向代理（Nginx 等）需同步调大 `client_max_body_size`。
+- 默认单文件上限 500MB，可调 `MAX_UPLOAD_SIZE_MB`；内容附件会流式上传，不再整文件读入内存；
+- 图片和付款截图仍会缓冲以校验尺寸，应继续使用较小的图片上传限制；
+- 经 Cloudflare Tunnel 上传可能受边缘单请求大小限制，大文件建议在局域网内操作后台，或使用 S3/R2 存储；
+- 反向代理（Nginx 等）需同步调大 `client_max_body_size`；
+- 使用 S3/R2 时请配置清理未完成 multipart upload 的生命周期规则。
 
 **Q: 会员过期后还能下载吗？**
 不能。第一版策略为会员过期后不可访问历史会员内容（PRD 设计）。

@@ -794,6 +794,8 @@ export const en: Messages = {
     paymentMethodNotFound: "Payment method not found",
     paymentRequestNotFound: "Payment request not found",
     fileRequired: "File is required",
+    fileNameRequired: "File name is required",
+    fileNameInvalid: "File name is invalid",
     unsupportedFilePurpose: "Unsupported file purpose",
     unsupportedFileType: "File type .{extension} is not allowed. Allowed: {allowed}",
     fileTooLarge: "File exceeds the {maxMb}MB limit",

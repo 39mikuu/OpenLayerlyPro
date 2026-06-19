@@ -58,3 +58,21 @@ export async function uploadFile<T = unknown>(
   if (!json.ok) throw new Error(errorMessage(json) || `Upload failed (${res.status})`);
   return json.data;
 }
+
+export async function uploadStreamFile<T = unknown>(path: string, file: File): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+      "x-file-name": encodeURIComponent(file.name),
+      "x-file-purpose": "content_attachment",
+    },
+    body: file,
+  });
+  const json = (await res.json().catch(() => null)) as ApiResponse<T> | null;
+  if (!json) {
+    throw new Error(translate(currentLocale(), "common.uploadFailed", { status: res.status }));
+  }
+  if (!json.ok) throw new Error(errorMessage(json) || `Upload failed (${res.status})`);
+  return json.data;
+}

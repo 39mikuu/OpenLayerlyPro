@@ -785,6 +785,8 @@ export const ja: Messages = {
     paymentMethodNotFound: "支払い方法が見つかりません",
     paymentRequestNotFound: "支払い申請が見つかりません",
     fileRequired: "ファイルが必要です",
+    fileNameRequired: "ファイル名が必要です",
+    fileNameInvalid: "ファイル名が無効です",
     unsupportedFilePurpose: "サポートされていないファイル用途です",
     unsupportedFileType: "ファイル形式 .{extension} は使用できません。使用可能：{allowed}",
     fileTooLarge: "ファイルが上限 {maxMb}MB を超えています",

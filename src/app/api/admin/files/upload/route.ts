@@ -10,7 +10,6 @@ const ADMIN_PURPOSES: FilePurpose[] = [
   "artist_avatar",
   "payment_qr",
   "content_image",
-  "content_attachment",
   "cover",
   "thumbnail",
 ];
