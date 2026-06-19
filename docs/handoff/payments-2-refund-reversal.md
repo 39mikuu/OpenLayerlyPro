@@ -124,7 +124,9 @@ if (event.type === "charge.refunded") {
   if (!charge.refunded || charge.amount_refunded !== charge.amount) {
     return { type: "ignored", providerEventId: event.id }; // 部分退款不处理
   }
-  if (!charge.payment_intent) throw new ApiError(422, "stripeEventInvalid");
+  // payment_intent 可空：我们的 Checkout（mode=payment）必有 PI，
+  // 无 PI ⟹ 同账号下非 Checkout 的外部 charge ⟹ ignored 200，绝不抛错（否则 Stripe 无限重试一个永远映射不了的事件）。
+  if (!charge.payment_intent) return { type: "ignored", providerEventId: event.id };
   return {
     type: "refunded",
     paymentRef: typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent.id,
@@ -138,7 +140,8 @@ if (event.type === "charge.refunded") {
 ```ts
 if (event.type === "charge.dispute.created") {
   const dispute = event.data.object as Stripe.Dispute;
-  if (!dispute.payment_intent) throw new ApiError(422, "stripeEventInvalid");
+  // 同上：payment_intent 可空，无 PI ⟹ 非 Checkout 的外部拒付 ⟹ ignored 200，不抛错。
+  if (!dispute.payment_intent) return { type: "ignored", providerEventId: event.id };
   return {
     type: "disputed",
     paymentRef: typeof dispute.payment_intent === "string" ? dispute.payment_intent : dispute.payment_intent.id,
