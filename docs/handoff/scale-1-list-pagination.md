@@ -33,7 +33,7 @@
 export const POSTS_PAGE_SIZE = 12;
 
 export type PostCursor = { publishedAt: Date; id: string };
-export function encodeCursor(c: PostCursor): string;   // base64(`${publishedAt.toISOString()}|${id}`)
+export function encodeCursor(c: PostCursor): string;   // 见下方「游标精度」——勿用 Date.toISOString() 截断
 export function decodeCursor(s: string): PostCursor | null; // 非法 → null（当作首页）
 
 // 公开已发布列表的一页：keyset
@@ -51,6 +51,16 @@ listPublishedPostsPage(opts: {
 - `order by published_at desc, id desc limit :limit + 1` —— **多取 1 条**判断是否有下一页:返回 `posts = rows.slice(0, limit)`,`nextCursor = rows.length > limit ? encodeCursor(最后一条) : null`。
 - 注意 `published_at` 理论可空,但 `status='published'` 行恒有 `published_at`(ADR 0004 的 check 约束保证),keyset 安全。
 - 首页:可直接用 `listPublishedPostsPage({ limit: 12 })` 取首屏,忽略 `nextCursor`;或加一个轻量 `listLatestPublished(limit)` 包装。
+
+### ⚠️ 游标精度(keyset 正确性关键,别踩)
+
+`timestamptz` 列在 DB 是**微秒精度**,而 `Date.toISOString()` 只到**毫秒**。若游标用毫秒、而列里有亚毫秒值,边界处 `published_at < :pa` 会**漏掉** `(:pa_ms, :pa_us]` 之间的行(既被 `<` 排除、又不等于 `:pa`)→ 翻页**丢数据**。
+
+- 公开列表的 `published_at` 目前恰好是毫秒(经 JS `Date` 写入),**暂时安全但脆弱**;**后台用的 `created_at` 是 `defaultNow()` = 微秒**,直接 `toISOString()` 游标**会漏行**。
+- 正确做法(任选其一,务必两侧一致):
+  - **A(推荐)**:游标保留完整精度——SQL 端取 `to_char(col, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`(或 epoch 微秒)编码,回比时以 `:cursorTs::timestamptz` 精确比较;不经 JS `Date` 截断。
+  - **B**:两侧统一 `date_trunc('milliseconds', col)` 排序/比较 + `id` 兜底(同毫秒多行靠 id 决胜)。
+- 不管哪种,`id` 必须是最终决胜键(uuid 顺序无业务含义但作为稳定 tiebreak 足够)。
 
 ## 3. 站点页改造
 
@@ -85,6 +95,7 @@ listPublishedPostsPage(opts: {
 - keyset 单测/集成(真实 PG):
   - 翻页**不重不漏**:插入 N 条,按页取完 = 全集且无重复。
   - 同 `published_at` 多条时用 `id` 兜底排序稳定。
+  - **游标精度边界**:构造亚毫秒/微秒不同但同毫秒的两条记录(尤其后台 `created_at`),翻页**不得漏行**(直接验证 §「游标精度」的修法生效)。
   - 翻页期间插入新 post 不会导致旧游标重复/跳行(keyset 特性)。
   - `limit+1` 判定 `nextCursor`:最后一页 `nextCursor=null`。
   - 分页 + category/tag 过滤叠加正确;**可见性/published 过滤不被破坏**。
