@@ -1,4 +1,4 @@
-import { listPosts, localizePostCards } from "@/modules/content";
+import { listPublishedPostsPage, localizePostCards } from "@/modules/content";
 import { getT, resolveLocale } from "@/modules/i18n/server";
 import { getPostsTaxonomy } from "@/modules/taxonomy";
 import { getActiveTheme, type PostCardView } from "@/modules/theme";
@@ -8,12 +8,12 @@ export const dynamic = "force-dynamic";
 export default async function PostsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ category?: string; tag?: string }>;
+  searchParams: Promise<{ category?: string; tag?: string; cursor?: string }>;
 }) {
   const filters = await searchParams;
-  const [posts, theme, t, locale] = await Promise.all([
-    listPosts({
-      publishedOnly: true,
+  const [page, theme, t, locale] = await Promise.all([
+    listPublishedPostsPage({
+      cursor: filters.cursor,
       categorySlug: filters.category,
       tagSlug: filters.tag,
     }),
@@ -22,8 +22,8 @@ export default async function PostsPage({
     resolveLocale(),
   ]);
   const [localizedPosts, taxonomy] = await Promise.all([
-    localizePostCards(posts, locale),
-    getPostsTaxonomy(posts.map((post) => post.id)),
+    localizePostCards(page.posts, locale),
+    getPostsTaxonomy(page.posts.map((post) => post.id)),
   ]);
 
   const cards: PostCardView[] = localizedPosts.map((post) => ({
@@ -38,5 +38,17 @@ export default async function PostsPage({
   }));
 
   const PostList = theme.components.PostList;
-  return <PostList view={{ posts: cards }} t={t} />;
+  const nextParams = new URLSearchParams();
+  if (page.nextCursor) nextParams.set("cursor", page.nextCursor);
+  if (filters.category) nextParams.set("category", filters.category);
+  if (filters.tag) nextParams.set("tag", filters.tag);
+  return (
+    <PostList
+      view={{
+        posts: cards,
+        nextHref: page.nextCursor ? `/posts?${nextParams.toString()}` : null,
+      }}
+      t={t}
+    />
+  );
 }

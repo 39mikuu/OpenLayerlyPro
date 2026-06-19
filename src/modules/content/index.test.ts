@@ -3,12 +3,51 @@ import { describe, expect, it, vi } from "vitest";
 import type { Post, PostTranslation } from "@/db/schema";
 
 import {
+  decodeCursor,
+  encodeCursor,
   getLocalizedPost,
   localizePostCards,
   publishTranslation,
   unpublishTranslation,
   upsertDraftTranslation,
 } from "./index";
+
+describe("published post cursor", () => {
+  it("round-trips a full-precision timestamp and UUID", () => {
+    const cursor = {
+      publishedAt: "2026-06-19T12:34:56.123456Z",
+      id: "11111111-1111-4111-8111-111111111111",
+    };
+
+    expect(decodeCursor(encodeCursor(cursor))).toEqual(cursor);
+  });
+
+  it("rejects a semantically impossible full-precision timestamp", () => {
+    const cursor = encodeCursor({
+      publishedAt: "2026-99-99T99:99:99.999999Z",
+      id: "11111111-1111-4111-8111-111111111111",
+    });
+
+    expect(decodeCursor(cursor)).toBeNull();
+  });
+
+  it("accepts canonical UUID text without version or variant restrictions", () => {
+    const cursor = {
+      publishedAt: "2026-06-19T12:34:56.123456Z",
+      id: "11111111-1111-0111-0111-111111111111",
+    };
+
+    expect(decodeCursor(encodeCursor(cursor))).toEqual(cursor);
+  });
+
+  it.each([
+    ["not-base64"],
+    [encodeCursor({ publishedAt: "2026-06-19T12:34:56.123Z", id: "not-a-uuid" })],
+    [null],
+  ])("safely rejects an invalid cursor", (cursor) => {
+    expect(decodeCursor(cursor)).toBeNull();
+  });
+});
 
 function post(overrides: Partial<Post> = {}): Post {
   return {

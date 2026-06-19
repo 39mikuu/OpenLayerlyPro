@@ -1,3 +1,6 @@
+import Link from "next/link";
+
+import { Button } from "@/components/ui/button";
 import type { Translate } from "@/modules/i18n";
 import type { PostListView } from "@/modules/theme/types";
 
@@ -20,6 +23,13 @@ export function PostList({ view, t }: { view: PostListView; t: Translate }) {
           {view.posts.map((post) => (
             <PostCard key={post.slug} post={post} t={t} />
           ))}
+        </div>
+      )}
+      {view.nextHref && (
+        <div className="flex justify-center">
+          <Button asChild variant="outline">
+            <Link href={view.nextHref}>{t("posts.nextPage")}</Link>
+          </Button>
         </div>
       )}
     </div>
