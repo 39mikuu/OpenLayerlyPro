@@ -11,6 +11,7 @@ export const dynamic = "force-dynamic";
 
 const NAV = [
   { href: "/admin", key: "overview" },
+  { href: "/admin/account", key: "account" },
   { href: "/admin/site", key: "site" },
   { href: "/admin/tiers", key: "tiers" },
   { href: "/admin/posts", key: "posts" },

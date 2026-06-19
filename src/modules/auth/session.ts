@@ -46,6 +46,13 @@ export async function clearSessionCookie(): Promise<void> {
   store.set(SESSION_COOKIE, "", { httpOnly: true, maxAge: 0, path: "/" });
 }
 
+export async function getCurrentSessionTokenHash(): Promise<string> {
+  const store = await cookies();
+  const token = store.get(SESSION_COOKIE)?.value;
+  if (!token) throw new ApiError(401, "authRequired");
+  return hmacSha256(token);
+}
+
 export const getCurrentUser = cache(async (): Promise<User | null> => {
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
@@ -80,4 +87,9 @@ export async function requireAdmin(): Promise<User> {
   const user = await requireUser();
   if (user.role !== "admin") throw new ApiError(403, "adminRequired");
   return user;
+}
+
+export async function requireAdminSession(): Promise<{ user: User; tokenHash: string }> {
+  const user = await requireAdmin();
+  return { user, tokenHash: await getCurrentSessionTokenHash() };
 }
