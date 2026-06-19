@@ -48,6 +48,7 @@ export const zh = {
     title: "作品",
     subtitle: "查看创作者最近发布的内容与会员更新。",
     empty: "还没有发布作品。",
+    nextPage: "下一页",
   },
   post: {
     loginVisible: "登录可见",

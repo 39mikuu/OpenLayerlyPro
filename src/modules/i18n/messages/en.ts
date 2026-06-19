@@ -46,6 +46,7 @@ export const en: Messages = {
     title: "Works",
     subtitle: "Browse the creator's latest posts and membership updates.",
     empty: "No works published yet.",
+    nextPage: "Next page",
   },
   post: {
     loginVisible: "Sign-in required",

@@ -46,6 +46,7 @@ export const ja: Messages = {
     title: "作品",
     subtitle: "クリエイターの最近の投稿やメンバー向け更新を確認できます。",
     empty: "公開されている作品はまだありません。",
+    nextPage: "次のページ",
   },
   post: {
     loginVisible: "ログインが必要です",
