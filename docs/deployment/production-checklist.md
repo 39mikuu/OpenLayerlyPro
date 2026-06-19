@@ -13,4 +13,18 @@
 - [ ] AI translation provider is disabled unless intentionally configured.
 - [ ] Custom footer code is reviewed and trusted.
 - [ ] `/api/health` and `/api/ready` return 200.
-- [ ] Database, uploads, and secrets backup jobs exist.
+- [ ] `scripts/backup.sh` runs on a schedule and copies archives off-host.
+- [ ] Backups include PostgreSQL, the config encryption key, and local uploads when used.
+- [ ] S3/R2 bucket versioning or provider backups are enabled when object storage is used.
+- [ ] A recent archive has been restored successfully in an isolated Compose project.
+- [ ] The restore drill verified `/api/ready`, sample data, uploads, and encrypted settings.
+
+## Backup Schedule Example
+
+Run from the repository directory so Compose can find `.env` and `docker-compose.yml`:
+
+```cron
+15 3 * * * cd /opt/openlayerlypro && ./scripts/backup.sh /srv/backups/openlayerly >> /var/log/openlayerly-backup.log 2>&1
+```
+
+Cron only creates archives. Add a separate retention policy and off-host copy, monitor non-zero exits, and run periodic restore drills using [Backup and Restore](backup-restore.md).
