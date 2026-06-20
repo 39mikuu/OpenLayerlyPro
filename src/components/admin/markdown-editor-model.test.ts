@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { insertMarkdownAtSelection } from "./markdown-editor-model";
+import {
+  getPreviewVideoIframeAttributes,
+  insertMarkdownAtSelection,
+  insertVideoDirectiveAtSelection,
+} from "./markdown-editor-model";
 
 describe("Markdown editor insertion model", () => {
   it("inserts into the latest value instead of the value captured when an upload started", () => {
@@ -27,5 +31,48 @@ describe("Markdown editor insertion model", () => {
       value: "abcx",
       cursor: 4,
     });
+  });
+
+  it("inserts a valid video directive on its own line at the current selection", () => {
+    const url = "https://youtu.be/dQw4w9WgXcQ";
+    expect(insertVideoDirectiveAtSelection("beforeafter", { start: 6, end: 6 }, url)).toEqual({
+      value: `before\n\n@video: ${url}\n\nafter`,
+      cursor: `before\n\n@video: ${url}\n\n`.length,
+    });
+  });
+
+  it("adds only the missing blank-line separators around an existing line boundary", () => {
+    const url = "https://vimeo.com/123456789";
+    expect(insertVideoDirectiveAtSelection("before\nafter", { start: 7, end: 7 }, url)?.value).toBe(
+      `before\n\n@video: ${url}\n\nafter`,
+    );
+    expect(
+      insertVideoDirectiveAtSelection("before\n\nafter", { start: 8, end: 8 }, url)?.value,
+    ).toBe(`before\n\n@video: ${url}\n\nafter`);
+  });
+
+  it("does not modify Markdown for an unsupported video URL", () => {
+    expect(
+      insertVideoDirectiveAtSelection("before", { start: 6, end: 6 }, "https://example.com/video"),
+    ).toBeNull();
+  });
+
+  it("returns fixed iframe attributes only for canonical preview sources", () => {
+    expect(
+      getPreviewVideoIframeAttributes("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"),
+    ).toEqual({
+      src: "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+      title: "YouTube video",
+      loading: "lazy",
+      referrerPolicy: "strict-origin-when-cross-origin",
+      allow:
+        "accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen",
+      allowFullscreen: true,
+    });
+    expect(
+      getPreviewVideoIframeAttributes(
+        "https://www.youtube-nocookie.com.evil.com/embed/dQw4w9WgXcQ",
+      ),
+    ).toBeNull();
   });
 });

@@ -69,6 +69,33 @@ describe("Markdown translation protection", () => {
     expect(restoreProtectedMarkdown(protection.markdown, protection)).toBe(fenced);
   });
 
+  it("protects valid YouTube, Vimeo, and Bilibili directives as exact whole lines", () => {
+    const directives = [
+      "@video: https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "@video: https://vimeo.com/123456789",
+      "@video: https://www.bilibili.com/video/BV1xx411c7mD",
+    ];
+    const source = directives.join("\nText remains translatable\n");
+    const protection = protectMarkdownForTranslation(source);
+
+    for (const directive of directives) {
+      expect([...protection.tokens.values()]).toContain(directive);
+      expect(protection.markdown).not.toContain(directive);
+    }
+    expect(restoreProtectedMarkdown(protection.markdown, protection)).toBe(source);
+  });
+
+  it("does not treat blockquote or list text as a whole video directive", () => {
+    const quoted = "> @video: https://youtu.be/dQw4w9WgXcQ";
+    const listed = "- @video: https://vimeo.com/123456789";
+    const source = `${quoted}\n${listed}`;
+    const protection = protectMarkdownForTranslation(source);
+
+    expect([...protection.tokens.values()]).not.toContain(quoted);
+    expect([...protection.tokens.values()]).not.toContain(listed);
+    expect(restoreProtectedMarkdown(protection.markdown, protection)).toBe(source);
+  });
+
   it("preserves CRLF line endings inside a fenced block", () => {
     const fenced = `  ${"~".repeat(3)}md\r\nhttps://inside.example/crlf\r\n  ${"~".repeat(5)}\r\n`;
     const protection = protectMarkdownForTranslation(fenced);
