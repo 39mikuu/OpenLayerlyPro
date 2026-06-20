@@ -1,6 +1,6 @@
 # ADR 0006：Markdown 内容编辑器 + 正文内联插图
 
-- **Status**：Proposed ▶（2026-06-20）
+- **Status**：Accepted ✅（2026-06-20）
 - **相关 issue**：v0.3 编辑器优化（待建 issue）
 - **依赖**：现有内容模型（`posts.body` / `post_translations.body`）、文件与流式上传（`src/modules/file`、`src/modules/storage`）、主题契约（`src/modules/theme`）、内容多语言与 AI 翻译
 
@@ -76,8 +76,8 @@
 - ⚠️ 未引用内联图的 reconcile 需正确处理(删多了会丢图、删少了会泄漏);需测试。
 - ⚠️ 富文本 WYSIWYG、自动保存/草稿恢复、版本历史、协同编辑均不在本 ADR;后续单独评估。
 
-## 待确认的决策
+## 已确认的决策（2026-06-20）
 
-1. Markdown 子集是否含**表格**与**任务列表**(GFM 扩展)?默认含表格、不含任务列表(可调)。
-2. 渲染库二选一:**markdown-it + sanitize-html**(推荐,本版默认) vs remark/rehype + rehype-sanitize。
-3. 是否本切片即做**未引用内联图 reconcile**(推荐做,防泄漏),还是先留 TODO。
+1. **Markdown 子集含表格,不含任务列表**。任务列表需把 `input[type=checkbox]` 纳入消毒白名单、扩大攻击面,而「已发布创作内容」几乎用不上;需要时后续单加。
+2. **渲染库 = markdown-it + sanitize-html**。决定因素是客户端预览需一个服务端/客户端**共用的轻量解析器**,markdown-it 浏览器侧更轻;remark/rehype 在浏览器更重。在已强制 `html:false` + 输出再过白名单后,rehype-sanitize 的 AST 级消毒并无显著增量收益。
+3. **本切片即做未引用内联图 reconcile**。不做会持续泄漏存储;删错风险由「汇总所有 locale(含草稿翻译)引用,只删谁都不引用的」保守策略兜住。
