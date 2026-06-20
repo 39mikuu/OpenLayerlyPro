@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   deleteObject: vi.fn(),
+  enqueueTask: vi.fn(),
   getDb: vi.fn(),
   getStorage: vi.fn(),
   insert: vi.fn(),
@@ -15,6 +16,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/db", () => ({ getDb: mocks.getDb }));
+vi.mock("@/lib/env", () => ({
+  getEnv: () => ({ INLINE_UPLOAD_GRACE_PERIOD_HOURS: 24 }),
+}));
 vi.mock("@/modules/config", () => ({
   getUploadConfig: vi.fn(async () => ({
     maxUploadSizeMb: 10,
@@ -27,6 +31,7 @@ vi.mock("@/modules/storage", () => ({
   getStorageForDriver: vi.fn(),
 }));
 vi.mock("@/modules/system/events", () => ({ recordEvent: mocks.recordEvent }));
+vi.mock("@/modules/tasks", () => ({ enqueueTask: mocks.enqueueTask }));
 
 import { ApiError } from "@/lib/api";
 
@@ -44,7 +49,11 @@ function setInsertResult(result: unknown) {
   mocks.returning.mockResolvedValue(result);
   mocks.values.mockReturnValue({ returning: mocks.returning });
   mocks.insert.mockReturnValue({ values: mocks.values });
-  mocks.getDb.mockReturnValue({ insert: mocks.insert });
+  const tx = { insert: mocks.insert };
+  mocks.getDb.mockReturnValue({
+    insert: mocks.insert,
+    transaction: (callback: (client: typeof tx) => unknown) => callback(tx),
+  });
 }
 
 describe("streamed file persistence", () => {
@@ -139,6 +148,14 @@ describe("streamed file persistence", () => {
     );
     expect(mocks.values).toHaveBeenCalledWith(
       expect.objectContaining({ width: 1, height: 1, purpose: "content_image" }),
+    );
+    expect(mocks.enqueueTask).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        kind: "file.cleanup_orphan",
+        payload: { fileId: "file-1" },
+        runAfter: expect.any(Date),
+      }),
     );
   });
 });

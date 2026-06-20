@@ -46,6 +46,7 @@ const envSchema = z.object({
 
   MAX_UPLOAD_SIZE_MB: z.coerce.number().default(500),
   PAYMENT_PROOF_MAX_SIZE_MB: z.coerce.number().default(10),
+  INLINE_UPLOAD_GRACE_PERIOD_HOURS: z.coerce.number().int().min(1).max(720).default(24),
 
   CLOUDFLARE_TUNNEL_TOKEN: z.string().optional(),
 

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/modules/auth/session";
 import { deletePost, getPostById, listPostFiles, updatePost } from "@/modules/content";
+import { MAX_POST_BODY_LENGTH } from "@/modules/content/markdown";
 import { getPostTaxonomy } from "@/modules/taxonomy";
 
 export const runtime = "nodejs";
@@ -30,7 +31,7 @@ const patchSchema = z.object({
     .regex(/^[a-z0-9-]+$/)
     .optional(),
   summary: z.string().max(1000).nullable().optional(),
-  body: z.string().max(100000).nullable().optional(),
+  body: z.string().max(MAX_POST_BODY_LENGTH).nullable().optional(),
   originalLocale: z.enum(["zh", "en", "ja"]).optional(),
   coverFileId: z.string().uuid().nullable().optional(),
   visibility: z.enum(["public", "login", "member"]).optional(),

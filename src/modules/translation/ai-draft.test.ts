@@ -158,6 +158,24 @@ describe("AI translation drafts", () => {
     );
   });
 
+  it("rejects a machine draft before saving when the provider mutates a protected token", async () => {
+    mocks.getPostById.mockResolvedValue({
+      ...sourcePost,
+      body: "[link](https://example.com/path) and `code`",
+    });
+    mocks.translate.mockImplementation(async ({ text }: { text: string }) => {
+      if (!text.includes("OLP_MD_")) return `JA:${text}`;
+      return text.replace(/OLP_MD_[0-9a-f]{32}_\d{4}_END/, "");
+    });
+
+    await expect(generateAiTranslationDraft(sourcePost.id, "ja")).rejects.toMatchObject({
+      status: 502,
+      code: "translationTokenMismatch",
+    });
+    expect(mocks.upsertDraftTranslation).not.toHaveBeenCalled();
+    expect(mocks.publishTranslation).not.toHaveBeenCalled();
+  });
+
   it("publishes through the content transaction only when explicitly enabled", async () => {
     mocks.getTranslationConfig.mockResolvedValue({
       directPublishEnabled: true,

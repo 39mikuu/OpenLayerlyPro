@@ -3,13 +3,13 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { MarkdownEditor } from "@/components/admin/markdown-editor";
 import { PostTranslationEditor } from "@/components/admin/post-translation-editor";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { api, uploadFile, uploadStreamFile } from "@/lib/client";
 
 type TierOption = { id: string; name: string; level: number };
@@ -55,6 +55,7 @@ export function PostEditor({
   const router = useRouter();
   const t = useT();
   const isNew = !post;
+  const isPublished = post?.status === "published";
   const [form, setForm] = useState({
     title: post?.title ?? "",
     slug: post?.slug ?? "",
@@ -105,7 +106,14 @@ export function PostEditor({
         router.push(`/admin/posts/${created.id}`);
         router.refresh();
       } else {
-        await api(`/api/admin/posts/${post.id}`, { method: "PUT", body: payload() });
+        if (isPublished) {
+          await api(`/api/admin/posts/${post.id}/content`, {
+            method: "PUT",
+            body: { body: form.body || null },
+          });
+        } else {
+          await api(`/api/admin/posts/${post.id}`, { method: "PUT", body: payload() });
+        }
         setMessage(t("admin.common.saved"));
         router.refresh();
       }
@@ -124,8 +132,16 @@ export function PostEditor({
     });
   }
 
+  async function uploadInlineImage(file: File): Promise<string> {
+    if (!post) throw new Error(t("admin.posts.createDraftFirst"));
+    const record = await uploadFile<{ id: string }>("/api/admin/files/upload", file, {
+      purpose: "content_image",
+    });
+    return `/api/files/${record.id}/download`;
+  }
+
   async function uploadAndAttach(file: File, kind: "image" | "attachment") {
-    if (!post) return;
+    if (!post || isPublished) return;
     await run(async () => {
       const record =
         kind === "image"
@@ -150,12 +166,17 @@ export function PostEditor({
             <Label>{t("admin.posts.titleColumn")}</Label>
             <Input
               value={form.title}
+              disabled={loading || isPublished}
               onChange={(e) => setForm({ ...form, title: e.target.value })}
             />
           </div>
           <div className="space-y-1">
             <Label>{t("admin.posts.slug")}</Label>
-            <Input value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} />
+            <Input
+              value={form.slug}
+              disabled={loading || isPublished}
+              onChange={(e) => setForm({ ...form, slug: e.target.value })}
+            />
           </div>
         </div>
         <Card>
@@ -171,6 +192,7 @@ export function PostEditor({
                     <input
                       type="checkbox"
                       checked={categoryIds.includes(category.id)}
+                      disabled={loading || isPublished}
                       onChange={(event) =>
                         setCategoryIds((current) =>
                           event.target.checked
@@ -195,6 +217,7 @@ export function PostEditor({
                     <input
                       type="checkbox"
                       checked={tagIds.includes(tag.id)}
+                      disabled={loading || isPublished}
                       onChange={(event) =>
                         setTagIds((current) =>
                           event.target.checked
@@ -217,16 +240,22 @@ export function PostEditor({
           <Label>{t("admin.posts.summary")}</Label>
           <Input
             value={form.summary}
+            disabled={loading || isPublished}
             onChange={(e) => setForm({ ...form, summary: e.target.value })}
           />
         </div>
         <div className="space-y-1">
           <Label>{t("admin.posts.body")}</Label>
-          <Textarea
-            rows={8}
+          <MarkdownEditor
             value={form.body}
-            onChange={(e) => setForm({ ...form, body: e.target.value })}
+            onChange={(body) => setForm((current) => ({ ...current, body }))}
+            onUploadImage={post ? uploadInlineImage : undefined}
+            disabled={loading}
+            ariaLabel={t("admin.posts.body")}
           />
+          {!post && (
+            <p className="text-xs text-muted-foreground">{t("admin.posts.createDraftFirst")}</p>
+          )}
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
@@ -234,6 +263,7 @@ export function PostEditor({
             <select
               className="border rounded-md h-9 px-2 w-full bg-transparent text-sm"
               value={form.visibility}
+              disabled={loading || isPublished}
               onChange={(e) =>
                 setForm({ ...form, visibility: e.target.value as typeof form.visibility })
               }
@@ -249,6 +279,7 @@ export function PostEditor({
               <select
                 className="border rounded-md h-9 px-2 w-full bg-transparent text-sm"
                 value={form.requiredTierId}
+                disabled={loading || isPublished}
                 onChange={(e) => setForm({ ...form, requiredTierId: e.target.value })}
               >
                 <option value="">{t("admin.posts.choose")}</option>
@@ -274,6 +305,7 @@ export function PostEditor({
           <Input
             type="file"
             accept=".jpg,.jpeg,.png,.webp"
+            disabled={loading || isPublished}
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (!file) return;
@@ -323,7 +355,7 @@ export function PostEditor({
             </Button>
           )}
           {!isNew && (
-            <Button variant="outline" disabled={loading} onClick={saveTaxonomy}>
+            <Button variant="outline" disabled={loading || isPublished} onClick={saveTaxonomy}>
               {t("admin.taxonomy.saveAssociations")}
             </Button>
           )}
@@ -370,7 +402,7 @@ export function PostEditor({
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={loading}
+                    disabled={loading || isPublished}
                     onClick={() =>
                       run(async () => {
                         await api(`/api/admin/posts/${post.id}/files`, {
@@ -392,6 +424,7 @@ export function PostEditor({
                 <Input
                   type="file"
                   accept=".jpg,.jpeg,.png,.webp,.gif"
+                  disabled={loading || isPublished}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) uploadAndAttach(file, "image");
@@ -403,6 +436,7 @@ export function PostEditor({
                 <Input
                   type="file"
                   accept=".jpg,.jpeg,.png,.webp,.gif,.zip,.psd,.clip,.brush,.abr,.procreate,.pdf,.txt,.mp4,.webm,.mov,.m4v"
+                  disabled={loading || isPublished}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) uploadAndAttach(file, "attachment");

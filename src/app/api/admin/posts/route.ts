@@ -4,6 +4,7 @@ import { z } from "zod";
 import { handleApiError, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/modules/auth/session";
 import { createPost, listPosts } from "@/modules/content";
+import { MAX_POST_BODY_LENGTH } from "@/modules/content/markdown";
 
 export const runtime = "nodejs";
 
@@ -24,7 +25,7 @@ const bodySchema = z.object({
     .max(200)
     .regex(/^[a-z0-9-]+$/, "slug 只能包含小写字母、数字和连字符"),
   summary: z.string().max(1000).nullable().optional(),
-  body: z.string().max(100000).nullable().optional(),
+  body: z.string().max(MAX_POST_BODY_LENGTH).nullable().optional(),
   coverFileId: z.string().uuid().nullable().optional(),
   visibility: z.enum(["public", "login", "member"]),
   requiredTierId: z.string().uuid().nullable().optional(),

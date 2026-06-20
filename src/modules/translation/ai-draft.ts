@@ -5,6 +5,7 @@ import { getPostById, publishTranslation, upsertDraftTranslation } from "@/modul
 import { isLocale, type Locale } from "@/modules/i18n";
 
 import { getTranslationProvider } from "./index";
+import { protectMarkdownForTranslation, restoreProtectedMarkdown } from "./markdown-protection";
 import type { TranslationProvider, TranslationRequest, TranslationTargetLocale } from "./types";
 
 export const MAX_TRANSLATION_CHUNK_CHARS = 6_000;
@@ -101,6 +102,18 @@ async function translateOptionalText(
   return translateText(provider, text, sourceLocale, targetLocale, maxChars);
 }
 
+async function translateMarkdownText(
+  provider: TranslationProvider,
+  text: string | null,
+  sourceLocale: Locale,
+  targetLocale: TranslationTargetLocale,
+): Promise<string | null> {
+  if (text === null || text === "") return text;
+  const protection = protectMarkdownForTranslation(text);
+  const translated = await translateText(provider, protection.markdown, sourceLocale, targetLocale);
+  return restoreProtectedMarkdown(translated, protection);
+}
+
 export async function generateAiTranslationDraft(
   postId: string,
   locale: string,
@@ -120,7 +133,7 @@ export async function generateAiTranslationDraft(
   // Translate everything before writing so a provider failure cannot leave a partial draft.
   const title = await translateText(provider, post.title, sourceLocale, locale);
   const summary = await translateOptionalText(provider, post.summary, sourceLocale, locale);
-  const body = await translateOptionalText(provider, post.body, sourceLocale, locale);
+  const body = await translateMarkdownText(provider, post.body, sourceLocale, locale);
 
   const draft = await upsertDraftTranslation(post.id, locale, {
     title,

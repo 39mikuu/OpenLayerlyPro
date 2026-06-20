@@ -353,7 +353,7 @@ export const postFiles = pgTable(
       .notNull()
       .references(() => files.id, { onDelete: "cascade" }),
     kind: text("kind", {
-      enum: ["cover", "image", "attachment", "preview", "thumbnail"],
+      enum: ["cover", "image", "attachment", "preview", "thumbnail", "inline"],
     }).notNull(),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: createdAt(),

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/modules/auth/session";
 import { getPostById, listPostTranslations, upsertDraftTranslation } from "@/modules/content";
+import { MAX_POST_BODY_LENGTH } from "@/modules/content/markdown";
 import { SUPPORTED_LOCALES } from "@/modules/i18n";
 
 export const runtime = "nodejs";
@@ -36,7 +37,7 @@ const bodySchema = z.object({
   locale: z.string(),
   title: z.string().max(200),
   summary: z.string().max(1000).nullable().optional(),
-  body: z.string().max(100000).nullable().optional(),
+  body: z.string().max(MAX_POST_BODY_LENGTH).nullable().optional(),
   source: z.enum(["manual", "machine"]).optional(),
 });
 

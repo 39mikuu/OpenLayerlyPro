@@ -12,6 +12,7 @@ export function buildTranslationPrompt(input: TranslationRequest): string {
   return [
     `Translate the following content into ${TARGET_LANGUAGE_NAMES[input.targetLocale]}.`,
     "Preserve all Markdown syntax exactly.",
+    "Preserve every OLP_MD_*_END token exactly, including its spelling and count.",
     "Preserve paragraph breaks and line breaks.",
     "Do not add, remove, summarize, or reinterpret any content.",
     "Return only the translated content. Do not explain your answer.",

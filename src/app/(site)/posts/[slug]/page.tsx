@@ -9,6 +9,7 @@ import {
   getRequiredTier,
   listPostFiles,
 } from "@/modules/content";
+import { renderMarkdown } from "@/modules/content/markdown";
 import { getT, resolveLocale } from "@/modules/i18n/server";
 import { getPostTaxonomy } from "@/modules/taxonomy";
 import { getActiveTheme, type PostAttachmentView, type PostImageView } from "@/modules/theme";
@@ -37,11 +38,13 @@ export default async function PostDetailPage({ params }: { params: Promise<{ slu
     ]);
 
   let body: string | null = null;
+  let bodyHtml: string | null = null;
   let images: PostImageView[] = [];
   let attachments: PostAttachmentView[] = [];
   if (allowed) {
     const files = await listPostFiles(post.id);
     body = localizedPost.body;
+    bodyHtml = renderMarkdown(localizedPost.body, { embedMode: "public" });
     images = files
       .filter((f) => f.link.kind === "image")
       .map((f) => ({ url: `/api/files/${f.file.id}/download`, alt: f.file.originalName }));
@@ -68,6 +71,7 @@ export default async function PostDetailPage({ params }: { params: Promise<{ slu
         isLoggedIn: !!user,
         allowed,
         body,
+        bodyHtml,
         images,
         attachments,
         machineTranslated: shouldShowMachineTranslationLabel(

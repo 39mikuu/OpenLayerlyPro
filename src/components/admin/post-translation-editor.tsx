@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { MarkdownEditor } from "@/components/admin/markdown-editor";
 import {
   editableTranslation,
   hasPublishableTitle,
@@ -17,8 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { api } from "@/lib/client";
+import { api, uploadFile } from "@/lib/client";
 import { type Locale, LOCALE_NAMES, SUPPORTED_LOCALES } from "@/modules/i18n";
 
 type TranslationOverview = {
@@ -121,6 +121,13 @@ export function PostTranslationEditor({
     }
   }
 
+  async function uploadInlineImage(file: File): Promise<string> {
+    const record = await uploadFile<{ id: string }>("/api/admin/files/upload", file, {
+      purpose: "content_image",
+    });
+    return `/api/files/${record.id}/download`;
+  }
+
   async function saveDraft() {
     await api(`/api/admin/posts/${postId}/translations`, {
       method: "PUT",
@@ -190,12 +197,13 @@ export function PostTranslationEditor({
           />
         </div>
         <div className="space-y-1">
-          <Label htmlFor={`translation-body-${locale}`}>{t("admin.posts.translationBody")}</Label>
-          <Textarea
-            id={`translation-body-${locale}`}
-            rows={8}
+          <Label>{t("admin.posts.translationBody")}</Label>
+          <MarkdownEditor
             value={form.body}
-            onChange={(event) => setForm((current) => ({ ...current, body: event.target.value }))}
+            onChange={(body) => setForm((current) => ({ ...current, body }))}
+            onUploadImage={uploadInlineImage}
+            disabled={loading}
+            ariaLabel={t("admin.posts.translationBody")}
           />
         </div>
 

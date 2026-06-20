@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  cleanupOrphanFile: vi.fn(),
+  deleteStorageObject: vi.fn(),
   getSmtpConfig: vi.fn(),
   sendMembershipActivatedEmail: vi.fn(),
   sendMembershipRevokedEmail: vi.fn(),
@@ -8,6 +10,11 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/modules/config", () => ({ getSmtpConfig: mocks.getSmtpConfig }));
+vi.mock("@/modules/file/cleanup", () => ({
+  cleanupOrphanFile: mocks.cleanupOrphanFile,
+  deleteStorageObject: mocks.deleteStorageObject,
+  UnsupportedOrphanCleanupPurposeError: class UnsupportedOrphanCleanupPurposeError extends Error {},
+}));
 vi.mock("@/modules/mail", () => ({
   sendMembershipActivatedEmail: mocks.sendMembershipActivatedEmail,
   sendMembershipRevokedEmail: mocks.sendMembershipRevokedEmail,
@@ -18,11 +25,11 @@ import type { Task } from "@/db/schema";
 
 import { runTaskHandler } from "./handlers";
 
-function task(payloadJson: Record<string, unknown>): Task {
+function task(payloadJson: Record<string, unknown>, kind = "email"): Task {
   const now = new Date();
   return {
     id: "11111111-1111-4111-8111-111111111111",
-    kind: "email",
+    kind,
     dedupeKey: null,
     payloadJson,
     runAfter: now,
@@ -42,6 +49,8 @@ describe("task handlers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSmtpConfig.mockResolvedValue({ configured: true });
+    mocks.cleanupOrphanFile.mockResolvedValue("deleted");
+    mocks.deleteStorageObject.mockResolvedValue(undefined);
   });
 
   it("treats missing SMTP configuration as a successful no-op", async () => {
@@ -114,5 +123,35 @@ describe("task handlers", () => {
       "Proof unclear",
       "en",
     );
+  });
+
+  it("runs first-stage orphan cleanup from an immutable file id payload", async () => {
+    const fileId = "550e8400-e29b-41d4-a716-446655440000";
+    const result = await runTaskHandler(task({ fileId }, "file.cleanup_orphan"));
+
+    expect(mocks.cleanupOrphanFile).toHaveBeenCalledWith(fileId);
+    expect(result.note).toContain("deleted");
+  });
+
+  it("runs second-stage storage deletion only from the task payload", async () => {
+    const payload = {
+      storageDriver: "local",
+      bucket: null,
+      objectKey: "content/2026/06/image.png",
+    } as const;
+    await runTaskHandler(task(payload, "storage.delete_object"));
+    expect(mocks.deleteStorageObject).toHaveBeenCalledWith(payload);
+  });
+
+  it("propagates temporary storage failures so the dispatcher can retry", async () => {
+    mocks.deleteStorageObject.mockRejectedValue(new Error("temporary storage outage"));
+    await expect(
+      runTaskHandler(
+        task(
+          { storageDriver: "s3", bucket: "private", objectKey: "content/image.png" },
+          "storage.delete_object",
+        ),
+      ),
+    ).rejects.toThrow("temporary storage outage");
   });
 });
