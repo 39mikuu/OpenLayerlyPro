@@ -1,263 +1,371 @@
-# 交接：B2 视频 #1 — 浏览器内播放(Range/206 + 内联播放器)
+# 交接：B2 视频 #1 — 浏览器内播放（Range/206 + 内联播放器）
 
-> 给执行 agent 的自包含实现说明。**前置依赖:当前 `main` 即可(B1 流式上传已合并)**。落地决策见 [ADR 0007](../adr/0007-inline-video-playback.md)。
+> 给执行 agent 的自包含实施说明。前置依赖：当前 `main`，B1 流式上传已合并。设计依据：[ADR 0007](../adr/0007-inline-video-playback.md)。
 >
-> 开工前建 issue;Draft 直到真实 PG 集成 + CI 全绿。
+> 开工前创建独立 Issue；实施 PR 保持 Draft，直到真实 PostgreSQL 集成测试和完整 CI 全绿。
 >
-> ⚠️ **顺序**:与编辑器 Markdown 切片**都改主题契约 + `post-detail.tsx`**,必须**串行**。本切片**无 schema 迁移**。
+> 与编辑器/公开嵌入都会修改主题契约和帖子详情展示，必须串行实施。本切片无 schema 迁移、无 ffmpeg。
 
-让 `content_attachment` 视频在公开页**内联播放且精确拖动**。会员专属是核心:**会员/登录视频在本地与 S3 都经应用代理 Range、逐请求鉴权**;只有**公开文章**视频才用 S3 签名 URL 卸载带宽。不含 ffmpeg/时长/封面/转码/直传 S3(B2 #2)。
+## 1. 目标
 
-## 0. 红线(务必遵守)
+让 `content_attachment` 视频支持：
 
-1. **鉴权先于任何基于文件大小的响应**:严格两阶段——先 `canAccessFile` 通过,**再** `parseSingleRange`。**绝不**在鉴权前返回 416 或任何含 `Content-Range: */size` / `Content-Length` 的响应(否则未授权者能探测受限文件的存在与精确大小)。
-2. **会员/登录视频逐请求鉴权**:本地代理 Range、**S3 也应用代理 Range**(不发签名 URL);每个 range 请求都过鉴权,会员撤销/过期、文章下架即时生效。
-3. **仅公开文章视频**(授予访问的 post `visibility==='public'`)才走 S3 302 签名 URL 卸载。
-4. **Range 解析**:非法(`last<first`、未知单位、畸形)→ 忽略→200;合法但无法满足(`start>=size`、后缀 0)→ 416(**鉴权后**);防大整数溢出。
-5. **play/download 分离**:`?mode=inline` 仅对**视频 MIME 白名单**置 `Content-Disposition: inline`,其余 `attachment`;始终 `X-Content-Type-Options: nosniff`。
-6. **限流分桶**:视频 Range 播放(metadata/seek/续传每次都是 GET)**不得**走通用下载的 120/10min,否则正常播放被 429。鉴权**之后**用独立 **per-user+per-file** 桶(阈值更高、续传基本不限),见 §5。
-7. **本地路径过 `resolveSafePath`**;**无 schema 迁移、无 ffmpeg**。
+- 浏览器内播放；
+- 精确 seek；
+- 本地与 S3 Range；
+- member/login 视频逐请求鉴权；
+- public S3 视频签名 URL卸载；
+- 独立视频限流；
+- 播放和下载 disposition 分离。
 
-## 1. 现状(必读)
+## 2. 红线
 
-- 路由 `src/app/api/files/[id]/download/route.ts`:整文件 200(L50-58),无 Range/`Accept-Ranges`;S3 `NextResponse.redirect(url,302)`(L44-46);`log` 按 purpose(L41);`getFileById`→404(L25-26)在鉴权前(既有;file id 为 uuid 不可枚举,保持)。
-- `authorizeAndPrepareDownload` `src/modules/download/index.ts`:`canAccessFile`(按 purpose,内部已取关联 published post,知 `post.visibility`)→ 写日志(`input.log`)→ S3 `{mode:"redirect",url}`(`SIGNED_URL_TTL_SECONDS=5*60`)/ 本地 `{mode:"stream",stream,file}`。
-- 存储:`GetObjectInput={objectKey,bucket?}`;本地 `getObject=createReadStream(resolveSafePath)`;S3 `getObject` 用 `GetObjectCommand`(未传 Range);`createSignedDownloadUrl(SignedUrlInput{expiresInSeconds,downloadName})`。
-- 公开页 `src/app/(site)/posts/[slug]/page.tsx` L39-55:attachments=`listPostFiles` 过滤 `kind="attachment"` →`{downloadHref:`/download/${id}`,name,sizeBytes}`。
-- 主题 `PostAttachmentView={downloadHref,name,sizeBytes}`;`post-detail.tsx` L117-145 渲染下载按钮。
-- 视频 MIME 映射已在 `src/modules/file/index.ts`(`mp4→video/mp4`,`webm→video/webm`,`mov→video/quicktime`,`m4v→video/x-m4v`)。
+1. 所有请求先经过粗粒度 pre-auth IP 限流。
+2. 鉴权通过前不得解析出基于文件大小的 416 或响应头。
+3. member/login 视频在 local 和 S3 都必须应用代理，每个 Range 请求重新鉴权。
+4. 只有 public 视频可走 S3 redirect。
+5. `mode=inline` 只允许视频 MIME 白名单，并始终 `nosniff`。
+6. 视频 Range 不得使用会误杀播放的普通 120/10min 下载桶。
+7. local objectKey 继续经过 `resolveSafePath`。
+8. 不实现 multipart Range、转码、HLS、封面或时长探测。
 
-## 2. 锁定决策(见 ADR 0007)
+## 3. 常量与配置
 
-| # | 决策 |
-|---|---|
-| D1 | 本地 Range/206 应用代理;无 schema 迁移、无 ffmpeg。 |
-| D2 | 会员/登录视频:本地 + **S3 均应用代理 Range**,逐请求鉴权;公开视频:S3 302 签名 URL(可较长 TTL)。仅视频改动,非视频附件 S3 不变。 |
-| D3 | `GetObjectInput` 加 `start?/end?`;本地 `createReadStream({start,end})`;**S3 `getObject` 传 `Range`**。 |
-| D4 | 鉴权先行;416 仅鉴权后;非法 Range→200;防溢出。 |
-| D5 | `playHref=/api/files/{id}/download?mode=inline`(视频 MIME 白名单→inline+nosniff);`downloadHref` 不变(attachment)。 |
-| D6 | `PostAttachmentView` 加 `mimeType`+`inlineCandidate`+`playHref?`;主题渲染 `<video>`+回退文案+**始终保留下载**。 |
-| D7 | 视频 MIME 白名单 `INLINE_VIDEO_MIME = {video/mp4, video/webm, video/quicktime, video/x-m4v}`(mp4/webm 可靠;mov/m4v 尽力而为)。 |
+新增统一常量：
 
-## 3. 存储层:Range
-
-`src/modules/storage/types.ts`:
 ```ts
-export type GetObjectInput = { objectKey: string; bucket?: string | null; start?: number; end?: number };
+export const INLINE_VIDEO_MIME = new Set([
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "video/x-m4v",
+]);
 ```
-本地 `local.ts`:
-```ts
-async getObject(input: GetObjectInput): Promise<Readable> {
-  const full = resolveSafePath(input.objectKey);
-  if (input.start !== undefined || input.end !== undefined) {
-    return createReadStream(full, { start: input.start ?? 0, end: input.end }); // end 含,与 Node 语义一致
-  }
-  return createReadStream(full);
-}
+
+新增配置：
+
+```text
+PUBLIC_VIDEO_SIGNED_URL_TTL_SECONDS
+FILE_PREAUTH_RATE_LIMIT_MAX
+FILE_PREAUTH_RATE_LIMIT_WINDOW_MS
+VIDEO_RANGE_RATE_LIMIT_MAX
+VIDEO_RANGE_RATE_LIMIT_WINDOW_MS
 ```
-S3 `s3.ts`(**本切片需要**,会员视频代理用):
-```ts
-async getObject(input: GetObjectInput): Promise<Readable> {
-  const Range = input.start !== undefined || input.end !== undefined
-    ? `bytes=${input.start ?? 0}-${input.end ?? ""}` : undefined;
-  const res = await this.client.send(new GetObjectCommand({ Bucket: input.bucket ?? this.bucket, Key: input.objectKey, Range }));
-  return res.Body as Readable;
-}
+
+建议默认：
+
+```text
+public video signed URL = 6 小时
+pre-auth IP bucket      = 1200 / 10 分钟
+video user/ip+file      = 600 / 10 分钟
 ```
-`SignedUrlInput` 增加可选 `disposition?: "inline"|"attachment"` 与 `contentType?: string` → 设到签名 URL 的 `ResponseContentDisposition` / `ResponseContentType`(公开视频 inline 播放,确保浏览器内联且 MIME 正确)。其余调用方不传则行为不变。
 
-**公开视频签名 URL 的 TTL 必须显式加长**:现有 `SIGNED_URL_TTL_SECONDS = 5*60`(5 分钟)用于普通附件下载。公开视频 302 后,浏览器后续的 seek/续传**直连 S3**,5 分钟内播放/拖动就会撞 S3 403、中断。为公开视频单独定义更长 TTL(如 `PUBLIC_VIDEO_SIGNED_URL_TTL_SECONDS = 6*60*60`,6 小时,可配),`prepareAuthorizedDownload` 对**公开视频**分支用它签 URL;非视频附件仍用 5 分钟。这与 ADR 0007 已接受的权衡一致:**签名 URL 是其有效期内的 bearer 凭证、撤销不了**——仅对**本就公开**的视频可接受,会员视频永远走应用代理(不签 URL)。测试须覆盖「长时长播放 + seek 超出 5 分钟仍可读」。
+配置必须设上下限，防止误设为无限或过低。
 
-## 4. 下载授权层:两阶段 + 可见性分流
+## 4. Storage API
 
-把「鉴权」与「准备字节」拆开,顺序固定:
+`GetObjectInput`：
 
 ```ts
-// 1) 鉴权（不碰 range/size）
-authorizeFileAccess(user, file): Promise<{ visibility: PostVisibility | null; postId: string | null }>
-//    内部即现有 canAccessFile；失败 throw 401/403。返回授予访问的 post 可见性（用于 §决定代理/重定向）。
+export type GetObjectInput = {
+  objectKey: string;
+  bucket?: string | null;
+  start?: number;
+  end?: number; // inclusive
+};
+```
 
-// 2) 鉴权通过后再解析 range（见 §5 路由）
+local：
 
-// 3) 准备：本地/或会员 S3 → 代理流（可带 range）；公开 S3 → 签名 URL
+```ts
+createReadStream(resolveSafePath(input.objectKey), {
+  start: input.start,
+  end: input.end,
+});
+```
+
+S3 proxy：
+
+```ts
+const range =
+  input.start !== undefined || input.end !== undefined
+    ? `bytes=${input.start ?? 0}-${input.end ?? ""}`
+    : undefined;
+
+new GetObjectCommand({
+  Bucket,
+  Key,
+  Range: range,
+});
+```
+
+`SignedUrlInput` 增加：
+
+```ts
+disposition?: "inline" | "attachment";
+contentType?: string;
+```
+
+S3 签名 URL设置 `ResponseContentDisposition` / `ResponseContentType`。不传时保持现有普通附件行为。
+
+## 5. 下载授权拆分
+
+将“访问判断”和“准备字节”拆开：
+
+```ts
+authorizeFileAccess(user, file): Promise<{
+  visibility: "public" | "login" | "member" | null;
+  postId: string | null;
+}>;
+
 prepareAuthorizedDownload(input: {
-  file; range?: {start:number; end:number};
-  visibility: PostVisibility | null;
-  inline: boolean;            // mode=inline 且 MIME 白名单
+  file: FileRecord;
+  visibility: "public" | "login" | "member" | null;
+  range?: { start: number; end: number };
+  inline: boolean;
   log: boolean;
-}): Promise<DownloadResult>
+}): Promise<DownloadResult>;
 ```
 
-`prepareAuthorizedDownload` 规则:
-- **本地** → `storage.getObject({...,start,end})` 流(带 range)。
-- **S3 且 `visibility==='public'`** → `createSignedDownloadUrl({ ..., expiresInSeconds: PUBLIC_VIDEO_SIGNED_URL_TTL_SECONDS, disposition: inline?"inline":"attachment", contentType: file.mimeType })`,返回 `{mode:"redirect",url}`(浏览器自行对 S3 range;TTL 须够长以覆盖整段播放/seek,见 §3)。
-- **S3 且 `visibility!=='public'`(会员/登录)** → `storage.getObject({...,start,end})`(**应用代理 S3 Range**),返回 `{mode:"stream",...}`;**不发签名 URL**。
-- `DownloadResult` 的 stream 分支带回 `{start,end,size}` 供路由设 206 头。
-- 日志:`input.log` 由路由按「是否续传 range」决定(见 §6)。
+规则：
 
-> 也可直接扩展现有 `authorizeAndPrepareDownload` 接收原始 `Range` 字符串,在其内部保证「鉴权→解析→准备」顺序;关键是**对外不可能在鉴权前拿到基于大小的响应**。
+- local → 应用流；
+- S3 + public video → 签名 URL redirect；
+- S3 + login/member video → `GetObjectCommand.Range` 应用代理；
+- 非视频 S3 附件继续现有短 TTL 下载流程；
+- `visibility` 必须来自实际授予访问的 published post，不从 query 参数推导。
 
-## 5. 路由:两阶段、206/416、disposition
+## 6. 路由固定顺序
 
-`src/app/api/files/[id]/download/route.ts`:
+`src/app/api/files/[id]/download/route.ts`：
+
 ```ts
+// 0. 统一 pre-auth 防滥用桶；不存在、未授权、授权请求都计入同一个 IP key
+if (!rateLimit(`file-preauth:${ip}`, PREAUTH_MAX, PREAUTH_WINDOW)) {
+  return jsonError(429, "downloadRateLimited");
+}
+
 const file = await getFileById(id);
-if (!file) return jsonError(404, "fileNotFound");   // uuid 不可枚举，保持既有
+if (!file) return jsonError(404, "fileNotFound");
 
-// —— 阶段一：鉴权（先于任何 range/size 响应）——
-const access = await authorizeFileAccess(user, file); // 失败 throw 401/403
+// 1. 鉴权，不解析 Range，不返回大小
+const access = await authorizeFileAccess(user, file);
 
-// —— 限流：区分通用下载 vs 视频 Range 播放（鉴权之后，避免成为探测信号）——
-const isVideoRange =
-  INLINE_VIDEO_MIME.has(file.mimeType) && (req.headers.get("range") || req.nextUrl.searchParams.get("mode") === "inline");
-if (isVideoRange) {
-  // 视频 Range：per-user+per-file 独立桶，阈值更高；start>0 续传基本不限（见 §6）
-  if (!rateLimit(`video:${user?.id ?? ip}:${file.id}`, 600, 10 * 60 * 1000)) {
+const rangeHeader = req.headers.get("range");
+const inlineRequested = req.nextUrl.searchParams.get("mode") === "inline";
+const inline = inlineRequested && INLINE_VIDEO_MIME.has(file.mimeType);
+const isVideoPlayback = INLINE_VIDEO_MIME.has(file.mimeType) &&
+  (inlineRequested || rangeHeader !== null);
+
+// 2. 鉴权后的功能限流
+if (isVideoPlayback) {
+  const principal = user?.id ?? ip;
+  if (!rateLimit(`video:${principal}:${file.id}`, VIDEO_MAX, VIDEO_WINDOW)) {
     return jsonError(429, "downloadRateLimited");
   }
 } else {
-  // 通用下载沿用既有 120/10min
-  if (!rateLimit(user ? `download:${user.id}` : `download-ip:${ip}`, 120, 10 * 60 * 1000)) {
+  const key = user ? `download:${user.id}` : `download-ip:${ip}`;
+  if (!rateLimit(key, 120, 10 * 60 * 1000)) {
     return jsonError(429, "downloadRateLimited");
   }
 }
 
-// —— 阶段二：鉴权后才解析 range ——
-const inline = req.nextUrl.searchParams.get("mode") === "inline"
-  && INLINE_VIDEO_MIME.has(file.mimeType);
-const range = parseSingleRange(req.headers.get("range"), file.sizeBytes); // null | {start,end} | "unsatisfiable"
-
+// 3. 只有鉴权后才使用 size 解析 Range
+const range = parseSingleRange(rangeHeader, file.sizeBytes);
 if (range === "unsatisfiable") {
-  return new NextResponse(null, { status: 416,
-    headers: { "Content-Range": `bytes */${file.sizeBytes}`, "Accept-Ranges": "bytes", "X-Content-Type-Options": "nosniff" } });
+  return new NextResponse(null, {
+    status: 416,
+    headers: {
+      "Content-Range": `bytes */${file.sizeBytes}`,
+      "Accept-Ranges": "bytes",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
-const isRangeContinuation = !!range && range.start > 0;
 const result = await prepareAuthorizedDownload({
-  file, range: range || undefined, visibility: access.visibility,
-  inline, log: (file.purpose === "content_attachment" || file.purpose === "content_image") && !isRangeContinuation,
+  file,
+  visibility: access.visibility,
+  range: range ?? undefined,
+  inline,
+  log: shouldLogInitialRequest(file, range),
 });
-if (result.mode === "redirect") return NextResponse.redirect(result.url, 302);
-
-const disposition = inline ? "inline" : (INLINE_PURPOSES.has(file.purpose) ? "inline" : "attachment");
-const common = {
-  "Content-Type": file.mimeType,
-  "Content-Disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(file.originalName)}`,
-  "Accept-Ranges": "bytes", "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
-};
-if (range) {
-  const len = range.end - range.start + 1;
-  return new NextResponse(Readable.toWeb(result.stream) as ReadableStream, { status: 206,
-    headers: { ...common, "Content-Range": `bytes ${range.start}-${range.end}/${file.sizeBytes}`, "Content-Length": String(len) } });
-}
-return new NextResponse(Readable.toWeb(result.stream) as ReadableStream, { status: 200,
-  headers: { ...common, "Content-Length": String(file.sizeBytes) } });
 ```
 
-`parseSingleRange(header, size)`(严格区分**非法**与**无法满足**):
-- 无 header → `null`(200)。
-- 仅支持 `bytes=` 单位;其它单位 → `null`(忽略→200)。
-- 单段;多段(逗号)→ `null`(不实现 multipart/byteranges)。
-- `bytes=a-b`:`a`、`b` 为非负十进制;**先校验位数/上界防溢出**(如长度 >15 位或 `> Number.MAX_SAFE_INTEGER` → `null`);`b<a`(`last<first`)→**非法**→`null`(200);`a>=size` → `"unsatisfiable"`;否则 `b=min(b,size-1)` → `{a,b}`。
-- `bytes=a-`(开放)→ `a>=size?"unsatisfiable":{a,size-1}`。
-- `bytes=-n`(后缀):`n===0` → `"unsatisfiable"`;否则 `{max(0,size-n),size-1}`。
-- `size===0` 的任意有效 range → `"unsatisfiable"`。
-- 前导零/空白/缺数字/负号 → 视情况 `null`(忽略)。
+pre-auth 429 必须对所有 fileId 使用相同响应形态，不包含文件存在性、大小或授权原因。
 
-> `INLINE_PURPOSES`(现有)与新的 `?mode=inline` 不冲突;视频走 `content_attachment` + `mode=inline` + MIME 白名单置 inline。**绝不**让非视频 MIME 经 `mode=inline` 变 inline(白名单拦截),保留 `nosniff`。
+## 7. Range parser
 
-## 6. 下载日志(启发式,非精确计数)
+```ts
+parseSingleRange(
+  header: string | null,
+  size: number,
+): null | { start: number; end: number } | "unsatisfiable";
+```
 
-- 续传/seek(`start>0`)**不写** `download_logs`/`recordEvent`。
-- 初始请求(无 Range 或 `start===0`)**按启发式记录**:浏览器 metadata 探测、重试、重载可能产生**多次** `bytes=0-`,故**可能少量重复**;**不作为精确播放次数**。在 PR/文档注明此语义。
+规则：
 
-## 7. 主题:内联 `<video>`
+- 无 header → null；
+- 仅支持 `bytes=`；
+- 多段、未知单位、畸形、前后空白、超大整数 → null；
+- `bytes=a-b`：`b < a` → null；`a >= size` → unsatisfiable；end 截断；
+- `bytes=a-`：从 a 到 EOF；
+- `bytes=-n`：最后 n 字节；`n===0` → unsatisfiable；
+- `size===0` 的有效 Range → unsatisfiable；
+- 解析前检查位数和 `Number.MAX_SAFE_INTEGER`。
 
-`src/modules/theme/types.ts`(与 ADR 0007 §5 一致):
+非法 Range 按 RFC 容错策略忽略，返回整文件 200；合法但无法满足才返回 416。
+
+## 8. 200 / 206 响应
+
+stream 模式公共头：
+
+```http
+Content-Type: <file.mimeType>
+Content-Disposition: inline|attachment; filename*=UTF-8''...
+Accept-Ranges: bytes
+Cache-Control: private, no-store
+X-Content-Type-Options: nosniff
+```
+
+- `inline=true` 才返回 inline；
+- 非视频即使带 `mode=inline` 仍返回 attachment；
+- Range 响应返回 206、`Content-Range` 和区间 `Content-Length`；
+- 无 Range 返回 200 和完整 `Content-Length`。
+
+public S3 redirect 的签名 URL同样设置正确 MIME 和 inline disposition。
+
+## 9. 日志
+
+```ts
+function shouldLogInitialRequest(file, range) {
+  const loggable =
+    file.purpose === "content_attachment" ||
+    file.purpose === "content_image";
+
+  return loggable && (!range || range.start === 0);
+}
+```
+
+语义：
+
+- seek/续传不记；
+- 初始请求启发式记录；
+- 两次 `bytes=0-...` 可能产生两条；
+- 不作为播放次数统计。
+
+## 10. 主题契约
+
 ```ts
 export type PostAttachmentView = {
-  downloadHref: string; name: string; sizeBytes: number;
+  downloadHref: string;
+  name: string;
+  sizeBytes: number;
   mimeType: string;
-  inlineCandidate: boolean;   // mimeType ∈ INLINE_VIDEO_MIME；仅表示“渲染播放器”，不保证可解码
-  playHref?: string;          // inlineCandidate 时 = /api/files/{id}/download?mode=inline
+  inlineCandidate: boolean;
+  playHref?: string;
 };
 ```
-公开页映射:
+
+映射：
+
 ```ts
-const INLINE_VIDEO_MIME = new Set(["video/mp4","video/webm","video/quicktime","video/x-m4v"]);
-...
-mimeType: f.file.mimeType,
-inlineCandidate: INLINE_VIDEO_MIME.has(f.file.mimeType),
-playHref: INLINE_VIDEO_MIME.has(f.file.mimeType) ? `/api/files/${f.file.id}/download?mode=inline` : undefined,
+inlineCandidate: INLINE_VIDEO_MIME.has(file.mimeType),
+playHref: INLINE_VIDEO_MIME.has(file.mimeType)
+  ? `/api/files/${file.id}/download?mode=inline`
+  : undefined,
 ```
-内置主题 `post-detail.tsx`:`inlineCandidate` 渲染
+
+主题：
+
 ```tsx
-<video controls preload="metadata" src={att.playHref} className="w-full rounded-xl border">
-  {t("post.videoUnsupported")}
-</video>
+{att.inlineCandidate && att.playHref && (
+  <video controls preload="metadata" src={att.playHref}>
+    {t("post.videoUnsupported")}
+  </video>
+)}
 ```
-并**始终保留**该附件的下载按钮(mov/m4v 在部分浏览器无法解码时用户仍可下载)。非视频附件不变。不把 `preload="metadata"` 当可靠封面。
 
-## 8. i18n
+始终保留下载按钮。MOV/M4V 只是尽力播放，不承诺 codec 支持。
 
-`{zh,en,ja}.ts` 补:`post.videoUnsupported`(`<video>` 回退)等。
+## 11. 测试
 
-## 9. 测试
+### pre-auth 与信息泄漏
 
-**鉴权 / 信息泄漏(最关键)**:
-- 未授权访客对**会员视频**发 `Range` 请求 → **401/403**,响应**不含** `Content-Range`/`Content-Length`/文件大小;**不产生 416**。
-- 授权会员 → 206 正常。
-- 会员**撤销/过期**或文章**下架**后,S3 会员视频后续 range 请求 → 立即 401/403(因应用代理逐请求鉴权,非签名 URL)。
+- 不存在 ID、未授权 ID、授权 ID 都进入同一 pre-auth IP 桶；
+- pre-auth 429 不含文件大小和授权信息；
+- 未授权 Range 返回 401/403，不含 `Content-Range` / `Content-Length`；
+- 未授权请求不产生 416。
 
-**可见性分流**:
-- 会员/登录视频 + S3 → `{mode:"stream"}`(代理,无 redirect)。
-- 公开视频 + S3 → `{mode:"redirect"}` 签名 URL(含 inline disposition + `contentType`,且 `expiresInSeconds` = 加长 TTL 而非 5min;断言传入的 TTL ≥ 公开视频常量,覆盖长播放/seek 不因 5min 过期)。
-- 本地 → 始终代理流。
+### post-auth 限流
 
-**Range 解析**:
-- `bytes=0-1023` → 206 + `Content-Range: bytes 0-1023/size` + `Content-Length:1024`。
-- `bytes=1000-`→到 EOF;`bytes=-500`→末 500;`bytes=-0`→**416**。
-- `bytes=500-400`(last<first)→**非法→200 整文件**(非 416)。
-- `bytes=500-` 且 size=100 →**416**;`start>=size`→416 + `Content-Range: bytes */size`。
-- 超大十进制(溢出)→ 当作 null→200,**不崩**。
-- 未知单位 / 多段 / 空白 / 前导零 → 各加用例(忽略→200)。
-- 无 Range → 200 + `Accept-Ranges`。
+- 正常数十次 metadata/seek/续传不误报 429；
+- 达到视频桶上限后返回 429；
+- 普通附件继续受现有 120/10min；
+- key 按 user-or-ip + fileId 隔离。
 
-**disposition**:`?mode=inline` 且 video MIME → `inline`;`?mode=inline` 但**非视频** MIME → 仍 `attachment`(白名单拦截);始终 `nosniff`。
+### 可见性分流
 
-**日志**:`bytes=2000-3000`(start>0)不新增日志;**连续两次** `bytes=0-...` → 断言当前是否产生两条(明确启发式,允许重复)。
+- member/login + S3 → stream，无 redirect；
+- public + S3 → redirect，长 TTL、inline、正确 MIME；
+- local → stream；
+- 权限撤销、会员过期、文章下架后下一次私有 Range 立即失败。
 
-**限流**:授权会员对同一视频**连续多次** Range 请求(模拟 metadata+seek+续传,数十次)→ **不**误报 429(走视频桶,非 120/10min);非视频附件的普通下载仍受 120/10min。
+### Range
 
-**主题/视图**:`inlineCandidate`/`playHref` 正确;`<video>` 渲染且保留下载;locked(`!allowed`)不渲染。
+覆盖：
 
-**存储**:本地 `getObject({start,end})` 与 S3 `getObject` 传 `Range` 返回正确字节区间。
+- `bytes=0-1023`；
+- open-ended；
+- suffix；
+- `bytes=-0`；
+- `last < first`；
+- start 超出 size；
+- size 0；
+- 多段；
+- 未知单位；
+- 前导/内部空白；
+- 超大整数和溢出；
+- 无 Range。
 
-## 10. 提交前验证
+### disposition / storage / theme
+
+- inline 视频；
+- 非视频带 inline query 仍 attachment；
+- nosniff；
+- local 与 S3 区间字节正确；
+- 播放器与下载按钮同时存在；
+- locked 页面不显示附件。
+
+## 12. 验证
+
 ```bash
-pnpm lint && pnpm format:check && pnpm exec tsc --noEmit
+pnpm lint
+pnpm format:check
+pnpm exec tsc --noEmit
 RUN_DB_INTEGRATION_TESTS=true pnpm test
-pnpm build:migrator && pnpm build
+pnpm build:migrator
+pnpm build
 ```
-(无 schema 迁移。)
 
-## 11. PR
-- base `main`,draft,标题 `feat(content): inline video playback with HTTP range`。
-- 描述:本地+S3 应用代理 Range/206;按可见性分流(会员代理、公开签名 URL);鉴权先行(无大小泄漏);`?mode=inline` + 视频 MIME 白名单 + nosniff;`PostAttachmentView` 加 `mimeType/inlineCandidate/playHref` + 主题 `<video>`+保留下载;日志启发式;无迁移、无 ffmpeg。主题契约变更需自定义主题适配。
+## 13. 验收清单
 
-## 12. 验收 checklist
-- [ ] 鉴权先于任何基于大小的响应;未授权得 401/403 而非 416/大小
-- [ ] 会员/登录视频本地+S3 均逐请求鉴权(撤销/过期/下架即时生效)
-- [ ] 仅公开视频用 S3 签名 URL 卸载(可较长 TTL)
-- [ ] 本地+S3 Range/206 正确(`Content-Range`/`Content-Length`/`Accept-Ranges`)
-- [ ] 非法 Range→200、无法满足→416(鉴权后)、防溢出
-- [ ] `?mode=inline` 仅视频 MIME 白名单生效 + nosniff;play/download disposition 分离
-- [ ] `inlineCandidate` 渲染 `<video>` + 回退 + **始终保留下载**
-- [ ] 日志:seek 不记;初始启发式(语义已注明,非精确计数)
-- [ ] 视频 Range 用独立 per-user+per-file 限流桶(鉴权后);连续多次 range 不误报 429(有测试)
-- [ ] 无 schema 迁移、无新依赖、无 ffmpeg;路径防穿越不破坏
+- [ ] pre-auth IP 桶存在且无侧信道
+- [ ] 鉴权先于 Range/size 响应
+- [ ] member/login local+S3 逐请求鉴权
+- [ ] public S3 使用独立长 TTL
+- [ ] Range 200/206/416 正确
+- [ ] 视频独立 post-auth 限流不误杀播放
+- [ ] inline 仅 MIME 白名单 + nosniff
+- [ ] 日志明确为启发式
+- [ ] 主题始终保留下载
+- [ ] 无 schema 迁移、无 ffmpeg
+- [ ] 完整 CI 全绿
 
-## 不在本切片(B2 #2 / 后续)
-- ffmpeg/ffprobe:时长、自动封面/缩略图、转码、HLS/ABR。
-- 创作者自定义封面 + `files` 加 `duration`/`poster_file_id`。
-- 直传 S3(presigned)。自定义播放器库。
+## 不在本切片
+
+- ffmpeg/ffprobe；
+- 自动封面、时长、缩略图；
+- 转码、HLS/ABR；
+- 直传 S3；
+- 自定义播放器库。
