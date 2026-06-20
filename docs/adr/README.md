@@ -33,3 +33,4 @@ ADR 一旦 Accepted 不在原地大改语义；要推翻就新写一条并把旧
 | [0003](0003-durable-task-and-outbox-boundary.md) | 持久化任务与 outbox 边界 | Accepted ✅ | #7 #9 |
 | [0004](0004-publishing-workflow.md) | 文章发布工作流：派生调度态 + token fencing | Accepted ✅ | #9 |
 | [0005](0005-auto-payments.md) | 自动收付款 + 可插拔支付服务商 | Accepted ✅ | v0.2 |
+| [0006](0006-markdown-editor.md) | Markdown 内容编辑器 + 正文内联插图 | Proposed ▶ | v0.3 |
