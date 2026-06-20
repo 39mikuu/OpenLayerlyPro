@@ -39,12 +39,15 @@
 | D5 | `payment_provider_events` 事件账本(唯一约束 + 事件时间防乱序);按 invoice 决策,不按聚合状态。 |
 | D6 | 续费 = 追加一笔 grant + 重算;退款/拒付反转**那一笔 grant**(改造 #49 路径,不吊销整行)。 |
 | D7 | 手动提醒 = `provider=NULL` 订阅 + `subscription.renewal_reminder` task;手动 grant period 用 `durationDays`。 |
+| D8 | 对账安全网 `subscription.reconcile`(防漏 `invoice.paid`)+ 权益按已付 period_end 结构性 fail-safe;不加 Core 宽限窗口。 |
+
+**owner 已定**:① 反转重算 = 未反转时长之和从基准顺延(不留洞);② 现有 memberships **直接迁移回填**;③ 取消默认 = period-end;④ dunning = Stripe + 对账 + fail-safe。「可订阅」判定按默认用 `stripe_price_id` 是否存在。
 
 ## 3. Schema + 迁移（PR-A,本切片最重的一块）
 
 新增 `membership_grants`、`subscriptions`、`payment_provider_events`,`payment_requests.subscription_id`,`membership_tiers.stripe_price_id`(字段见 ADR 0009 §1/§2/§5)。
 
-**现有 memberships 迁移**(评审待确认 2,默认推荐):把每个现有 `memberships` 行回填成**一笔 legacy `membership_grant`**(`source` 沿用、`period_start=starts_at`、`period_end=ends_at`、`payment_request_id` 尽量回填),之后有效会员一律走账本重算。`memberships` 表保留为**派生投影**(或读时计算 + 缓存)。迁移要有**幂等、可回滚、回归测试**(迁移前后 `getActiveLevel` 不变)。
+**现有 memberships 迁移（已定:直接回填,非前向兼容）**:把每个现有 `memberships` 行回填成一笔 `membership_grant`(`source` 沿用、`period_start=starts_at`、`period_end=ends_at`、`payment_request_id` 尽量回填),之后有效会员一律走账本重算。`memberships` 表保留为**派生投影**(或读时计算 + 缓存)。迁移要**幂等、可回滚、有回归测试**(迁移前后 `getActiveLevel`/到期不变)。
 
 `pnpm exec drizzle-kit generate` → 提交迁移 + snapshot;核对仅含本切片变更。
 
@@ -89,6 +92,15 @@ webhook 路由对所有事件:
 
 下单:`POST /api/payments/subscribe`(登录)→ 校验 tier 有 `stripe_price_id` → **先建本地 `subscription(status='pending')`** → `createSubscriptionCheckout`(metadata 带本地 id)→ 返回 redirectUrl。
 
+## 6b. 对账安全网（PR-A,dunning/webhook 不可靠的兜底）
+
+webhook 不保证送达;**正确性靠对账,不靠「每个回调都送达」**(ADR 0009 §9)。
+
+- **结构性 fail-safe**:grant 有效期严格被已付 invoice `period_end` 限定 → 漏掉失败/取消回调**绝不超期**。`past_due` 仅状态标,不延长权益;**不加 Core 额外宽限窗口**。
+- **`subscription.reconcile` durable task**(周期性,如每日 + period 边界附近):对 `active`/`past_due` 的 Stripe 订阅,拉 Stripe 权威状态(`stripe.subscriptions.retrieve` + 最近 `invoices.list`),经**同一幂等账本路径**:① 补齐缺失的续费 grant(漏掉的 `invoice.paid`,按 invoice period);② 修正 subscription 状态(canceled/expired)。漏发/失败回调由此**自愈**。
+- webhook handler 处理失败返回非 2xx → Stripe 重试;事件账本标 `failed` → 可重处理。
+- 对账走与 webhook **完全相同**的幂等去重(事件账本 + `payment_request.provider_event_id`),不重复开通。
+
 ## 7. 取消（PR-A）
 
 `POST /api/me/subscription/cancel` → `cancelSubscription(ref,{atPeriodEnd:true})` → 本地 `cancel_at_period_end=true`;webhook 最终置 `canceled`。会员用到当前账本到期。立即取消为可选(不退已用周期)。
@@ -111,6 +123,11 @@ webhook 路由对所有事件:
 - `failed → paid → 旧 failed 重放` → 不回退 past_due(事件时间防乱序)。
 - 续费事件重放 → 只开通一期(事件账本 + payment_request 双守卫)。
 - owned-but-unresolved paid → 可重试/落库,不被当永久 no-op。
+
+**对账安全网 / fail-safe**
+- 漏掉 `invoice.paid`(模拟回调丢失)→ `subscription.reconcile` 拉 Stripe 后**补齐**该期 grant,且与后到的同一事件**不重复**开通。
+- 漏掉 `customer.subscription.deleted`/失败回调 → 会员**不超期**,在最后已付 `period_end` 自然到期(结构性 fail-safe);reconcile 后修正订阅状态。
+- reconcile 走与 webhook 相同幂等去重,反复运行不重复开通。
 
 **按笔反转 / 权益账本**
 - 三期 grant,**只退中间一期** → 其余期/手动/其他来源权益不受损(重算正确)。
@@ -152,6 +169,7 @@ pnpm build:migrator && pnpm build
 - [ ] 顺序无关:invoice.paid 早于 subscription.created 仍开通;owned-unresolved 可重试不当 no-op
 - [ ] 权益窗口 = Stripe invoice 实际 period(月末/2月/闰年/anchor 不漂移)
 - [ ] 按 invoice 决策:deleted 早于已付 invoice,该 invoice 仍开通
+- [ ] 对账安全网:`subscription.reconcile` 补齐漏掉的 `invoice.paid`(幂等不重复);漏掉失败/取消回调会员不超期(结构性 fail-safe,不加 Core 宽限窗口)
 - [ ] 按笔反转:退款/拒付只撤对应期,保留其他期/手动/一次性(#49 改造后回归绿)
 - [ ] Stripe `mode=subscription` 开通 + 续费;金额校验;不碰卡号;密钥不入日志
 - [ ] 取消 period-end 默认 / 立即可选,不退已用周期

@@ -44,7 +44,7 @@ membership_grants(
   - `getActiveLevel` / 有效 `endsAt`：取所有未反转 grant 在各 tier 上**叠加**后的覆盖区间（沿用 ADR 0001「叠加时间窗」语义,只是从「一个可变 endsAt」改为「一组不可变 grant 的并/和」）。
   - **反转某一笔** = 给该 grant 置 `reversed_at` → **重算**有效 `endsAt`/level。这样退款/拒付只撤销那一期,**保留**其他期、手动、tier 变更、其他来源。
 - **所有来源统一写账本**：人工 / 一次性 / 订阅续费 / gift 都写一行 `membership_grants`;`grantMembership` 改为「追加一笔 grant + 重算投影」。一次性/人工的反转也因此**从「吊销整行」升级为「撤销那一笔」**（顺带修正现状的粗粒度反转）。
-- **叠加重算规则**（明确,供实现 + 测试）：同一用户对某 tier 的有效到期 = 从「当前 active 基准」起,按未反转 grant 的 `period` **连续顺延**;反转中间一笔时按文档化规则重算（推荐：重算为「未反转 grant 时长之和从基准顺延」,即移除该笔时长,后续不留洞——见 handoff §权益重算）。
+- **叠加重算规则（已定,owner）**：同一用户对某 tier 的有效到期 = 从「当前 active 基准」起,按未反转 grant 的时长**连续顺延**;**反转中间一笔 = 移除该笔时长、后续不留洞**(「未反转 grant 时长之和从基准顺延」)。供实现 + 测试。
 
 > 这是对 ADR 0001 的**细化/扩展**(不是推翻):时间窗叠加语义不变,只是把「一个可变 endsAt」显式化为「不可变 grant 账本 + 派生投影」,以支持按笔反转。需要把现有 membership 迁移/前向兼容(见 Consequences)。
 
@@ -121,6 +121,18 @@ payment_provider_events(
 
 人工/一次性/订阅续费都**追加 grant + 重算**,会员态统一。tier 用 `purchase_enabled` 控一次性;`stripe_price_id` 控订阅。后台:订阅列表 + 取消;`me`:订阅状态 + 取消（默认 `cancel_at_period_end`）。
 
+### 9. webhook 不可靠 → 对账安全网 + 权益结构性 fail-safe（dunning 回调失败的兜底）
+
+webhook **不保证送达**(Stripe 重试约 3 天后放弃),dunning 相关回调(`invoice.payment_failed` / `invoice.paid` 重试成功 / `customer.subscription.deleted`)都可能丢。**不把正确性押在「每个回调都送达」**,分两层保证:
+
+- **权益结构性 fail-safe**:每笔 grant 有效期**严格被已付 invoice 的 `period_end` 限定**。因此**漏掉失败/取消回调绝不会让会员超期**——最坏会员在「最后真正付费那期」末自然到期。`past_due` 只是状态标(供 UI/提醒),**不延长权益**;**不加 Core 额外宽限窗口**(已付 period_end 即天然宽限边界)。
+- **对账安全网(防漏掉成功续费)**:真正危险方向是漏掉 `invoice.paid`(dunning 重试成功却没收到)→ 付了钱没续上。兜底:
+  1. webhook handler 失败返回非 2xx → Stripe 重试;事件账本标 `failed` → 可重处理。
+  2. 新增周期性 durable task `subscription.reconcile`:对 active/past_due 的 Stripe 订阅,**主动拉 Stripe 权威状态**(subscription + 最近 invoices),经**同一幂等账本路径**补齐缺失续费 grant、修正状态 → 漏发/失败回调**自愈**。
+  3. 可选:Stripe Events API 回放区间内漏处理事件。
+
+即 **happy path 靠 webhook + dunning;可靠性靠对账 + 结构性 fail-safe**。
+
 ## Alternatives
 
 - **不建 grant 账本,继续吊销整行**：否决（B1）——无法按期反转,退款误伤其他期/手动/其他来源。
@@ -136,7 +148,7 @@ payment_provider_events(
 - ✅ 真正的会员续费(Stripe 自动 + 无卡半自动),经常性收入,1.0 核心闭环补齐。
 - ✅ **按笔可反转的权益账本**:退款/拒付只撤对应期,顺带修正现状一次性/人工的粗粒度反转。
 - ✅ provider 无关订阅 + 事件账本,易接入新 provider、对账可审计。
-- ⚠️ **较大 schema 迁移**：新增 `membership_grants`、`subscriptions`、`payment_provider_events`;`payment_requests.subscription_id`；`membership_tiers.stripe_price_id`。**且需把现有 memberships 迁移成 grant 账本(或前向兼容:旧行视为单笔 grant)**——这是本切片最重的一块,需谨慎设计 + 迁移测试。
+- ⚠️ **较大 schema 迁移**：新增 `membership_grants`、`subscriptions`、`payment_provider_events`;`payment_requests.subscription_id`；`membership_tiers.stripe_price_id`。**现有 memberships 直接迁移回填成 `membership_grants`(已定:非前向兼容)**——本切片最重的一块,需幂等/可回滚迁移 + 迁移前后 `getActiveLevel`/到期不变测试。
 - ⚠️ `grantMembership`/反转路径改为「追加 grant + 重算投影」,影响现有人工/一次性/反转(#49)代码,**必须全回归**。
 - ⚠️ Stripe webhook 事件集扩大;需幂等账本 + 乱序拒绝 + 顺序无关恢复 + 按 invoice 决策 + 针对性测试(见下)。
 - ⚠️ 权益重算规则(尤其反转中间一笔)需文档化 + 测试,避免留洞或多给。
@@ -151,11 +163,15 @@ payment_provider_events(
 - 按期反转与**人工/一次性并存**时,只撤对应那一笔。
 - 月末 / 2 月·闰年 / 非默认 billing anchor 周期 → 权益窗口取 Stripe 实际 period,不漂移。
 - 续费幂等(event 账本 + payment_request 双守卫)、金额校验、reversal-first。
+- **对账自愈**:漏掉 `invoice.paid`(dunning 重试成功但回调丢)→ `subscription.reconcile` 拉 Stripe 后补齐续费 grant。
+- **结构性 fail-safe**:漏掉失败/取消回调 → 会员**不超期**,在最后已付 period_end 自然到期。
 
-## 待确认（评审时定）
+## 已定（owner,2026-06-20）
 
-1. 权益重算:反转中间一笔的语义——「按未反转时长之和从基准顺延」(不留洞,推荐)还是「严格保留各 grant 原始 [start,end] 区间」(可能留洞)。
-2. 现有 memberships 迁移:回填成 `membership_grants` vs 旧行作为「单笔 legacy grant」前向兼容。
-3. 「可订阅」判定:`stripe_price_id` 是否存在 vs 显式列。
-4. 取消默认:period-end(推荐)vs 立即;手动提醒提前天数默认。
-5. past_due 宽限:完全交给 Stripe dunning + 账本自然到期,还是 Core 额外显式窗口。
+1. 反转重算 = 「未反转 grant 时长之和从基准顺延」(不留洞)。
+2. 现有 memberships **直接迁移回填**成 `membership_grants`(非前向兼容)。
+3. 取消默认 = `cancel_at_period_end`(用到期末)。
+4. past_due / dunning = Stripe dunning + **对账安全网**(§9)+ 权益按已付 period_end **结构性 fail-safe**;**不**加 Core 额外宽限窗口。
+
+按推荐默认(无异议即采用):
+- 「可订阅」判定 = tier `stripe_price_id` 是否存在(少一列);手动提醒提前天数默认 7(可配)。
