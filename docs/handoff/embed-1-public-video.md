@@ -1,143 +1,428 @@
 # 交接：公开视频嵌入 — provider 白名单 iframe
 
-> 给执行 agent 的自包含实现说明。**前置依赖:编辑器 Markdown 切片([ADR 0006](../adr/0006-markdown-editor.md) / `handoff/editor-1-markdown-inline-images.md`)已合并**——本切片**扩展**其 `src/modules/content/markdown.ts` 与编辑器组件。落地决策见 [ADR 0008](../adr/0008-public-video-embeds.md)。
+> 给执行 agent 的自包含实施说明。前置依赖：ADR 0006 的 Markdown 编辑器切片已合并。设计依据：[ADR 0008](../adr/0008-public-video-embeds.md)。
 >
-> 开工前建 issue(如「feat(content): public video embeds」),PR 关联;Draft 直到 CI 全绿。
+> 开工前创建独立 Issue；实施 PR 保持 Draft，直到完整 CI 全绿。
 
-让创作者在正文嵌入 **YouTube / Vimeo / Bilibili** 公开视频(不占自托管存储/带宽)。**这是公开内容,不是会员专属**(会员专属走自托管附件 = ADR 0007)。
+## 1. 目标
 
-## 0. 红线
+让创作者使用显式 Markdown 指令嵌入：
 
-1. **绝不开裸 HTML/iframe**:`markdown-it` 仍 `html:false`;iframe **只能由 Core 从 provider 白名单 URL 生成**。
-2. **iframe host 锁死白名单**:`sanitize-html` 用 `allowedIframeHostnames` 限定 `www.youtube-nocookie.com`/`player.vimeo.com`/`player.bilibili.com`;非白名单 URL → **不生成 iframe,退化为普通链接**。
-3. **必须用 markdown-it block rule**(非逐行预处理):代码块/引用/列表/转义文本里的 `@video:` **不得**被转成 iframe。
-4. **id/BVID 严格正则**,任何不匹配 → 不嵌入。
-5. **不设半截 `sandbox`**;host 白名单常量 `EMBED_HOSTS` 单一来源,与未来 CSP `frame-src` 共用(§3/§4)。
-6. embed **非会员专属**:UI/文档明确标注;会员专属视频引导用附件上传。
-7. **AI 翻译保护**:整行 `@video: <url>` 是指令,纳入编辑器切片的占位保护 + token 校验集合(送模前占位、译后还原、不一致即拒)。
+- YouTube；
+- Vimeo；
+- Bilibili。
 
-## 1. 现状(依赖编辑器切片)
+这是公开第三方内容，不提供会员字节门禁。会员专属视频必须使用 ADR 0007 的自托管附件。
 
-- `src/modules/content/markdown.ts`(编辑器切片新建):`renderMarkdown(md)` = markdown-it(`html:false`)→ sanitize-html 白名单(**当前不含 iframe**)。本切片在此扩展。
-- 编辑器 `src/components/admin/markdown-editor.tsx`(编辑器切片新建):工具栏 + 预览;本切片加「插入嵌入」按钮。
-- 主题 `post-detail.tsx` 用 `dangerouslySetInnerHTML={{__html: bodyHtml}}` 渲染——**本切片无需改主题**(iframe 在 bodyHtml 内)。
+## 2. 红线
 
-## 2. 锁定决策(见 ADR 0008)
+1. 保持 `markdown-it({ html:false })`，不允许裸 iframe。
+2. iframe 只能由 Core 根据 provider 注册表生成。
+3. 必须使用顶层 markdown-it block rule，禁止逐行字符串替换。
+4. preview/public 使用同一 `renderMarkdown`，由 `embedMode` 区分。
+5. preview 默认不自动加载第三方 iframe。
+6. sanitizer 的 iframe host 只能来自 `EMBED_HOSTS`。
+7. 本切片不设置 sandbox。
+8. 整行 `@video:` 必须纳入 AI 翻译 token 保护。
 
-| # | 决策 |
-|---|---|
-| D1 | 显式标记 `@video: <url>`(单独一行)触发嵌入;不自动转任意链接。 |
-| D2 | Core 校验 provider 白名单 → 生成规范 embed iframe;未命中 → 退化链接。 |
-| D3 | `sanitize-html` 放行 `iframe` 且 `allowedIframeHostnames` 锁 host。 |
-| D4 | 首批 provider:YouTube(`youtube-nocookie.com`)、Vimeo、Bilibili;小注册表可扩展。 |
-| D5 | embed 公开;不做会员门禁;UI/文档标注。 |
+## 3. provider 注册表
 
-## 3. provider 注册表 `src/modules/content/video-embed.ts`(新建)
+新增 `src/modules/content/video-embed.ts`：
 
 ```ts
-type EmbedProvider = {
-  id: "youtube" | "vimeo" | "bilibili";
-  // 命中观看 URL → 返回规范 embed src；不匹配 → null
-  toEmbedSrc(url: URL): string | null;
+export type EmbedProviderId = "youtube" | "vimeo" | "bilibili";
+
+export type ResolvedVideoEmbed = {
+  provider: EmbedProviderId;
+  originalUrl: string;
+  embedSrc: string;
+  title: string;
 };
 
-// YouTube: youtube.com/watch?v=ID | youtu.be/ID | youtube.com/shorts/ID
-//   → https://www.youtube-nocookie.com/embed/ID   （ID: [A-Za-z0-9_-]{11}）
-// Vimeo: vimeo.com/{digits}        → https://player.vimeo.com/video/{digits}
-// Bilibili: bilibili.com/video/{BV...} → https://player.bilibili.com/player.html?bvid={BV...}
+export function resolveVideoEmbed(rawUrl: string): ResolvedVideoEmbed | null;
 
-export function resolveEmbedSrc(rawUrl: string): string | null; // 遍历注册表，全不匹配 → null
-
-// 单一来源:embed iframe 的允许 host，供 sanitize allowedIframeHostnames 与（后续）CSP frame-src 共用
-export const EMBED_HOSTS = ["www.youtube-nocookie.com", "player.vimeo.com", "player.bilibili.com"] as const;
+export const EMBED_HOSTS = [
+  "www.youtube-nocookie.com",
+  "player.vimeo.com",
+  "player.bilibili.com",
+] as const;
 ```
-- 用 `new URL()` 解析,**校验 host**(含国别/`m.`/`www.` 变体白名单),再正则取 id;任何异常/不匹配 → `null`。
-- 不做出站请求(无 oEmbed)。
 
-## 4. 渲染管线扩展 `markdown.ts`
+### YouTube
 
-- **必须用 markdown-it 自定义 block rule**(`md.block.ruler.before(...)` 或 `md.use` 插件)识别 `@video: <url>` 行,**严禁逐行字符串预处理**。逐行预处理会把 **fenced code / inline code / blockquote / 列表项 / 已转义文本**里的 `@video:` 误转成 iframe;block rule 只在真正的 block 上下文命中。
-  - rule 命中且 `resolveEmbedSrc(url)` 命中 → renderer **直接产出** HTML 片段(响应式容器 + iframe),例如
-    ```html
-    <div class="video-embed"><iframe src="<embedSrc>" title="<provider> video"
-      loading="lazy" referrerpolicy="strict-origin-when-cross-origin"
-      allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-      allowfullscreen></iframe></div>
-    ```
-    > renderer 产出的 HTML 不受 `html:false` 对“用户源文本”的限制(这是渲染器产出,非用户文本)。注意 `allow` 拼写为 `accelerometer`。
-  - `resolveEmbedSrc` 未命中 → 当作普通文本/链接(linkify 处理),**不产 iframe**。
-- **sanitize 配置**新增(host 白名单从 provider 注册表导出的**共享常量** `EMBED_HOSTS` 取,见 §3,便于与未来 CSP `frame-src` 共用):
-  ```ts
-  allowedTags: [...existing, "iframe", "div"],
-  allowedAttributes: {
-    ...existing,
-    iframe: ["src","title","loading","referrerpolicy","allow","allowfullscreen","width","height"],
-    div: ["class"],
-  },
-  allowedClasses: { div: ["video-embed"] },
-  allowedIframeHostnames: EMBED_HOSTS, // = ["www.youtube-nocookie.com","player.vimeo.com","player.bilibili.com"]
-  // 不放行 sandbox 属性（见下）；sanitize 默认校验 iframe hostname：src 非白名单 → 整个 iframe 被剥离
-  ```
-- **关键顺序**:iframe 必须在「block rule 产出 → sanitize」之间存在,由 sanitize 按 `allowedIframeHostnames` 兜底校验。即便 block rule 被绕过,sanitize 也会剥掉非白名单 iframe(纵深防御)。
-- **sandbox 策略(统一)**:本切片**不设 `sandbox`**,也不在 sanitize 允许属性内。理由:provider 播放器需 `allow-scripts allow-same-origin allow-presentation allow-popups` 才能工作,这组合已抵消 sandbox 隔离收益,收紧又破坏播放;安全靠 host 锁死 + `nocookie` 域 + `referrerpolicy` +(后续)CSP 承担。要 per-provider sandbox 须给经测试的完整权限集,不可半设。
-- **CSP 接入点**:把 `EMBED_HOSTS` 作为单一来源常量集中导出;后续 CSP `frame-src` **只**列举这些精确 host(**绝不** `https:`/`*`),与 `allowedIframeHostnames` 共用,避免漂移。
+接受：
 
-## 5. 编辑器「插入嵌入」`markdown-editor.tsx`
+```text
+https://www.youtube.com/watch?v=<11-char-id>
+https://youtu.be/<11-char-id>
+https://www.youtube.com/shorts/<11-char-id>
+```
 
-- 工具栏加按钮 → 弹输入框收 URL → 校验 `resolveEmbedSrc(url) !== null`(命中才插)→ 在光标处插入新行 `@video: <url>`。
-- 不命中 → 提示「暂不支持该来源,目前支持 YouTube / Vimeo / Bilibili」。
-- 预览:走编辑器切片统一的 `GET /api/admin/posts/preview`(服务端 `renderMarkdown`),**不**在客户端单独渲染。**预览默认渲染占位卡片**(provider 名 + 「点击加载」),点击后才挂真 iframe;**只有公开页**默认 lazy 真 iframe。避免作者一开预览就自动向第三方发请求(隐私 + 噪声)。
+输出：
 
-## 6. 主题样式
+```text
+https://www.youtube-nocookie.com/embed/<id>
+```
 
-`.video-embed`:16:9 响应式容器(`aspect-ratio: 16/9; width:100%`),`iframe` 充满、`border:0`、圆角。放内置主题已有的内容样式区(或 `prose-content` 旁)。
+### Vimeo
 
-## 7. i18n
+接受：
 
-`{zh,en,ja}.ts` 补:插入嵌入按钮、URL 输入提示、「非会员专属/任何人可看」说明、不支持来源提示。
+```text
+https://vimeo.com/<digits>
+```
 
-## 8. 文档
+输出：
 
-`docs/admin/` 或 README 注明:嵌入的第三方视频**非会员专属**;会员专属视频请用附件上传(自托管)。
+```text
+https://player.vimeo.com/video/<digits>
+```
 
-## 9. 测试
+### Bilibili
 
-- `resolveEmbedSrc`:YouTube(watch/youtu.be/shorts)、Vimeo、Bilibili 各形态 → 正确 embed src;非白名单 host、缺 id、`javascript:`、伪装 host(`youtube.com.evil.com`)→ `null`。
-- 渲染:`@video: <合法>` → 含**白名单 host** iframe + `.video-embed`;`@video: <非法>` → **无 iframe**(退化链接/文本)。
-- **block rule 上下文**:`@video:` 出现在 ① fenced code、② inline code、③ blockquote、④ 列表项、⑤ 已转义/缩进文本中 → **均不**转 iframe(只在独立 block 行命中)。
-- **消毒兜底**:即便构造一个非白名单 host 的 iframe 进入 sanitize,也被 `allowedIframeHostnames`(=`EMBED_HOSTS`)剥离(直接测 sanitize 层);`sandbox` 属性不被放行。
-- XSS:`@video: javascript:...`、属性注入、`<iframe>` 裸写在正文(应被 `html:false` 转义)→ 全部无可执行 iframe。
-- 编辑器:插入合法 URL → 正文出现 `@video:` 行;非法 URL → 提示且不插;预览默认占位卡片(不自动请求第三方)。
+接受：
 
-## 10. 提交前验证
+```text
+https://www.bilibili.com/video/<BVID>
+```
+
+输出：
+
+```text
+https://player.bilibili.com/player.html?bvid=<BVID>
+```
+
+要求：
+
+- `new URL()` 解析；
+- scheme 仅 HTTPS；
+- host 精确匹配允许变体；
+- ID / BVID 严格正则；
+- 拒绝 `youtube.com.evil.com` 等伪装 host；
+- 不发送 oEmbed 或其他出站请求。
+
+## 4. markdown-it 顶层 block rule
+
+在 `markdown.ts` 注册自定义 block rule。
+
+只在以下全部成立时命中：
+
+```ts
+state.parentType === "root";
+state.sCount[startLine] === 0;
+当前行去除尾部换行后完整匹配 /^@video:\s+(\S+)\s*$/;
+```
+
+并确认当前上下文不是：
+
+- fenced code；
+- indented code；
+- blockquote；
+- list；
+- 其他嵌套 block。
+
+rule 不直接输出 HTML，而是生成自定义 token：
+
+```ts
+token.type = "video_embed";
+token.meta = resolvedEmbed;
+```
+
+未命中 provider 时不生成 token，让 Markdown 正常按文本/linkify 处理。
+
+必须验证以下内容均不转换：
+
+```markdown
+`@video: https://...`
+
+> @video: https://...
+
+- @video: https://...
+
+    @video: https://...
+
+\@video: https://...
+
+普通句子 @video: https://...
+```
+
+## 5. renderer 的 public / preview 模式
+
+ADR 0006 提供：
+
+```ts
+renderMarkdown(markdown, {
+  embedMode: "public" | "preview",
+});
+```
+
+### public renderer
+
+输出：
+
+```html
+<div class="video-embed">
+  <iframe
+    src="https://allowed-host/..."
+    title="YouTube video"
+    loading="lazy"
+    referrerpolicy="strict-origin-when-cross-origin"
+    allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+    allowfullscreen
+  ></iframe>
+</div>
+```
+
+### preview renderer
+
+输出不自动请求第三方的占位：
+
+```html
+<div
+  class="video-embed-placeholder"
+  data-provider="youtube"
+  data-embed-src="https://www.youtube-nocookie.com/embed/..."
+>
+  <button type="button">点击加载 YouTube 视频</button>
+</div>
+```
+
+要求：
+
+- `data-embed-src` 只能来自注册表的规范 URL；
+- 管理端点击后再次 `new URL()` 并验证 hostname ∈ `EMBED_HOSTS`；
+- 通过验证后才将 placeholder 替换为 iframe；
+- 默认预览不会产生第三方网络请求；
+- 组件卸载时清理事件监听；
+- 不使用 `innerHTML` 拼接用户输入创建 iframe。
+
+## 6. preview API
+
+复用 ADR 0006：
+
+```http
+POST /api/admin/posts/preview
+```
+
+请求：
+
+```json
+{
+  "markdown": "@video: https://youtu.be/...",
+  "embedMode": "preview"
+}
+```
+
+服务端只允许 `embedMode="preview"`，调用同一个 `renderMarkdown` 并返回已消毒 HTML。
+
+公开页面调用：
+
+```ts
+renderMarkdown(body, { embedMode: "public" });
+```
+
+## 7. sanitizer
+
+扩展允许标签：
+
+```text
+iframe
+div
+button
+```
+
+允许属性：
+
+```ts
+iframe: [
+  "src",
+  "title",
+  "loading",
+  "referrerpolicy",
+  "allow",
+  "allowfullscreen",
+  "width",
+  "height",
+];
+
+div: ["class", "data-provider", "data-embed-src"];
+button: ["type"];
+```
+
+允许 class：
+
+```ts
+div: ["video-embed", "video-embed-placeholder"];
+```
+
+iframe：
+
+```ts
+allowedIframeHostnames: EMBED_HOSTS;
+```
+
+额外要求：
+
+- `data-embed-src` 只允许 HTTPS 且 host ∈ `EMBED_HOSTS`；
+- 非白名单 iframe 整体剥离；
+- 不允许 sandbox 属性；
+- 裸 iframe 源文本被 `html:false` 转义；
+- sanitizer 测试应直接注入伪造 HTML验证兜底。
+
+## 8. CSP 接入点
+
+`EMBED_HOSTS` 是未来 CSP `frame-src` 的唯一来源。
+
+不得在文档或代码中建议：
+
+```text
+frame-src https:
+frame-src *
+```
+
+若本切片同时新增 CSP，则只生成：
+
+```text
+frame-src 'self' https://www.youtube-nocookie.com https://player.vimeo.com https://player.bilibili.com
+```
+
+若项目暂未启用 CSP，只保留集中常量和接入测试，不额外扩大其他 directive。
+
+## 9. 编辑器按钮
+
+`MarkdownEditor` 工具栏新增“插入公开视频”：
+
+1. 输入观看 URL；
+2. 客户端调用共享 URL validator 或轻量 API确认支持；
+3. 合法时插入独立行：
+
+```text
+@video: <original-url>
+```
+
+4. 非法时显示支持列表，不插入正文；
+5. UI 明确提示“第三方嵌入不是会员专属”。
+
+客户端校验只改善 UX，服务端 renderer 必须重新校验。
+
+## 10. 主题样式
+
+在内容样式区增加：
+
+```css
+.video-embed,
+.video-embed-placeholder {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+}
+
+.video-embed iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+```
+
+placeholder 应提供清晰按钮和 provider 名称。
+
+## 11. AI 翻译
+
+ADR 0006 的保护器必须把整行：
+
+```text
+@video: <url>
+```
+
+作为单个不可变 token。模型返回后 token 集合不一致则拒绝 machine draft。
+
+## 12. i18n 与文档
+
+zh/en/ja 增加：
+
+- 插入公开视频；
+- URL 输入提示；
+- 不支持来源；
+- 点击加载；
+- 第三方视频非会员专属；
+- 会员视频请上传附件。
+
+管理员文档说明第三方隐私请求和可用性依赖。
+
+## 13. 测试
+
+### provider resolver
+
+- YouTube watch/youtu.be/shorts；
+- Vimeo；
+- Bilibili；
+- 错误 host；
+- 伪装 host；
+- HTTP、javascript、缺 ID、属性注入；
+- 输出 host 必须在 `EMBED_HOSTS`。
+
+### block rule
+
+- 顶层零缩进独立行转换；
+- fenced/inline code 不转换；
+- blockquote 不转换；
+- list 不转换；
+- indented code 不转换；
+- 转义和普通句子不转换。
+
+### public renderer
+
+- 合法 URL输出 iframe；
+- iframe host 白名单；
+- loading/referrerpolicy/allow 正确；
+- 非法 URL无 iframe；
+- 裸 iframe 无可执行结果。
+
+### preview renderer/API
+
+- POST preview 返回 placeholder，无 iframe；
+- 打开预览不请求第三方；
+- 点击前 host 再验证；
+- 点击合法 placeholder 后创建 iframe；
+- 伪造 data-embed-src 被拒绝；
+- 非管理员 401/403；
+- no-store。
+
+### sanitizer
+
+- 非白名单 iframe 剥离；
+- 非白名单 data-embed-src 剥离或 placeholder 整体删除；
+- sandbox 不保留；
+- script、事件属性和注入向量被拒绝。
+
+## 14. 验证
 
 ```bash
-pnpm lint && pnpm format:check && pnpm exec tsc --noEmit
+pnpm lint
+pnpm format:check
+pnpm exec tsc --noEmit
 RUN_DB_INTEGRATION_TESTS=true pnpm test
-pnpm build:migrator && pnpm build
+pnpm build:migrator
+pnpm build
 ```
-(无 schema 迁移。)
 
-## 11. PR
+## 15. 验收清单
 
-- base `main`,draft,标题 `feat(content): public video embeds`。
-- 描述:provider 白名单(YouTube/Vimeo/Bilibili)、`@video:` 标记、markdown.ts 生成受控 iframe + sanitize `allowedIframeHostnames`、编辑器插入按钮、主题 16:9 样式、明确非会员专属。依赖编辑器切片;无迁移。
-- 关联 issue。
-
-## 12. 验收 checklist
-
-- [ ] `html:false` 不变;iframe 仅由 Core 从白名单 URL 生成
-- [ ] **markdown-it block rule**(非逐行预处理);代码块/引用/列表/转义文本里的 `@video:` 不转(有测试)
-- [ ] sanitize `allowedIframeHostnames`=`EMBED_HOSTS` 锁 host;非白名单 iframe 被剥离(有测试);不放行 `sandbox`
-- [ ] `EMBED_HOSTS` 单一来源常量,预留 CSP `frame-src` 共用接入点
-- [ ] 非白名单/畸形 URL → 退化链接,不产 iframe
-- [ ] 编辑器插入按钮校验来源;预览**默认占位卡片**(不自动打第三方),走统一 preview API
-- [ ] 响应式 16:9;`loading=lazy` + `referrerpolicy`;`allow` 拼写 `accelerometer`
-- [ ] AI 翻译把整行 `@video:` 纳入占位保护 + token 校验
-- [ ] UI/文档标注「嵌入视频非会员专属」
+- [ ] 顶层 markdown-it block rule
+- [ ] Core 生成规范 embed，不允许裸 iframe
+- [ ] public/preview 模式明确
+- [ ] preview 默认占位且点击前二次校验
+- [ ] sanitizer host 与 data 属性白名单
+- [ ] 不设置 sandbox
+- [ ] EMBED_HOSTS 作为 CSP 单一来源
+- [ ] AI 翻译整行保护
+- [ ] UI/文档标明非会员专属
 - [ ] 无 schema 迁移
+- [ ] 完整 CI 全绿
 
-## 不在本切片(后续)
+## 不在本切片
 
-- oEmbed 实时元数据/标题抓取;更多 provider;封面缩略图卡片(点击再加载 iframe,省第三方请求与隐私)。
-- 音频/其它 embed(音乐、推文等)。
+- oEmbed；
+- 自动缩略图和第三方标题抓取；
+- 更多 provider；
+- 音频、音乐、推文等其他 embed；
+- 会员专属第三方视频。
