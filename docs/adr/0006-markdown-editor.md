@@ -122,34 +122,50 @@ Markdown 图片只允许：
 为彻底关闭“上传并 attach 后，正文尚未保存而被另一保存误删”的窗口，流程锁定为：
 
 1. 编辑器上传图片，只创建 `files` 记录并返回 `fileId`；**上传时不创建 `post_files` link**。
-2. 上传成功后立即 enqueue 一个延迟执行的 `file.cleanup_orphan` durable task，建议 `availableAt = now + 24h`，dedupe key 使用 `file:cleanup_orphan:{fileId}`。
-3. 编辑器把内部文件 URL 插入 Markdown。
-4. 保存正文或翻译时，服务端解析即将提交的正文，并在同一内容保存事务中：
+2. 上传成功后立即 enqueue 一个延迟执行的 `file.cleanup_orphan` durable task，建议 `runAfter = now + 24h`。
+3. `file.cleanup_orphan` 不得使用 `fileId` 级永久 dedupe key。现有 `tasks.dedupe_key` 是跨状态持久唯一键；若第一次检查因文件已关联而成功 no-op，未来 detach 仍必须能够再次 enqueue。允许重复 task，由幂等 handler 吸收；如需去重，只能使用上传请求或 detach 事件级 token。
+4. 编辑器把内部文件 URL 插入 Markdown。
+5. 保存正文或翻译时，服务端解析即将提交的正文，并在同一内容保存事务中：
    - 验证引用的文件存在且 `purpose="content_image"`；
    - 对新增引用创建 `kind="inline"` link；
    - 汇总原文和所有 locale（含草稿翻译）计算仍有效的引用；
    - 解除不再使用的当前 post inline links。
-5. 已发布文章/翻译允许上述**内部 inline 同步 helper**运行；其他 kind 继续遵守 draft-only 限制。
-6. 通用 attach/detach API 不得绕过正文引用校验去破坏已发布正文。
+6. 已发布文章/翻译允许上述**内部 inline 同步 helper**运行；其他 kind 继续遵守 draft-only 限制。
+7. 通用 attach/detach API 不得绕过正文引用校验去破坏已发布正文。
 
 延迟 cleanup 到期后重新检查引用：保存成功的文件已有 link，任务安全 no-op；放弃保存的文件仍无引用，任务负责回收。
 
 这样正文和 link 的权威状态由一次保存统一提交，不依赖宽限期或多标签页时序，同时未保存上传也不会永久泄漏。
 
-### 7. orphan 删除使用 durable cleanup
+### 7. orphan 清理采用两阶段 durable 流程
 
-正文保存事务只负责解除 link，并为“当前已无任何引用”的候选文件写同一种 durable cleanup task；**事务内不删除本地/S3 对象**。
+正文保存事务只负责解除 link，并为候选文件 enqueue `file.cleanup_orphan`；**事务内不删除本地/S3 对象**。
 
-cleanup worker 每次执行时必须重新：
+#### 阶段一：`file.cleanup_orphan`
 
-1. 锁定 file 行；
-2. 检查任意 `post_files`、cover、设置项及其他受保护引用；
-3. 有引用则安全 no-op；
-4. 无引用时幂等删除存储对象；
-5. 删除 file 行；
-6. 失败由 durable task 重试。
+handler 在一个短数据库事务内：
 
-允许短期残留孤儿对象，不允许 DB 仍引用而对象已被不可回滚地删除。
+1. `FOR UPDATE` 锁定 file 行；
+2. 文件不存在 → 成功 no-op；
+3. 检查任意 `post_files`、cover、设置项及其他受保护引用；
+4. 有引用 → 成功 no-op；
+5. 捕获不可变的 `{ storageDriver, bucket, objectKey }`；
+6. enqueue `storage.delete_object`，dedupe key 使用对象级稳定键，例如 `storage:delete_object:{driver}:{bucket}:{objectKey}`；
+7. 删除 file 行；
+8. `storage.delete_object` task 与 file 行删除一起提交。
+
+删除 file 行后，外键层面不能再产生新引用。
+
+#### 阶段二：`storage.delete_object`
+
+handler 仅根据 task payload 删除存储对象：
+
+- 对象不存在视为成功；
+- 临时错误重试；
+- 不依赖已删除的 file 行；
+- 不重新创建数据库记录。
+
+这样数据库先解除可引用身份，存储删除失败只会留下可重试的孤儿对象，不会造成 DB 仍引用但对象已经消失。
 
 ### 8. kind 与 purpose 必须在服务端匹配
 
@@ -203,6 +219,8 @@ prompt 约束只作为辅助，不是结构安全保证。
 - **增加 body_format**：当前 alpha 存量很小，复杂度大于收益；暂不采用。
 - **客户端独立预览渲染器**：拒绝。会与服务端安全边界和后续 embed renderer 漂移。
 - **上传时立即 attach + 宽限期 reconcile**：拒绝。多标签页和长时间未保存仍可能误删。
+- **对象删除与正文事务绑定**：拒绝。存储 I/O 不可由数据库回滚。
+- **每个 fileId 永久 dedupe 一个 cleanup task**：拒绝。第一次 no-op 会阻止未来 detach 后重新清理。
 
 ## Consequences
 
@@ -210,9 +228,10 @@ prompt 约束只作为辅助，不是结构安全保证。
 - ✅ 预览与公开页共用同一服务端 renderer；
 - ✅ 内联图 link 与正文保存原子同步，不存在 attach 后未保存窗口；
 - ✅ 未保存上传由延迟 durable cleanup 有界回收；
-- ✅ 对象清理由 durable task 重试，不把不可回滚 I/O 放进 DB 事务；
+- ✅ DB 先删除 file 身份，再由第二阶段任务重试对象删除；
 - ✅ 默认无 schema 迁移；
 - ⚠️ 未保存上传最多保留到 cleanup 到期；
+- ⚠️ 存储删除失败时可能暂留无 DB 行的孤儿对象；
 - ⚠️ 自定义主题应在下一主题大版本前迁移到 `bodyHtml`；
 - ⚠️ 自动保存、版本历史、协同编辑和 WYSIWYG 不在本 ADR。
 
@@ -222,6 +241,7 @@ prompt 约束只作为辅助，不是结构安全保证。
 2. 渲染库为 markdown-it + sanitize-html。
 3. preview API 使用 POST，公开/预览通过 `embedMode` 区分。
 4. 内联图只在正文保存事务中同步 link。
-5. 上传和 detach orphan 均使用同一个 delayed durable cleanup handler。
-6. 默认 cleanup 延迟为 24 小时，可配置。
-7. 默认不产生数据库迁移。
+5. `file.cleanup_orphan` 每次触发均可重新 enqueue，不使用 fileId 级永久 dedupe。
+6. 对象删除使用第二阶段 `storage.delete_object` task。
+7. 默认上传 cleanup 延迟为 24 小时，可配置。
+8. 默认不产生数据库迁移。
