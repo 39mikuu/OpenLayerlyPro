@@ -35,6 +35,48 @@ describe("Markdown translation protection", () => {
     );
   });
 
+  it.each([
+    [
+      "supports up to three leading spaces",
+      `   ${"`".repeat(3)}ts\nconst url = "https://inside.example/indented";\n   ${"`".repeat(3)}\n`,
+    ],
+    [
+      "accepts a longer backtick closing fence",
+      `${"`".repeat(3)}ts\nconst url = "https://inside.example/long-close";\n${"`".repeat(4)}\n`,
+    ],
+    [
+      "supports tilde fences",
+      `${"~".repeat(3)}md\nhttps://inside.example/tilde and inline-looking\n${"~".repeat(4)}\n`,
+    ],
+    [
+      "does not close on a shorter fence inside code",
+      `${"`".repeat(4)}md\n${"`".repeat(3)}\nhttps://inside.example/short-inner\n${"`".repeat(5)}\n`,
+    ],
+    [
+      "does not close on a different fence character",
+      `${"~".repeat(3)}md\n${"`".repeat(3)}\nhttps://inside.example/different-marker\n${"~".repeat(4)}\n`,
+    ],
+    [
+      "protects an unclosed fence through end of input",
+      `${"`".repeat(3)}md\nhttps://inside.example/unclosed\ninline-looking`,
+    ],
+  ])("%s", (_label, fenced) => {
+    const protection = protectMarkdownForTranslation(fenced);
+
+    expect(protection.tokens.size).toBe(1);
+    expect([...protection.tokens.values()]).toEqual([fenced]);
+    expect(protection.markdown).toMatch(/^OLP_MD_[0-9a-f]{32}_0000_END$/);
+    expect(restoreProtectedMarkdown(protection.markdown, protection)).toBe(fenced);
+  });
+
+  it("preserves CRLF line endings inside a fenced block", () => {
+    const fenced = `  ${"~".repeat(3)}md\r\nhttps://inside.example/crlf\r\n  ${"~".repeat(5)}\r\n`;
+    const protection = protectMarkdownForTranslation(fenced);
+
+    expect([...protection.tokens.values()]).toEqual([fenced]);
+    expect(restoreProtectedMarkdown(protection.markdown, protection)).toBe(fenced);
+  });
+
   it.each(["missing", "duplicated", "modified", "unauthorized", "foreign-prefix"])(
     "rejects %s tokens",
     (mode) => {

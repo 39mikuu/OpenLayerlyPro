@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/modules/auth/session";
-import { deletePost, getPostById, listPostFiles, savePostContent } from "@/modules/content";
+import { deletePost, getPostById, listPostFiles, updatePost } from "@/modules/content";
 import { MAX_POST_BODY_LENGTH } from "@/modules/content/markdown";
 import { getPostTaxonomy } from "@/modules/taxonomy";
 
@@ -45,7 +45,7 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
     await requireAdmin();
     const { id } = await ctx.params;
     const { categoryIds, tagIds, ...input } = patchSchema.parse(await req.json());
-    return jsonOk(await savePostContent(id, input, { categoryIds, tagIds }));
+    return jsonOk(await updatePost(id, input, { categoryIds, tagIds }));
   } catch (err) {
     return handleApiError(err);
   }

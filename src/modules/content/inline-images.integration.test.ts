@@ -34,8 +34,9 @@ import {
   deleteTranslation,
   detachFileFromPost,
   publishTranslation,
-  savePostContent,
+  savePublishedPostBody,
   updatePost,
+  updatePostTaxonomy,
   upsertDraftTranslation,
 } from "@/modules/content";
 import { saveUploadedFile } from "@/modules/file";
@@ -394,9 +395,24 @@ describeWithDatabase("Markdown inline image lifecycle integration", () => {
       })
       .returning();
 
-    await savePostContent(post!.id, { body: markdownImage(inlineFile.id) });
-    await expect(links(post!.id)).resolves.toHaveLength(1);
+    await expect(
+      updatePost(post!.id, { body: markdownImage(inlineFile.id) }),
+    ).rejects.toMatchObject({ status: 409, code: "postNotEditable" });
 
+    await savePublishedPostBody(post!.id, markdownImage(inlineFile.id));
+    await expect(links(post!.id)).resolves.toHaveLength(1);
+    const [storedPost] = await db.select().from(posts).where(eq(posts.id, post!.id));
+    expect(storedPost).toMatchObject({
+      title: "Published",
+      slug: post!.slug,
+      visibility: "public",
+      requiredTierId: null,
+      coverFileId: null,
+    });
+
+    await expect(
+      updatePostTaxonomy(post!.id, { categoryIds: [], tagIds: [] }),
+    ).rejects.toMatchObject({ status: 409, code: "postNotEditable" });
     await expect(
       attachFileToPost({ postId: post!.id, fileId: galleryFile.id, kind: "image" }),
     ).rejects.toMatchObject({ status: 409, code: "postNotEditable" });

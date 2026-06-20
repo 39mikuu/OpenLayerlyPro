@@ -55,6 +55,7 @@ export function PostEditor({
   const router = useRouter();
   const t = useT();
   const isNew = !post;
+  const isPublished = post?.status === "published";
   const [form, setForm] = useState({
     title: post?.title ?? "",
     slug: post?.slug ?? "",
@@ -105,7 +106,14 @@ export function PostEditor({
         router.push(`/admin/posts/${created.id}`);
         router.refresh();
       } else {
-        await api(`/api/admin/posts/${post.id}`, { method: "PUT", body: payload() });
+        if (isPublished) {
+          await api(`/api/admin/posts/${post.id}/content`, {
+            method: "PUT",
+            body: { body: form.body || null },
+          });
+        } else {
+          await api(`/api/admin/posts/${post.id}`, { method: "PUT", body: payload() });
+        }
         setMessage(t("admin.common.saved"));
         router.refresh();
       }
@@ -133,7 +141,7 @@ export function PostEditor({
   }
 
   async function uploadAndAttach(file: File, kind: "image" | "attachment") {
-    if (!post) return;
+    if (!post || isPublished) return;
     await run(async () => {
       const record =
         kind === "image"
@@ -158,12 +166,17 @@ export function PostEditor({
             <Label>{t("admin.posts.titleColumn")}</Label>
             <Input
               value={form.title}
+              disabled={loading || isPublished}
               onChange={(e) => setForm({ ...form, title: e.target.value })}
             />
           </div>
           <div className="space-y-1">
             <Label>{t("admin.posts.slug")}</Label>
-            <Input value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} />
+            <Input
+              value={form.slug}
+              disabled={loading || isPublished}
+              onChange={(e) => setForm({ ...form, slug: e.target.value })}
+            />
           </div>
         </div>
         <Card>
@@ -179,6 +192,7 @@ export function PostEditor({
                     <input
                       type="checkbox"
                       checked={categoryIds.includes(category.id)}
+                      disabled={loading || isPublished}
                       onChange={(event) =>
                         setCategoryIds((current) =>
                           event.target.checked
@@ -203,6 +217,7 @@ export function PostEditor({
                     <input
                       type="checkbox"
                       checked={tagIds.includes(tag.id)}
+                      disabled={loading || isPublished}
                       onChange={(event) =>
                         setTagIds((current) =>
                           event.target.checked
@@ -225,6 +240,7 @@ export function PostEditor({
           <Label>{t("admin.posts.summary")}</Label>
           <Input
             value={form.summary}
+            disabled={loading || isPublished}
             onChange={(e) => setForm({ ...form, summary: e.target.value })}
           />
         </div>
@@ -247,6 +263,7 @@ export function PostEditor({
             <select
               className="border rounded-md h-9 px-2 w-full bg-transparent text-sm"
               value={form.visibility}
+              disabled={loading || isPublished}
               onChange={(e) =>
                 setForm({ ...form, visibility: e.target.value as typeof form.visibility })
               }
@@ -262,6 +279,7 @@ export function PostEditor({
               <select
                 className="border rounded-md h-9 px-2 w-full bg-transparent text-sm"
                 value={form.requiredTierId}
+                disabled={loading || isPublished}
                 onChange={(e) => setForm({ ...form, requiredTierId: e.target.value })}
               >
                 <option value="">{t("admin.posts.choose")}</option>
@@ -287,6 +305,7 @@ export function PostEditor({
           <Input
             type="file"
             accept=".jpg,.jpeg,.png,.webp"
+            disabled={loading || isPublished}
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (!file) return;
@@ -336,7 +355,7 @@ export function PostEditor({
             </Button>
           )}
           {!isNew && (
-            <Button variant="outline" disabled={loading} onClick={saveTaxonomy}>
+            <Button variant="outline" disabled={loading || isPublished} onClick={saveTaxonomy}>
               {t("admin.taxonomy.saveAssociations")}
             </Button>
           )}
@@ -383,7 +402,7 @@ export function PostEditor({
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={loading}
+                    disabled={loading || isPublished}
                     onClick={() =>
                       run(async () => {
                         await api(`/api/admin/posts/${post.id}/files`, {
@@ -405,6 +424,7 @@ export function PostEditor({
                 <Input
                   type="file"
                   accept=".jpg,.jpeg,.png,.webp,.gif"
+                  disabled={loading || isPublished}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) uploadAndAttach(file, "image");
@@ -416,6 +436,7 @@ export function PostEditor({
                 <Input
                   type="file"
                   accept=".jpg,.jpeg,.png,.webp,.gif,.zip,.psd,.clip,.brush,.abr,.procreate,.pdf,.txt,.mp4,.webm,.mov,.m4v"
+                  disabled={loading || isPublished}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) uploadAndAttach(file, "attachment");

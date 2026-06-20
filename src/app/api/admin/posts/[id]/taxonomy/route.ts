@@ -1,10 +1,9 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 
-import { getDb } from "@/db";
 import { handleApiError, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/modules/auth/session";
-import { setPostCategories, setPostTags } from "@/modules/taxonomy";
+import { updatePostTaxonomy } from "@/modules/content";
 
 export const runtime = "nodejs";
 
@@ -17,11 +16,8 @@ export async function PUT(request: NextRequest, ctx: { params: Promise<{ id: str
   try {
     await requireAdmin();
     const { id } = await ctx.params;
-    const { categoryIds, tagIds } = bodySchema.parse(await request.json());
-    await getDb().transaction(async (tx) => {
-      await setPostCategories(id, categoryIds, tx);
-      await setPostTags(id, tagIds, tx);
-    });
+    const taxonomy = bodySchema.parse(await request.json());
+    await updatePostTaxonomy(id, taxonomy);
     return jsonOk({ updated: true });
   } catch (error) {
     return handleApiError(error);

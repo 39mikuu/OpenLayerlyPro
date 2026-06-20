@@ -65,21 +65,15 @@ export async function createPost(
   });
 }
 
-async function updatePostWithInlineImages(
+export async function updatePost(
   id: string,
   input: Partial<PostInput>,
-  taxonomy: PostTaxonomyInput,
-  options: { allowPublished: boolean },
+  taxonomy: PostTaxonomyInput = {},
 ): Promise<Post> {
   return getDb().transaction(async (tx) => {
     const [existing] = await tx.select().from(posts).where(eq(posts.id, id)).limit(1).for("update");
     if (!existing) throw new ApiError(404, "postNotFound");
-    if (
-      existing.status === "archived" ||
-      (!options.allowPublished && existing.status !== "draft")
-    ) {
-      throw new ApiError(409, "postNotEditable");
-    }
+    if (existing.status !== "draft") throw new ApiError(409, "postNotEditable");
 
     if (input.visibility === "member" || input.requiredTierId !== undefined) {
       await assertValidTier({
@@ -94,9 +88,6 @@ async function updatePostWithInlineImages(
       (input.summary !== undefined && input.summary !== existing.summary) ||
       (input.body !== undefined && input.body !== existing.body) ||
       (input.originalLocale !== undefined && input.originalLocale !== existing.originalLocale);
-    const editableStatus = options.allowPublished
-      ? ne(posts.status, "archived")
-      : eq(posts.status, "draft");
     const [post] = await tx
       .update(posts)
       .set({
@@ -104,7 +95,7 @@ async function updatePostWithInlineImages(
         updatedAt: sql`now()`,
         ...(contentChanged ? { contentUpdatedAt: sql`now()` } : {}),
       })
-      .where(and(eq(posts.id, id), editableStatus))
+      .where(and(eq(posts.id, id), eq(posts.status, "draft")))
       .returning();
     if (!post) throw new ApiError(409, "postNotEditable");
     if (taxonomy.categoryIds !== undefined) {
@@ -116,21 +107,49 @@ async function updatePostWithInlineImages(
   });
 }
 
-export async function updatePost(
+export async function updatePostTaxonomy(
   id: string,
-  input: Partial<PostInput>,
-  taxonomy: PostTaxonomyInput = {},
-): Promise<Post> {
-  return updatePostWithInlineImages(id, input, taxonomy, { allowPublished: false });
+  taxonomy: Required<PostTaxonomyInput>,
+): Promise<void> {
+  await getDb().transaction(async (tx) => {
+    const [post] = await tx
+      .select({ id: posts.id, status: posts.status })
+      .from(posts)
+      .where(eq(posts.id, id))
+      .limit(1)
+      .for("update");
+    if (!post) throw new ApiError(404, "postNotFound");
+    if (post.status !== "draft") throw new ApiError(409, "postNotEditable");
+    await setPostCategories(id, taxonomy.categoryIds, tx);
+    await setPostTags(id, taxonomy.tagIds, tx);
+  });
 }
 
-/** Content-editor save path. Generic post mutations remain draft-only. */
-export async function savePostContent(
-  id: string,
-  input: Partial<PostInput>,
-  taxonomy: PostTaxonomyInput = {},
-): Promise<Post> {
-  return updatePostWithInlineImages(id, input, taxonomy, { allowPublished: true });
+/** Narrow live-edit exception: only the published original body and its inline links. */
+export async function savePublishedPostBody(id: string, body: string | null): Promise<Post> {
+  return getDb().transaction(async (tx) => {
+    const [existing] = await tx
+      .select({ id: posts.id, status: posts.status, body: posts.body })
+      .from(posts)
+      .where(eq(posts.id, id))
+      .limit(1)
+      .for("update");
+    if (!existing) throw new ApiError(404, "postNotFound");
+    if (existing.status !== "published") throw new ApiError(409, "postNotEditable");
+
+    const [post] = await tx
+      .update(posts)
+      .set({
+        body,
+        updatedAt: sql`now()`,
+        ...(body !== existing.body ? { contentUpdatedAt: sql`now()` } : {}),
+      })
+      .where(and(eq(posts.id, id), eq(posts.status, "published")))
+      .returning();
+    if (!post) throw new ApiError(409, "postNotEditable");
+    await syncInlineImageLinks(tx, id);
+    return post;
+  });
 }
 
 async function assertValidTier(input: {

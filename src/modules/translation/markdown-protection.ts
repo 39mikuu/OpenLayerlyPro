@@ -8,6 +8,80 @@ export type ProtectedMarkdown = {
   tokenPrefix: string;
 };
 
+type MarkdownLine = {
+  start: number;
+  end: number;
+  content: string;
+};
+
+type FenceOpening = {
+  marker: "`" | "~";
+  length: number;
+};
+
+function splitMarkdownLines(markdown: string): MarkdownLine[] {
+  const lines: MarkdownLine[] = [];
+  let start = 0;
+
+  while (start < markdown.length) {
+    const newline = markdown.indexOf("\n", start);
+    const end = newline === -1 ? markdown.length : newline + 1;
+    let contentEnd = newline === -1 ? markdown.length : newline;
+    if (contentEnd > start && markdown[contentEnd - 1] === "\r") contentEnd -= 1;
+    lines.push({ start, end, content: markdown.slice(start, contentEnd) });
+    start = end;
+  }
+
+  return lines;
+}
+
+function parseFenceOpening(line: string): FenceOpening | null {
+  const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  if (!match) return null;
+  const fence = match[1];
+  const marker = fence[0] as FenceOpening["marker"];
+  if (marker === "`" && match[2].includes("`")) return null;
+  return { marker, length: fence.length };
+}
+
+function isFenceClosing(line: string, opening: FenceOpening): boolean {
+  const match = /^ {0,3}(`+|~+)[ \t]*$/.exec(line);
+  if (!match) return false;
+  const fence = match[1];
+  return fence[0] === opening.marker && fence.length >= opening.length;
+}
+
+function protectFencedCode(markdown: string, protect: (value: string) => string): string {
+  const lines = splitMarkdownLines(markdown);
+  if (lines.length === 0) return markdown;
+
+  const output: string[] = [];
+  let cursor = 0;
+  let index = 0;
+
+  while (index < lines.length) {
+    const opening = parseFenceOpening(lines[index].content);
+    if (!opening) {
+      index += 1;
+      continue;
+    }
+
+    let closingIndex = index + 1;
+    while (closingIndex < lines.length && !isFenceClosing(lines[closingIndex].content, opening)) {
+      closingIndex += 1;
+    }
+
+    const blockEnd = closingIndex < lines.length ? lines[closingIndex].end : markdown.length;
+    output.push(markdown.slice(cursor, lines[index].start));
+    output.push(protect(markdown.slice(lines[index].start, blockEnd)));
+    cursor = blockEnd;
+    index = closingIndex < lines.length ? closingIndex + 1 : lines.length;
+  }
+
+  output.push(markdown.slice(cursor));
+  return output.join("");
+}
+
 export function protectMarkdownForTranslation(markdown: string): ProtectedMarkdown {
   const tokenPrefix = `OLP_MD_${randomUUID().replaceAll("-", "")}_`;
   const tokens = new Map<string, string>();
@@ -20,13 +94,7 @@ export function protectMarkdownForTranslation(markdown: string): ProtectedMarkdo
     return token;
   };
 
-  let protectedText = markdown;
-
-  // Protect complete fenced blocks before inline constructs and URLs.
-  protectedText = protectedText.replace(
-    /(^|\n)(```+|~~~+)[^\n]*\n[\s\S]*?\n\2[ \t]*(?=\n|$)/g,
-    (match) => protect(match),
-  );
+  let protectedText = protectFencedCode(markdown, protect);
   protectedText = protectedText.replace(/^@video:[ \t]+\S+[ \t]*$/gm, (match) => protect(match));
   protectedText = protectedText.replace(/(`+)([^`\n]|`(?!\1))*?\1/g, (match) => protect(match));
 
