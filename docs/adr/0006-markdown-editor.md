@@ -1,6 +1,6 @@
 # ADR 0006：Markdown 内容编辑器 + 正文内联插图
 
-- **Status**：Accepted ✅（2026-06-20）
+- **Status**：Proposed ▶（2026-06-20；评审阻塞项修订中，锁定后转 Accepted）
 - **相关 issue**：v0.3 编辑器优化（待建 issue）
 - **依赖**：现有内容模型（`posts.body` / `post_translations.body`）、文件与流式上传（`src/modules/file`、`src/modules/storage`）、主题契约（`src/modules/theme`）、内容多语言与 AI 翻译
 
@@ -32,25 +32,28 @@
 渲染 + 消毒在 **Core/页面层**完成,**主题拿到已消毒 HTML**:
 
 - 新增共享模块 `src/modules/content/markdown.ts`:`renderMarkdown(md): string`(权威渲染) = markdown-it(`html:false`、`linkify:true`、`breaks:true`)→ **sanitize-html 白名单**(标签/属性/URL scheme 白名单:`http`/`https`/`mailto` + 相对 `/api/files/...`;禁 `javascript:`/`data:` 等)。
-- 主题契约 `PostDetailView` 增加 `bodyHtml: string | null`(已消毒),内置主题用 `dangerouslySetInnerHTML` 渲染。**主题不解析、不消毒、不碰 Markdown**——保持「主题只展示、不含业务」。
+- **`img` src 锁内部文件**:首切片 sanitizer 只放行**相对** `/api/files/{uuid}/download` 作为 `<img src>`,**剥离外部 `http(s)` 图片**。理由:外链图会 ① 绕过 OpenLayerlyPro 文件门禁(会员图能被第三方 hotlink),② 把每个访客的 IP/UA/访问时间泄露给任意第三方域。需要外部图床时后续单加显式 allowlist 域,不在本切片默认开。
+- 主题契约 `PostDetailView` **新增** `bodyHtml: string | null`(已消毒),内置主题切到 `dangerouslySetInnerHTML` 渲染。**主题不解析、不消毒、不碰 Markdown**——保持「主题只展示、不含业务」。
+- **不在本切片直接删 `body`**:同一主题版本内 `body`(标 deprecated,仍填充原始文本)与 `bodyHtml` 并存,内置主题切到 `bodyHtml`;旧自定义主题继续读 `body` 不至于立刻崩。`body` 留待**下一主题大版本**移除并在 `docs/architecture` 注明迁移窗口。这样契约演进不打断现有自定义主题。
 - 列表/摘要(`summary`)仍按纯文本/截断处理,不渲染 Markdown。
 
 ### 3. 安全红线
 
 - **禁用裸 HTML**(markdown-it `html:false`)+ **输出再过 sanitize-html 白名单**(纵深防御,即便单作者)。
-- URL scheme 白名单;`rel="noopener nofollow"` + 外链处理由 sanitize 配置统一。
-- 消毒是**服务端权威边界**;客户端预览仅作者自看,可只用 markdown-it(`html:false`)免重复打包 sanitize-html,但**绝不**把客户端预览当安全边界。
+- URL scheme 白名单;`<img src>` 仅相对 `/api/files/...`(见 §4);`rel="noopener nofollow"` + 外链处理由 sanitize 配置统一。
+- 消毒是**服务端权威边界**。**预览统一走管理员鉴权的 `GET /api/admin/posts/preview`**,复用同一服务端 `renderMarkdown`——前后端单一渲染/消毒实现,杜绝「预览只跑 markdown-it」与权威渲染在后续(`@video:` iframe renderer 等)发生安全边界漂移。客户端不再各自实现一套渲染。
 
 ### 4. 正文内联插图,复用文件系统与鉴权
 
 - 编辑器内上传图片(工具栏按钮 / 拖拽 / 粘贴)→ 走**现有图片上传**(`content_image`,buffered + sharp 尺寸校验)→ 返回 fileId → 在光标处插入 Markdown `![alt](/api/files/{fileId}/download)`。
 - **内联图片必须 link 成该 post 的 `post_files`**(新增 `kind='inline'`),从而**继承现有下载鉴权**(purpose×post 状态×可见性×会员态的既有矩阵),与正文同授权;下方画廊只渲染 `kind='image'`,内联图不重复出现。
-- **未引用清理**:保存帖子时解析正文中的 `/api/files/{id}` 引用,unlink+删除不再被引用的 `kind='inline'` 文件,避免存储泄漏(reconcile;复用 #6/文件删除范式)。
+- **未引用清理(reconcile)**:保存帖子时解析正文(及所有 locale 翻译)中的 `/api/files/{id}` 引用,删除不再被任何引用的 `kind='inline'` 文件。**不可直接复用现有 `deleteFile`**——它会级联解除该 file 在**其他帖子**的 `post_files` 关联(见 `file/index.ts` 注释)。正确流程:detach 当前 post 的 link → 检查该 file 是否仍被**任意** `post_files` 引用 → **仅当引用计数为 0** 才删 file/object,并处理并发重新关联。详见 handoff。
+- **误删窗口**:必须避免「图已上传 attach、正文尚未保存」期间被另一处保存触发的 reconcile 当垃圾删掉。采用「正文保存成功后再 reconcile + 暂存/宽限」的明确方案(见 handoff §7),不靠时序巧合。
 
 ### 5. 翻译也是 Markdown,AI 翻译保结构
 
 - `post_translations.body` 同为 Markdown;翻译编辑器获得**同款工具栏 + 预览**。
-- AI 翻译草稿 prompt 更新:声明输入为 Markdown,**保留结构/代码块/URL/图片引用**(只译 alt 文本与正文,`![](...)` 的 URL 原样)。
+- **AI 翻译不能只靠 prompt 保结构**:送模前对**不可译片段做占位保护**(fenced/inline 代码块、URL、`![alt](url)` 的 `url`、未来的整行 `@video: <url>` 指令)→ 替换为不可破坏的占位 token → 译后按 token 还原;并做**不可变 token 集合校验**(返回文本的 token 集合须与送出完全一致),不一致即**拒绝采用该草稿**。prompt 声明输入为 Markdown 仅作辅助,不作为唯一保证。
 - 编辑正文照旧 bump `content_updated_at`(翻译陈旧判定不变)。
 
 ### 6. 依赖
@@ -80,4 +83,4 @@
 
 1. **Markdown 子集含表格,不含任务列表**。任务列表需把 `input[type=checkbox]` 纳入消毒白名单、扩大攻击面,而「已发布创作内容」几乎用不上;需要时后续单加。
 2. **渲染库 = markdown-it + sanitize-html**。决定因素是客户端预览需一个服务端/客户端**共用的轻量解析器**,markdown-it 浏览器侧更轻;remark/rehype 在浏览器更重。在已强制 `html:false` + 输出再过白名单后,rehype-sanitize 的 AST 级消毒并无显著增量收益。
-3. **本切片即做未引用内联图 reconcile**。不做会持续泄漏存储;删错风险由「汇总所有 locale(含草稿翻译)引用,只删谁都不引用的」保守策略兜住。
+3. **本切片即做未引用内联图 reconcile**,但走**引用计数 orphan-check**(非 `deleteFile` 级联),且**正文保存成功后**才执行 + 暂存/宽限避免误删窗口。删错风险由「汇总所有 locale(含草稿翻译)引用 + 引用计数为 0 才删 + 处理并发重关联」兜住(见 handoff §7)。

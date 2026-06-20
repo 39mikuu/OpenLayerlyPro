@@ -15,7 +15,8 @@
 3. **仅公开文章视频**(授予访问的 post `visibility==='public'`)才走 S3 302 签名 URL 卸载。
 4. **Range 解析**:非法(`last<first`、未知单位、畸形)→ 忽略→200;合法但无法满足(`start>=size`、后缀 0)→ 416(**鉴权后**);防大整数溢出。
 5. **play/download 分离**:`?mode=inline` 仅对**视频 MIME 白名单**置 `Content-Disposition: inline`,其余 `attachment`;始终 `X-Content-Type-Options: nosniff`。
-6. **本地路径过 `resolveSafePath`**;**无 schema 迁移、无 ffmpeg**。
+6. **限流分桶**:视频 Range 播放(metadata/seek/续传每次都是 GET)**不得**走通用下载的 120/10min,否则正常播放被 429。鉴权**之后**用独立 **per-user+per-file** 桶(阈值更高、续传基本不限),见 §5。
+7. **本地路径过 `resolveSafePath`**;**无 schema 迁移、无 ffmpeg**。
 
 ## 1. 现状(必读)
 
@@ -63,7 +64,9 @@ async getObject(input: GetObjectInput): Promise<Readable> {
   return res.Body as Readable;
 }
 ```
-`createSignedDownloadUrl` 增加可选 `disposition?: "inline"|"attachment"` → 设到签名 URL 的 `ResponseContentDisposition`(公开视频 inline 播放用)。
+`SignedUrlInput` 增加可选 `disposition?: "inline"|"attachment"` 与 `contentType?: string` → 设到签名 URL 的 `ResponseContentDisposition` / `ResponseContentType`(公开视频 inline 播放,确保浏览器内联且 MIME 正确)。其余调用方不传则行为不变。
+
+**公开视频签名 URL 的 TTL 必须显式加长**:现有 `SIGNED_URL_TTL_SECONDS = 5*60`(5 分钟)用于普通附件下载。公开视频 302 后,浏览器后续的 seek/续传**直连 S3**,5 分钟内播放/拖动就会撞 S3 403、中断。为公开视频单独定义更长 TTL(如 `PUBLIC_VIDEO_SIGNED_URL_TTL_SECONDS = 6*60*60`,6 小时,可配),`prepareAuthorizedDownload` 对**公开视频**分支用它签 URL;非视频附件仍用 5 分钟。这与 ADR 0007 已接受的权衡一致:**签名 URL 是其有效期内的 bearer 凭证、撤销不了**——仅对**本就公开**的视频可接受,会员视频永远走应用代理(不签 URL)。测试须覆盖「长时长播放 + seek 超出 5 分钟仍可读」。
 
 ## 4. 下载授权层:两阶段 + 可见性分流
 
@@ -87,7 +90,7 @@ prepareAuthorizedDownload(input: {
 
 `prepareAuthorizedDownload` 规则:
 - **本地** → `storage.getObject({...,start,end})` 流(带 range)。
-- **S3 且 `visibility==='public'`** → `createSignedDownloadUrl({ ..., disposition: inline?"inline":"attachment" })`,返回 `{mode:"redirect",url}`(浏览器自行对 S3 range)。
+- **S3 且 `visibility==='public'`** → `createSignedDownloadUrl({ ..., expiresInSeconds: PUBLIC_VIDEO_SIGNED_URL_TTL_SECONDS, disposition: inline?"inline":"attachment", contentType: file.mimeType })`,返回 `{mode:"redirect",url}`(浏览器自行对 S3 range;TTL 须够长以覆盖整段播放/seek,见 §3)。
 - **S3 且 `visibility!=='public'`(会员/登录)** → `storage.getObject({...,start,end})`(**应用代理 S3 Range**),返回 `{mode:"stream",...}`;**不发签名 URL**。
 - `DownloadResult` 的 stream 分支带回 `{start,end,size}` 供路由设 206 头。
 - 日志:`input.log` 由路由按「是否续传 range」决定(见 §6)。
@@ -100,9 +103,24 @@ prepareAuthorizedDownload(input: {
 ```ts
 const file = await getFileById(id);
 if (!file) return jsonError(404, "fileNotFound");   // uuid 不可枚举，保持既有
-// 限流……
+
 // —— 阶段一：鉴权（先于任何 range/size 响应）——
 const access = await authorizeFileAccess(user, file); // 失败 throw 401/403
+
+// —— 限流：区分通用下载 vs 视频 Range 播放（鉴权之后，避免成为探测信号）——
+const isVideoRange =
+  INLINE_VIDEO_MIME.has(file.mimeType) && (req.headers.get("range") || req.nextUrl.searchParams.get("mode") === "inline");
+if (isVideoRange) {
+  // 视频 Range：per-user+per-file 独立桶，阈值更高；start>0 续传基本不限（见 §6）
+  if (!rateLimit(`video:${user?.id ?? ip}:${file.id}`, 600, 10 * 60 * 1000)) {
+    return jsonError(429, "downloadRateLimited");
+  }
+} else {
+  // 通用下载沿用既有 120/10min
+  if (!rateLimit(user ? `download:${user.id}` : `download-ip:${ip}`, 120, 10 * 60 * 1000)) {
+    return jsonError(429, "downloadRateLimited");
+  }
+}
 
 // —— 阶段二：鉴权后才解析 range ——
 const inline = req.nextUrl.searchParams.get("mode") === "inline"
@@ -193,7 +211,7 @@ playHref: INLINE_VIDEO_MIME.has(f.file.mimeType) ? `/api/files/${f.file.id}/down
 
 **可见性分流**:
 - 会员/登录视频 + S3 → `{mode:"stream"}`(代理,无 redirect)。
-- 公开视频 + S3 → `{mode:"redirect"}` 签名 URL(含 inline disposition)。
+- 公开视频 + S3 → `{mode:"redirect"}` 签名 URL(含 inline disposition + `contentType`,且 `expiresInSeconds` = 加长 TTL 而非 5min;断言传入的 TTL ≥ 公开视频常量,覆盖长播放/seek 不因 5min 过期)。
 - 本地 → 始终代理流。
 
 **Range 解析**:
@@ -208,6 +226,8 @@ playHref: INLINE_VIDEO_MIME.has(f.file.mimeType) ? `/api/files/${f.file.id}/down
 **disposition**:`?mode=inline` 且 video MIME → `inline`;`?mode=inline` 但**非视频** MIME → 仍 `attachment`(白名单拦截);始终 `nosniff`。
 
 **日志**:`bytes=2000-3000`(start>0)不新增日志;**连续两次** `bytes=0-...` → 断言当前是否产生两条(明确启发式,允许重复)。
+
+**限流**:授权会员对同一视频**连续多次** Range 请求(模拟 metadata+seek+续传,数十次)→ **不**误报 429(走视频桶,非 120/10min);非视频附件的普通下载仍受 120/10min。
 
 **主题/视图**:`inlineCandidate`/`playHref` 正确;`<video>` 渲染且保留下载;locked(`!allowed`)不渲染。
 
@@ -234,6 +254,7 @@ pnpm build:migrator && pnpm build
 - [ ] `?mode=inline` 仅视频 MIME 白名单生效 + nosniff;play/download disposition 分离
 - [ ] `inlineCandidate` 渲染 `<video>` + 回退 + **始终保留下载**
 - [ ] 日志:seek 不记;初始启发式(语义已注明,非精确计数)
+- [ ] 视频 Range 用独立 per-user+per-file 限流桶(鉴权后);连续多次 range 不误报 429(有测试)
 - [ ] 无 schema 迁移、无新依赖、无 ffmpeg;路径防穿越不破坏
 
 ## 不在本切片(B2 #2 / 后续)
