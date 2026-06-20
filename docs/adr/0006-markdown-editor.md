@@ -132,6 +132,7 @@ Markdown 图片只允许：
    - 解除不再使用的当前 post inline links。
 6. 已发布文章/翻译允许上述**内部 inline 同步 helper**运行；其他 kind 继续遵守 draft-only 限制。
 7. 通用 attach/detach API 不得绕过正文引用校验去破坏已发布正文。
+8. 删除翻译、删除草稿翻译和删除整篇文章时，也必须在对应事务中捕获受影响的 inline fileId，并为每个候选文件 enqueue 新的 orphan cleanup task；不能只依赖外键级联解除 link。
 
 延迟 cleanup 到期后重新检查引用：保存成功的文件已有 link，任务安全 no-op；放弃保存的文件仍无引用，任务负责回收。
 
@@ -139,7 +140,7 @@ Markdown 图片只允许：
 
 ### 7. orphan 清理采用两阶段 durable 流程
 
-正文保存事务只负责解除 link，并为候选文件 enqueue `file.cleanup_orphan`；**事务内不删除本地/S3 对象**。
+正文保存或删除事务只负责解除 link，并为候选文件 enqueue `file.cleanup_orphan`；**事务内不删除本地/S3 对象**。
 
 #### 阶段一：`file.cleanup_orphan`
 
@@ -150,7 +151,7 @@ handler 在一个短数据库事务内：
 3. 检查任意 `post_files`、cover、设置项及其他受保护引用；
 4. 有引用 → 成功 no-op；
 5. 捕获不可变的 `{ storageDriver, bucket, objectKey }`；
-6. enqueue `storage.delete_object`，dedupe key 使用对象级稳定键，例如 `storage:delete_object:{driver}:{bucket}:{objectKey}`；
+6. enqueue `storage.delete_object`，dedupe key 使用对象身份的稳定哈希，例如 `storage:delete_object:{sha256(driver\0bucket\0objectKey)}`；
 7. 删除 file 行；
 8. `storage.delete_object` task 与 file 行删除一起提交。
 
@@ -227,6 +228,7 @@ prompt 约束只作为辅助，不是结构安全保证。
 - ✅ Markdown、主题、翻译和文件权限边界清晰；
 - ✅ 预览与公开页共用同一服务端 renderer；
 - ✅ 内联图 link 与正文保存原子同步，不存在 attach 后未保存窗口；
+- ✅ 翻译删除和文章删除不会只级联 link 而遗漏对象清理；
 - ✅ 未保存上传由延迟 durable cleanup 有界回收；
 - ✅ DB 先删除 file 身份，再由第二阶段任务重试对象删除；
 - ✅ 默认无 schema 迁移；
@@ -241,7 +243,8 @@ prompt 约束只作为辅助，不是结构安全保证。
 2. 渲染库为 markdown-it + sanitize-html。
 3. preview API 使用 POST，公开/预览通过 `embedMode` 区分。
 4. 内联图只在正文保存事务中同步 link。
-5. `file.cleanup_orphan` 每次触发均可重新 enqueue，不使用 fileId 级永久 dedupe。
-6. 对象删除使用第二阶段 `storage.delete_object` task。
-7. 默认上传 cleanup 延迟为 24 小时，可配置。
-8. 默认不产生数据库迁移。
+5. 保存、翻译删除和文章删除路径都负责 enqueue orphan cleanup。
+6. `file.cleanup_orphan` 每次触发均可重新 enqueue，不使用 fileId 级永久 dedupe。
+7. 对象删除使用第二阶段 `storage.delete_object` task。
+8. 默认上传 cleanup 延迟为 24 小时，可配置。
+9. 默认不产生数据库迁移。
