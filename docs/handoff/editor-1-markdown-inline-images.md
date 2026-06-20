@@ -36,6 +36,7 @@
 | D3 | `PostDetailView` **新增** `bodyHtml: string \| null`(已消毒),内置主题用 `dangerouslySetInnerHTML` 渲染;**`body` 标 deprecated 但保留**(仍填原始文本),不在本切片删,避免打断自定义主题(见 §5）。摘要 `summary` 仍纯文本。 |
 | D9 | 预览统一走 `GET /api/admin/posts/preview`(管理员鉴权 + 服务端 `renderMarkdown`);客户端不再单跑 markdown-it,避免安全边界漂移。 |
 | D10 | attach API 校验 `kind↔purpose`(`inline/image→content_image`、`attachment→content_attachment`)。 |
+| D11 | `kind='inline'` 放宽 `attachFileToPost`/`detachFileFromPost` 的 draft-only 门槛(已发布文章/翻译可挂内联图;reconcile 不依赖 post 状态);其余 kind 保持 draft-only(见 §6.1)。 |
 | D4 | 内联图:编辑器上传 `purpose:"content_image"` → 关联 post `kind:"inline"` → 正文插入 `![alt](/api/files/{id}/download)`;画廊只渲染 `kind="image"`。鉴权不变(purpose 已覆盖)。 |
 | D5 | `postFiles.kind` 与 post files API 枚举新增 `inline`(增量迁移)。 |
 | D6 | 翻译同为 Markdown;翻译编辑器复用同款工具栏 + 预览;AI 翻译 prompt 声明 Markdown 并保结构/代码/URL/图片引用。 |
@@ -146,14 +147,17 @@ await api(`/api/admin/posts/${post.id}/files`, { method: "POST", body: { fileId:
 
 `post-translation-editor.tsx`:正文区同样换成 `MarkdownEditor`,内联图同理 attach 到同一 post(`kind:"inline"`)。**注意已发布文章的翻译编辑会撞 §6.1 的 409**。
 
-### 6.1 已发布文章的内联图(待 owner 定调,见 PR 讨论)
+### 6.1 已发布文章的内联图 —— 放宽 `kind='inline'` 的 draft-only 门槛(owner 已定调:方案 A)
 
-`attachFileToPost`/`detachFileFromPost` 仅允许 `post.status==='draft'`(保护 ADR 0004 的发布/fencing 不变量)。两条候选,**实现前以 owner 选定为准**:
+`attachFileToPost`/`detachFileFromPost`(`content/index.ts:616/635`)现仅允许 `post.status==='draft'`(保护 ADR 0004 的发布/fencing 不变量)。**决策:对 `kind='inline'`(且 file `purpose==='content_image'`)放宽该门槛**,允许已发布文章/其翻译也挂、解内联图。
 
-- **方案 A(推荐,更可用)**:对 `kind='inline'`(purpose=`content_image`)的 attach/detach **放宽 draft-only 门槛**,允许已发布文章也挂内联图。依据:内联图是 purpose 鉴权的内容文件,**不改动**被该门槛保护的「已发布正文/调度 fencing」状态;reconcile 同样需能在已发布文章上运行(否则发布后正文里换图会泄漏旧文件)。需:attach/detach/reconcile 路径放宽且补「已发布文章可挂/解内联图」测试,确认不影响 ADR 0004 不变量。
-- **方案 B(更保守)**:保持 draft-only;编辑器在文章非 draft 时**禁用插入图片**(上传前判状态,**避免孤儿上传**),提示「请将文章转回草稿再编辑图片」。代价:已发布文章的翻译无法插内联图。
+依据:内联图是 **purpose 鉴权的内容文件**,attach/detach 它**不改动**被 draft-only 门槛保护的「已发布正文/调度 fencing」状态(ADR 0004),因此可安全放宽。
 
-无论 A/B,**编辑器都必须在上传前检查状态**,杜绝「上传成功 → attach 409 → 孤儿文件」。
+实现要点:
+- `attachFileToPost`/`detachFileFromPost`:**仅当 `kind==='inline'`(或经校验 purpose=content_image)时跳过 `status==='draft'` 检查**;其余 kind(cover/image/attachment/…)**保持 draft-only 不变**。
+- **reconcile 必须能在已发布文章上运行**——否则发布后在正文里换图,旧内联文件永远清不掉(存储泄漏)。§7 的 orphan-check 不依赖 post 状态。
+- 编辑器**仍在上传前检查可行性**,杜绝「上传成功 → attach 409 → 孤儿文件」;放宽后 inline 路径对 draft/published 都应成功。
+- 测试:已发布文章 + 其草稿翻译插入/移除内联图 → attach/detach 成功(非 409)、reconcile 正常;同一文章对 `kind='image'`(画廊)在已发布态仍 409(确认只放宽了 inline)。
 
 post files API `src/app/api/admin/posts/[id]/files/route.ts`:
 - `attachSchema.kind` 枚举加 `"inline"`。
@@ -253,6 +257,7 @@ pnpm build:migrator && pnpm build
 - [ ] 工具栏 + 预览**经 `/api/admin/posts/preview`**(管理员鉴权 + 服务端 `renderMarkdown`),客户端不单跑渲染
 - [ ] 内联插图:上传 content_image + 关联 `kind='inline'` + 正文插入 Markdown;新建态先存草稿
 - [ ] attach **校验 `kind↔purpose`**(`inline→content_image`、`attachment→content_attachment`)
+- [ ] **`kind='inline'` 放宽 draft-only 门槛**(已发布文章/翻译可挂/解内联图 + reconcile 可运行;其余 kind 仍 draft-only)
 - [ ] 内联图继承 member-only 门禁(purpose 鉴权,未改 `canAccessFile` 语义)
 - [ ] 画廊只显 `kind='image'`,内联图不重复
 - [ ] 翻译同为 Markdown + 同款编辑器;AI 翻译**占位保护 + token 集合校验**(篡改即拒)
