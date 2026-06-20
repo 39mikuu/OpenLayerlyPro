@@ -122,20 +122,23 @@ Markdown 图片只允许：
 为彻底关闭“上传并 attach 后，正文尚未保存而被另一保存误删”的窗口，流程锁定为：
 
 1. 编辑器上传图片，只创建 `files` 记录并返回 `fileId`；**上传时不创建 `post_files` link**。
-2. 编辑器把内部文件 URL 插入 Markdown。
-3. 保存正文或翻译时，服务端解析即将提交的正文，并在同一内容保存事务中：
+2. 上传成功后立即 enqueue 一个延迟执行的 `file.cleanup_orphan` durable task，建议 `availableAt = now + 24h`，dedupe key 使用 `file:cleanup_orphan:{fileId}`。
+3. 编辑器把内部文件 URL 插入 Markdown。
+4. 保存正文或翻译时，服务端解析即将提交的正文，并在同一内容保存事务中：
    - 验证引用的文件存在且 `purpose="content_image"`；
    - 对新增引用创建 `kind="inline"` link；
    - 汇总原文和所有 locale（含草稿翻译）计算仍有效的引用；
    - 解除不再使用的当前 post inline links。
-4. 已发布文章/翻译允许上述**内部 inline 同步 helper**运行；其他 kind 继续遵守 draft-only 限制。
-5. 通用 attach/detach API 不得绕过正文引用校验去破坏已发布正文。
+5. 已发布文章/翻译允许上述**内部 inline 同步 helper**运行；其他 kind 继续遵守 draft-only 限制。
+6. 通用 attach/detach API 不得绕过正文引用校验去破坏已发布正文。
 
-这样正文和 link 的权威状态由一次保存统一提交，不依赖宽限期或多标签页时序。
+延迟 cleanup 到期后重新检查引用：保存成功的文件已有 link，任务安全 no-op；放弃保存的文件仍无引用，任务负责回收。
+
+这样正文和 link 的权威状态由一次保存统一提交，不依赖宽限期或多标签页时序，同时未保存上传也不会永久泄漏。
 
 ### 7. orphan 删除使用 durable cleanup
 
-正文保存事务只负责解除 link，并为“当前已无任何引用”的候选文件写 durable cleanup task；**事务内不删除本地/S3 对象**。
+正文保存事务只负责解除 link，并为“当前已无任何引用”的候选文件写同一种 durable cleanup task；**事务内不删除本地/S3 对象**。
 
 cleanup worker 每次执行时必须重新：
 
@@ -206,9 +209,10 @@ prompt 约束只作为辅助，不是结构安全保证。
 - ✅ Markdown、主题、翻译和文件权限边界清晰；
 - ✅ 预览与公开页共用同一服务端 renderer；
 - ✅ 内联图 link 与正文保存原子同步，不存在 attach 后未保存窗口；
+- ✅ 未保存上传由延迟 durable cleanup 有界回收；
 - ✅ 对象清理由 durable task 重试，不把不可回滚 I/O 放进 DB 事务；
 - ✅ 默认无 schema 迁移；
-- ⚠️ 未保存正文时上传的文件可能暂时成为未关联文件，需要通用 orphan cleanup 定期处理；
+- ⚠️ 未保存上传最多保留到 cleanup 到期；
 - ⚠️ 自定义主题应在下一主题大版本前迁移到 `bodyHtml`；
 - ⚠️ 自动保存、版本历史、协同编辑和 WYSIWYG 不在本 ADR。
 
@@ -218,5 +222,6 @@ prompt 约束只作为辅助，不是结构安全保证。
 2. 渲染库为 markdown-it + sanitize-html。
 3. preview API 使用 POST，公开/预览通过 `embedMode` 区分。
 4. 内联图只在正文保存事务中同步 link。
-5. orphan 对象通过 durable cleanup task 删除。
-6. 默认不产生数据库迁移。
+5. 上传和 detach orphan 均使用同一个 delayed durable cleanup handler。
+6. 默认 cleanup 延迟为 24 小时，可配置。
+7. 默认不产生数据库迁移。
