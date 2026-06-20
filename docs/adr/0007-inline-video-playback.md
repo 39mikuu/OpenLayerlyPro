@@ -2,77 +2,89 @@
 
 - **Status**：Accepted ✅（2026-06-20）
 - **相关 issue**：v0.3 B2 视频（待建 issue）
-- **依赖**：B1 流式上传(已在 main:`content_attachment` 流式 + S3 有界 multipart)、下载鉴权(`src/modules/download`)、存储抽象(`src/modules/storage`)、主题契约(`src/modules/theme`)
+- **依赖**：B1 流式上传(已在 main)、下载鉴权(`src/modules/download`)、存储抽象(`src/modules/storage`)、主题契约(`src/modules/theme`)
 
 ## Context
 
-视频(`mp4`/`webm`/`mov`/`m4v`)目前作为 `content_attachment` 上传(B1 已支持大文件流式上传),但在公开页**只渲染成下载链接**,无法在浏览器内播放/拖动。Roadmap 的 B2 列了一堆:**本地 Range/206、内联播放、封面/时长/缩略图/转码、直传 S3**——这是多个量级不同的事,塞进一刀会失控,尤其**转码**(ffmpeg、后台作业、HLS/ABR)是独立 epic。
+视频(`mp4`/`webm`/`mov`/`m4v`)目前作为 `content_attachment` 上传(B1 已支持流式),但公开页只渲染成下载链接,无法在浏览器内播放/拖动。本切片(B2 #1)做**浏览器内播放 + 精确拖动**,**无 ffmpeg、无 schema 迁移**;转码/缩略图/时长/直传 S3 推迟到 B2 #2。
 
-现状关键事实(调研结论):
+现状关键事实:
 
-- **下载路由 `src/app/api/files/[id]/download/route.ts` 不读 `Range` 头、不返回 206**:本地存储恒返回整文件(`fs.createReadStream` 无 offset),无 `Accept-Ranges`。
-- **S3 路径已 OK**:下载对 S3 返回 302 跳转到**签名 URL**,浏览器对签名 URL 的 Range 请求由 S3 原生支持(返回 206)。当前签名 URL TTL = 5 分钟。
-- 存储抽象 `GetObjectInput` 无 `start`/`end`;本地 `createReadStream` 支持 `{start,end}` 部分读。
-- `files` 表有 `sizeBytes`/`mimeType`,**无 `duration`/`poster`**;**仓库无任何 ffmpeg/ffprobe**;Dockerfile 基于 `node:22-bookworm-slim`,未装任何 apt 包。
-- 下载鉴权 `canAccessFile` 按 `file.purpose` 判定(`content_attachment` → 关联 published post + `canAccessPost`);`authorizeAndPrepareDownload` **每次调用都写 `download_logs` + `recordEvent`**。
-- 主题 `PostAttachmentView = { downloadHref, name, sizeBytes }`,内置主题把视频当普通下载项渲染。
+- 下载路由 `src/app/api/files/[id]/download/route.ts` 不读 `Range`、不返回 206;本地恒返回整文件(`fs.createReadStream` 无 offset);S3 走 302→签名 URL(`SIGNED_URL_TTL_SECONDS=5*60`)。
+- 存储 `GetObjectInput` 无 range;本地 `createReadStream` 支持 `{start,end}`;S3 `GetObjectCommand` 支持 `Range`(当前未用)。
+- 下载鉴权 `canAccessFile` 按 `file.purpose` 判定;`content_attachment` → 关联 published post + `canAccessPost`(已知 post `visibility` = public/login/member)。
+- 仓库无 ffmpeg。
 
-最危险/最易错的点:① Range 解析的边界与**鉴权必须先于发字节**;② 内联视频播放会产生**大量 range 请求**,会把 `download_logs` 刷爆;③ S3 签名 URL **5 分钟 TTL 短于视频时长**会导致播放中途 403。
+**核心矛盾(本 ADR 必须解决)**:既要「会员专属视频逐请求鉴权」(会员过期/撤销/文章下架后立即失效),又想用 S3 签名 URL 卸载带宽。但**签名 URL 是一段时长内的 bearer 凭证**:302 之后浏览器后续的 seek/重连直接打 S3,应用不再鉴权,且 URL 在有效期内可被转发。长视频需要长 TTL,会把这个泄漏窗口放大到不可接受。二者不可兼得,必须按内容可见性分流。
 
 ## Decision
 
-**本切片(B2 #1)= 仅「浏览器内可播放 + 可拖动」,无 ffmpeg、无 schema 迁移。** 转码/缩略图/时长提取/直传 S3 推迟到 B2 #2(单独 ADR)。
+### 1. 本地存储支持 HTTP Range/206(应用代理)
 
-### 1. 本地存储支持 HTTP Range/206
+- `GetObjectInput` 加可选 `start?/end?`(含端);本地 `getObject` 用 `fs.createReadStream(path,{start,end})`(路径仍过 `resolveSafePath`)。
+- 路由解析单段 `Range`,合法→206(`Content-Range`/`Content-Length`/`Accept-Ranges: bytes`);无 Range→200 + `Accept-Ranges`。
 
-- `GetObjectInput` 增可选 `start?: number; end?: number`;本地 `getObject` 用 `fs.createReadStream(path, { start, end })`(路径仍过现有 `resolveSafePath`,不破坏防穿越)。
-- 下载路由解析 `Range: bytes=a-b`(单段):
-  - 合法 → **206**,头含 `Content-Range: bytes a-b/size`、`Content-Length:(b-a+1)`、`Accept-Ranges: bytes`,body 为该段流。
-  - 无 Range → **200**,但加 `Accept-Ranges: bytes`(告知可拖动)。
-  - 开放式 `bytes=a-`→到 EOF;后缀 `bytes=-n`→末 n 字节;`start>=size`→**416** + `Content-Range: bytes */size`;畸形/多段 → 退化为 **200** 整文件(不实现 multipart/byteranges)。
-- **鉴权先行**:Range 分支必须在 `authorizeAndPrepareDownload`/`canAccessFile` 通过**之后**才发任何字节(member-only 视频每个 range 请求都带 cookie、同源、逐次鉴权)。
+### 2. 按可见性分流的 S3 安全模型(解决核心矛盾)
 
-### 2. S3 视频:延长签名 URL TTL(避免播放中途过期)
+| 内容 | 后端 | 交付方式 | 鉴权保证 |
+|---|---|---|---|
+| **会员/登录限定视频** | 本地 | 应用代理 Range | **逐请求鉴权** |
+| **会员/登录限定视频** | S3 | **应用代理 S3 Range**(给 `GetObjectCommand` 传 `Range`,流回浏览器) | **逐请求鉴权**(会员撤销/过期/下架立即生效) |
+| **公开文章视频** | S3 | 302→签名 URL(可较长 TTL) | 公开内容,签名 URL 卸载带宽可接受 |
+| **公开文章视频** | 本地 | 应用代理 Range | — |
 
-- S3 仍走 302→签名 URL(浏览器对其 range,S3 原生 206),保留 S3 带宽卸载。
-- **视频类下载的签名 URL TTL 调长**(可配置,默认如 6h),否则长视频播放中途签名过期 → 403。
-- ⚠️ 代价:签名 URL 在 TTL 内可被转发分享(与现有「所有下载都用 5 分钟签名 URL」是同性质、更长的权衡)。见「待确认」给出可选的「app 代理 range」强门禁方案。
+- 「是否公开」由关联 published post 的 `visibility` 决定:**仅当授予访问的 post `visibility==='public'`** 才走 S3 签名 URL 卸载;`login`/`member` 一律**应用代理 Range**。
+- 这样「会员专属视频逐请求鉴权」对**本地与 S3 都成立**;签名 URL 只用于本就公开的视频。
+- 需让 S3 `getObject` 支持 `Range`(本切片新增);**无迁移、无 ffmpeg**。
+- **范围限定**:本规则只针对**视频内联播放**。非视频附件(zip/psd 等)的 S3 下载沿用现有 5 分钟签名 URL 模型,不在本切片改动。
 
-### 3. 内联播放器(主题层)
+### 3. 鉴权先于任何基于文件大小的响应(防信息泄漏)
 
-- `PostAttachmentView` 增 `mimeType: string` 与 `playable: boolean`(`mimeType.startsWith("video/")`);**不新增 `post_files.kind`**(按 mimeType 判定)。
-- 内置主题:`playable` 项渲染 `<video controls preload="metadata" src={…}>`(`preload=metadata` 让浏览器自取首帧作封面,免 ffmpeg),**同时保留下载按钮**;非视频附件不变。
-- 内联视频 `src` 直指 `/api/files/{id}/download`(range 端点),**不走** `/download/{id}` 的额外 307 跳转(避免每个 range 多一跳)。
+两阶段顺序,**不得在鉴权前返回 416 或任何含文件大小的响应**(否则未授权者可探测受限文件的存在与精确大小):
 
-### 4. 下载日志防刷
+1. 加载文件 + `canAccessFile` 鉴权(失败 → 401/403,不泄漏大小)。
+2. 鉴权通过后才 `parseSingleRange`。
+3. 合法但无法满足 → 416(此时才可含 `Content-Range: */size`);不写下载日志。
+4. 合法 → 打开本地/S3 代理流(或公开视频生成签名 URL)。
 
-- 内联播放的 range 请求只在「无 Range 或 Range 从 0 开始」时记一次(视为一次 play),后续 seek 的 range 不写 `download_logs`/`recordEvent`(复用 `authorizeAndPrepareDownload` 已有的 `log` 开关,由路由按是否为续传 range 决定)。
+### 4. 播放与下载语义分离(disposition)
 
-### 5. 不做(本切片明确推迟到 B2 #2)
+- `playHref` = `/api/files/{id}/download?mode=inline` → `Content-Disposition: inline`,**仅对显式视频 MIME 白名单**生效(`video/mp4`,`video/webm`,`video/quicktime`,`video/x-m4v`);非白名单一律 `attachment`。始终保留 `X-Content-Type-Options: nosniff`,杜绝任意 HTML/SVG 经 query 变成同源内联。
+- `downloadHref` = `/download/{id}` → `Content-Disposition: attachment`(不变)。
+- 公开视频的 S3 签名 URL 同步设置 response content-disposition = inline。
 
-- **ffmpeg/ffprobe**:时长提取、自动封面/缩略图、转码、HLS/ABR。
-- **创作者自定义封面**(需列 + UI)。
-- **直传 S3**(presigned PUT/multipart):现有经 app 流式上传已能传大视频;直传是带宽优化,非播放必需。
+### 5. 内联候选 ≠ 一定可解码(主题契约)
+
+- `PostAttachmentView` 统一新增三字段(ADR 与 handoff 一致):`mimeType: string`、`inlineCandidate: boolean`、`playHref?: string`。
+- `inlineCandidate` = mimeType ∈ 视频 MIME 白名单(`video/mp4`/`video/webm` 为可靠基线;`video/quicktime`/`video/x-m4v` 为尽力而为,浏览器可能因容器/codec 不支持而无法解码)。**它只表示「渲染播放器」,不保证可解码**。
+- 主题对 `inlineCandidate` 渲染 `<video controls preload="metadata">` + `<video>` 内回退文案,且**始终保留下载按钮**作为兜底。不把 `preload="metadata"` 宣称为可靠首帧封面(标准仅「可能」取前几帧)。
+
+### 6. 下载日志:启发式,非精确播放计数
+
+- 续传/seek(`start>0`)的 range **不写**日志;初始请求(无 Range 或 `start===0`)按**启发式**记录——浏览器的 metadata 探测、重试、重载可能产生多次 `bytes=0-`,故**可能少量重复**,**不作为精确播放次数**。
 
 ## Alternatives
 
-- **一次性做全套 B2(含转码)**:否决。转码引入 ffmpeg 系统依赖、后台作业、存储与失败重试,是独立 epic;先交付「能播能拖」的高价值小刀。
-- **S3 视频也经 app 代理 range**(对 S3 发带 Range 的 GetObject,流回浏览器):强门禁(逐请求鉴权、无长效签名 URL),与本地同一套代码;但视频带宽全过 app,抵消 S3 卸载。列为「待确认」的可选强门禁模式。
-- **新增 `post_files.kind='video'`**:否决(本切片);按 mimeType 判定零迁移,且视频既可内联播放又可下载。未来若需「下载专用视频」再引入。
-- **slice 1 就做创作者封面 / ffprobe 时长**:否决;`<video preload=metadata>` 客户端即可显示首帧与时长,服务端无需,避免 ffmpeg 依赖与迁移。
+- **所有 S3 视频都用长 TTL 签名 URL**:否决。与「会员专属逐请求鉴权」红线矛盾——会员撤销/过期/下架后,签名 URL 在 TTL 内仍可播放且可转发。仅对公开视频可接受。
+- **会员视频也用短(5min)签名 URL**:否决。长视频播放超 5 分钟,seek/重连会因 URL 过期 403,播放中断。
+- **一次性做全套 B2(含转码)**:否决,转码是独立 epic(ffmpeg/后台作业)。
+- **新增 `post_files.kind='video'`**:否决(本切片);按 mimeType 判定零迁移。
 
 ## Consequences
 
-- ✅ 高价值、低风险:**无 ffmpeg、无 schema 迁移、无新依赖**;主要是本地 Range/206 + 主题播放器 + view 扩字段。
-- ✅ 复用 B1 上传与现有下载鉴权;member-only 视频逐 range 请求仍受门禁。
-- ✅ **无迁移 → 不与编辑器切片争迁移编号**;唯一共享文件是主题契约 + `post-detail.tsx`,故**编辑器与本切片串行做**(别并行改主题层)。
-- ⚠️ Range 解析必须严谨(边界、416、鉴权先行),需针对性测试。
-- ⚠️ S3 长 TTL 签名 URL 的转发分享窗口变大(可配置/可选强门禁,见待确认)。
-- ⚠️ 主题契约 `PostAttachmentView` 扩字段;自定义主题需消费(内置主题随切片更新)。
-- ⚠️ 时长/封面/缩略图/转码/直传 S3 不在本切片;B2 #2 单独评估(届时再决定 ffmpeg 进 Dockerfile)。
+- ✅ 会员专属视频在本地与 S3 **都逐请求鉴权**(撤销/过期/下架即时生效),矛盾消除。
+- ✅ 公开视频仍可用 S3 签名 URL 卸载带宽。
+- ✅ 无 schema 迁移、无 ffmpeg、无新依赖;S3 仅需 `getObject` 支持 Range。
+- ⚠️ 会员视频经应用代理 → 视频带宽走应用(自托管运维成本);这是「强门禁」的必要代价,公开视频不受影响。
+- ⚠️ Range 解析须区分「非法(忽略→200)」与「合法但无法满足(416)」,并防大整数溢出;鉴权必须先行。需针对性测试。
+- ⚠️ 主题契约 `PostAttachmentView` 扩字段;自定义主题需适配(内置主题随切片更新)。
+- ⚠️ 与编辑器切片**都改主题契约 + `post-detail.tsx`**,**串行**做。
+- ⚠️ 时长/封面/缩略图/转码/直传 S3 在 B2 #2 评估。
 
 ## 已确认的决策（2026-06-20）
 
-1. **范围 = 含本地 Range 完整版**:本地做 206 精确拖动,S3 沿用签名 URL 原生 range,两后端体验一致(会员专属视频是核心目标,自托管两后端都要支持)。
-2. **S3 视频门禁 = 延长签名 URL TTL(默认 6h,可配)**,保留 S3 带宽卸载;与现有「所有下载用签名 URL」同一模型(成员资格用于**获取** URL,获取后 TTL 内可转发,与现有 5 分钟方案同性质)。**可选强门禁**「app 代理 range」作为配置项保留(牺牲 S3 卸载换逐请求门禁),不设为默认。
-3. **默认对所有 `video/*` 附件内联播放 + 保留下载**,不引入额外开关。
+1. **范围 = 含本地 Range/206 完整版**;会员专属是核心目标,自托管两后端都支持精确拖动。
+2. **S3 安全模型 = 按可见性分流**(§2):会员/登录视频应用代理 S3 Range(逐请求鉴权);公开视频 302 签名 URL 卸载带宽。**不**用「所有 S3 视频长 TTL」。
+3. **鉴权先于任何基于大小的响应**(§3),416 仅在鉴权后。
+4. **play/download 语义分离 + 视频 MIME 白名单 inline + nosniff**(§4)。
+5. **默认对视频 MIME 白名单内联播放 + 始终保留下载**;字段 `inlineCandidate`,不保证可解码(§5)。
