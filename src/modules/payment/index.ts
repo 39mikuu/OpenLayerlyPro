@@ -884,16 +884,6 @@ export async function reverseAutoPayment(
         .limit(1)
         .for("update");
     }
-    if (!request && checkout?.owned && checkout.requestId) {
-      [request] = await tx
-        .select()
-        .from(paymentRequests)
-        .where(
-          and(eq(paymentRequests.provider, providerId), eq(paymentRequests.id, checkout.requestId)),
-        )
-        .limit(1)
-        .for("update");
-    }
 
     if (!request) {
       if (mappedPayment || checkout?.owned) {
