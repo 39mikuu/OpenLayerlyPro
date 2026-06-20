@@ -23,9 +23,10 @@
 4. 主题只接收已消毒 `bodyHtml`。
 5. 内联图只允许 `purpose="content_image"`。
 6. 上传图片时不立即创建 `post_files` link；link 与正文保存事务同步。
-7. 不直接调用现有 `deleteFile` 清理内联图片。
-8. 存储对象删除不放进正文保存事务，必须走 durable cleanup。
-9. 已发布文章允许内部 inline 同步，但通用 attach/detach API不得破坏仍被正文引用的文件。
+7. 每个未关联上传必须安排延迟 durable orphan cleanup，避免永久泄漏。
+8. 不直接调用现有 `deleteFile` 清理内联图片。
+9. 存储对象删除不放进正文保存事务，必须走 durable cleanup。
+10. 已发布文章允许内部 inline 同步，但通用 attach/detach API不得破坏仍被正文引用的文件。
 
 ## 3. 依赖
 
@@ -204,7 +205,30 @@ const file = await uploadFile("/api/admin/files/upload", image, {
 insertAtCursor(`![alt](/api/files/${file.id}/download)`);
 ```
 
-上传后未保存的文件暂时没有 `post_files` 引用。若用户放弃编辑，由通用 orphan cleanup 后续清理；不得在上传接口中立即 attach。
+上传接口在成功创建 file 记录后立即 enqueue：
+
+```text
+kind: file.cleanup_orphan
+payload: { fileId }
+dedupeKey: file:cleanup_orphan:<fileId>
+availableAt: now + INLINE_UPLOAD_GRACE_PERIOD
+```
+
+建议默认：
+
+```text
+INLINE_UPLOAD_GRACE_PERIOD = 24 小时
+```
+
+该任务用于回收“已上传但从未保存正文”的文件。若正文在此之前保存，link 已建立，任务到期后重查引用并安全 no-op。
+
+要求：
+
+- 上传成功但 enqueue 失败时，整个上传流程返回失败并清理刚创建的对象/记录，不能静默留下无界 orphan；
+- 同一 fileId 的 cleanup task 必须可 dedupe；
+- 延迟可配置但必须设上下限。
+
+管理员预览读取未关联 `content_image` 时沿用现有 admin bypass；普通访客仍不能访问未关联文件。
 
 ## 10. 保存时同步 inline links
 
@@ -234,7 +258,7 @@ syncInlineImageLinks(
 4. 为新增引用创建 `kind="inline"` link；
 5. 对当前 post 已存在但不再被任何 locale 引用的 inline link 执行内部 detach；
 6. 对被 detach 的 fileId，在事务内重新统计所有引用；
-7. 引用为 0 时 enqueue durable cleanup task；
+7. 引用为 0 时 enqueue 同一种 `file.cleanup_orphan` task，可立即执行；
 8. 正文、翻译、link 变化和 task enqueue 一起提交或一起回滚。
 
 ### 已发布内容
@@ -247,13 +271,16 @@ syncInlineImageLinks(
 
 ## 11. durable orphan cleanup
 
-新增任务类型，例如：
+新增任务类型：
 
 ```text
 file.cleanup_orphan
 ```
 
-payload 仅包含 `fileId`。
+同一 handler 同时处理：
+
+- 上传后延迟检查；
+- 正文删除引用后的即时检查。
 
 handler：
 
@@ -322,10 +349,15 @@ restoreProtectedMarkdown(translated, tokens)
 - 超长 body 400/413；
 - XSS 输出已消毒；
 - no-store；
-- 与公开页共用 renderer。
+- 与公开页共用 renderer；
+- admin 可预览尚未 link 的上传图片，普通访客不可访问。
 
 ### PostgreSQL 集成
 
+- 上传成功时创建延迟 cleanup task；
+- 上传 task enqueue 失败时对象和 DB 记录回滚/补偿清理；
+- 未保存正文的上传在宽限期后被清理；
+- 宽限期内成功保存建立 link 后，延迟 cleanup no-op；
 - 保存正文并引用新图片 → 正文和 inline link 同事务提交；
 - 保存失败 → link 不产生；
 - 翻译引用图片 → link 保留；
@@ -361,6 +393,7 @@ pnpm build
 - [ ] `bodyHtml` 新增、`body` deprecated 保留
 - [ ] 外部图片全部剥离
 - [ ] 上传不立即 attach
+- [ ] 上传后安排 delayed durable cleanup
 - [ ] 正文保存与 inline link 同事务同步
 - [ ] 已发布内容只放宽内部 inline sync
 - [ ] kind↔purpose 服务端校验
