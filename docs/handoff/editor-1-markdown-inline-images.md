@@ -23,10 +23,11 @@
 4. 主题只接收已消毒 `bodyHtml`。
 5. 内联图只允许 `purpose="content_image"`。
 6. 上传图片时不立即创建 `post_files` link；link 与正文保存事务同步。
-7. 每个未关联上传必须安排延迟 durable orphan cleanup，避免永久泄漏。
-8. 不直接调用现有 `deleteFile` 清理内联图片。
-9. 存储对象删除不放进正文保存事务，必须走 durable cleanup。
-10. 已发布文章允许内部 inline 同步，但通用 attach/detach API不得破坏仍被正文引用的文件。
+7. 每个未关联上传必须安排延迟 durable orphan cleanup。
+8. `file.cleanup_orphan` 不得使用 fileId 级永久 dedupe key。
+9. 不直接调用现有 `deleteFile` 清理内联图片。
+10. 数据库先删除 file 身份，再由第二阶段 task 删除存储对象。
+11. 已发布文章允许内部 inline 同步，但通用 attach/detach API不得破坏仍被正文引用的文件。
 
 ## 3. 依赖
 
@@ -205,13 +206,12 @@ const file = await uploadFile("/api/admin/files/upload", image, {
 insertAtCursor(`![alt](/api/files/${file.id}/download)`);
 ```
 
-上传接口在成功创建 file 记录后立即 enqueue：
+上传接口在成功创建 file 记录后 enqueue：
 
 ```text
 kind: file.cleanup_orphan
 payload: { fileId }
-dedupeKey: file:cleanup_orphan:<fileId>
-availableAt: now + INLINE_UPLOAD_GRACE_PERIOD
+runAfter: now + INLINE_UPLOAD_GRACE_PERIOD
 ```
 
 建议默认：
@@ -220,19 +220,35 @@ availableAt: now + INLINE_UPLOAD_GRACE_PERIOD
 INLINE_UPLOAD_GRACE_PERIOD = 24 小时
 ```
 
-该任务用于回收“已上传但从未保存正文”的文件。若正文在此之前保存，link 已建立，任务到期后重查引用并安全 no-op。
+### cleanup task 的 dedupe 规则
 
-要求：
+现有 `tasks.dedupe_key` 是跨 pending/processing/succeeded/dead 状态的持久唯一键，因此禁止：
 
-- 上传成功但 enqueue 失败时，整个上传流程返回失败并清理刚创建的对象/记录，不能静默留下无界 orphan；
-- 同一 fileId 的 cleanup task 必须可 dedupe；
-- 延迟可配置但必须设上下限。
+```text
+file:cleanup_orphan:<fileId>
+```
+
+作为永久 key。否则上传后的第一次检查若因文件已关联而 succeeded，未来 detach 再 enqueue 会被永久去重。
+
+允许两种实现：
+
+1. `file.cleanup_orphan` 不设置 dedupeKey，依赖 handler 幂等；
+2. 使用事件级 key，例如：
+
+```text
+file:cleanup_orphan:<fileId>:upload:<requestToken>
+file:cleanup_orphan:<fileId>:detach:<correlationId>
+```
+
+不得使用 fileId 级生命周期唯一 key。
+
+上传成功但 task enqueue 失败时，整个上传流程返回失败并补偿删除刚创建的对象/记录，不能静默留下无界 orphan。
 
 管理员预览读取未关联 `content_image` 时沿用现有 admin bypass；普通访客仍不能访问未关联文件。
 
 ## 10. 保存时同步 inline links
 
-新增内部服务，例如：
+新增内部服务：
 
 ```ts
 syncInlineImageLinks(
@@ -241,6 +257,7 @@ syncInlineImageLinks(
     postId: string;
     nextSourceBody?: string | null;
     nextTranslation?: { locale: string; body: string | null };
+    correlationId: string;
   },
 ): Promise<void>;
 ```
@@ -257,9 +274,11 @@ syncInlineImageLinks(
    - 不接受外部 URL 或非 UUID；
 4. 为新增引用创建 `kind="inline"` link；
 5. 对当前 post 已存在但不再被任何 locale 引用的 inline link 执行内部 detach；
-6. 对被 detach 的 fileId，在事务内重新统计所有引用；
-7. 引用为 0 时 enqueue 同一种 `file.cleanup_orphan` task，可立即执行；
+6. 对每个候选 fileId enqueue 新的 `file.cleanup_orphan` task；
+7. 若使用 dedupeKey，必须包含本次 `correlationId`；
 8. 正文、翻译、link 变化和 task enqueue 一起提交或一起回滚。
+
+不需要在保存事务内提前判断最终引用数；cleanup handler 会在执行时锁定并重查所有引用。
 
 ### 已发布内容
 
@@ -269,32 +288,64 @@ syncInlineImageLinks(
 - 通用 detach API 对已发布内容不得解除仍被任何 locale 正文引用的 inline link；
 - 推荐不向普通 attach API 暴露 `kind="inline"`，由保存服务独占维护。
 
-## 11. durable orphan cleanup
+## 11. 两阶段 durable cleanup
 
-新增任务类型：
+### 11.1 `file.cleanup_orphan`
 
-```text
-file.cleanup_orphan
+payload：
+
+```ts
+{
+  fileId: string;
+}
 ```
 
-同一 handler 同时处理：
-
-- 上传后延迟检查；
-- 正文删除引用后的即时检查。
-
-handler：
+handler 在一个短 PostgreSQL 事务内：
 
 1. `FOR UPDATE` 锁定 file；
 2. 文件不存在 → 成功 no-op；
 3. 检查所有 `post_files` 引用；
 4. 检查 post cover、支付凭证、站点设置等现有受保护引用；
 5. 仍有引用 → 成功 no-op；
-6. 仅允许清理预期 purpose 的 orphan；
-7. 幂等删除本地/S3 对象；
-8. 删除 file 行；
-9. 临时存储或数据库失败由任务重试。
+6. 验证该 purpose 允许被 orphan cleanup；
+7. 捕获 `{ storageDriver, bucket, objectKey }`；
+8. enqueue `storage.delete_object`；
+9. 删除 file 行；
+10. enqueue 与 file 删除一起提交。
 
-不得在正文事务中直接删除对象。宁可暂留孤儿，不得制造正文引用指向不存在对象。
+`storage.delete_object` dedupeKey 可使用：
+
+```text
+storage:delete_object:<driver>:<bucket-or-empty>:<objectKey>
+```
+
+这是对象级最终操作，永久去重是安全的。
+
+### 11.2 `storage.delete_object`
+
+payload：
+
+```ts
+{
+  storageDriver: "local" | "s3";
+  bucket: string | null;
+  objectKey: string;
+}
+```
+
+handler：
+
+1. 根据 payload 获取 storage driver；
+2. 幂等删除对象；
+3. 对象不存在视为成功；
+4. 临时错误抛出并由任务重试；
+5. 不依赖 file 行，因为该行已在阶段一删除。
+
+该顺序保证：
+
+- file 行删除后无法建立新的数据库引用；
+- 存储删除失败只留下可重试孤儿对象；
+- 不会出现数据库仍引用但对象已被不可回滚删除。
 
 ## 12. kind ↔ purpose 校验
 
@@ -352,12 +403,18 @@ restoreProtectedMarkdown(translated, tokens)
 - 与公开页共用 renderer；
 - admin 可预览尚未 link 的上传图片，普通访客不可访问。
 
-### PostgreSQL 集成
+### PostgreSQL / task 集成
 
-- 上传成功时创建延迟 cleanup task；
-- 上传 task enqueue 失败时对象和 DB 记录回滚/补偿清理；
-- 未保存正文的上传在宽限期后被清理；
+- 上传成功时创建延迟 `file.cleanup_orphan` task；
+- 上传 task enqueue 失败时对象和 DB 记录补偿清理；
+- 未保存正文的上传在宽限期后进入两阶段清理；
 - 宽限期内成功保存建立 link 后，延迟 cleanup no-op；
+- cleanup no-op succeeded 后，未来 detach 仍能 enqueue 新 task；
+- 多个重复 cleanup task 并发时只有一个删除 file，其余安全 no-op；
+- 阶段一在同一事务中 enqueue object task 并删除 file；
+- 阶段一事务失败时 file 与 object task 都不改变；
+- 阶段二对象不存在视为成功；
+- 阶段二临时失败可重试；
 - 保存正文并引用新图片 → 正文和 inline link 同事务提交；
 - 保存失败 → link 不产生；
 - 翻译引用图片 → link 保留；
@@ -366,9 +423,7 @@ restoreProtectedMarkdown(translated, tokens)
 - 多标签页并发保存不会删除另一个已提交正文正在引用的文件；
 - 已发布文章和草稿翻译可同步 inline links；
 - 已发布文章的其他 kind 仍被 409 保护；
-- 通用 detach 不能破坏仍被正文引用的 inline link；
-- cleanup task 重放幂等；
-- 存储删除失败可重试，DB 引用不被破坏。
+- 通用 detach 不能破坏仍被正文引用的 inline link。
 
 ### AI 翻译
 
@@ -393,12 +448,13 @@ pnpm build
 - [ ] `bodyHtml` 新增、`body` deprecated 保留
 - [ ] 外部图片全部剥离
 - [ ] 上传不立即 attach
-- [ ] 上传后安排 delayed durable cleanup
+- [ ] 上传后安排 delayed `file.cleanup_orphan`
+- [ ] cleanup 不使用 fileId 级永久 dedupe
 - [ ] 正文保存与 inline link 同事务同步
 - [ ] 已发布内容只放宽内部 inline sync
 - [ ] kind↔purpose 服务端校验
-- [ ] detach 后只 enqueue durable cleanup
-- [ ] cleanup worker 重查所有引用并幂等删除
+- [ ] 阶段一 DB 删除 file + enqueue object task
+- [ ] 阶段二幂等删除存储对象
 - [ ] AI 翻译 token 校验
 - [ ] 默认无数据库迁移
 - [ ] 真实 PostgreSQL 集成测试与完整 CI 全绿
