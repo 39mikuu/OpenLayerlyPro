@@ -13,6 +13,7 @@ describe("OpenAI-compatible translation provider", () => {
     expect(prompt).toContain("Translate");
     expect(prompt).toContain("Japanese");
     expect(prompt).toContain("Preserve all Markdown syntax exactly");
+    expect(prompt).toContain("Preserve every OLP_MD_*_END token exactly");
     expect(prompt).toContain("Preserve paragraph breaks and line breaks");
     expect(prompt).toContain("Do not add, remove");
     expect(prompt).toContain("Do not explain");

@@ -7,11 +7,13 @@ import type { Readable } from "stream";
 import { getDb } from "@/db";
 import { type FileRecord, files, paymentMethods, paymentRequests, posts } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import { getEnv } from "@/lib/env";
 import { getUploadConfig } from "@/modules/config";
 import { getSetting } from "@/modules/site";
 import { getStorage, getStorageForDriver } from "@/modules/storage";
 import { StorageObjectTooLargeError } from "@/modules/storage/stream";
 import { recordEvent } from "@/modules/system/events";
+import { enqueueTask } from "@/modules/tasks";
 
 export type FilePurpose = FileRecord["purpose"];
 
@@ -198,22 +200,41 @@ export async function saveUploadedFile(input: {
     contentType: file.type || "application/octet-stream",
   });
 
-  const [record] = await getDb()
-    .insert(files)
-    .values({
-      storageDriver: storage.driver,
-      bucket: stored.bucket,
-      objectKey: stored.objectKey,
-      originalName: file.name,
-      mimeType: file.type || "application/octet-stream",
-      sizeBytes: file.size,
-      sha256: sha,
-      width,
-      height,
-      purpose,
-      createdBy: input.createdBy ?? null,
-    })
-    .returning();
+  let record: FileRecord;
+  try {
+    record = await getDb().transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(files)
+        .values({
+          storageDriver: storage.driver,
+          bucket: stored.bucket,
+          objectKey: stored.objectKey,
+          originalName: file.name,
+          mimeType: file.type || "application/octet-stream",
+          sizeBytes: file.size,
+          sha256: sha,
+          width,
+          height,
+          purpose,
+          createdBy: input.createdBy ?? null,
+        })
+        .returning();
+      if (!inserted) throw new Error("文件记录写入失败");
+
+      if (purpose === "content_image") {
+        const gracePeriodMs = getEnv().INLINE_UPLOAD_GRACE_PERIOD_HOURS * 60 * 60 * 1000;
+        await enqueueTask(tx, {
+          kind: "file.cleanup_orphan",
+          payload: { fileId: inserted.id },
+          runAfter: new Date(Date.now() + gracePeriodMs),
+        });
+      }
+      return inserted;
+    });
+  } catch (error) {
+    await storage.deleteObject(stored);
+    throw error;
+  }
 
   await recordEvent("file_uploaded", {
     fileId: record.id,

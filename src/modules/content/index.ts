@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, exists, getTableColumns, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, exists, getTableColumns, inArray, lt, ne, or, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import {
@@ -22,6 +22,13 @@ import { ApiError } from "@/lib/api";
 import { isLocale, type Locale } from "@/modules/i18n";
 import { getActiveLevel } from "@/modules/membership";
 import { setPostCategories, setPostTags } from "@/modules/taxonomy";
+
+import {
+  assertPostFilePurpose,
+  type AttachablePostFileKind,
+  enqueueOrphanCleanup,
+  syncInlineImageLinks,
+} from "./inline-images";
 
 export type PostInput = {
   title: string;
@@ -53,19 +60,26 @@ export async function createPost(
       await setPostCategories(post.id, taxonomy.categoryIds, tx);
     }
     if (taxonomy.tagIds !== undefined) await setPostTags(post.id, taxonomy.tagIds, tx);
+    await syncInlineImageLinks(tx, post.id);
     return post;
   });
 }
 
-export async function updatePost(
+async function updatePostWithInlineImages(
   id: string,
   input: Partial<PostInput>,
-  taxonomy: PostTaxonomyInput = {},
+  taxonomy: PostTaxonomyInput,
+  options: { allowPublished: boolean },
 ): Promise<Post> {
   return getDb().transaction(async (tx) => {
     const [existing] = await tx.select().from(posts).where(eq(posts.id, id)).limit(1).for("update");
     if (!existing) throw new ApiError(404, "postNotFound");
-    if (existing.status !== "draft") throw new ApiError(409, "postNotEditable");
+    if (
+      existing.status === "archived" ||
+      (!options.allowPublished && existing.status !== "draft")
+    ) {
+      throw new ApiError(409, "postNotEditable");
+    }
 
     if (input.visibility === "member" || input.requiredTierId !== undefined) {
       await assertValidTier({
@@ -80,6 +94,9 @@ export async function updatePost(
       (input.summary !== undefined && input.summary !== existing.summary) ||
       (input.body !== undefined && input.body !== existing.body) ||
       (input.originalLocale !== undefined && input.originalLocale !== existing.originalLocale);
+    const editableStatus = options.allowPublished
+      ? ne(posts.status, "archived")
+      : eq(posts.status, "draft");
     const [post] = await tx
       .update(posts)
       .set({
@@ -87,15 +104,33 @@ export async function updatePost(
         updatedAt: sql`now()`,
         ...(contentChanged ? { contentUpdatedAt: sql`now()` } : {}),
       })
-      .where(and(eq(posts.id, id), eq(posts.status, "draft")))
+      .where(and(eq(posts.id, id), editableStatus))
       .returning();
     if (!post) throw new ApiError(409, "postNotEditable");
     if (taxonomy.categoryIds !== undefined) {
       await setPostCategories(id, taxonomy.categoryIds, tx);
     }
     if (taxonomy.tagIds !== undefined) await setPostTags(id, taxonomy.tagIds, tx);
+    await syncInlineImageLinks(tx, id);
     return post;
   });
+}
+
+export async function updatePost(
+  id: string,
+  input: Partial<PostInput>,
+  taxonomy: PostTaxonomyInput = {},
+): Promise<Post> {
+  return updatePostWithInlineImages(id, input, taxonomy, { allowPublished: false });
+}
+
+/** Content-editor save path. Generic post mutations remain draft-only. */
+export async function savePostContent(
+  id: string,
+  input: Partial<PostInput>,
+  taxonomy: PostTaxonomyInput = {},
+): Promise<Post> {
+  return updatePostWithInlineImages(id, input, taxonomy, { allowPublished: true });
 }
 
 async function assertValidTier(input: {
@@ -108,7 +143,25 @@ async function assertValidTier(input: {
 }
 
 export async function deletePost(id: string): Promise<void> {
-  await getDb().delete(posts).where(eq(posts.id, id));
+  await getDb().transaction(async (tx) => {
+    const [post] = await tx
+      .select({ id: posts.id })
+      .from(posts)
+      .where(eq(posts.id, id))
+      .limit(1)
+      .for("update");
+    if (!post) return;
+
+    const inlineLinks = await tx
+      .select({ fileId: postFiles.fileId })
+      .from(postFiles)
+      .where(and(eq(postFiles.postId, id), eq(postFiles.kind, "inline")));
+    await tx.delete(posts).where(eq(posts.id, id));
+    await enqueueOrphanCleanup(
+      tx,
+      inlineLinks.map((link) => link.fileId),
+    );
+  });
 }
 
 export async function getPostById(id: string): Promise<Post | null> {
@@ -409,9 +462,18 @@ async function requireTranslationTarget(
   postId: string,
   locale: string,
   dbc: DbClient,
+  options: { lock?: boolean } = {},
 ): Promise<Post> {
   requireSupportedLocale(locale);
-  const [post] = await dbc.select().from(posts).where(eq(posts.id, postId)).limit(1);
+  const query = dbc.select().from(posts).where(eq(posts.id, postId)).limit(1);
+  const lockableQuery = query as typeof query & {
+    for?: (strength: "update") => Promise<Post[]>;
+  };
+  const rows =
+    options.lock && typeof lockableQuery.for === "function"
+      ? await lockableQuery.for("update")
+      : await query;
+  const [post] = rows;
   if (!post) throw new ApiError(404, "postNotFound");
   if (post.originalLocale === locale) {
     throw new ApiError(400, "translationOriginalLocale", { locale });
@@ -432,7 +494,9 @@ export async function upsertDraftTranslation(
   dbc = getDb(),
 ): Promise<PostTranslation> {
   return dbc.transaction(async (tx) => {
-    const post = await requireTranslationTarget(postId, locale, tx);
+    const post = await requireTranslationTarget(postId, locale, tx, {
+      lock: true,
+    });
     const title = requireTranslationTitle(input.title);
     const [existing] = await tx
       .select()
@@ -461,6 +525,7 @@ export async function upsertDraftTranslation(
         .set(values)
         .where(eq(postTranslations.id, existing.id))
         .returning();
+      await syncInlineImageLinks(tx, postId);
       return updated;
     }
 
@@ -468,6 +533,7 @@ export async function upsertDraftTranslation(
       .insert(postTranslations)
       .values({ postId, locale, ...values })
       .returning();
+    await syncInlineImageLinks(tx, postId);
     return created;
   });
 }
@@ -478,7 +544,9 @@ export async function publishTranslation(
   dbc = getDb(),
 ): Promise<PostTranslation> {
   return dbc.transaction(async (tx) => {
-    const post = await requireTranslationTarget(postId, locale, tx);
+    const post = await requireTranslationTarget(postId, locale, tx, {
+      lock: true,
+    });
     const [draft] = await tx
       .select()
       .from(postTranslations)
@@ -514,6 +582,7 @@ export async function publishTranslation(
       .where(and(eq(postTranslations.id, draft.id), eq(postTranslations.status, "draft")))
       .returning();
     if (!published) throw new ApiError(404, "translationDraftNotFound");
+    await syncInlineImageLinks(tx, postId);
     return published;
   });
 }
@@ -521,43 +590,81 @@ export async function publishTranslation(
 export async function unpublishTranslation(
   postId: string,
   locale: string,
-  dbc: DbClient = getDb(),
+  dbc = getDb(),
 ): Promise<void> {
-  await requireTranslationTarget(postId, locale, dbc);
-  await dbc
-    .update(postTranslations)
-    .set({ status: "archived", updatedAt: new Date() })
-    .where(
-      and(
-        eq(postTranslations.postId, postId),
-        eq(postTranslations.locale, locale),
-        eq(postTranslations.status, "published"),
-      ),
-    );
+  await dbc.transaction(async (tx) => {
+    await requireTranslationTarget(postId, locale, tx, { lock: true });
+    await tx
+      .update(postTranslations)
+      .set({ status: "archived", updatedAt: new Date() })
+      .where(
+        and(
+          eq(postTranslations.postId, postId),
+          eq(postTranslations.locale, locale),
+          eq(postTranslations.status, "published"),
+        ),
+      );
+    await syncInlineImageLinks(tx, postId);
+  });
 }
 
-export async function deleteTranslation(
-  translationId: string,
-  dbc: DbClient = getDb(),
-): Promise<void> {
-  await dbc.delete(postTranslations).where(eq(postTranslations.id, translationId));
+export async function deleteTranslation(translationId: string, dbc = getDb()): Promise<void> {
+  await dbc.transaction(async (tx) => {
+    const [candidate] = await tx
+      .select({ postId: postTranslations.postId })
+      .from(postTranslations)
+      .where(eq(postTranslations.id, translationId))
+      .limit(1);
+    if (!candidate) return;
+
+    await tx
+      .select({ id: posts.id })
+      .from(posts)
+      .where(eq(posts.id, candidate.postId))
+      .limit(1)
+      .for("update");
+    const [translation] = await tx
+      .select({ postId: postTranslations.postId })
+      .from(postTranslations)
+      .where(eq(postTranslations.id, translationId))
+      .limit(1)
+      .for("update");
+    if (!translation) return;
+
+    await tx.delete(postTranslations).where(eq(postTranslations.id, translationId));
+    await syncInlineImageLinks(tx, translation.postId);
+  });
 }
 
 export async function deleteDraftTranslation(
   postId: string,
   locale: string,
-  dbc: DbClient = getDb(),
+  dbc = getDb(),
 ): Promise<void> {
-  await requireTranslationTarget(postId, locale, dbc);
-  await dbc
-    .delete(postTranslations)
-    .where(
-      and(
-        eq(postTranslations.postId, postId),
-        eq(postTranslations.locale, locale),
-        eq(postTranslations.status, "draft"),
-      ),
-    );
+  await dbc.transaction(async (tx) => {
+    await requireTranslationTarget(postId, locale, tx, { lock: true });
+    await tx
+      .select({ id: postTranslations.id })
+      .from(postTranslations)
+      .where(
+        and(
+          eq(postTranslations.postId, postId),
+          eq(postTranslations.locale, locale),
+          eq(postTranslations.status, "draft"),
+        ),
+      )
+      .for("update");
+    await tx
+      .delete(postTranslations)
+      .where(
+        and(
+          eq(postTranslations.postId, postId),
+          eq(postTranslations.locale, locale),
+          eq(postTranslations.status, "draft"),
+        ),
+      );
+    await syncInlineImageLinks(tx, postId);
+  });
 }
 
 /** 用户是否可访问内容（admin 直通；published 状态由调用方决定是否要求） */
@@ -602,9 +709,13 @@ export async function listPostFiles(postId: string): Promise<PostFileWithFile[]>
 export async function attachFileToPost(input: {
   postId: string;
   fileId: string;
-  kind: PostFile["kind"];
+  kind: AttachablePostFileKind;
   sortOrder?: number;
 }): Promise<PostFile> {
+  if ((input.kind as PostFile["kind"]) === "inline") {
+    throw new ApiError(400, "inlineFileManagedByBody");
+  }
+
   return getDb().transaction(async (tx) => {
     const [post] = await tx
       .select({ id: posts.id, status: posts.status })
@@ -614,6 +725,14 @@ export async function attachFileToPost(input: {
       .for("update");
     if (!post) throw new ApiError(404, "postNotFound");
     if (post.status !== "draft") throw new ApiError(409, "postNotEditable");
+
+    const [file] = await tx
+      .select({ purpose: files.purpose })
+      .from(files)
+      .where(eq(files.id, input.fileId))
+      .limit(1);
+    if (!file) throw new ApiError(404, "fileNotFound");
+    assertPostFilePurpose(input.kind, file.purpose);
 
     const [link] = await tx
       .insert(postFiles)
@@ -634,9 +753,24 @@ export async function detachFileFromPost(postId: string, fileId: string): Promis
     if (!post) throw new ApiError(404, "postNotFound");
     if (post.status !== "draft") throw new ApiError(409, "postNotEditable");
 
+    const links = await tx
+      .select({ kind: postFiles.kind })
+      .from(postFiles)
+      .where(and(eq(postFiles.postId, postId), eq(postFiles.fileId, fileId)));
+    const hasDetachableLink = links.some((link) => link.kind !== "inline");
+    if (!hasDetachableLink && links.some((link) => link.kind === "inline")) {
+      throw new ApiError(409, "inlineFileManagedByBody");
+    }
+
     await tx
       .delete(postFiles)
-      .where(and(eq(postFiles.postId, postId), eq(postFiles.fileId, fileId)));
+      .where(
+        and(
+          eq(postFiles.postId, postId),
+          eq(postFiles.fileId, fileId),
+          ne(postFiles.kind, "inline"),
+        ),
+      );
   });
 }
 

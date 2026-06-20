@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Post, PostTranslation } from "@/db/schema";
 
+vi.mock("./inline-images", () => ({
+  assertPostFilePurpose: vi.fn(),
+  enqueueOrphanCleanup: vi.fn(),
+  syncInlineImageLinks: vi.fn(),
+}));
+
 import {
   decodeCursor,
   encodeCursor,

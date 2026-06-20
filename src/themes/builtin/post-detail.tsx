@@ -94,10 +94,11 @@ export function PostDetail({ view, t }: { view: PostDetailView; t: Translate }) 
         </section>
       ) : (
         <div className="mt-8 space-y-9">
-          {view.body && (
-            <div className="whitespace-pre-wrap text-[15px] leading-8 sm:text-base">
-              {view.body}
-            </div>
+          {view.bodyHtml && (
+            <div
+              className="prose-content text-[15px] leading-8 sm:text-base"
+              dangerouslySetInnerHTML={{ __html: view.bodyHtml }}
+            />
           )}
 
           {view.images.length > 0 && (

@@ -3,6 +3,11 @@ import { z } from "zod";
 import type { Task } from "@/db/schema";
 import { getSmtpConfig } from "@/modules/config";
 import { executeScheduledPublish } from "@/modules/content/publishing";
+import {
+  cleanupOrphanFile,
+  deleteStorageObject,
+  UnsupportedOrphanCleanupPurposeError,
+} from "@/modules/file/cleanup";
 import { SUPPORTED_LOCALES } from "@/modules/i18n";
 import {
   sendMembershipActivatedEmail,
@@ -48,6 +53,13 @@ const publishPostPayloadSchema = z.object({
   schedulingAuditId: z.string().uuid(),
 });
 
+const cleanupOrphanPayloadSchema = z.object({ fileId: z.string().uuid() });
+const storageDeletePayloadSchema = z.object({
+  storageDriver: z.enum(["local", "s3"]),
+  bucket: z.string().nullable(),
+  objectKey: z.string().min(1),
+});
+
 export type TaskHandlerResult = { note?: string; deferUntil?: Date };
 
 async function runEmailTask(task: Task): Promise<TaskHandlerResult> {
@@ -88,12 +100,37 @@ async function runPublishPostTask(task: Task): Promise<TaskHandlerResult> {
   return { note: result.note };
 }
 
+async function runCleanupOrphanTask(task: Task): Promise<TaskHandlerResult> {
+  const parsed = cleanupOrphanPayloadSchema.safeParse(task.payloadJson);
+  if (!parsed.success) throw new PermanentTaskError("Invalid file.cleanup_orphan payload");
+  try {
+    const outcome = await cleanupOrphanFile(parsed.data.fileId);
+    return { note: `Orphan cleanup ${outcome}` };
+  } catch (error) {
+    if (error instanceof UnsupportedOrphanCleanupPurposeError) {
+      throw new PermanentTaskError(error.message);
+    }
+    throw error;
+  }
+}
+
+async function runStorageDeleteTask(task: Task): Promise<TaskHandlerResult> {
+  const parsed = storageDeletePayloadSchema.safeParse(task.payloadJson);
+  if (!parsed.success) throw new PermanentTaskError("Invalid storage.delete_object payload");
+  await deleteStorageObject(parsed.data);
+  return {};
+}
+
 export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
   switch (task.kind) {
     case "email":
       return runEmailTask(task);
     case "publish_post":
       return runPublishPostTask(task);
+    case "file.cleanup_orphan":
+      return runCleanupOrphanTask(task);
+    case "storage.delete_object":
+      return runStorageDeleteTask(task);
     default:
       throw new PermanentTaskError("Unsupported task kind");
   }

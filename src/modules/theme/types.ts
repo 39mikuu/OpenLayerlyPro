@@ -66,7 +66,9 @@ export type PostDetailView = {
   coverUrl: string | null;
   isLoggedIn: boolean;
   allowed: boolean;
+  /** @deprecated 下一主题大版本移除 */
   body: string | null;
+  bodyHtml: string | null;
   images: PostImageView[];
   attachments: PostAttachmentView[];
   machineTranslated: boolean;

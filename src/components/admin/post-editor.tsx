@@ -3,13 +3,13 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { MarkdownEditor } from "@/components/admin/markdown-editor";
 import { PostTranslationEditor } from "@/components/admin/post-translation-editor";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { api, uploadFile, uploadStreamFile } from "@/lib/client";
 
 type TierOption = { id: string; name: string; level: number };
@@ -124,6 +124,14 @@ export function PostEditor({
     });
   }
 
+  async function uploadInlineImage(file: File): Promise<string> {
+    if (!post) throw new Error(t("admin.posts.createDraftFirst"));
+    const record = await uploadFile<{ id: string }>("/api/admin/files/upload", file, {
+      purpose: "content_image",
+    });
+    return `/api/files/${record.id}/download`;
+  }
+
   async function uploadAndAttach(file: File, kind: "image" | "attachment") {
     if (!post) return;
     await run(async () => {
@@ -222,11 +230,16 @@ export function PostEditor({
         </div>
         <div className="space-y-1">
           <Label>{t("admin.posts.body")}</Label>
-          <Textarea
-            rows={8}
+          <MarkdownEditor
             value={form.body}
-            onChange={(e) => setForm({ ...form, body: e.target.value })}
+            onChange={(body) => setForm((current) => ({ ...current, body }))}
+            onUploadImage={post ? uploadInlineImage : undefined}
+            disabled={loading}
+            ariaLabel={t("admin.posts.body")}
           />
+          {!post && (
+            <p className="text-xs text-muted-foreground">{t("admin.posts.createDraftFirst")}</p>
+          )}
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">

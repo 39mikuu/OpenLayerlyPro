@@ -466,7 +466,7 @@ describeWithDatabase("scheduled publishing integration", () => {
         originalName: "cover.jpg",
         mimeType: "image/jpeg",
         sizeBytes: 10,
-        purpose: "cover",
+        purpose: "content_image",
       })
       .returning();
 
