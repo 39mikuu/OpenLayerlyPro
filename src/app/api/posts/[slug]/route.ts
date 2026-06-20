@@ -39,13 +39,15 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ slug: stri
     return jsonOk({
       ...meta,
       body: post.body,
-      files: files.map((f) => ({
-        id: f.file.id,
-        kind: f.link.kind,
-        originalName: f.file.originalName,
-        sizeBytes: f.file.sizeBytes,
-        mimeType: f.file.mimeType,
-      })),
+      files: files
+        .filter((item) => item.link.kind !== "inline")
+        .map((f) => ({
+          id: f.file.id,
+          kind: f.link.kind,
+          originalName: f.file.originalName,
+          sizeBytes: f.file.sizeBytes,
+          mimeType: f.file.mimeType,
+        })),
     });
   } catch (err) {
     return handleApiError(err);

@@ -4,7 +4,12 @@ import type { Readable } from "stream";
 import { getDb } from "@/db";
 import { downloadLogs, type FileRecord, files, type User, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
-import { canAccessPost, listPostsForFile } from "@/modules/content";
+import {
+  canAccessPost,
+  listPostIdsWithPublishedInlineImageReference,
+  listPostLinksForFile,
+  listPostsForFile,
+} from "@/modules/content";
 import { getStorageForDriver } from "@/modules/storage";
 import { recordEvent } from "@/modules/system/events";
 
@@ -37,16 +42,50 @@ export async function canAccessFile(
       if (file.createdBy === user.id) return { allowed: true };
       return { allowed: false, errorCode: "accessDenied" };
     }
-    case "content_image":
     case "content_attachment": {
-      const posts = await listPostsForFile(file.id);
-      if (posts.length === 0) return { allowed: false, errorCode: "fileUnlinked" };
-      for (const post of posts) {
+      const linkedPosts = await listPostsForFile(file.id);
+      if (linkedPosts.length === 0) return { allowed: false, errorCode: "fileUnlinked" };
+      for (const post of linkedPosts) {
         if (post.status !== "published") continue;
         if (await canAccessPost(user, post)) {
           return { allowed: true, postId: post.id };
         }
       }
+      if (!user) return { allowed: false, errorCode: "authRequired" };
+      return { allowed: false, errorCode: "memberAccessDenied" };
+    }
+    case "content_image": {
+      const links = await listPostLinksForFile(file.id);
+      if (links.length === 0) return { allowed: false, errorCode: "fileUnlinked" };
+
+      const checkedNonInlinePostIds = new Set<string>();
+      for (const link of links) {
+        if (link.kind === "inline" || checkedNonInlinePostIds.has(link.post.id)) continue;
+        checkedNonInlinePostIds.add(link.post.id);
+        if (link.post.status !== "published") continue;
+        if (await canAccessPost(user, link.post)) {
+          return { allowed: true, postId: link.post.id };
+        }
+      }
+
+      const inlinePosts = [
+        ...new Map(
+          links
+            .filter((link) => link.kind === "inline" && link.post.status === "published")
+            .map((link) => [link.post.id, link.post] as const),
+        ).values(),
+      ];
+      const publishedReferencePostIds = await listPostIdsWithPublishedInlineImageReference(
+        file.id,
+        inlinePosts,
+      );
+      for (const post of inlinePosts) {
+        if (!publishedReferencePostIds.has(post.id)) continue;
+        if (await canAccessPost(user, post)) {
+          return { allowed: true, postId: post.id };
+        }
+      }
+
       if (!user) return { allowed: false, errorCode: "authRequired" };
       return { allowed: false, errorCode: "memberAccessDenied" };
     }

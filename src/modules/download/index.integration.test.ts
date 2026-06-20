@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { eq } from "drizzle-orm";
 import { Readable } from "stream";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -27,6 +28,7 @@ import {
   membershipTiers,
   postFiles,
   posts,
+  postTranslations,
   type User,
   users,
 } from "@/db/schema";
@@ -123,6 +125,8 @@ describeWithDatabase("private file download authorization integration", () => {
 
   async function seedPostFile(input: {
     purpose?: "content_image" | "content_attachment";
+    kind?: "inline" | "image" | "attachment";
+    body?: string | null;
     visibility?: "public" | "login" | "member";
     requiredTierId?: string | null;
     state?: "draft" | "scheduled" | "published" | "archived";
@@ -135,6 +139,7 @@ describeWithDatabase("private file download authorization integration", () => {
       .values({
         title: `${state} post`,
         slug: `${state}-${randomUUID()}`,
+        body: input.body ?? null,
         visibility: input.visibility ?? "public",
         requiredTierId: input.requiredTierId ?? null,
         status: state === "scheduled" ? "draft" : state,
@@ -147,9 +152,33 @@ describeWithDatabase("private file download authorization integration", () => {
     await db.insert(postFiles).values({
       postId: post!.id,
       fileId: file.id,
-      kind: file.purpose === "content_image" ? "image" : "attachment",
+      kind: input.kind ?? (file.purpose === "content_image" ? "image" : "attachment"),
     });
     return { post: post!, file };
+  }
+
+  function markdownImage(fileId: string): string {
+    return `![inline](/api/files/${fileId}/download)`;
+  }
+
+  async function seedTranslation(input: {
+    postId: string;
+    fileId: string;
+    status: "draft" | "published" | "archived";
+    locale?: string;
+  }) {
+    const [translation] = await db
+      .insert(postTranslations)
+      .values({
+        postId: input.postId,
+        locale: input.locale ?? "ja",
+        title: `${input.status} translation`,
+        body: markdownImage(input.fileId),
+        status: input.status,
+        publishedAt: input.status === "published" ? new Date() : null,
+      })
+      .returning();
+    return translation!;
   }
 
   it("allows anonymous access to public-purpose assets", async () => {
@@ -280,6 +309,296 @@ describeWithDatabase("private file download authorization integration", () => {
         allowed: true,
       });
     }
+  });
+
+  it("keeps draft-only inline images private while administrators retain access", async () => {
+    const { admin, other } = await seedUsers();
+    const { post, file } = await seedPostFile({
+      purpose: "content_image",
+      kind: "inline",
+      visibility: "public",
+    });
+    await seedTranslation({ postId: post.id, fileId: file.id, status: "draft" });
+
+    await expect(canAccessFile(null, file)).resolves.toEqual({
+      allowed: false,
+      errorCode: "authRequired",
+    });
+    await expect(canAccessFile(other, file)).resolves.toEqual({
+      allowed: false,
+      errorCode: "memberAccessDenied",
+    });
+    await expect(canAccessFile(admin, file)).resolves.toEqual({
+      allowed: true,
+      postId: post.id,
+    });
+
+    await expect(authorizeAndPrepareDownload({ user: null, file })).rejects.toMatchObject({
+      status: 401,
+      code: "authRequired",
+    });
+    await expect(authorizeAndPrepareDownload({ user: other, file })).rejects.toMatchObject({
+      status: 403,
+      code: "memberAccessDenied",
+    });
+    await expect(db.select().from(downloadLogs)).resolves.toEqual([]);
+    await expect(db.select().from(appEvents)).resolves.toEqual([]);
+    expect(storageMocks.getObject).not.toHaveBeenCalled();
+    expect(storageMocks.createSignedDownloadUrl).not.toHaveBeenCalled();
+  });
+
+  it("applies draft, published, and archived translation state on the next request", async () => {
+    const { post, file } = await seedPostFile({
+      purpose: "content_image",
+      kind: "inline",
+      visibility: "public",
+    });
+    const translation = await seedTranslation({
+      postId: post.id,
+      fileId: file.id,
+      status: "draft",
+    });
+
+    await expect(canAccessFile(null, file)).resolves.toMatchObject({ allowed: false });
+
+    await db
+      .update(postTranslations)
+      .set({ status: "published", publishedAt: new Date() })
+      .where(eq(postTranslations.id, translation.id));
+    await expect(canAccessFile(null, file)).resolves.toEqual({
+      allowed: true,
+      postId: post.id,
+    });
+
+    await db
+      .update(postTranslations)
+      .set({ status: "archived", publishedAt: null })
+      .where(eq(postTranslations.id, translation.id));
+    await expect(canAccessFile(null, file)).resolves.toEqual({
+      allowed: false,
+      errorCode: "authRequired",
+    });
+  });
+
+  it("does not authorize an inline reference from a non-published parent post", async () => {
+    const linked = await seedPostFile({
+      purpose: "content_image",
+      kind: "inline",
+      state: "draft",
+      visibility: "public",
+    });
+    await db
+      .update(posts)
+      .set({ body: markdownImage(linked.file.id) })
+      .where(eq(posts.id, linked.post.id));
+
+    await expect(canAccessFile(null, linked.file)).resolves.toEqual({
+      allowed: false,
+      errorCode: "authRequired",
+    });
+  });
+
+  it("allows inline images referenced by published original or published translation bodies", async () => {
+    const original = await seedPostFile({
+      purpose: "content_image",
+      kind: "inline",
+      visibility: "public",
+    });
+    await db
+      .update(posts)
+      .set({ body: markdownImage(original.file.id) })
+      .where(eq(posts.id, original.post.id));
+    const [originalPost] = await db.select().from(posts).where(eq(posts.id, original.post.id));
+    await expect(canAccessFile(null, original.file)).resolves.toEqual({
+      allowed: true,
+      postId: originalPost!.id,
+    });
+
+    const translated = await seedPostFile({
+      purpose: "content_image",
+      kind: "inline",
+      visibility: "public",
+    });
+    await seedTranslation({
+      postId: translated.post.id,
+      fileId: translated.file.id,
+      status: "draft",
+      locale: "ja",
+    });
+    await seedTranslation({
+      postId: translated.post.id,
+      fileId: translated.file.id,
+      status: "published",
+      locale: "en",
+    });
+    await expect(canAccessFile(null, translated.file)).resolves.toEqual({
+      allowed: true,
+      postId: translated.post.id,
+    });
+  });
+
+  it("keeps public, login, and member visibility checks for published inline references", async () => {
+    const { owner, other } = await seedUsers();
+    const lowerTier = await seedTier(5);
+    const requiredTier = await seedTier(10);
+    await seedMembership(owner, requiredTier.id);
+    await seedMembership(other, lowerTier.id);
+
+    const publicFile = await seedPostFile({
+      purpose: "content_image",
+      kind: "inline",
+      visibility: "public",
+    });
+    await seedTranslation({
+      postId: publicFile.post.id,
+      fileId: publicFile.file.id,
+      status: "published",
+    });
+    await expect(canAccessFile(null, publicFile.file)).resolves.toEqual({
+      allowed: true,
+      postId: publicFile.post.id,
+    });
+
+    const loginFile = await seedPostFile({
+      purpose: "content_image",
+      kind: "inline",
+      visibility: "login",
+    });
+    await seedTranslation({
+      postId: loginFile.post.id,
+      fileId: loginFile.file.id,
+      status: "published",
+    });
+    await expect(canAccessFile(null, loginFile.file)).resolves.toEqual({
+      allowed: false,
+      errorCode: "authRequired",
+    });
+    await expect(canAccessFile(owner, loginFile.file)).resolves.toEqual({
+      allowed: true,
+      postId: loginFile.post.id,
+    });
+
+    const memberFile = await seedPostFile({
+      purpose: "content_image",
+      kind: "inline",
+      visibility: "member",
+      requiredTierId: requiredTier.id,
+    });
+    await seedTranslation({
+      postId: memberFile.post.id,
+      fileId: memberFile.file.id,
+      status: "published",
+    });
+    await expect(canAccessFile(other, memberFile.file)).resolves.toEqual({
+      allowed: false,
+      errorCode: "memberAccessDenied",
+    });
+    await expect(canAccessFile(owner, memberFile.file)).resolves.toEqual({
+      allowed: true,
+      postId: memberFile.post.id,
+    });
+  });
+
+  it("allows a non-inline published link even when another post has only a draft inline reference", async () => {
+    const draftInline = await seedPostFile({
+      purpose: "content_image",
+      kind: "inline",
+      visibility: "public",
+    });
+    await seedTranslation({
+      postId: draftInline.post.id,
+      fileId: draftInline.file.id,
+      status: "draft",
+    });
+
+    const [galleryPost] = await db
+      .insert(posts)
+      .values({
+        title: "Published gallery",
+        slug: `published-gallery-${randomUUID()}`,
+        visibility: "public",
+        status: "published",
+        publishedAt: new Date(),
+      })
+      .returning();
+    await db.insert(postFiles).values({
+      postId: galleryPost!.id,
+      fileId: draftInline.file.id,
+      kind: "image",
+    });
+
+    await expect(canAccessFile(null, draftInline.file)).resolves.toEqual({
+      allowed: true,
+      postId: galleryPost!.id,
+    });
+  });
+
+  it("allows any accessible published inline path and returns the granting postId", async () => {
+    const file = await seedFile("content_image");
+    const requiredTier = await seedTier(10);
+    const [memberPost, publicPost] = await db
+      .insert(posts)
+      .values([
+        {
+          title: "Restricted reference",
+          slug: `restricted-reference-${randomUUID()}`,
+          body: markdownImage(file.id),
+          visibility: "member" as const,
+          requiredTierId: requiredTier.id,
+          status: "published" as const,
+          publishedAt: new Date(),
+        },
+        {
+          title: "Public reference",
+          slug: `public-reference-${randomUUID()}`,
+          body: markdownImage(file.id),
+          visibility: "public" as const,
+          status: "published" as const,
+          publishedAt: new Date(),
+        },
+      ])
+      .returning();
+    await db.insert(postFiles).values([
+      { postId: memberPost!.id, fileId: file.id, kind: "inline" },
+      { postId: publicPost!.id, fileId: file.id, kind: "inline" },
+    ]);
+
+    await expect(canAccessFile(null, file)).resolves.toEqual({
+      allowed: true,
+      postId: publicPost!.id,
+    });
+  });
+
+  it("authorizes inline images only through an exact parsed internal Markdown image path", async () => {
+    const linked = await seedPostFile({
+      purpose: "content_image",
+      kind: "inline",
+      visibility: "public",
+    });
+    const invalidBodies = [
+      `plain text ${linked.file.id}`,
+      `prefix-${linked.file.id}-suffix`,
+      `![external](https://example.com/${linked.file.id})`,
+      `![forged](/api/files/${linked.file.id}/download-extra)`,
+      `![forged](/api/files/${linked.file.id}0/download)`,
+    ];
+
+    for (const body of invalidBodies) {
+      await db.update(posts).set({ body }).where(eq(posts.id, linked.post.id));
+      await expect(canAccessFile(null, linked.file)).resolves.toEqual({
+        allowed: false,
+        errorCode: "authRequired",
+      });
+    }
+
+    await db
+      .update(posts)
+      .set({ body: markdownImage(linked.file.id) })
+      .where(eq(posts.id, linked.post.id));
+    await expect(canAccessFile(null, linked.file)).resolves.toEqual({
+      allowed: true,
+      postId: linked.post.id,
+    });
   });
 
   it("logs successful downloads and leaves no side effects when authorization fails", async () => {
