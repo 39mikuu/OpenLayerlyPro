@@ -27,7 +27,8 @@
 8. `file.cleanup_orphan` 不得使用 fileId 级永久 dedupe key。
 9. 不直接调用现有 `deleteFile` 清理内联图片。
 10. 数据库先删除 file 身份，再由第二阶段 task 删除存储对象。
-11. 已发布文章允许内部 inline 同步，但通用 attach/detach API不得破坏仍被正文引用的文件。
+11. 删除翻译或整篇文章时也必须 enqueue inline orphan cleanup，不能只依赖外键级联。
+12. 已发布文章允许内部 inline 同步，但通用 attach/detach API不得破坏仍被正文引用的文件。
 
 ## 3. 依赖
 
@@ -238,6 +239,8 @@ file:cleanup_orphan:<fileId>
 ```text
 file:cleanup_orphan:<fileId>:upload:<requestToken>
 file:cleanup_orphan:<fileId>:detach:<correlationId>
+file:cleanup_orphan:<fileId>:translation-delete:<correlationId>
+file:cleanup_orphan:<fileId>:post-delete:<correlationId>
 ```
 
 不得使用 fileId 级生命周期唯一 key。
@@ -288,9 +291,34 @@ syncInlineImageLinks(
 - 通用 detach API 对已发布内容不得解除仍被任何 locale 正文引用的 inline link；
 - 推荐不向普通 attach API 暴露 `kind="inline"`，由保存服务独占维护。
 
-## 11. 两阶段 durable cleanup
+## 11. 删除路径必须显式清理 inline 候选
 
-### 11.1 `file.cleanup_orphan`
+### 11.1 删除翻译 / 删除草稿翻译
+
+`deleteTranslation` 与 `deleteDraftTranslation` 必须改成事务：
+
+1. 锁定目标 translation 并取得 `postId`；
+2. 删除 translation；
+3. 重新计算该 post 剩余原文与所有 locale 的 inline 引用；
+4. detach 不再被任何正文引用的 inline links；
+5. 为候选 fileId enqueue `file.cleanup_orphan`；
+6. 删除和 task enqueue 一起提交。
+
+### 11.2 删除整篇文章
+
+`deletePost` 必须改成事务：
+
+1. 锁定 post；
+2. 在外键级联前读取该 post 的全部 `kind="inline"` fileId；
+3. 删除 post，让 translations / post_files 正常级联；
+4. 为捕获的每个 fileId enqueue 新的 `file.cleanup_orphan`；
+5. post 删除和 task enqueue 一起提交。
+
+不能假设 `post_files ON DELETE CASCADE` 会自动清理 `files` 与存储对象。
+
+## 12. 两阶段 durable cleanup
+
+### 12.1 `file.cleanup_orphan`
 
 payload：
 
@@ -313,15 +341,15 @@ handler 在一个短 PostgreSQL 事务内：
 9. 删除 file 行；
 10. enqueue 与 file 删除一起提交。
 
-`storage.delete_object` dedupeKey 可使用：
+对象删除 task 的 dedupe key 使用稳定哈希，避免把任意长度 objectKey 直接写入 key：
 
 ```text
-storage:delete_object:<driver>:<bucket-or-empty>:<objectKey>
+storage:delete_object:<sha256(driver + "\0" + bucket + "\0" + objectKey)>
 ```
 
 这是对象级最终操作，永久去重是安全的。
 
-### 11.2 `storage.delete_object`
+### 12.2 `storage.delete_object`
 
 payload：
 
@@ -347,7 +375,7 @@ handler：
 - 存储删除失败只留下可重试孤儿对象；
 - 不会出现数据库仍引用但对象已被不可回滚删除。
 
-## 12. kind ↔ purpose 校验
+## 13. kind ↔ purpose 校验
 
 统一放在内容模块，而非只写在 API：
 
@@ -359,7 +387,7 @@ cover/preview/thumbnail → 现有明确允许的图片 purpose
 
 错误组合返回 400。
 
-## 13. AI 翻译结构保护
+## 14. AI 翻译结构保护
 
 新增共享保护器：
 
@@ -379,7 +407,7 @@ restoreProtectedMarkdown(translated, tokens)
 
 返回后要求 token 集合与次数完全一致；缺失、重复、改写或新增 token 均拒绝保存 machine draft。
 
-## 14. 测试
+## 15. 测试
 
 ### renderer / sanitizer
 
@@ -410,6 +438,9 @@ restoreProtectedMarkdown(translated, tokens)
 - 未保存正文的上传在宽限期后进入两阶段清理；
 - 宽限期内成功保存建立 link 后，延迟 cleanup no-op；
 - cleanup no-op succeeded 后，未来 detach 仍能 enqueue 新 task；
+- 删除 translation 后重新计算剩余 locale 并清理候选；
+- 删除 draft translation 后重新计算剩余 locale 并清理候选；
+- 删除 post 前捕获 inline fileId，删除后 enqueue cleanup；
 - 多个重复 cleanup task 并发时只有一个删除 file，其余安全 no-op；
 - 阶段一在同一事务中 enqueue object task 并删除 file；
 - 阶段一事务失败时 file 与 object task 都不改变；
@@ -431,7 +462,7 @@ restoreProtectedMarkdown(translated, tokens)
 - 模型删除、复制、修改 token → 拒绝采用；
 - 代码、图片 URL、链接 URL和 `@video:` 保持不变。
 
-## 15. 验证
+## 16. 验证
 
 ```bash
 pnpm lint
@@ -442,7 +473,7 @@ pnpm build:migrator
 pnpm build
 ```
 
-## 16. 验收清单
+## 17. 验收清单
 
 - [ ] POST preview API + 服务端单一 renderer
 - [ ] `bodyHtml` 新增、`body` deprecated 保留
@@ -451,6 +482,7 @@ pnpm build
 - [ ] 上传后安排 delayed `file.cleanup_orphan`
 - [ ] cleanup 不使用 fileId 级永久 dedupe
 - [ ] 正文保存与 inline link 同事务同步
+- [ ] 翻译删除与文章删除显式 enqueue cleanup
 - [ ] 已发布内容只放宽内部 inline sync
 - [ ] kind↔purpose 服务端校验
 - [ ] 阶段一 DB 删除 file + enqueue object task
