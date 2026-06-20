@@ -1,6 +1,6 @@
 # ADR 0007：浏览器内视频播放（HTTP Range/206 + 内联播放器）
 
-- **Status**：Proposed ▶（2026-06-20；评审完成后再转 Accepted）
+- **Status**：Accepted ✅（2026-06-20）
 - **相关 issue**：v0.3 B2 视频（待建 issue）
 - **依赖**：B1 流式上传、下载鉴权、存储抽象、主题契约
 
@@ -205,7 +205,7 @@ playHref?: string;
 - ⚠️ MOV/M4V 仅尽力播放；
 - ⚠️ 与 ADR 0006/0008 都可能修改主题展示，必须串行实施。
 
-## 待转 Accepted 前确认
+## 已确认决策
 
 1. member/login 视频始终应用代理。
 2. public S3 视频允许较长签名 URL。
