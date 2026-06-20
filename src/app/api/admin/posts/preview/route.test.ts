@@ -48,6 +48,24 @@ describe("admin Markdown preview API", () => {
     expect(payload.data.html).not.toContain("<script>");
   });
 
+  it("returns a video placeholder without a third-party iframe", async () => {
+    const response = await route.POST(
+      request({
+        markdown: "@video: https://youtu.be/dQw4w9WgXcQ",
+        embedMode: "preview",
+      }),
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(payload.data.html).toContain('class="video-embed-placeholder"');
+    expect(payload.data.html).toContain(
+      'data-embed-src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"',
+    );
+    expect(payload.data.html).not.toContain("<iframe");
+  });
+
   it("rejects an oversized body", async () => {
     const response = await route.POST(
       request({ markdown: "x".repeat(MAX_POST_BODY_LENGTH + 1), embedMode: "preview" }),
