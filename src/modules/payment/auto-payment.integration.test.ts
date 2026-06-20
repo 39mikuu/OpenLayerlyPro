@@ -407,6 +407,7 @@ describeWithDatabase("Stripe automatic payment integration", () => {
     const event = {
       type: "paid" as const,
       providerRef: "cs_paid",
+      paymentRef: "pi_paid",
       providerEventId: "evt_paid",
       amountMinor: 500,
       currency: "usd",
@@ -430,6 +431,7 @@ describeWithDatabase("Stripe automatic payment integration", () => {
     expect(stored).toMatchObject({
       status: "approved",
       providerEventId: "evt_paid",
+      providerPaymentRef: "pi_paid",
       grantedMembershipId: grants[0]?.id,
     });
     expect(grants).toHaveLength(1);
@@ -467,11 +469,57 @@ describeWithDatabase("Stripe automatic payment integration", () => {
     await confirmAutoPayment("stripe", {
       type: "paid",
       providerRef: "cs_cancelled",
+      paymentRef: "pi_cancelled",
       providerEventId: "evt_late",
       amountMinor: 500,
       currency: "usd",
     });
     await expect(db.select().from(memberships)).resolves.toHaveLength(0);
+    await expect(db.select().from(tasks)).resolves.toHaveLength(0);
+  });
+
+  it("rejects conflicting Checkout Session metadata without granting access", async () => {
+    const { user, tier } = await seed();
+    const [request] = await db
+      .insert(paymentRequests)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        flow: "auto",
+        status: "pending_payment",
+        provider: "stripe",
+        providerRef: "cs_reference_conflict",
+        amountMinor: 500,
+        currency: "usd",
+        amountLabel: tier.priceLabel,
+        durationDays: tier.durationDays,
+      })
+      .returning();
+
+    await expect(
+      confirmAutoPayment("stripe", {
+        type: "paid",
+        providerRef: "cs_reference_conflict",
+        paymentRef: "pi_reference_conflict",
+        requestId: randomUUID(),
+        providerEventId: "evt_reference_conflict",
+        amountMinor: 500,
+        currency: "usd",
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "paymentReferenceMismatch" });
+
+    const [stored] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, request!.id));
+    expect(stored).toMatchObject({
+      status: "pending_payment",
+      providerEventId: null,
+      providerPaymentRef: null,
+      grantedMembershipId: null,
+    });
+    await expect(db.select().from(memberships)).resolves.toHaveLength(0);
+    await expect(db.select().from(auditEvents)).resolves.toHaveLength(0);
     await expect(db.select().from(tasks)).resolves.toHaveLength(0);
   });
 
@@ -497,6 +545,7 @@ describeWithDatabase("Stripe automatic payment integration", () => {
       confirmAutoPayment("stripe", {
         type: "paid",
         providerRef: "cs_mismatch",
+        paymentRef: "pi_mismatch",
         providerEventId: "evt_mismatch",
         amountMinor: 499,
         currency: "usd",

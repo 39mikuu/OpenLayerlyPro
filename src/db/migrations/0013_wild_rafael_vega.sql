@@ -1,0 +1,4 @@
+ALTER TABLE "payment_requests" ADD COLUMN "provider_payment_ref" text;--> statement-breakpoint
+ALTER TABLE "payment_requests" ADD COLUMN "reversal_event_id" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "payment_requests_provider_payment_ref_unique" ON "payment_requests" USING btree ("provider","provider_payment_ref") WHERE "payment_requests"."provider" is not null and "payment_requests"."provider_payment_ref" is not null;--> statement-breakpoint
+CREATE UNIQUE INDEX "payment_requests_reversal_event_id_unique" ON "payment_requests" USING btree ("provider","reversal_event_id") WHERE "payment_requests"."provider" is not null and "payment_requests"."reversal_event_id" is not null;

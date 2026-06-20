@@ -6,6 +6,11 @@ import type { NormalizedPaymentEvent, PaymentProvider } from "./index";
 
 type StripeClient = Pick<Stripe, "balance" | "checkout" | "webhooks">;
 
+function objectId(value: string | { id: string } | null | undefined): string | null {
+  if (!value) return null;
+  return typeof value === "string" ? value : value.id;
+}
+
 export class StripePaymentProvider implements PaymentProvider {
   readonly id = "stripe" as const;
   private readonly client: StripeClient;
@@ -39,7 +44,10 @@ export class StripePaymentProvider implements PaymentProvider {
             quantity: 1,
           },
         ],
-        metadata: { requestId: input.requestId },
+        metadata: {
+          requestId: input.requestId,
+          app: "openlayerlypro",
+        },
         success_url: input.successUrl,
         cancel_url: input.cancelUrl,
       },
@@ -59,6 +67,31 @@ export class StripePaymentProvider implements PaymentProvider {
       throw new ApiError(401, "stripeSignatureInvalid");
     }
 
+    if (event.type === "charge.refunded") {
+      const charge = event.data.object as Stripe.Charge;
+      if (!charge.refunded || charge.amount_refunded !== charge.amount) {
+        return { type: "ignored", providerEventId: event.id };
+      }
+      const paymentRef = objectId(charge.payment_intent);
+      if (!paymentRef) return { type: "ignored", providerEventId: event.id };
+      return {
+        type: "refunded",
+        paymentRef,
+        providerEventId: event.id,
+      };
+    }
+
+    if (event.type === "charge.dispute.created") {
+      const dispute = event.data.object as Stripe.Dispute;
+      const paymentRef = objectId(dispute.payment_intent);
+      if (!paymentRef) return { type: "ignored", providerEventId: event.id };
+      return {
+        type: "disputed",
+        paymentRef,
+        providerEventId: event.id,
+      };
+    }
+
     if (event.type === "checkout.session.expired") {
       const session = event.data.object as Stripe.Checkout.Session;
       if (!session.id) throw new ApiError(422, "stripeEventInvalid");
@@ -69,23 +102,45 @@ export class StripePaymentProvider implements PaymentProvider {
         providerEventId: event.id,
       };
     }
+
     if (event.type !== "checkout.session.completed") {
       return { type: "ignored", providerEventId: event.id };
     }
+
     const session = event.data.object as Stripe.Checkout.Session;
     if (session.payment_status !== "paid") {
       return { type: "ignored", providerEventId: event.id };
     }
-    if (!session.id || session.amount_total === null || !session.currency) {
+    const paymentRef = objectId(session.payment_intent);
+    if (!session.id || session.amount_total === null || !session.currency || !paymentRef) {
       throw new ApiError(422, "stripeEventInvalid");
     }
     return {
       type: "paid",
       providerRef: session.id,
+      paymentRef,
       requestId: session.metadata?.requestId || undefined,
       providerEventId: event.id,
       amountMinor: session.amount_total,
       currency: session.currency.toLowerCase(),
+    };
+  }
+
+  async resolveCheckoutByPaymentIntent(paymentRef: string): Promise<{
+    providerRef: string;
+    requestId?: string;
+    owned: boolean;
+  } | null> {
+    const sessions = await this.client.checkout.sessions.list({
+      payment_intent: paymentRef,
+      limit: 1,
+    });
+    const session = sessions.data[0];
+    if (!session) return null;
+    return {
+      providerRef: session.id,
+      requestId: session.metadata?.requestId || undefined,
+      owned: session.metadata?.app === "openlayerlypro",
     };
   }
 

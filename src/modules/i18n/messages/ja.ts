@@ -806,6 +806,10 @@ export const ja: Messages = {
     pendingAutoPaymentExists: "このプランには確認待ちのオンライン決済があります",
     paymentCheckoutChanged: "オンライン決済の状態が変わりました。更新して再試行してください",
     paymentAmountMismatch: "確認された金額または通貨が注文と一致しません",
+    paymentReferenceMismatch: "決済プロバイダーの参照情報がこの注文と一致しません",
+    paymentProviderUnsupported: "この決済プロバイダーには対応していません",
+    paymentReversalTargetUnavailable:
+      "取り消す支払いを一時的に確認できません。しばらくしてから再試行してください",
     pendingPaymentExists:
       "このプランには確認待ちの申請があります。確認を待つか、先にキャンセルしてください。",
     resubmitRejectedOnly: "却下された申請のみ再送信できます",
@@ -844,6 +848,9 @@ export const ja: Messages = {
     membershipTier: "メンバーシッププラン：{tier}",
     membershipUntil: "有効期限：{date}",
     membershipReady: "ログインするとメンバー限定コンテンツの閲覧とダウンロードができます。",
+    membershipRevokedSubject: "メンバーシップの利用を停止しました",
+    membershipRevokedBody: "メンバーシップへのアクセスを停止しました。",
+    membershipRevokedHelp: "ご不明な点はサイト管理者へお問い合わせください。",
     rejectedSubject: "支払い申請が却下されました",
     rejectedBody: "「{tier}」の支払い申請は承認されませんでした。",
     rejectedReason: "理由：{reason}",

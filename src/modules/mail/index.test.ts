@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   renderLoginCodeEmail,
   renderMembershipActivatedEmail,
+  renderMembershipRevokedEmail,
   renderPaymentRejectedEmail,
   renderTestEmail,
 } from "./index";
@@ -26,6 +27,11 @@ describe("localized mail templates", () => {
     expect(membership.subject).toBe("Membership activated");
     expect(membership.text).toContain("Membership tier: 黄金会员");
     expect(membership.text).toContain("Valid until: 2026-06-30");
+
+    const revoked = renderMembershipRevokedEmail("Gold", "en");
+    expect(revoked.subject).toBe("Membership access disabled");
+    expect(revoked.text).toContain("Membership tier: Gold");
+    expect(revoked.text).not.toContain("Stripe");
 
     const rejected = renderPaymentRejectedEmail("Gold", "截图不清晰", "en");
     expect(rejected.subject).toBe("Payment request rejected");
@@ -52,6 +58,9 @@ describe("localized mail templates", () => {
 
     expect(renderMembershipActivatedEmail("ゴールド", new Date(2026, 5, 30), "ja").text).toContain(
       "メンバーシッププラン：ゴールド",
+    );
+    expect(renderMembershipRevokedEmail("ゴールド", "ja").subject).toBe(
+      "メンバーシップの利用を停止しました",
     );
     expect(renderPaymentRejectedEmail("ゴールド", "画像が不鮮明です", "ja").text).toContain(
       "理由：画像が不鮮明です",

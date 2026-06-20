@@ -22,6 +22,12 @@
 - [ ] 重放同一 webhook 不会重复开通会员或重复发送邮件任务。
 - [ ] 金额或币种不匹配时事务回滚，不开通会员。
 - [ ] `checkout.session.expired` 会取消仍处于 `pending_payment` 的申请。
+- [ ] Stripe webhook 已订阅 `charge.refunded` 与 `charge.dispute.created`。
+- [ ] 全额退款会将付款申请改为 `reversed`，并仅撤销该申请开通的会员。
+- [ ] 拒付创建使用独立审计动作，并停用对应会员访问。
+- [ ] reversal-first 场景会先持久化 `reversed`，后到的 paid webhook 不会开通会员。
+- [ ] 部分退款与同一 Stripe 账户中其他产品的事件会安全忽略。
+- [ ] 退款/拒付通知不包含 Stripe event ID、拒付详情或其他敏感 provider 数据。
 - [ ] 新鲜 `creating:*` claim 返回 409，避免并发重复创建。
 - [ ] 超过 2 分钟的 stale claim 能恢复，并复用原 payment request ID。
 - [ ] Stripe 后台只出现一个由 `checkout:<requestId>` 幂等键保护的 Checkout Session。

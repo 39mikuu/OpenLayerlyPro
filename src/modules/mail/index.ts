@@ -78,6 +78,29 @@ export async function sendMembershipActivatedEmail(
   await sendMail(to, message.subject, message.text);
 }
 
+export function renderMembershipRevokedEmail(tierName: string, locale?: Locale) {
+  const t = mailT(locale);
+  return {
+    subject: t("mail.membershipRevokedSubject"),
+    text: [
+      t("mail.membershipRevokedBody"),
+      "",
+      t("mail.membershipTier", { tier: tierName }),
+      "",
+      t("mail.membershipRevokedHelp"),
+    ].join("\n"),
+  };
+}
+
+export async function sendMembershipRevokedEmail(
+  to: string,
+  tierName: string,
+  locale?: Locale,
+): Promise<void> {
+  const message = renderMembershipRevokedEmail(tierName, locale);
+  await sendMail(to, message.subject, message.text);
+}
+
 export function renderPaymentRejectedEmail(
   tierName: string,
   reviewNote?: string | null,

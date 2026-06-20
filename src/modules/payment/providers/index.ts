@@ -6,6 +6,7 @@ import { StripePaymentProvider } from "./stripe";
 export type PaidPaymentEvent = {
   type: "paid";
   providerRef: string;
+  paymentRef: string;
   requestId?: string;
   providerEventId: string;
   amountMinor: number;
@@ -19,9 +20,24 @@ export type ExpiredPaymentEvent = {
   providerEventId: string;
 };
 
+export type RefundedPaymentEvent = {
+  type: "refunded";
+  paymentRef: string;
+  providerEventId: string;
+};
+
+export type DisputedPaymentEvent = {
+  type: "disputed";
+  paymentRef: string;
+  providerEventId: string;
+};
+
+export type ReversalPaymentEvent = RefundedPaymentEvent | DisputedPaymentEvent;
+
 export type NormalizedPaymentEvent =
   | PaidPaymentEvent
   | ExpiredPaymentEvent
+  | ReversalPaymentEvent
   | { type: "ignored"; providerEventId: string };
 
 export interface PaymentProvider {
@@ -39,6 +55,11 @@ export interface PaymentProvider {
     redirectUrl: string | null;
   }>;
   parseWebhook(rawBody: string, signature: string | null): Promise<NormalizedPaymentEvent>;
+  resolveCheckoutByPaymentIntent(paymentRef: string): Promise<{
+    providerRef: string;
+    requestId?: string;
+    owned: boolean;
+  } | null>;
   testConnection(): Promise<void>;
 }
 

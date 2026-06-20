@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getSmtpConfig: vi.fn(),
   sendMembershipActivatedEmail: vi.fn(),
+  sendMembershipRevokedEmail: vi.fn(),
   sendPaymentRejectedEmail: vi.fn(),
 }));
 
 vi.mock("@/modules/config", () => ({ getSmtpConfig: mocks.getSmtpConfig }));
 vi.mock("@/modules/mail", () => ({
   sendMembershipActivatedEmail: mocks.sendMembershipActivatedEmail,
+  sendMembershipRevokedEmail: mocks.sendMembershipRevokedEmail,
   sendPaymentRejectedEmail: mocks.sendPaymentRejectedEmail,
 }));
 
@@ -76,6 +78,23 @@ describe("task handlers", () => {
       "Supporter",
       new Date("2026-07-18T10:00:00.000Z"),
       "ja",
+    );
+  });
+
+  it("dispatches membership revocation notifications without provider details", async () => {
+    await runTaskHandler(
+      task({
+        template: "membership_revoked",
+        to: "fan@example.com",
+        locale: "zh",
+        params: { tierName: "Supporter" },
+      }),
+    );
+
+    expect(mocks.sendMembershipRevokedEmail).toHaveBeenCalledWith(
+      "fan@example.com",
+      "Supporter",
+      "zh",
     );
   });
 
