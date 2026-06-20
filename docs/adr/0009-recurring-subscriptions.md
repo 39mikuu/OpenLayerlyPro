@@ -1,6 +1,6 @@
 # ADR 0009：周期性会员（订阅自动续费 + 手动周期提醒）
 
-- **Status**：Proposed ▶（2026-06-20；评审锁定后转 Accepted）
+- **Status**：Accepted ✅（2026-06-20）
 - **相关 issue**：v1.0 会员续费（待建 issue）
 - **依赖**：[ADR 0001](0001-membership-lifecycle-model.md)（会员生命周期：叠加时间窗 + 存储态）、[ADR 0002](0002-audit-and-event-strategy.md)（事务内审计 + 因果链）、[ADR 0003](0003-durable-task-and-outbox-boundary.md)（durable tasks / outbox）、[ADR 0005](0005-auto-payments.md)（自动收付款 + 可插拔 provider）
 
