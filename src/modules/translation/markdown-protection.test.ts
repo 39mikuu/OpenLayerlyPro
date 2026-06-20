@@ -77,6 +77,19 @@ describe("Markdown translation protection", () => {
     expect(restoreProtectedMarkdown(protection.markdown, protection)).toBe(fenced);
   });
 
+  it("restores dollar replacement sequences literally", () => {
+    const dollar = "$";
+    const fenced = [
+      `${"`".repeat(3)}sh`,
+      `echo "${dollar}${dollar} ${dollar}& ${dollar}1"`,
+      `printf '%s\\n' "${dollar}\`" "${dollar}'"`,
+      "`".repeat(3),
+    ].join("\n");
+    const protection = protectMarkdownForTranslation(fenced);
+
+    expect(restoreProtectedMarkdown(protection.markdown, protection)).toBe(fenced);
+  });
+
   it.each(["missing", "duplicated", "modified", "unauthorized", "foreign-prefix"])(
     "rejects %s tokens",
     (mode) => {

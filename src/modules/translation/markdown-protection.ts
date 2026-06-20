@@ -135,7 +135,7 @@ export function restoreProtectedMarkdown(
 
   let restored = translated;
   for (const [token, original] of protection.tokens) {
-    restored = restored.replace(token, original);
+    restored = restored.replace(token, () => original);
   }
   if (restored.includes(protection.tokenPrefix)) {
     throw new ApiError(502, "translationTokenMismatch");
