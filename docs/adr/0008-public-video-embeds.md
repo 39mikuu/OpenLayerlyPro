@@ -1,6 +1,6 @@
 # ADR 0008：公开视频嵌入（provider 白名单 iframe）
 
-- **Status**：Proposed ▶（2026-06-20；评审完成后再转 Accepted）
+- **Status**：Accepted ✅（2026-06-20）
 - **相关 issue**：v0.3 编辑器 / 视频（待建 issue）
 - **依赖**：[ADR 0006](0006-markdown-editor.md)
 
@@ -228,7 +228,7 @@ frame-src *
 - ⚠️ provider URL规则变化时需要维护注册表；
 - ⚠️ 必须在 ADR 0006 实现完成后串行实施。
 
-## 待转 Accepted 前确认
+## 已确认决策
 
 1. 首批 provider 为 YouTube/Vimeo/Bilibili。
 2. 只识别顶层零缩进独立块。
