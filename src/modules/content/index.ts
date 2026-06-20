@@ -29,6 +29,7 @@ import {
   enqueueOrphanCleanup,
   syncInlineImageLinks,
 } from "./inline-images";
+import { extractInternalImageFileIds } from "./markdown";
 
 export type PostInput = {
   title: string;
@@ -793,14 +794,62 @@ export async function detachFileFromPost(postId: string, fileId: string): Promis
   });
 }
 
-/** 文件所关联的 posts（用于下载鉴权） */
-export async function listPostsForFile(fileId: string): Promise<Post[]> {
-  const rows = await getDb()
-    .select({ post: posts })
+export type PostLinkForFile = {
+  post: Post;
+  kind: PostFile["kind"];
+};
+
+/** 文件所关联的 post links（保留 kind，供下载鉴权区分 inline 与其他关联） */
+export async function listPostLinksForFile(fileId: string): Promise<PostLinkForFile[]> {
+  return getDb()
+    .select({ post: posts, kind: postFiles.kind })
     .from(postFiles)
     .innerJoin(posts, eq(postFiles.postId, posts.id))
     .where(eq(postFiles.fileId, fileId));
-  return rows.map((r) => r.post);
+}
+
+/** 文件所关联的 posts（保留旧接口，避免破坏现有调用方） */
+export async function listPostsForFile(fileId: string): Promise<Post[]> {
+  const rows = await listPostLinksForFile(fileId);
+  return rows.map((row) => row.post);
+}
+
+/**
+ * 返回候选已发布帖子中，确实在已发布正文里引用了指定 inline 图片的 postId。
+ * 草稿和 archived 翻译只参与 link 保留，不参与下载授权。
+ */
+export async function listPostIdsWithPublishedInlineImageReference(
+  fileId: string,
+  candidatePosts: readonly Post[],
+): Promise<Set<string>> {
+  const publishedById = new Map(
+    candidatePosts
+      .filter((post) => post.status === "published")
+      .map((post) => [post.id, post] as const),
+  );
+  const postIds = [...publishedById.keys()];
+  if (postIds.length === 0) return new Set();
+
+  const authorizedPostIds = new Set<string>();
+  for (const post of publishedById.values()) {
+    if (extractInternalImageFileIds(post.body).has(fileId)) {
+      authorizedPostIds.add(post.id);
+    }
+  }
+
+  const translations = await getDb()
+    .select({ postId: postTranslations.postId, body: postTranslations.body })
+    .from(postTranslations)
+    .where(
+      and(inArray(postTranslations.postId, postIds), eq(postTranslations.status, "published")),
+    );
+  for (const translation of translations) {
+    if (extractInternalImageFileIds(translation.body).has(fileId)) {
+      authorizedPostIds.add(translation.postId);
+    }
+  }
+
+  return authorizedPostIds;
 }
 
 export type { DerivedPostState, PublishingActor, ScheduledPublishResult } from "./publishing";

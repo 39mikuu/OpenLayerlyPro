@@ -266,6 +266,8 @@ describeWithDatabase("Markdown inline image lifecycle integration", () => {
 
     await updatePost(post.id, { body: null });
     await expect(links(post.id)).resolves.toHaveLength(1);
+    await expect(cleanupOrphanFile(file.id)).resolves.toBe("referenced");
+    await expect(db.select().from(files).where(eq(files.id, file.id))).resolves.toHaveLength(1);
 
     await deleteDraftTranslation(post.id, "ja");
     await expect(links(post.id)).resolves.toEqual([]);
