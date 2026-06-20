@@ -36,3 +36,4 @@ ADR 一旦 Accepted 不在原地大改语义；要推翻就新写一条并把旧
 | [0006](0006-markdown-editor.md) | Markdown 内容编辑器 + 正文内联插图 | Accepted ✅ | v0.3 |
 | [0007](0007-inline-video-playback.md) | 浏览器内视频播放：HTTP Range/206 + 内联播放器 | Accepted ✅ | v0.3 |
 | [0008](0008-public-video-embeds.md) | 公开视频嵌入：provider 白名单 iframe | Accepted ✅ | v0.3 |
+| [0009](0009-recurring-subscriptions.md) | 周期性会员：Stripe 自动续费 + 手动周期提醒 | Proposed ▶ | v1.0 |
