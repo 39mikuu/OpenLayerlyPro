@@ -1,6 +1,6 @@
 # ADR 0006：Markdown 内容编辑器 + 正文内联插图
 
-- **Status**：Proposed ▶（2026-06-20；评审完成后再转 Accepted）
+- **Status**：Accepted ✅（2026-06-20）
 - **相关 issue**：v0.3 编辑器优化（待建 issue）
 - **依赖**：现有内容模型、文件与存储模块、主题契约、内容多语言与 AI 翻译
 
@@ -216,7 +216,7 @@ prompt 约束只作为辅助，不是结构安全保证。
 - ⚠️ 自定义主题应在下一主题大版本前迁移到 `bodyHtml`；
 - ⚠️ 自动保存、版本历史、协同编辑和 WYSIWYG 不在本 ADR。
 
-## 待转 Accepted 前确认
+## 已确认决策
 
 1. Markdown 子集含表格、不含任务列表。
 2. 渲染库为 markdown-it + sanitize-html。
