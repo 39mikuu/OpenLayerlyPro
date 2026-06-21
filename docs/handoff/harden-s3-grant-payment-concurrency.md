@@ -40,8 +40,13 @@ export async function acquireUserGrantLock(tx: TxClient, userId: string): Promis
 - **审计所有 `grantMembership` 调用点**(payment approve、admin manual、auto confirm、gift、订阅)确保都经取锁入口、且都在事务内,无旁路。
 - **测试必须证明锁在 read 与 insert 期间仍持有**(例如:并发两 grant,断言第二个被阻塞直到第一个事务提交;或用 `pg_locks` 断言持锁跨越 read→insert)。
 
-### 2.2 替换窄锁
-- `confirmAutoPayment` 把 `stripe:userId:tierId` 锁换成**经 `acquireUserGrantLock(tx, userId)`**(同 helper、同 64 位 key、按 user 串行,覆盖跨 tier 与跨流程)。下单创建订阅/checkout 的并发去重(ADR 0009 的 `(user,tier,provider)` 部分唯一)各自独立,不与本锁冲突。
+### 2.2 不要动 checkout 去重锁;grant 锁只在 grant 路径 + 固定锁序
+
+> 更正:现有 `stripe:userId:tierId` advisory 锁在 **`createAutoCheckout`(~line 405,`creating:` claim)**,是 **checkout 创建去重**锁(防同 user/tier 重复 Stripe 会话)——**与 grant 串行是两码事**。`confirmAutoPayment`(~line 526)本身**没有** advisory 锁,它先取 `payment_requests` 行锁(`.for("update")`,~line 555)再 grant。
+
+- **保留 `createAutoCheckout` 的 checkout 去重锁不动**(它是独立关注点;ADR 0009 订阅的下单并发用其自己的 `(user,tier,provider)` 部分唯一/claim,也独立)。**不要**把它"替换"成 grant 锁,**不要**把 grant 锁加进 checkout 创建路径。
+- **user grant 锁只在 grant 路径获取**(`grantMembershipTx` 内),即 `approvePaymentRequest` / `confirmAutoPayment` / 管理员手工 / gift / 订阅 `grantMembershipForPeriod` 调到 grant 时。
+- **固定锁序防死锁**:同时持有「`payment_requests` 行锁」与「user grant 锁」的路径必须用**统一顺序**。现状 `confirmAutoPayment`/`approvePaymentRequest` 都是**先行锁(FOR UPDATE)→ 再 grant(取 user 锁)**,即**canonical = 行锁 → user-grant 锁**。**任何路径都不得**反过来「先 user-grant 锁 → 再取 payment_requests 行锁」。`grantMembershipTx` 只取 user 锁 + 插 membership(不碰 payment_requests 行锁),天然不破坏此序。
 
 ### 2.3 人工 pending 部分唯一
 - 迁移加 `UNIQUE(user_id, tier_id) WHERE status IN ('pending_review','pending_payment')`(drizzle `uniqueIndex(...).where(...)`)。
@@ -75,7 +80,7 @@ base `main`,Draft 直到真实 PG 集成 + CI 全绿,关联 issue,标题 `fix(pa
 - [ ] `acquireUserGrantLock` **只接受 `TxClient`**(类型层挡 root `getDb()`);用 `hashtextextended`(64 位 key)
 - [ ] `lock→read→calc→insert→audit` **同一显式事务**:核心拆 `grantMembershipTx(tx)`,公开入口有 tx 用 tx、无 tx 新开事务;**禁止**对 root client 跑 lock
 - [ ] 所有 grant 路径(人工/自动/管理员/gift/订阅)经取锁入口且在事务内(审计无旁路)
-- [ ] `confirmAutoPayment` 窄锁换成经 `acquireUserGrantLock`
+- [ ] `createAutoCheckout` 的 checkout 去重锁**保留不动**;user grant 锁**只在 grant 路径**;固定锁序 **行锁→user-grant 锁**(无路径反序)
 - [ ] 人工 pending 部分唯一 + `ON CONFLICT DO NOTHING RETURNING`(不 catch 冲突)
 - [ ] **测试证明锁在 read 与 insert 期间持续持有**(并发被阻塞 / `pg_locks` 跨 read→insert)
 - [ ] 迁移:确定性检测 SQL → 有重复则**明确失败打印 user/tier/count** + 独立 remediation 脚本(不自动删财务)+ 升级文档

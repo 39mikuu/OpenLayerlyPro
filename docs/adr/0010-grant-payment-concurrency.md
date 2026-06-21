@@ -29,7 +29,8 @@ ADR 0009 的订阅又**新增**了 `grantMembershipForPeriod`,若不先建立统
   - 锁 helper **只接受事务 client(`TxClient`)**,**禁止**传 root `getDb()`(否则锁随隐式事务立即释放,read→insert 失去保护——「看似加锁实则提前释放」)。
   - 核心实现为仅事务的内部函数;公开入口有外部事务则复用、否则新开事务。
   - 同事务内重复获取安全(可被外层先取)。
-- **替换**现有过窄的 `stripe:user:tier` 锁为本 `membership-grant:userId` 锁(按 user 串行,覆盖跨 tier 与跨流程),避免「窄锁串行不到人工/管理员」。
+- **现有 `stripe:user:tier` 锁是另一回事,保留不动**:它在 `createAutoCheckout`,是 **checkout 创建去重**锁(防重复 Stripe 会话),**不是** grant 锁——**不替换、不合并**;grant 锁是**新增**的、**仅在 grant 路径**获取(覆盖人工/自动/管理员/gift/订阅)。
+- **固定锁序防死锁**:同时持「`payment_requests` 行锁」与「user grant 锁」的路径(`confirmAutoPayment`/`approvePaymentRequest`)统一为 **行锁(FOR UPDATE)→ user grant 锁**(现状即如此);任何路径不得反序。
 
 > 选 advisory xact lock 而非行锁:grant 是 INSERT 新行(无既有行可 `FOR UPDATE`);按 userId 串行即可保证「读基准→插新行」原子,且事务结束自动释放。
 
