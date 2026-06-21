@@ -11,7 +11,7 @@
 ## 1. 现状
 - `src/modules/membership/index.ts` `grantMembership`:读 `getActiveMembership` → 计算 `startsAt`(同/低 tier active → `current.endsAt`,否则 now)→ INSERT。**无锁**。
 - `src/modules/payment/index.ts` `createPaymentRequest`(~line 119):SELECT `pending_review` → 若有抛 `pendingPaymentExists` → INSERT。**check-then-insert,无锁/无唯一**。
-- `confirmAutoPayment`(~line 403):有 `pg_advisory_xact_lock(hashtext('stripe:'||userId||':'||tierId))`——**过窄,本切片改成统一锁**。
+- `createAutoCheckout`(~line 405):有 `pg_advisory_xact_lock('stripe:'||userId||':'||tierId)`——是 **checkout 创建去重**锁(`creating:` claim),**保留不动**(§2.2)。`confirmAutoPayment`(~line 526)先取 `payment_requests` 行锁(`.for("update")`)再 grant,**无** advisory 锁。
 - schema `paymentRequests`:仅 `payment_requests_user_created_idx`(普通)。
 
 ## 2. 实现
