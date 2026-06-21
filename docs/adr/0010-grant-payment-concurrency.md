@@ -1,6 +1,6 @@
 # ADR 0010：付款与会员授予的并发不变量（userId 串行 + pending 唯一）
 
-- **Status**：Proposed ▶（2026-06-21；评审锁定后转 Accepted）
+- **Status**：Accepted ✅（2026-06-21）
 - **相关 issue**：v1.0 安全硬化 / S3（epic #64）
 - **依赖**：[ADR 0001](0001-membership-lifecycle-model.md)（会员生命周期：按笔时间窗）、[ADR 0005](0005-auto-payments.md)（自动收付款）、[ADR 0009](0009-recurring-subscriptions.md)（周期性会员;其 `grantMembershipForPeriod` 必须建在本 ADR 的串行基础上）
 
