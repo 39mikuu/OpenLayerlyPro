@@ -59,8 +59,19 @@ select max(ends_at) from memberships
 
 ### 2.3 人工 pending 部分唯一
 - 迁移加 `UNIQUE(user_id, tier_id) WHERE status IN ('pending_review','pending_payment')`(drizzle `uniqueIndex(...).where(...)`)。
-- **所有进入 pending 的写入路径都要冲突处理**(部分唯一跨 `pending_review`+`pending_payment`、跨人工/自动):
-  - `createPaymentRequest`(插 `pending_review`)、**`createAutoCheckout`(插 `pending_payment`)**、**`resubmitPaymentProof`(rejected→`pending_review`)** 都用 `INSERT/UPDATE ... ON CONFLICT DO NOTHING RETURNING`;无返回 = 已有未决 → 抛 `pendingPaymentExists`。**不要** try/catch 唯一冲突(同事务会 abort)。
+- **所有进入 pending 的写入路径都要冲突处理**(部分唯一跨 `pending_review`+`pending_payment`、跨人工/自动)。按操作类型分两种正确写法(**`ON CONFLICT` 仅 `INSERT` 支持,`UPDATE` 不支持**):
+  - **INSERT 路径**(`createPaymentRequest` 插 `pending_review`、`createAutoCheckout` 插 `pending_payment`):`INSERT ... ON CONFLICT DO NOTHING RETURNING`;无返回 = 已有未决 → 抛 `pendingPaymentExists`。
+  - **UPDATE 路径**(`resubmitPaymentProof`:rejected→`pending_review`):**不能**用 `ON CONFLICT`。改**条件更新**:
+    ```sql
+    update payment_requests set status='pending_review', ...
+     where id = $reqId and status='rejected'
+       and not exists (
+         select 1 from payment_requests p
+          where p.user_id=$uid and p.tier_id=$tid
+            and p.status in ('pending_review','pending_payment') and p.id <> $reqId )
+    returning id;
+    ```
+    无返回行 → 区分是「非 rejected」(沿用 `resubmitRejectedOnly`)还是「已有其它未决」→ 抛 `pendingPaymentExists`。部分唯一索引仍作并发兜底;为避免并发 resubmit 撞原始唯一违例,该转换在**事务内**进行并可经统一 per-user 序列化(与 grant 锁同 `membership-grant:userId` 或专用锁),使条件更新足以避免违例。**不**靠 catch 唯一冲突。
   - 语义 = **每 (user,tier) 跨流程至多一个未决**(故意:有人工未决时不能再开 auto checkout,反之亦然)。
   - auto 路径现有 `creating:` claim / stale 恢复**复用同一行**(UPDATE 同 id,不新插)须与唯一索引兼容——确认恢复路径不会因唯一索引报错。
 - **迁移前置 remediation(自托管升级必须可执行,不能只说"脚本或手动")**:
@@ -96,7 +107,7 @@ base `main`,Draft 直到真实 PG 集成 + CI 全绿,关联 issue,标题 `fix(pa
 - [ ] 所有 grant 路径(人工/自动/管理员/gift/订阅)经取锁入口且在事务内(审计无旁路)
 - [ ] `createAutoCheckout` 的 checkout 去重锁**保留不动**;user grant 锁**只在 grant 路径**;固定锁序 **行锁→user-grant 锁**(无路径反序)
 - [ ] **叠加基准含 scheduled 行**(max(endsAt) of 同/高 tier、非 revoked、endsAt>now,非仅 `getActiveMembership`)→ 背靠背续费零重叠
-- [ ] pending 部分唯一 + `ON CONFLICT DO NOTHING RETURNING`(不 catch 冲突);**所有 pending 入口**(createPaymentRequest/createAutoCheckout/resubmitPaymentProof)都返回 `pendingPaymentExists`;auto claim/恢复兼容唯一索引
+- [ ] pending 部分唯一;**INSERT 入口**(createPaymentRequest/createAutoCheckout)用 `ON CONFLICT DO NOTHING RETURNING`,**UPDATE 入口**(resubmitPaymentProof)用条件更新 + `NOT EXISTS` 守卫(`ON CONFLICT` 不支持 UPDATE);均返回 `pendingPaymentExists`、**不 catch 唯一违例**;auto claim/恢复兼容唯一索引
 - [ ] **测试证明锁在 read 与 insert 期间持续持有**(并发被阻塞 / `pg_locks` 跨 read→insert)
 - [ ] 迁移:确定性检测 SQL → 有重复则**明确失败打印 user/tier/count** + 独立 remediation 脚本(不自动删财务)+ 升级文档
 - [ ] 真实 PG 并发测试:无重复 pending、无重叠会员期

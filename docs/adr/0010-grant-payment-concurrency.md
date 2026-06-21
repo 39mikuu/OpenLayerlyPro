@@ -47,7 +47,7 @@ ADR 0009 的订阅又**新增**了 `grantMembershipForPeriod`,若不先建立统
 - 加**部分唯一索引**:每 `(user_id, tier_id)` 至多一个**未决**付款请求——`UNIQUE(user_id, tier_id) WHERE status IN ('pending_review','pending_payment')`。
 - check-then-insert 的 TOCTOU 即便在锁外也由约束兜底(双保险);命中冲突按 `pendingPaymentExists` 处理(用 `ON CONFLICT DO NOTHING RETURNING` 判定,**勿**在同事务 catch 唯一冲突)。
 - 自动流的并发创建同样受益(同一未决唯一)。
-- **所有进入 pending 的写入路径都要处理冲突**:部分唯一覆盖 `pending_review` 与 `pending_payment`、跨人工/自动。除 `createPaymentRequest` 外,**`createAutoCheckout`(插 `pending_payment`)** 与 **`resubmitPaymentProof`(rejected→`pending_review`)** 也必须用同样的 `ON CONFLICT DO NOTHING`/冲突判定,命中已有未决 → 返回 `pendingPaymentExists`,**不得**触发原始唯一违例/事务 abort。语义 = **每 (user,tier) 跨流程至多一个未决**(故意);auto 路径现有 `creating:` claim/stale 恢复**复用同一行**(不新插)须与唯一索引兼容。
+- **所有进入 pending 的写入路径都要处理冲突**:部分唯一覆盖 `pending_review` 与 `pending_payment`、跨人工/自动。按操作分两种正确写法(**`ON CONFLICT` 仅 `INSERT` 支持**):INSERT 路径(`createPaymentRequest`、`createAutoCheckout`)用 `ON CONFLICT DO NOTHING RETURNING`;**UPDATE 路径(`resubmitPaymentProof` rejected→pending)用条件更新 + `NOT EXISTS` 守卫**(0 行更新 → `pendingPaymentExists`),**不得** `ON CONFLICT` 于 UPDATE、不得 catch 唯一违例。语义 = **每 (user,tier) 跨流程至多一个未决**(故意);auto `creating:` claim/stale 恢复复用同一行(不新插)须与唯一索引兼容;并发转换经 per-user 序列化避免原始违例。
 - **迁移 remediation(自托管升级可执行)**:迁移先跑确定性检测 SQL;有重复未决 → **明确失败并打印 user/tier/count**(不静默、不自动改财务);提供独立 remediation 脚本由管理员择一保留、其余 `cancelled`/`rejected`(带审计);修复后重跑迁移;升级文档写明。
 
 ### 3. 不改按笔账本与反转语义
