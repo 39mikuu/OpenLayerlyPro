@@ -57,15 +57,27 @@ This prevents unauthorized clients from using `416`, `Content-Range`, or `Conten
 ```text
 PUBLIC_VIDEO_SIGNED_URL_TTL_SECONDS=21600
 FILE_PREAUTH_RATE_LIMIT_MAX=1200
+FILE_PREAUTH_UNRESOLVED_RATE_LIMIT_MAX=20000
 FILE_PREAUTH_RATE_LIMIT_WINDOW_MS=600000
 VIDEO_RANGE_RATE_LIMIT_MAX=600
+VIDEO_UNRESOLVED_RATE_LIMIT_MAX=10000
 VIDEO_RANGE_RATE_LIMIT_WINDOW_MS=600000
+DOWNLOAD_UNRESOLVED_RATE_LIMIT_MAX=2000
 ```
 
-The application validates all values as bounded positive integers. The pre-auth bucket is shared by all file IDs for an IP. After authorization, video metadata, seek, and resume requests use a separate user-or-IP plus file bucket. Ordinary non-video downloads retain the existing 120 requests per 10 minutes bucket.
+The application validates all values as bounded positive integers. When a trusted client IP is available, the pre-auth bucket is shared by all file IDs for that IP. After authorization, video metadata, seek, and resume requests use a separate user-or-IP plus file bucket. Ordinary non-video downloads retain the existing 120 requests per 10 minutes bucket.
+
+When no trusted client IP can be resolved, the route does not use a fixed `unknown` identity and does not skip abuse protection. It switches to three dedicated high-threshold emergency policies:
+
+- `file-preauth-unresolved` for all file requests before lookup;
+- `video-unresolved:<fileId>` for anonymous video requests;
+- `download-unresolved` for anonymous non-video downloads.
+
+These are shared global degradation buckets, not real per-IP isolation. Authenticated post-auth video and download requests still use the user ID, so users do not share an `unknown` principal. Production emits a rate-limited warning while this fallback is active. Configure `TRUSTED_PROXY_HEADER` and `TRUSTED_PROXY_HOPS` correctly for normal per-IP isolation.
 
 ## Reverse proxy and storage notes
 
+- Configure the trusted proxy header/hop count and confirm the application can resolve a client IP. Without it, the documented shared emergency buckets remain active and production logs warnings.
 - Preserve the `Range` request header and the application's `206`, `416`, `Content-Range`, `Content-Length`, and `Accept-Ranges` response headers.
 - Do not rewrite private file responses into public cacheable responses. The route sends `Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff`.
 - Local Range reads remain inside the configured upload root.

@@ -3,6 +3,7 @@ import { Readable } from "stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/lib/api";
+import { __resetUnresolvedClientWarningForTests } from "@/modules/download/rate-limit-policy";
 
 const mocks = vi.hoisted(() => ({
   order: [] as string[],
@@ -68,10 +69,14 @@ const IMAGE_FILE = {
 };
 
 const DEFAULT_ENV = {
+  NODE_ENV: "test",
   FILE_PREAUTH_RATE_LIMIT_MAX: 100,
+  FILE_PREAUTH_UNRESOLVED_RATE_LIMIT_MAX: 20_000,
   FILE_PREAUTH_RATE_LIMIT_WINDOW_MS: 60_000,
   VIDEO_RANGE_RATE_LIMIT_MAX: 2,
+  VIDEO_UNRESOLVED_RATE_LIMIT_MAX: 10_000,
   VIDEO_RANGE_RATE_LIMIT_WINDOW_MS: 60_000,
+  DOWNLOAD_UNRESOLVED_RATE_LIMIT_MAX: 2_000,
 };
 
 function request(
@@ -92,6 +97,7 @@ async function call(fileId = VIDEO_FILE.id, options: { range?: string; inline?: 
 describe("file download route security and Range behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetUnresolvedClientWarningForTests();
     mocks.order.length = 0;
     mocks.getClientIp.mockReturnValue("198.51.100.10");
     mocks.getUserAgent.mockReturnValue("vitest");
@@ -171,6 +177,105 @@ describe("file download route security and Range behavior", () => {
       "file-preauth:198.51.100.1",
       "file-preauth:198.51.100.2",
     ]);
+  });
+
+  it("uses dedicated emergency pre-auth and anonymous video buckets when IP is unavailable", async () => {
+    mocks.getClientIp.mockReturnValue(null);
+
+    const response = await call(VIDEO_FILE.id, { inline: true });
+
+    expect(response.status).toBe(200);
+    expect(mocks.rateLimit.mock.calls).toEqual([
+      ["file-preauth-unresolved", 20_000, 60_000],
+      [`video-unresolved:${VIDEO_FILE.id}`, 10_000, 60_000],
+    ]);
+    expect(JSON.stringify(mocks.rateLimit.mock.calls)).not.toContain("unknown");
+  });
+
+  it("emits a rate-limited production warning while unresolved fallback is active", async () => {
+    mocks.getClientIp.mockReturnValue(null);
+    mocks.getEnv.mockReturnValue({ ...DEFAULT_ENV, NODE_ENV: "production" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await call(VIDEO_FILE.id, { inline: true });
+    await call(VIDEO_FILE.id, { inline: true });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("TRUSTED_PROXY_HEADER/TRUSTED_PROXY_HOPS");
+    warn.mockRestore();
+  });
+
+  it("uses the dedicated unresolved download bucket instead of the ordinary anonymous limit", async () => {
+    mocks.getClientIp.mockReturnValue(null);
+    mocks.getFileById.mockResolvedValue(ATTACHMENT_FILE);
+    mocks.prepareAuthorizedDownload.mockResolvedValue({
+      mode: "stream",
+      stream: Readable.from([Buffer.alloc(1000)]),
+      file: ATTACHMENT_FILE,
+    });
+
+    const response = await call(ATTACHMENT_FILE.id);
+
+    expect(response.status).toBe(200);
+    expect(mocks.rateLimit.mock.calls).toEqual([
+      ["file-preauth-unresolved", 20_000, 60_000],
+      ["download-unresolved", 2_000, 600_000],
+    ]);
+    expect(JSON.stringify(mocks.rateLimit.mock.calls)).not.toContain("unknown");
+  });
+
+  it("keeps authenticated users isolated post-auth when pre-auth IP is unresolved", async () => {
+    mocks.getClientIp.mockReturnValue(null);
+    mocks.getCurrentUser
+      .mockResolvedValueOnce({ id: "member-a", role: "member" })
+      .mockResolvedValueOnce({ id: "member-b", role: "member" });
+
+    expect((await call(VIDEO_FILE.id, { inline: true })).status).toBe(200);
+    expect((await call(VIDEO_FILE.id, { inline: true })).status).toBe(200);
+
+    expect(mocks.rateLimit.mock.calls.map((entry) => entry[0])).toEqual([
+      "file-preauth-unresolved",
+      `video:member-a:${VIDEO_FILE.id}`,
+      "file-preauth-unresolved",
+      `video:member-b:${VIDEO_FILE.id}`,
+    ]);
+    expect(mocks.rateLimit).toHaveBeenNthCalledWith(1, "file-preauth-unresolved", 20_000, 60_000);
+    expect(mocks.rateLimit).toHaveBeenNthCalledWith(3, "file-preauth-unresolved", 20_000, 60_000);
+  });
+
+  it("returns a uniform 429 when the unresolved pre-auth emergency bucket is exhausted", async () => {
+    mocks.getClientIp.mockReturnValue(null);
+    mocks.rateLimit.mockReturnValue(false);
+
+    const response = await call("missing", { range: "bytes=999999-", inline: true });
+    const payload = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(payload.code).toBe("downloadRateLimited");
+    expect(response.headers.get("content-range")).toBeNull();
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(mocks.rateLimit).toHaveBeenCalledWith("file-preauth-unresolved", 20_000, 60_000);
+    expect(mocks.getFileById).not.toHaveBeenCalled();
+    expect(mocks.authorizeFileAccess).not.toHaveBeenCalled();
+    expect(mocks.prepareAuthorizedDownload).not.toHaveBeenCalled();
+  });
+
+  it("returns a uniform 429 when the unresolved anonymous video bucket is exhausted", async () => {
+    mocks.getClientIp.mockReturnValue(null);
+    mocks.rateLimit.mockImplementation((key: string) => key === "file-preauth-unresolved");
+
+    const response = await call(VIDEO_FILE.id, { range: "bytes=999999-", inline: true });
+    const payload = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(payload.code).toBe("downloadRateLimited");
+    expect(response.headers.get("content-range")).toBeNull();
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(mocks.rateLimit.mock.calls).toEqual([
+      ["file-preauth-unresolved", 20_000, 60_000],
+      [`video-unresolved:${VIDEO_FILE.id}`, 10_000, 60_000],
+    ]);
+    expect(mocks.prepareAuthorizedDownload).not.toHaveBeenCalled();
   });
 
   it.each([

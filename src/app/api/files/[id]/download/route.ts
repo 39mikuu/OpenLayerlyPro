@@ -11,13 +11,17 @@ import {
   shouldLogInitialFileRequest,
 } from "@/modules/download";
 import { parseSingleRange } from "@/modules/download/range";
+import {
+  getDownloadRateLimit,
+  getFilePreAuthRateLimit,
+  getVideoRateLimit,
+  resolveClientRateLimitIdentity,
+  warnUnresolvedClientRateLimitIdentity,
+} from "@/modules/download/rate-limit-policy";
 import { isInlineVideoMime } from "@/modules/download/video";
 import { getFileById } from "@/modules/file";
 
 export const runtime = "nodejs";
-
-const DOWNLOAD_RATE_LIMIT_MAX = 120;
-const DOWNLOAD_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 
 // Existing preview assets remain inline. content_attachment is inline only for
 // an explicit, allowlisted video playback request.
@@ -50,18 +54,19 @@ function secureStreamHeaders(input: {
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    const ip = getClientIp(req) ?? "unknown";
+    const clientIp = getClientIp(req);
+    const identity = resolveClientRateLimitIdentity(clientIp);
     const env = getEnv();
+    if (identity.kind === "unresolved" && env.NODE_ENV === "production") {
+      warnUnresolvedClientRateLimitIdentity();
+    }
 
     // This bucket intentionally precedes parameter parsing, file lookup, auth,
-    // and Range handling so all file IDs share one indistinguishable IP budget.
-    if (
-      !rateLimit(
-        `file-preauth:${ip}`,
-        env.FILE_PREAUTH_RATE_LIMIT_MAX,
-        env.FILE_PREAUTH_RATE_LIMIT_WINDOW_MS,
-      )
-    ) {
+    // and Range handling so all file IDs share one indistinguishable budget.
+    // When a trusted IP is unavailable, a separate high-threshold emergency
+    // bucket is used instead of merging clients into the normal per-IP budget.
+    const preAuthLimit = getFilePreAuthRateLimit(identity, env);
+    if (!rateLimit(preAuthLimit.key, preAuthLimit.max, preAuthLimit.windowMs)) {
       return jsonError(429, "downloadRateLimited");
     }
 
@@ -79,19 +84,22 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const videoRequest = video && (inlineRequested || rangeHeader !== null);
 
     if (videoRequest) {
-      const principal = user?.id ?? ip;
-      if (
-        !rateLimit(
-          `video:${principal}:${file.id}`,
-          env.VIDEO_RANGE_RATE_LIMIT_MAX,
-          env.VIDEO_RANGE_RATE_LIMIT_WINDOW_MS,
-        )
-      ) {
+      const videoLimit = getVideoRateLimit({
+        identity,
+        userId: user?.id ?? null,
+        fileId: file.id,
+        env,
+      });
+      if (!rateLimit(videoLimit.key, videoLimit.max, videoLimit.windowMs)) {
         return jsonError(429, "downloadRateLimited");
       }
     } else {
-      const key = user ? `download:${user.id}` : `download-ip:${ip}`;
-      if (!rateLimit(key, DOWNLOAD_RATE_LIMIT_MAX, DOWNLOAD_RATE_LIMIT_WINDOW_MS)) {
+      const downloadLimit = getDownloadRateLimit({
+        identity,
+        userId: user?.id ?? null,
+        env,
+      });
+      if (!rateLimit(downloadLimit.key, downloadLimit.max, downloadLimit.windowMs)) {
         return jsonError(429, "downloadRateLimited");
       }
     }
@@ -117,7 +125,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       range: parsedRange ?? undefined,
       inline,
       log: shouldLogInitialFileRequest(file, parsedRange),
-      ip: getClientIp(req),
+      ip: clientIp,
       userAgent: getUserAgent(req),
     });
 

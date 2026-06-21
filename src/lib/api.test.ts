@@ -66,11 +66,42 @@ describe("getClientIp 可信代理解析", () => {
     expect(getClientIp(makeReq({ "x-forwarded-for": "1.2.3.4, 5.6.7.8" }))).toBeNull();
   });
 
+  it("默认代理配置会进入专用 unresolved 应急桶，而不是普通 unknown 桶", async () => {
+    const { getClientIp } = await import("./api");
+    const { getEnv } = await import("./env");
+    const { getFilePreAuthRateLimit, resolveClientRateLimitIdentity } =
+      await import("@/modules/download/rate-limit-policy");
+    const ip = getClientIp(makeReq({ "x-forwarded-for": "198.51.100.10" }));
+    const policy = getFilePreAuthRateLimit(resolveClientRateLimitIdentity(ip), getEnv());
+
+    expect(ip).toBeNull();
+    expect(policy).toEqual({
+      key: "file-preauth-unresolved",
+      max: 20_000,
+      windowMs: 600_000,
+    });
+    expect(policy.key).not.toContain("unknown");
+  });
+
   it("hops=1：取最右条目，忽略客户端伪造的前缀", async () => {
     vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
     const getClientIp = await loadGetClientIp();
     // 客户端伪造 1.2.3.4，反代追加真实访客 203.0.113.7
     expect(getClientIp(makeReq({ "x-forwarded-for": "1.2.3.4, 203.0.113.7" }))).toBe("203.0.113.7");
+  });
+
+  it("不同可信代理 IP 会映射到不同的文件 pre-auth 桶", async () => {
+    vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
+    const { getClientIp } = await import("./api");
+    const { getEnv } = await import("./env");
+    const { getFilePreAuthRateLimit, resolveClientRateLimitIdentity } =
+      await import("@/modules/download/rate-limit-policy");
+    const first = getClientIp(makeReq({ "x-forwarded-for": "198.51.100.1" }));
+    const second = getClientIp(makeReq({ "x-forwarded-for": "198.51.100.2" }));
+
+    expect(getFilePreAuthRateLimit(resolveClientRateLimitIdentity(first), getEnv()).key).not.toBe(
+      getFilePreAuthRateLimit(resolveClientRateLimitIdentity(second), getEnv()).key,
+    );
   });
 
   it("hops=2：取右数第 2 个条目", async () => {
