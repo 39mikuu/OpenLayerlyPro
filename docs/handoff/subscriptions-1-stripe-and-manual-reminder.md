@@ -37,8 +37,8 @@
 | D3 | provider 无关 `subscriptions` 表(状态含 `pending`);`PaymentProvider` 加可选 recurring 方法 + `subscription_*` 事件(带 period + 事件时间)。 |
 | D4 | tier 加 `stripe_price_id`;invoice 行**按匹配 price/item 选取**,非恰好一条受支持周期行 → 拒绝告警。 |
 | D5 | `payment_provider_events` = **持久化 inbox**;webhook 验签后只持久化 + 200;**内部 dispatcher** 处理(lease/fencing/`max_attempts`→`dead`,严格同事务原子)。事件时间防乱序;冲突时权威 Stripe 读。 |
-| D9 | 下单并发安全(部分唯一非终态 + claim/lease + Stripe 幂等键 + 返既有 checkout);价格合同**快照**到订阅;`provider_checkout_ref` 作 pending 恢复锚点;续费 reversal-first 墓碑(refund/dispute 早于 paid)。 |
-| D6 | `payment_requests.provider_invoice_ref` + `UNIQUE(provider,provider_invoice_ref)`;webhook 与 reconcile 同走 `applyPaidInvoice(invoiceId)`。 |
+| D9 | 下单并发安全(非终态部分唯一索引使用 **`NULLS NOT DISTINCT`**，使 `provider=NULL` 的手动提醒同样去重；再配 claim/lease + Stripe 幂等键 + 返既有 checkout);价格合同**快照**到订阅;`provider_checkout_ref` 作 pending 恢复锚点;续费 reversal-first 墓碑(refund/dispute 早于 paid)。 |
+| D6 | `payment_requests.provider_invoice_ref` + 部分 `UNIQUE(provider,provider_invoice_ref) WHERE provider_invoice_ref IS NOT NULL`;webhook 与 reconcile 同走 `applyPaidInvoice(invoiceId)`，所有 insert/墓碑的 conflict target 必须带同样谓词。 |
 | D7 | 对账 `subscription.reconcile`(对象级幂等 + 扩展状态集 + 回溯窗口);结构性 fail-safe(权益=已付 period.end,不加 Core 宽限)。 |
 | D8 | 手动提醒 = `provider=NULL` 订阅 + `subscription.renewal_reminder`(前 7 天可配)。取消默认 period-end。 |
 
@@ -60,9 +60,12 @@ subscriptions(
   created_at, updated_at
 )
 // UNIQUE(provider, provider_subscription_ref) WHERE provider_subscription_ref IS NOT NULL
-// 部分唯一：每 (user_id,tier_id,provider) 至多一个非终态订阅（status NOT IN ('canceled','expired')）（B2）
-//   ⚠️ PG 唯一索引把 NULL 视为相异 → provider=NULL（手动提醒，PR-B）不会被去重，会出现多个非终态手动订阅 + 重复提醒。
-//   必须处理 NULL：用 `NULLS NOT DISTINCT`（PG15+）、或 coalesce(provider,'manual') 表达式键、或对 provider IS NULL 单独建部分唯一索引。
+// 锁定实现（项目基线 PostgreSQL 16）：
+// CREATE UNIQUE INDEX subscriptions_one_nonterminal_per_identity
+//   ON subscriptions (user_id, tier_id, provider) NULLS NOT DISTINCT
+//   WHERE status NOT IN ('canceled', 'expired');
+// 这样每 (user_id,tier_id,provider) 至多一个非终态订阅；provider=NULL 的手动提醒也会被去重，
+// 不得退回普通 UNIQUE（PG 默认把 NULL 视为相异，会产生多个非终态手动订阅 + 重复提醒）。
 
 payment_provider_events(   // 持久化 inbox（B5）
   id, provider, provider_event_id, event_type, object_ref,
@@ -135,7 +138,7 @@ webhook(经 dispatcher)与 reconcile **都调** `applyPaidInvoice({providerInvoi
 
 **下单 `POST /api/payments/subscribe`(并发安全,B2,对齐一次性 checkout)**:
 - 事务/advisory lock 内:若已有 active/past_due 订阅 → 拒绝;若已有 `pending` 且其 Checkout 仍 open → **返回既有 URL**;否则建 `subscription(status='pending')` + **快照** `provider_price_ref`/`expected_amount_minor`/`expected_currency`(来自当前 tier)。
-- **部分唯一 `(user_id,tier_id,provider)` 非终态** 兜并发;`createSubscriptionCheckout` 用稳定 Stripe 幂等键 `subscription-checkout:<localSubscriptionId>`;**会话建成后条件写 `provider_checkout_ref`**(建会话成功但本地保存崩溃由对账/重试经幂等键恢复同一会话,B3)。
+- **`NULLS NOT DISTINCT` 部分唯一 `(user_id,tier_id,provider)` 非终态** 兜并发（包括 `provider=NULL` 手动提醒）;`createSubscriptionCheckout` 用稳定 Stripe 幂等键 `subscription-checkout:<localSubscriptionId>`;**会话建成后条件写 `provider_checkout_ref`**(建会话成功但本地保存崩溃由对账/重试经幂等键恢复同一会话,B3)。
 
 ## 7. 取消（PR-A）
 
@@ -177,6 +180,7 @@ tier 编辑加 `stripe_price_id`(预建 recurring Price 说明)。`me`:订阅状
 **B1–B5 边界(本轮必加)**
 - `refund/dispute` **早于** `invoice.paid`(无本地 request)→ 墓碑先落,后到 paid **不授予**。
 - **并发 double-click subscribe → 只产生一个** Stripe 订阅;已有 open checkout 返回既有 URL;已有 active/past_due 拒绝新建。
+- **并发创建 `provider=NULL` 手动提醒 → 只产生一个非终态订阅**；取消/过期后允许创建下一条，证明 `NULLS NOT DISTINCT` 与部分谓词同时生效。
 - **建会话成功、本地保存崩溃** → 重试经幂等键**恢复同一会话**,不重复建订阅。
 - **pending 全丢**(checkout.completed/subscription.created/invoice.paid 都丢)→ reconcile 经 `provider_checkout_ref` 恢复;过期 session → pending 转终态。
 - **改 tier 价后老订阅续费**:按订阅快照校验仍成功。
@@ -208,9 +212,9 @@ pnpm build:migrator && pnpm build
 - [ ] `grantMembershipForPeriod` 逐字写 period 不重锚;投影确定性 + 不超已付边界(测试)
 - [ ] **持久化 inbox + dispatcher**:webhook 验签后只持久化 + 200;dispatcher lease/fencing/`max_attempts`→`dead`;业务+审计+`processed` **严格同事务**,fencing 失败整体回滚
 - [ ] `provider_invoice_ref` 部分 `UNIQUE` + **`ON CONFLICT (...) WHERE provider_invoice_ref IS NOT NULL DO NOTHING RETURNING`**(目标谓词匹配部分索引,否则报错;不 catch 冲突);webhook 与 reconcile 同走 `applyPaidInvoice`,同期仅授予一次;reconcile 不伪造 event id
-- [ ] 订阅非终态唯一**正确处理 `provider=NULL`**(手动提醒):`NULLS NOT DISTINCT`/coalesce 键/单独部分索引,杜绝同 user/tier 多个非终态手动订阅 + 重复提醒
+- [ ] 订阅非终态唯一使用项目锁定的 **PostgreSQL 16 `NULLS NOT DISTINCT` 部分唯一索引**，覆盖 `provider=NULL` 手动提醒，杜绝同 user/tier 多个非终态订阅 + 重复提醒；真实 PG 测试覆盖并发 Stripe 与并发手动创建
 - [ ] **续费 reversal-first 墓碑**:refund/dispute 早于 paid → 解析到 invoice id、先落 `reversed` 行、后到 paid 不授予
-- [ ] **下单并发安全**:部分唯一 `(user,tier,provider)` 非终态 + claim/lease + Stripe 幂等键;返回既有 open checkout;active/past_due 拒绝;会话成功本地崩溃可恢复
+- [ ] **下单并发安全**:`NULLS NOT DISTINCT` 部分唯一 `(user,tier,provider)` 非终态 + claim/lease + Stripe 幂等键;返回既有 open checkout;active/past_due 拒绝;会话成功本地崩溃可恢复
 - [ ] **价格合同快照**:订阅存 `provider_price_ref`/`expected_amount`/`currency`,续费按快照校验;改 tier 价不影响老订阅
 - [ ] 顺序无关 + 按 invoice 决策(deleted 早于已付 invoice 仍开通);invoice 行按 price 精确选取(非首行)
 - [ ] 对账覆盖 pending/active/past_due/近期 canceled/未解析恢复 + 回溯窗口;**pending 经 `provider_checkout_ref` 恢复**;漏 paid 自愈、漏取消不超期

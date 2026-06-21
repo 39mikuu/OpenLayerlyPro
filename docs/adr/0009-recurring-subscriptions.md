@@ -42,7 +42,8 @@
 - **价格合同快照(B4)**:`subscriptions` 在创建时**快照** `provider_price_ref`、`expected_amount_minor`、`expected_currency`(必要时 quantity)。Checkout 用快照;**续费 invoice 按订阅快照校验,不按可变的 tier 设置**。改 tier 价格只影响**新**订阅;把存量订阅迁到新 Price 是显式的后续操作。
 - **invoice 行选取**:按**匹配该订阅 item / 快照 `provider_price_ref`** 的行取 period/amount;**不取任意 `invoice.lines[0]`**;不存在恰好一条受支持周期行 → 拒绝并告警。
 - **下单并发安全(B2,对齐一次性 checkout)**:
-  - **每 `(user_id, tier_id, provider)` 至多一个非终态订阅**:部分唯一约束 +(必要时)事务 advisory lock。
+  - **每 `(user_id, tier_id, provider)` 至多一个非终态订阅**:项目基线 PostgreSQL 16 使用 `NULLS NOT DISTINCT` 部分唯一索引，使 `provider=NULL` 的手动提醒也被去重；不得使用默认 NULL-distinct 的普通唯一索引。必要时再配事务 advisory lock。
+  - 锁定 DDL：`CREATE UNIQUE INDEX subscriptions_one_nonterminal_per_identity ON subscriptions (user_id, tier_id, provider) NULLS NOT DISTINCT WHERE status NOT IN ('canceled', 'expired');`。
   - checkout 创建用 claim token + lease/stale 恢复;**稳定 Stripe 幂等键 `subscription-checkout:<localSubscriptionId>`**。
   - 已有 open Checkout → **返回既有 URL**,不再建;已有 active/past_due 订阅 → 拒绝新建。
   - **Stripe 建会话成功但本地 ref 持久化崩溃 → 可恢复**(claim/lease + 对账,见 §8)。
@@ -74,13 +75,13 @@ payment_provider_events(   -- inbox
 
 ### 6. 续费 = 按笔建行 + 对象级幂等 + 续费 reversal-first（B1）
 
-- **付款对象级身份**:`payment_requests` 增 `provider_invoice_ref`,**部分** `UNIQUE(provider, provider_invoice_ref)`。**event id 去重「投递」,invoice id 去重「财务对象/授予」**。
-- **统一入口 `applyPaidInvoice(invoiceId, ...)`**:webhook 与 reconcile **走同一路径**。用 `INSERT ... ON CONFLICT(provider,provider_invoice_ref) DO NOTHING RETURNING`(**不**在同事务内 catch 唯一冲突——那会让事务 abort):
+- **付款对象级身份**:`payment_requests` 增 `provider_invoice_ref`,**部分** `UNIQUE(provider, provider_invoice_ref) WHERE provider_invoice_ref IS NOT NULL`。**event id 去重「投递」,invoice id 去重「财务对象/授予」**。
+- **统一入口 `applyPaidInvoice(invoiceId, ...)`**:webhook 与 reconcile **走同一路径**。部分唯一索引要求冲突目标带相同谓词，必须使用 `INSERT ... ON CONFLICT(provider,provider_invoice_ref) WHERE provider_invoice_ref IS NOT NULL DO NOTHING RETURNING`；裸 `ON CONFLICT(provider,provider_invoice_ref)` 无法让 PostgreSQL/Drizzle 推断该部分索引，会直接报错。**不**在同事务内 catch 唯一冲突——那会让事务 abort:
   - 插入成功(无既有行)→ 该 invoice 未被反转 → `grantMembershipForPeriod(period)` + 更新 subscription `current_period_ends_at`(按事件时间防乱序)+ 审计 + 续费邮件。
   - 冲突(已有行)→ 视其 `status`:`approved` = 已处理,幂等 no-op;**`reversed`(反转墓碑)= 不授予**(B1)。
 - **续费 reversal-first 墓碑(B1)**:订阅未来 invoice 在 `invoice.paid` 前**没有**本地 payment_request,故 `charge.refunded`/`charge.dispute.created` 先到时:
   - **把 refund/dispute 解析到关联 invoice id**(不只 PaymentIntent;Stripe charge→invoice)。
-  - **在任何 grant 之前**持久化一行 `payment_request(status='reversed', provider_invoice_ref=该invoice, subscription_id, reversal_event_id)` 作为墓碑(同样 `ON CONFLICT DO NOTHING`)。
+  - **在任何 grant 之前**持久化一行 `payment_request(status='reversed', provider_invoice_ref=该invoice, subscription_id, reversal_event_id)` 作为墓碑，同样使用 `ON CONFLICT(provider,provider_invoice_ref) WHERE provider_invoice_ref IS NOT NULL DO NOTHING`。
   - 之后 `applyPaidInvoice` 命中该墓碑 → **不授予**;后到的 paid 事件可补齐缺失引用(provider_payment_ref 等),但**不得**开通权益。
 - **按 invoice 决策**:只看该 invoice 自身是否被反转;**不**因 subscription 聚合 `canceled` 否决一笔已付 invoice。
 - **grant 已存在时的退款/拒付**:复用 #49,按唯一 `granted_membership_id` 吊销**那一行**(目标发现 + 反转动作沿用,仅扩展到「按 invoice 找 grant」)。
@@ -137,12 +138,12 @@ webhook 不保证送达。两层保证:
 - 高 tier active + 低 tier 购买(跨 tier 调度);中间一期反转(跨 tier);并存手动/一次性时按笔反转只撤对应行。
 - `invoice.paid` 早于 `subscription.created`;`subscription.deleted` 早于已付 invoice;`failed→paid→旧 failed 重放` 不回退。
 - **并发同一 webhook 两次** → 仅认领者执行一次(fencing);stale processing 可恢复;旧 worker token 失效无法完成。
-- reconcile：late webhook 之前 reconcile、pending 全丢、canceled-before-missing-paid、并发 reconcile、reconcile 与 webhook **竞争同一 invoice** → `UNIQUE(provider_invoice_ref)` 保证仅一次授予。
+- reconcile：late webhook 之前 reconcile、pending 全丢、canceled-before-missing-paid、并发 reconcile、reconcile 与 webhook **竞争同一 invoice** → 部分 `UNIQUE(provider,provider_invoice_ref)` + 匹配谓词的 `ON CONFLICT` 保证仅一次授予。
 - invoice 多行/无受支持周期行 → 拒绝告警,不取任意首行。
 - 月末/2 月·闰年/非默认 anchor → 周期取 Stripe 实际值。
 - 金额校验、reversal-first、不碰卡号、非 Stripe provider 优雅降级。
 - **续费 reversal-first**:`refund/dispute` **早于** `invoice.paid`(无本地 request)→ 墓碑先落,后到 paid **不授予**。
-- **下单并发**:并发 double-click subscribe → **只产生一个** Stripe 订阅;已有 open checkout 返回既有 URL;已有 active/past_due 拒绝新建。
+- **下单并发**:并发 double-click subscribe → **只产生一个** Stripe 订阅;已有 open checkout 返回既有 URL;已有 active/past_due 拒绝新建；并发创建 `provider=NULL` 手动提醒同样只能产生一个非终态订阅，取消/过期后才允许新建下一条。
 - **建会话成功、本地保存崩溃** → 重试/对账**恢复同一会话**,不重复建订阅。
 - **pending 全丢**(checkout.completed/subscription.created/invoice.paid 都丢)→ reconcile 经 `provider_checkout_ref` 恢复;过期 session → pending 转终态。
 - **改 tier 价后老订阅续费**:按订阅**快照**校验仍成功(B4)。
