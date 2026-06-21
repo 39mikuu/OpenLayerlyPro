@@ -22,6 +22,8 @@ export type StoredObject = {
 export type GetObjectInput = {
   objectKey: string;
   bucket?: string | null;
+  start?: number;
+  end?: number;
 };
 
 export type DeleteObjectInput = {
@@ -34,6 +36,8 @@ export type SignedUrlInput = {
   bucket?: string | null;
   expiresInSeconds: number;
   downloadName?: string;
+  disposition?: "inline" | "attachment";
+  contentType?: string;
 };
 
 export interface StorageAdapter {

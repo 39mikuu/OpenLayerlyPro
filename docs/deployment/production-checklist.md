@@ -9,6 +9,9 @@
 - [ ] Upload limits fit available memory.
 - [ ] Storage driver is selected intentionally: `local` or `s3`.
 - [ ] S3/R2 credentials are stored through env or admin encrypted config.
+- [ ] Reverse proxy forwards video `Range` requests and preserves `206`/`416`, `Content-Range`, and `Accept-Ranges` responses.
+- [ ] Inline-video signed URL TTL and file/video rate-limit environment values have been reviewed for this deployment.
+- [ ] Operators understand that only public S3 playback redirects; login/member S3 video remains application-proxied. See [Inline video playback](../admin/inline-video-playback.md).
 - [ ] Turnstile is configured if bot protection is needed.
 - [ ] AI translation provider is disabled unless intentionally configured.
 - [ ] Custom footer code is reviewed and trusted.

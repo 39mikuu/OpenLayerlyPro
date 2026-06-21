@@ -36,7 +36,13 @@ import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { canAccessPost } from "@/modules/content";
 import { getActiveMembership } from "@/modules/membership";
 
-import { authorizeAndPrepareDownload, canAccessFile } from "./index";
+import {
+  authorizeAndPrepareDownload,
+  authorizeFileAccess,
+  canAccessFile,
+  prepareAuthorizedDownload,
+  shouldLogInitialFileRequest,
+} from "./index";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -71,6 +77,7 @@ describeWithDatabase("private file download authorization integration", () => {
     purpose: FileRecord["purpose"],
     createdBy: string | null = null,
     storageDriver: FileRecord["storageDriver"] = "local",
+    mimeType = "application/octet-stream",
   ): Promise<FileRecord> {
     const [file] = await db
       .insert(files)
@@ -78,8 +85,8 @@ describeWithDatabase("private file download authorization integration", () => {
         storageDriver,
         bucket: storageDriver === "s3" ? "private" : null,
         objectKey: `${purpose}/${randomUUID()}`,
-        originalName: `${purpose}.bin`,
-        mimeType: "application/octet-stream",
+        originalName: mimeType.startsWith("video/") ? "video.mp4" : `${purpose}.bin`,
+        mimeType,
         sizeBytes: 9,
         purpose,
         createdBy,
@@ -131,6 +138,7 @@ describeWithDatabase("private file download authorization integration", () => {
     requiredTierId?: string | null;
     state?: "draft" | "scheduled" | "published" | "archived";
     storageDriver?: "local" | "s3";
+    mimeType?: string;
   }) {
     const state = input.state ?? "published";
     const scheduled = state === "scheduled";
@@ -148,7 +156,12 @@ describeWithDatabase("private file download authorization integration", () => {
         scheduleToken: scheduled ? randomUUID() : null,
       })
       .returning();
-    const file = await seedFile(input.purpose ?? "content_attachment", null, input.storageDriver);
+    const file = await seedFile(
+      input.purpose ?? "content_attachment",
+      null,
+      input.storageDriver,
+      input.mimeType,
+    );
     await db.insert(postFiles).values({
       postId: post!.id,
       fileId: file.id,
@@ -599,6 +612,332 @@ describeWithDatabase("private file download authorization integration", () => {
       allowed: true,
       postId: linked.post.id,
     });
+  });
+
+  it("proxies public local video ranges through the application", async () => {
+    const { post, file } = await seedPostFile({
+      purpose: "content_attachment",
+      visibility: "public",
+      storageDriver: "local",
+      mimeType: "video/mp4",
+    });
+    const access = await authorizeFileAccess(null, file);
+    expect(access).toEqual({ postId: post.id, visibility: "public" });
+
+    const result = await prepareAuthorizedDownload({
+      user: null,
+      file,
+      access,
+      range: { start: 100, end: 199 },
+      inline: true,
+      log: false,
+    });
+
+    expect(result.mode).toBe("stream");
+    expect(storageMocks.getObject).toHaveBeenCalledWith({
+      objectKey: file.objectKey,
+      bucket: file.bucket,
+      start: 100,
+      end: 199,
+    });
+    expect(storageMocks.createSignedDownloadUrl).not.toHaveBeenCalled();
+  });
+
+  it("redirects only public S3 inline video with long TTL, inline disposition, and saved MIME", async () => {
+    const { post, file } = await seedPostFile({
+      purpose: "content_attachment",
+      visibility: "public",
+      storageDriver: "s3",
+      mimeType: "video/mp4",
+    });
+    const access = await authorizeFileAccess(null, file);
+    expect(access).toEqual({ postId: post.id, visibility: "public" });
+
+    const result = await prepareAuthorizedDownload({
+      user: null,
+      file,
+      access,
+      inline: true,
+      log: true,
+    });
+
+    expect(result).toEqual({ mode: "redirect", url: "https://storage.example/signed" });
+    expect(storageMocks.createSignedDownloadUrl).toHaveBeenCalledWith({
+      objectKey: file.objectKey,
+      bucket: file.bucket,
+      expiresInSeconds: 21_600,
+      downloadName: file.originalName,
+      disposition: "inline",
+      contentType: "video/mp4",
+    });
+    expect(storageMocks.getObject).not.toHaveBeenCalled();
+    await expect(db.select().from(downloadLogs)).resolves.toEqual([
+      expect.objectContaining({
+        userId: null,
+        postId: post.id,
+        fileId: file.id,
+        storageDriver: "s3",
+      }),
+    ]);
+    await expect(db.select().from(appEvents)).resolves.toEqual([
+      expect.objectContaining({
+        type: "file_downloaded",
+        payloadJson: { fileId: file.id, userId: null },
+      }),
+    ]);
+  });
+
+  it("proxies login S3 video and reuses the requested Range without signing", async () => {
+    const { owner } = await seedUsers();
+    const { post, file } = await seedPostFile({
+      purpose: "content_attachment",
+      visibility: "login",
+      storageDriver: "s3",
+      mimeType: "video/webm",
+    });
+    const access = await authorizeFileAccess(owner, file);
+    expect(access).toEqual({ postId: post.id, visibility: "login" });
+
+    const result = await prepareAuthorizedDownload({
+      user: owner,
+      file,
+      access,
+      range: { start: 10, end: 20 },
+      inline: true,
+      log: false,
+    });
+
+    expect(result.mode).toBe("stream");
+    expect(storageMocks.getObject).toHaveBeenCalledWith({
+      objectKey: file.objectKey,
+      bucket: file.bucket,
+      start: 10,
+      end: 20,
+    });
+    expect(storageMocks.createSignedDownloadUrl).not.toHaveBeenCalled();
+  });
+
+  it("proxies admin access to a draft S3 video instead of treating it as public", async () => {
+    const { admin } = await seedUsers();
+    const { post, file } = await seedPostFile({
+      purpose: "content_attachment",
+      state: "draft",
+      visibility: "public",
+      storageDriver: "s3",
+      mimeType: "video/quicktime",
+    });
+    const access = await authorizeFileAccess(admin, file);
+    expect(access).toEqual({ postId: post.id, visibility: null });
+
+    const result = await prepareAuthorizedDownload({
+      user: admin,
+      file,
+      access,
+      inline: true,
+      log: false,
+    });
+
+    expect(result.mode).toBe("stream");
+    expect(storageMocks.getObject).toHaveBeenCalled();
+    expect(storageMocks.createSignedDownloadUrl).not.toHaveBeenCalled();
+  });
+
+  it("keeps non-video S3 attachments on the short attachment signed URL path", async () => {
+    const { file } = await seedPostFile({
+      purpose: "content_attachment",
+      visibility: "public",
+      storageDriver: "s3",
+      mimeType: "application/zip",
+    });
+    const access = await authorizeFileAccess(null, file);
+
+    await expect(
+      prepareAuthorizedDownload({
+        user: null,
+        file,
+        access,
+        inline: false,
+        log: false,
+      }),
+    ).resolves.toEqual({ mode: "redirect", url: "https://storage.example/signed" });
+    expect(storageMocks.createSignedDownloadUrl).toHaveBeenCalledWith({
+      objectKey: file.objectKey,
+      bucket: file.bucket,
+      expiresInSeconds: 300,
+      downloadName: file.originalName,
+      disposition: "attachment",
+      contentType: "application/zip",
+    });
+  });
+
+  it("proxies member S3 video for a valid tier and denies a lower tier", async () => {
+    const { owner, other } = await seedUsers();
+    const lowerTier = await seedTier(5);
+    const requiredTier = await seedTier(10);
+    await seedMembership(owner, requiredTier.id);
+    await seedMembership(other, lowerTier.id);
+    const { post, file } = await seedPostFile({
+      purpose: "content_attachment",
+      visibility: "member",
+      requiredTierId: requiredTier.id,
+      storageDriver: "s3",
+      mimeType: "video/x-m4v",
+    });
+
+    const access = await authorizeFileAccess(owner, file);
+    expect(access).toEqual({ postId: post.id, visibility: "member" });
+    await expect(
+      prepareAuthorizedDownload({
+        user: owner,
+        file,
+        access,
+        range: { start: 0, end: 8 },
+        inline: true,
+        log: false,
+      }),
+    ).resolves.toMatchObject({ mode: "stream" });
+    expect(storageMocks.createSignedDownloadUrl).not.toHaveBeenCalled();
+    await expect(authorizeFileAccess(other, file)).rejects.toMatchObject({
+      status: 403,
+      code: "memberAccessDenied",
+    });
+  });
+
+  it("prefers an accessible public post over a member post for shared public S3 video", async () => {
+    const { owner } = await seedUsers();
+    const requiredTier = await seedTier(10);
+    await seedMembership(owner, requiredTier.id);
+    const file = await seedFile("content_attachment", null, "s3", "video/mp4");
+    const [memberPost, publicPost] = await db
+      .insert(posts)
+      .values([
+        {
+          title: "Member video",
+          slug: `member-video-${randomUUID()}`,
+          visibility: "member" as const,
+          requiredTierId: requiredTier.id,
+          status: "published" as const,
+          publishedAt: new Date(),
+        },
+        {
+          title: "Public video",
+          slug: `public-video-${randomUUID()}`,
+          visibility: "public" as const,
+          status: "published" as const,
+          publishedAt: new Date(),
+        },
+      ])
+      .returning();
+    await db.insert(postFiles).values([
+      { postId: memberPost!.id, fileId: file.id, kind: "attachment" },
+      { postId: publicPost!.id, fileId: file.id, kind: "attachment" },
+    ]);
+
+    const access = await authorizeFileAccess(owner, file);
+    expect(access).toEqual({ postId: publicPost!.id, visibility: "public" });
+    await expect(
+      prepareAuthorizedDownload({
+        user: owner,
+        file,
+        access,
+        inline: true,
+        log: false,
+      }),
+    ).resolves.toEqual({ mode: "redirect", url: "https://storage.example/signed" });
+  });
+
+  it("rechecks member expiry, revocation, tier changes, and post status on each video request", async () => {
+    const { owner } = await seedUsers();
+    const requiredTier = await seedTier(10);
+    const higherTier = await seedTier(20);
+    await seedMembership(owner, requiredTier.id);
+    const { post, file } = await seedPostFile({
+      purpose: "content_attachment",
+      visibility: "member",
+      requiredTierId: requiredTier.id,
+      storageDriver: "s3",
+      mimeType: "video/mp4",
+    });
+
+    await expect(authorizeFileAccess(owner, file)).resolves.toEqual({
+      postId: post.id,
+      visibility: "member",
+    });
+
+    await db.update(memberships).set({ status: "revoked" }).where(eq(memberships.userId, owner.id));
+    await expect(authorizeFileAccess(owner, file)).rejects.toMatchObject({ status: 403 });
+
+    await db
+      .update(memberships)
+      .set({ status: "active", endsAt: new Date(Date.now() - 1000) })
+      .where(eq(memberships.userId, owner.id));
+    await expect(authorizeFileAccess(owner, file)).rejects.toMatchObject({ status: 403 });
+
+    await db
+      .update(memberships)
+      .set({ endsAt: new Date(Date.now() + 86_400_000) })
+      .where(eq(memberships.userId, owner.id));
+    await db.update(posts).set({ requiredTierId: higherTier.id }).where(eq(posts.id, post.id));
+    await expect(authorizeFileAccess(owner, file)).rejects.toMatchObject({ status: 403 });
+
+    await db
+      .update(memberships)
+      .set({ tierId: higherTier.id })
+      .where(eq(memberships.userId, owner.id));
+    await expect(authorizeFileAccess(owner, file)).resolves.toMatchObject({
+      visibility: "member",
+    });
+
+    await db
+      .update(posts)
+      .set({ status: "archived", publishedAt: null })
+      .where(eq(posts.id, post.id));
+    await expect(authorizeFileAccess(owner, file)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("does not reuse login authorization after the next request becomes anonymous", async () => {
+    const { owner } = await seedUsers();
+    const { post, file } = await seedPostFile({
+      purpose: "content_attachment",
+      visibility: "login",
+      storageDriver: "local",
+      mimeType: "video/webm",
+    });
+
+    await expect(authorizeFileAccess(owner, file)).resolves.toEqual({
+      postId: post.id,
+      visibility: "login",
+    });
+    await expect(authorizeFileAccess(null, file)).rejects.toMatchObject({
+      status: 401,
+      code: "authRequired",
+    });
+  });
+
+  it("logs initial video requests but not seek or resume ranges", async () => {
+    const { post, file } = await seedPostFile({
+      purpose: "content_attachment",
+      visibility: "public",
+      storageDriver: "local",
+      mimeType: "video/mp4",
+    });
+    const access = await authorizeFileAccess(null, file);
+    const ranges = [null, { start: 0, end: 4 }, { start: 5, end: 8 }] as const;
+    for (const range of ranges) {
+      await prepareAuthorizedDownload({
+        user: null,
+        file,
+        access,
+        range: range ?? undefined,
+        inline: true,
+        log: shouldLogInitialFileRequest(file, range),
+      });
+    }
+
+    await expect(db.select().from(downloadLogs)).resolves.toHaveLength(2);
+    await expect(db.select().from(appEvents)).resolves.toHaveLength(2);
+    const logs = await db.select().from(downloadLogs);
+    expect(logs.every((log) => log.postId === post.id && log.fileId === file.id)).toBe(true);
   });
 
   it("logs successful downloads and leaves no side effects when authorization fails", async () => {

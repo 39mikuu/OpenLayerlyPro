@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   abortMock: vi.fn(),
   doneError: null as Error | null,
   sendMock: vi.fn(),
+  signedUrlMock: vi.fn(),
   uploadOptions: [] as Array<{
     params: { Body: AsyncIterable<Uint8Array> };
     queueSize: number;
@@ -34,6 +35,10 @@ vi.mock("@aws-sdk/client-s3", async (importOriginal) => {
     ),
   };
 });
+
+vi.mock("@aws-sdk/s3-request-presigner", () => ({
+  getSignedUrl: state.signedUrlMock,
+}));
 
 vi.mock("@aws-sdk/lib-storage", () => ({
   Upload: class MockUpload {
@@ -75,6 +80,7 @@ describe("S3StorageAdapter", () => {
     state.doneError = null;
     state.uploadOptions.length = 0;
     state.uploadedBodies.length = 0;
+    state.signedUrlMock.mockResolvedValue("https://storage.example/signed");
   });
 
   it("连接测试执行 Put、Get 内容校验和 Delete 闭环", async () => {
@@ -127,6 +133,62 @@ describe("S3StorageAdapter", () => {
 
     const command = state.sendMock.mock.calls[0][0] as DeleteObjectCommand;
     expect(command.input.Bucket).toBe("historical-bucket");
+  });
+
+  it("sends exact proxy Range values and omits Range for full reads", async () => {
+    state.sendMock.mockResolvedValue({ Body: Readable.from(["body"]) });
+    const adapter = new S3StorageAdapter(config);
+
+    await adapter.getObject({
+      objectKey: "content/video.mp4",
+      bucket: "historical-bucket",
+      start: 100,
+      end: 999,
+    });
+    await adapter.getObject({ objectKey: "content/full.mp4" });
+
+    const ranged = state.sendMock.mock.calls[0][0] as GetObjectCommand;
+    expect(ranged.input).toMatchObject({
+      Bucket: "historical-bucket",
+      Key: "content/video.mp4",
+      Range: "bytes=100-999",
+    });
+    const full = state.sendMock.mock.calls[1][0] as GetObjectCommand;
+    expect(full.input.Bucket).toBe("test-bucket");
+    expect(full.input.Key).toBe("content/full.mp4");
+    expect(full.input.Range).toBeUndefined();
+  });
+
+  it("sets signed response disposition and content type without changing legacy defaults", async () => {
+    const adapter = new S3StorageAdapter(config);
+
+    await adapter.createSignedDownloadUrl({
+      objectKey: "content/video name.mp4",
+      expiresInSeconds: 21_600,
+      downloadName: "video name.mp4",
+      disposition: "inline",
+      contentType: "video/mp4",
+    });
+    await adapter.createSignedDownloadUrl({
+      objectKey: "content/archive.zip",
+      expiresInSeconds: 300,
+      downloadName: "archive.zip",
+    });
+
+    const inlineCommand = state.signedUrlMock.mock.calls[0][1] as GetObjectCommand;
+    expect(inlineCommand.input).toMatchObject({
+      Bucket: "test-bucket",
+      Key: "content/video name.mp4",
+      ResponseContentDisposition: "inline; filename*=UTF-8''video%20name.mp4",
+      ResponseContentType: "video/mp4",
+    });
+    expect(state.signedUrlMock.mock.calls[0][2]).toEqual({ expiresIn: 21_600 });
+
+    const attachmentCommand = state.signedUrlMock.mock.calls[1][1] as GetObjectCommand;
+    expect(attachmentCommand.input.ResponseContentDisposition).toBe(
+      "attachment; filename*=UTF-8''archive.zip",
+    );
+    expect(attachmentCommand.input.ResponseContentType).toBeUndefined();
   });
 
   it("uses bounded multipart settings and streams bytes without whole-file buffering", async () => {
