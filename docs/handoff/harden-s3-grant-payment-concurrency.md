@@ -16,24 +16,42 @@
 
 ## 2. 实现
 
-### 2.1 统一授予锁(membership 模块)
+### 2.1 统一授予锁(membership 模块)—— 严格事务契约
+
+> ⚠️ **致命陷阱**:`pg_advisory_xact_lock` **只在当前 DB 事务期间持有**。现有 `grantMembership(input, dbc?)` 若传入的是 **root `getDb()` client(非事务)**,锁语句在其隐式事务结束时**立即释放**,随后的 `getActiveMembership → INSERT` **不再受锁保护**——「看起来加了锁、实际提前释放」。必须用类型 + 结构强制。
+
+**类型层区分(必须)**:`DbClient = Db | Tx`(现状是联合)。新增**仅事务**别名并让锁 helper 只接受它:
 ```ts
-// 在 grant 所在事务内、读当前会员之前获取；同事务内重复获取安全
-export async function acquireUserGrantLock(tx: DbClient, userId: string): Promise<void> {
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`membership-grant:${userId}`}))`);
+// db/index.ts: 导出仅事务类型
+export type TxClient = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+// lock helper 只接受 TxClient（不可传 root getDb()）；编译期即挡住误用
+export async function acquireUserGrantLock(tx: TxClient, userId: string): Promise<void> {
+  // 64 位 key（hashtextextended，降哈希碰撞导致的无关串行）；seed 固定即可
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`membership-grant:${userId}`}, 0))`);
 }
 ```
-- `grantMembership` / `grantMembershipForPeriod`(订阅切片)**入口先调 `acquireUserGrantLock(tx, userId)`** 再 `getActiveMembership` → 计算 → INSERT。
-- 若 grant 被更外层事务调用(如付款审批),外层在进入 grant 前已持锁也无妨(advisory xact lock 同事务可重入获取)。
-- **审计所有 `grantMembership` 调用点**(payment approve、admin manual、auto confirm、gift)确保都经过取锁的入口,无旁路。
+
+**结构契约(必须)**:`lock → read(getActiveMembership) → calculate → INSERT → audit` **全部在同一显式事务内**,无论调用方有没有事务:
+- 把核心实现拆成**仅事务**的内部函数 `grantMembershipTx(input, tx: TxClient)`(第一步即 `acquireUserGrantLock(tx, userId)`)。
+- 公开入口 `grantMembership(input, dbc?)`:**若 `dbc` 是事务**→ 直接 `grantMembershipTx(input, dbc)`;**若无 `dbc` / 是 root**→ `getDb().transaction(tx => grantMembershipTx(input, tx))` **新开事务**。**禁止**把 root `getDb()` 当事务直接执行 lock。
+- 同理 `grantMembershipForPeriod`(订阅切片)走同一 `grantMembershipTx` 范式。
+- 外层已有事务时,内层 `acquireUserGrantLock` 在同一事务重复获取安全(已持有)。
+- **审计所有 `grantMembership` 调用点**(payment approve、admin manual、auto confirm、gift、订阅)确保都经取锁入口、且都在事务内,无旁路。
+- **测试必须证明锁在 read 与 insert 期间仍持有**(例如:并发两 grant,断言第二个被阻塞直到第一个事务提交;或用 `pg_locks` 断言持锁跨越 read→insert)。
 
 ### 2.2 替换窄锁
-- `confirmAutoPayment` 把 `stripe:userId:tierId` 锁换成 `membership-grant:userId`(按 user 串行,覆盖跨 tier 与跨流程)。下单创建订阅/checkout 的并发去重(ADR 0009 的 `(user,tier,provider)` 部分唯一)各自独立,不与本锁冲突。
+- `confirmAutoPayment` 把 `stripe:userId:tierId` 锁换成**经 `acquireUserGrantLock(tx, userId)`**(同 helper、同 64 位 key、按 user 串行,覆盖跨 tier 与跨流程)。下单创建订阅/checkout 的并发去重(ADR 0009 的 `(user,tier,provider)` 部分唯一)各自独立,不与本锁冲突。
 
 ### 2.3 人工 pending 部分唯一
 - 迁移加 `UNIQUE(user_id, tier_id) WHERE status IN ('pending_review','pending_payment')`(drizzle `uniqueIndex(...).where(...)`)。
 - `createPaymentRequest`:仍可先查(快速失败),但**插入用 `INSERT ... ON CONFLICT DO NOTHING RETURNING`**;无返回 = 已有未决 → 抛 `pendingPaymentExists`。**不要** try/catch 唯一冲突(同事务会 abort)。
-- **迁移前置**:若库里已存在同 (user,tier) 多条未决,迁移前需先合并/清理(脚本或手动),否则唯一索引创建失败——在迁移说明里写清。
+- **迁移前置 remediation(自托管升级必须可执行,不能只说"脚本或手动")**:
+  1. 迁移内**先跑确定性检测**:`SELECT user_id, tier_id, count(*) FROM payment_requests WHERE status IN ('pending_review','pending_payment') GROUP BY 1,2 HAVING count(*) > 1`。
+  2. 若有结果 → **迁移明确失败并打印** `user_id/tier_id/count`(不静默、不自动改财务数据)。
+  3. 提供**独立 remediation 脚本**(如 `scripts/dedupe-pending-payments.*`):列出冲突,由**管理员选择保留哪一条**,其余置 `cancelled`/`rejected`(带审计),**绝不自动删除财务记录**。
+  4. remediation 完成后**重新运行迁移**(检测通过 → 建唯一索引)。
+  5. **升级文档**(`docs/deployment` / 升级说明)写明这套步骤。
 
 ## 3. 测试(真实 PostgreSQL 并发)
 - 两并发创建同 user/tier 付款请求 → 仅一条 pending。
@@ -54,9 +72,12 @@ pnpm build:migrator && pnpm build
 base `main`,Draft 直到真实 PG 集成 + CI 全绿,关联 issue,标题 `fix(payment): serialize membership grants and dedupe pending requests`。
 
 ## 6. 验收 checklist
-- [ ] `acquireUserGrantLock` 统一锁;所有 grant 路径经其入口(审计无旁路)
-- [ ] `confirmAutoPayment` 窄锁换成 `membership-grant:userId`
+- [ ] `acquireUserGrantLock` **只接受 `TxClient`**(类型层挡 root `getDb()`);用 `hashtextextended`(64 位 key)
+- [ ] `lock→read→calc→insert→audit` **同一显式事务**:核心拆 `grantMembershipTx(tx)`,公开入口有 tx 用 tx、无 tx 新开事务;**禁止**对 root client 跑 lock
+- [ ] 所有 grant 路径(人工/自动/管理员/gift/订阅)经取锁入口且在事务内(审计无旁路)
+- [ ] `confirmAutoPayment` 窄锁换成经 `acquireUserGrantLock`
 - [ ] 人工 pending 部分唯一 + `ON CONFLICT DO NOTHING RETURNING`(不 catch 冲突)
-- [ ] 迁移前置检查重复未决
+- [ ] **测试证明锁在 read 与 insert 期间持续持有**(并发被阻塞 / `pg_locks` 跨 read→insert)
+- [ ] 迁移:确定性检测 SQL → 有重复则**明确失败打印 user/tier/count** + 独立 remediation 脚本(不自动删财务)+ 升级文档
 - [ ] 真实 PG 并发测试:无重复 pending、无重叠会员期
 - [ ] 现有人工/一次性/#49 回归全绿

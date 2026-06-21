@@ -23,9 +23,12 @@ ADR 0009 的订阅又**新增**了 `grantMembershipForPeriod`,若不先建立统
 
 ### 1. 单一串行点：所有 grant 按 `userId` advisory 锁串行
 
-- 引入统一锁键 **`membership-grant:<userId>`**(`pg_advisory_xact_lock(hashtext('membership-grant:'||userId))`),在**读取当前会员之前**、在 grant 所在事务内获取。
+- 引入统一锁键 **`membership-grant:<userId>`**,在**读取当前会员之前**、在 grant 所在事务内获取。key 用 **64 位 `hashtextextended(..., 0)`**(而非 32 位 `hashtext`),降低不同用户哈希碰撞导致的无关串行。
 - **所有授予路径复用同一把锁**:人工审批、Stripe 自动确认、管理员手工开通、gift、以及 ADR 0009 的 `grantMembershipForPeriod`。
-- 实现为一个入口 helper（如 `withUserGrantLock(tx, userId, fn)`),`grantMembership` / `grantMembershipForPeriod` 在内部**先取锁再读-算-写**;advisory_xact_lock 在同一事务内重复获取安全(可被外层流程先取)。
+- **严格事务契约(关键)**:`pg_advisory_xact_lock` 只在当前事务期间持有。因此 `lock → read → calculate → INSERT → audit` **必须同一显式事务**:
+  - 锁 helper **只接受事务 client(`TxClient`)**,**禁止**传 root `getDb()`(否则锁随隐式事务立即释放,read→insert 失去保护——「看似加锁实则提前释放」)。
+  - 核心实现为仅事务的内部函数;公开入口有外部事务则复用、否则新开事务。
+  - 同事务内重复获取安全(可被外层先取)。
 - **替换**现有过窄的 `stripe:user:tier` 锁为本 `membership-grant:userId` 锁(按 user 串行,覆盖跨 tier 与跨流程),避免「窄锁串行不到人工/管理员」。
 
 > 选 advisory xact lock 而非行锁:grant 是 INSERT 新行(无既有行可 `FOR UPDATE`);按 userId 串行即可保证「读基准→插新行」原子,且事务结束自动释放。
@@ -35,6 +38,7 @@ ADR 0009 的订阅又**新增**了 `grantMembershipForPeriod`,若不先建立统
 - 加**部分唯一索引**:每 `(user_id, tier_id)` 至多一个**未决**付款请求——`UNIQUE(user_id, tier_id) WHERE status IN ('pending_review','pending_payment')`。
 - check-then-insert 的 TOCTOU 即便在锁外也由约束兜底(双保险);命中冲突按 `pendingPaymentExists` 处理(用 `ON CONFLICT DO NOTHING RETURNING` 判定,**勿**在同事务 catch 唯一冲突)。
 - 自动流的并发创建同样受益(同一未决唯一)。
+- **迁移 remediation(自托管升级可执行)**:迁移先跑确定性检测 SQL;有重复未决 → **明确失败并打印 user/tier/count**(不静默、不自动改财务);提供独立 remediation 脚本由管理员择一保留、其余 `cancelled`/`rejected`(带审计);修复后重跑迁移;升级文档写明。
 
 ### 3. 不改按笔账本与反转语义
 
@@ -61,4 +65,5 @@ ADR 0009 的订阅又**新增**了 `grantMembershipForPeriod`,若不先建立统
 - 两个**同时** grant 同 user 同 tier → 顺延正确、**无重叠**、无重复。
 - 高 tier active + 低 tier grant 并发 → 调度正确。
 - 双 webhook / 双管理员审批 / 自动+人工 并发组合 → 不重复开通、不重叠。
-- 部分唯一迁移前存在重复未决 → 迁移前置检查处理。
+- **锁在 read 与 insert 期间持续持有**:并发第二个 grant 阻塞至第一个提交(或 `pg_locks` 断言跨 read→insert);传 root client 的误用被类型/结构挡住。
+- 部分唯一迁移前存在重复未决 → 迁移**明确失败 + 打印** + remediation 脚本 + 重跑通过。
