@@ -47,6 +47,29 @@ const envSchema = z.object({
   MAX_UPLOAD_SIZE_MB: z.coerce.number().default(500),
   PAYMENT_PROOF_MAX_SIZE_MB: z.coerce.number().default(10),
   INLINE_UPLOAD_GRACE_PERIOD_HOURS: z.coerce.number().int().min(1).max(720).default(24),
+  PUBLIC_VIDEO_SIGNED_URL_TTL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(21_600),
+  FILE_PREAUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(100).max(100_000).default(1_200),
+  FILE_PREAUTH_UNRESOLVED_RATE_LIMIT_MAX: z.coerce
+    .number()
+    .int()
+    .min(2_000)
+    .max(1_000_000)
+    .default(20_000),
+  FILE_PREAUTH_RATE_LIMIT_WINDOW_MS: z.coerce
+    .number()
+    .int()
+    .min(10_000)
+    .max(86_400_000)
+    .default(600_000),
+  VIDEO_RANGE_RATE_LIMIT_MAX: z.coerce.number().int().min(50).max(10_000).default(600),
+  VIDEO_UNRESOLVED_RATE_LIMIT_MAX: z.coerce.number().int().min(1_000).max(500_000).default(10_000),
+  VIDEO_RANGE_RATE_LIMIT_WINDOW_MS: z.coerce
+    .number()
+    .int()
+    .min(10_000)
+    .max(86_400_000)
+    .default(600_000),
+  DOWNLOAD_UNRESOLVED_RATE_LIMIT_MAX: z.coerce.number().int().min(500).max(100_000).default(2_000),
 
   CLOUDFLARE_TUNNEL_TOKEN: z.string().optional(),
 

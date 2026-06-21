@@ -125,7 +125,7 @@ export class LocalStorageAdapter implements StorageAdapter {
 
   async getObject(input: GetObjectInput): Promise<Readable> {
     const full = resolveSafePath(input.objectKey);
-    return createReadStream(full);
+    return createReadStream(full, { start: input.start, end: input.end });
   }
 
   async deleteObject(input: DeleteObjectInput): Promise<void> {

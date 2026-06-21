@@ -50,7 +50,14 @@ export type PostListView = {
 };
 
 export type PostImageView = { url: string; alt: string };
-export type PostAttachmentView = { downloadHref: string; name: string; sizeBytes: number };
+export type PostAttachmentView = {
+  downloadHref: string;
+  name: string;
+  sizeBytes: number;
+  mimeType: string;
+  inlineCandidate: boolean;
+  playHref?: string;
+};
 
 /**
  * 内容详情页所需数据。

@@ -10,6 +10,7 @@ import {
   listPostFiles,
 } from "@/modules/content";
 import { renderMarkdown } from "@/modules/content/markdown";
+import { isInlineVideoMime } from "@/modules/download/video";
 import { getT, resolveLocale } from "@/modules/i18n/server";
 import { getPostTaxonomy } from "@/modules/taxonomy";
 import { getActiveTheme, type PostAttachmentView, type PostImageView } from "@/modules/theme";
@@ -50,11 +51,17 @@ export default async function PostDetailPage({ params }: { params: Promise<{ slu
       .map((f) => ({ url: `/api/files/${f.file.id}/download`, alt: f.file.originalName }));
     attachments = files
       .filter((f) => f.link.kind === "attachment")
-      .map((f) => ({
-        downloadHref: `/download/${f.file.id}`,
-        name: f.file.originalName,
-        sizeBytes: f.file.sizeBytes,
-      }));
+      .map((f) => {
+        const inlineCandidate = isInlineVideoMime(f.file.mimeType);
+        return {
+          downloadHref: `/download/${f.file.id}`,
+          playHref: inlineCandidate ? `/api/files/${f.file.id}/download?mode=inline` : undefined,
+          name: f.file.originalName,
+          sizeBytes: f.file.sizeBytes,
+          mimeType: f.file.mimeType,
+          inlineCandidate,
+        };
+      });
   }
 
   const PostDetail = theme.components.PostDetail;

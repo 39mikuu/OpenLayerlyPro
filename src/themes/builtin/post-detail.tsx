@@ -123,22 +123,33 @@ export function PostDetail({ view, t }: { view: PostDetailView; t: Translate }) 
               </div>
               <div className="space-y-2">
                 {view.attachments.map((att) => (
-                  <div
-                    key={att.downloadHref}
-                    className="flex min-w-0 items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3 text-sm"
-                  >
-                    <span className="min-w-0 truncate">
-                      {att.name}
-                      <span className="ml-2 text-xs text-muted-foreground">
-                        {formatSize(att.sizeBytes)}
+                  <div key={att.downloadHref} className="space-y-3 rounded-lg border bg-card p-4">
+                    {att.inlineCandidate && att.playHref && (
+                      <video
+                        className="inline-video-player"
+                        controls
+                        preload="metadata"
+                        playsInline
+                        src={att.playHref}
+                        aria-label={t("post.playVideo")}
+                      >
+                        {t("post.videoUnsupported")}
+                      </video>
+                    )}
+                    <div className="flex min-w-0 items-center justify-between gap-3 text-sm">
+                      <span className="min-w-0 truncate">
+                        {att.name}
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          {formatSize(att.sizeBytes)}
+                        </span>
                       </span>
-                    </span>
-                    <Button size="sm" variant="outline" className="shrink-0" asChild>
-                      <a href={att.downloadHref}>
-                        <Download className="size-4" />
-                        {t("post.download")}
-                      </a>
-                    </Button>
+                      <Button size="sm" variant="outline" className="shrink-0" asChild>
+                        <a href={att.downloadHref}>
+                          <Download className="size-4" />
+                          {att.inlineCandidate ? t("post.downloadVideo") : t("post.download")}
+                        </a>
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </div>

@@ -5,10 +5,14 @@
 - [ ] SMTP is configured and tested.
 - [ ] Config encryption key or key file is backed up.
 - [ ] `TRUSTED_PROXY_HEADER` and `TRUSTED_PROXY_HOPS` match the deployment edge.
+- [ ] File requests resolve distinct trusted client IPs in production; otherwise the shared unresolved-client emergency buckets and rate-limited warning remain active.
 - [ ] Origin app port is not publicly exposed when trusting proxy headers.
 - [ ] Upload limits fit available memory.
 - [ ] Storage driver is selected intentionally: `local` or `s3`.
 - [ ] S3/R2 credentials are stored through env or admin encrypted config.
+- [ ] Reverse proxy forwards video `Range` requests and preserves `206`/`416`, `Content-Range`, and `Accept-Ranges` responses.
+- [ ] Inline-video signed URL TTL, normal per-IP limits, and unresolved-client emergency limits have been reviewed for this deployment.
+- [ ] Operators understand that only public S3 playback redirects; login/member S3 video remains application-proxied. See [Inline video playback](../admin/inline-video-playback.md).
 - [ ] Turnstile is configured if bot protection is needed.
 - [ ] AI translation provider is disabled unless intentionally configured.
 - [ ] Custom footer code is reviewed and trusted.

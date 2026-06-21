@@ -122,8 +122,16 @@ export class S3StorageAdapter implements StorageAdapter {
   }
 
   async getObject(input: GetObjectInput): Promise<Readable> {
+    const range =
+      input.start !== undefined || input.end !== undefined
+        ? `bytes=${input.start ?? 0}-${input.end ?? ""}`
+        : undefined;
     const res = await this.client.send(
-      new GetObjectCommand({ Bucket: input.bucket ?? this.bucket, Key: input.objectKey }),
+      new GetObjectCommand({
+        Bucket: input.bucket ?? this.bucket,
+        Key: input.objectKey,
+        Range: range,
+      }),
     );
     return res.Body as Readable;
   }
@@ -135,12 +143,14 @@ export class S3StorageAdapter implements StorageAdapter {
   }
 
   async createSignedDownloadUrl(input: SignedUrlInput): Promise<string> {
+    const disposition = input.disposition ?? "attachment";
     const command = new GetObjectCommand({
       Bucket: input.bucket ?? this.bucket,
       Key: input.objectKey,
       ResponseContentDisposition: input.downloadName
-        ? `attachment; filename*=UTF-8''${encodeURIComponent(input.downloadName)}`
+        ? `${disposition}; filename*=UTF-8''${encodeURIComponent(input.downloadName)}`
         : undefined,
+      ResponseContentType: input.contentType,
     });
     return getSignedUrl(this.client, command, { expiresIn: input.expiresInSeconds });
   }

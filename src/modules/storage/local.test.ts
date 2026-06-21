@@ -14,6 +14,12 @@ vi.mock("@/lib/env", () => ({
   getEnv: () => ({ UPLOAD_DIR: uploadDir }),
 }));
 
+async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
 async function listFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
   const nested = await Promise.all(
@@ -96,6 +102,33 @@ describe("LocalStorageAdapter streaming uploads", () => {
 
     await expect(upload).rejects.toMatchObject({ name: "AbortError" });
     expect(await listFiles(uploadDir)).toEqual([]);
+  });
+
+  it("reads full objects and exact inclusive byte ranges", async () => {
+    const adapter = new LocalStorageAdapter();
+    const body = Buffer.from("0123456789abcdef");
+    await adapter.putObject({
+      objectKey: "content/range.bin",
+      body,
+      contentType: "application/octet-stream",
+    });
+
+    await expect(
+      streamToBuffer(await adapter.getObject({ objectKey: "content/range.bin" })),
+    ).resolves.toEqual(body);
+    await expect(
+      streamToBuffer(await adapter.getObject({ objectKey: "content/range.bin", start: 3, end: 7 })),
+    ).resolves.toEqual(Buffer.from("34567"));
+    await expect(
+      streamToBuffer(await adapter.getObject({ objectKey: "content/range.bin", start: 10 })),
+    ).resolves.toEqual(Buffer.from("abcdef"));
+  });
+
+  it("keeps Range reads behind resolveSafePath", async () => {
+    const adapter = new LocalStorageAdapter();
+    await expect(
+      adapter.getObject({ objectKey: "../outside.mp4", start: 0, end: 1 }),
+    ).rejects.toThrow("非法文件路径");
   });
 
   it("cleans stale part files left by a crashed process", async () => {
