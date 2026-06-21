@@ -29,7 +29,41 @@ Record the exact archive path and the current Git commit or image tag:
 git rev-parse HEAD
 ```
 
-## 3. Pull and Deploy the New Version
+## 3. Resolve Duplicate Pending Payments Before the S3 Migration
+
+The S3 concurrency migration adds a partial unique index that permits at most one
+`pending_review` or `pending_payment` row for each `(user_id, tier_id)`. The migration first
+checks existing data and fails with the conflicting user, tier, and row count. It never deletes
+or silently rewrites financial records.
+
+Report conflicts before deploying:
+
+```bash
+DATABASE_URL="$DATABASE_URL" pnpm payments:dedupe-pending
+```
+
+The command is report-only by default. For each conflict, review the listed request IDs and
+explicitly choose the request that remains pending. Preview the change first:
+
+```bash
+DATABASE_URL="$DATABASE_URL" pnpm payments:dedupe-pending -- \
+  --keep <request-id> --resolve cancelled --dry-run
+```
+
+Apply only after an administrator has reviewed the payment evidence and chosen the outcome:
+
+```bash
+DATABASE_URL="$DATABASE_URL" pnpm payments:dedupe-pending -- \
+  --keep <request-id> --resolve cancelled --apply \
+  --actor-id <admin-user-id> --reason "Resolve duplicate pending requests before upgrade"
+```
+
+`--resolve rejected` is also supported. The tool is idempotent, updates rather than deletes the
+other pending rows, writes an audit event for every changed request, and prints a modification
+summary. Run the report again until it returns no conflicts, then rerun the migration/deployment.
+Keep the pre-upgrade backup until the migration and application checks are complete.
+
+## 4. Pull and Deploy the New Version
 
 Source checkout deployment:
 
@@ -46,7 +80,7 @@ docker compose up -d
 
 The application entrypoint runs database migrations before starting the server. Migrations are forward-only. If migration fails, the application container exits instead of serving traffic.
 
-## 4. Verify the Upgrade
+## 5. Verify the Upgrade
 
 Inspect startup and migration logs:
 
@@ -71,7 +105,7 @@ Also sample the operational paths relevant to the deployment:
 - one local-file download, or one S3/R2 signed download;
 - mail configuration visibility without exposing its password.
 
-## 5. Failure and Rollback
+## 6. Failure and Rollback
 
 Do not attempt to reverse a database migration manually. Application code rollback alone is unsafe after a forward schema migration.
 

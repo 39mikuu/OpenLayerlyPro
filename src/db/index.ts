@@ -6,9 +6,10 @@ import { getEnv } from "@/lib/env";
 import * as schema from "./schema";
 
 type Db = ReturnType<typeof createDb>;
+export type TxClient = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 /** Db 或事务对象，供模块函数在事务内外复用 */
-export type DbClient = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type DbClient = Db | TxClient;
 
 function createDb() {
   const client = postgres(getEnv().DATABASE_URL, {

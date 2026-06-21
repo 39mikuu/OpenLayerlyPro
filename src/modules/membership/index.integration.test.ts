@@ -6,6 +6,7 @@ import { getDb } from "@/db";
 import { auditEvents, memberships, membershipTiers, paymentRequests, users } from "@/db/schema";
 
 import {
+  acquireUserGrantLock,
   extendMembership,
   getActiveMembership,
   getMembershipDetail,
@@ -274,23 +275,212 @@ describeWithDatabase("membership lifecycle integration", () => {
     expect(events.map((event) => event.action)).toEqual(["grant"]);
   });
 
-  it("creates a scheduled grant when renewing an equal membership", async () => {
+  it("creates three back-to-back grants without overlap or lost duration", async () => {
     const { user, tier } = await seed();
-    const first = await grantMembership({
-      userId: user.id,
-      tierId: tier.id,
-      source: "manual",
-      actor: { type: "system", id: null },
-    });
-    const renewal = await grantMembership({
-      userId: user.id,
-      tierId: tier.id,
-      source: "manual",
-      actor: { type: "system", id: null },
-    });
+    const grants = [];
+    for (let index = 0; index < 3; index += 1) {
+      grants.push(
+        await grantMembership({
+          userId: user.id,
+          tierId: tier.id,
+          source: "manual",
+          actor: { type: "system", id: null },
+        }),
+      );
+    }
 
-    expect(renewal.membership.startsAt.toISOString()).toBe(first.membership.endsAt.toISOString());
-    expect(renewal.membership.startsAt.getTime()).toBeGreaterThan(Date.now());
-    expect(renewal.membership.status).toBe("active");
+    expect(grants[1]!.membership.startsAt.toISOString()).toBe(
+      grants[0]!.membership.endsAt.toISOString(),
+    );
+    expect(grants[2]!.membership.startsAt.toISOString()).toBe(
+      grants[1]!.membership.endsAt.toISOString(),
+    );
+    expect(grants[2]!.membership.endsAt.getTime() - grants[0]!.membership.startsAt.getTime()).toBe(
+      93 * 24 * 60 * 60 * 1000,
+    );
+  });
+
+  it("serializes concurrent grants and makes the second observe the first scheduled period", async () => {
+    const { user, tier } = await seed();
+    const results = await Promise.all([
+      grantMembership({
+        userId: user.id,
+        tierId: tier.id,
+        source: "manual",
+        actor: { type: "system", id: null },
+      }),
+      grantMembership({
+        userId: user.id,
+        tierId: tier.id,
+        source: "gift",
+        actor: { type: "system", id: null },
+      }),
+    ]);
+    const ordered = results
+      .map((result) => result.membership)
+      .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+
+    expect(ordered).toHaveLength(2);
+    expect(ordered[1]!.startsAt.toISOString()).toBe(ordered[0]!.endsAt.toISOString());
+    expect(ordered[1]!.endsAt.getTime() - ordered[0]!.startsAt.getTime()).toBe(
+      62 * 24 * 60 * 60 * 1000,
+    );
+  });
+
+  it("holds the user grant lock until transaction commit", async () => {
+    const { user, tier } = await seed();
+    const firstStartsAt = new Date(Date.now() - 60_000);
+    const firstEndsAt = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+    let releaseFirst!: () => void;
+    let markLocked!: () => void;
+    const release = new Promise<void>((resolve) => (releaseFirst = resolve));
+    const locked = new Promise<void>((resolve) => (markLocked = resolve));
+
+    const first = db.transaction(async (tx) => {
+      await acquireUserGrantLock(tx, user.id);
+      markLocked();
+      await release;
+      await tx.insert(memberships).values({
+        userId: user.id,
+        tierId: tier.id,
+        source: "external",
+        startsAt: firstStartsAt,
+        endsAt: firstEndsAt,
+        status: "active",
+      });
+    });
+    await locked;
+
+    let secondFinished = false;
+    const second = grantMembership({
+      userId: user.id,
+      tierId: tier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    }).then((result) => {
+      secondFinished = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(secondFinished).toBe(false);
+
+    releaseFirst();
+    await first;
+    const result = await second;
+    expect(result.membership.startsAt.toISOString()).toBe(firstEndsAt.toISOString());
+  });
+
+  it("uses scheduled and suspended same-or-higher tiers as anchors", async () => {
+    const { user, tier } = await seed();
+    const scheduledEnd = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
+    const suspendedEnd = new Date(Date.now() + 70 * 24 * 60 * 60 * 1000);
+    await db.insert(memberships).values([
+      {
+        userId: user.id,
+        tierId: tier.id,
+        source: "external",
+        startsAt: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+        endsAt: scheduledEnd,
+        status: "active",
+      },
+      {
+        userId: user.id,
+        tierId: tier.id,
+        source: "external",
+        startsAt: new Date(Date.now() + 40 * 24 * 60 * 60 * 1000),
+        endsAt: suspendedEnd,
+        status: "suspended",
+      },
+    ]);
+
+    const granted = await grantMembership({
+      userId: user.id,
+      tierId: tier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    expect(granted.membership.startsAt.toISOString()).toBe(suspendedEnd.toISOString());
+  });
+
+  it("ignores revoked and expired rows when choosing a grant anchor", async () => {
+    const { user, tier } = await seed();
+    await db.insert(memberships).values([
+      {
+        userId: user.id,
+        tierId: tier.id,
+        source: "external",
+        startsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+        endsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        status: "revoked",
+      },
+      {
+        userId: user.id,
+        tierId: tier.id,
+        source: "external",
+        startsAt: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000),
+        endsAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
+        status: "active",
+      },
+    ]);
+    const before = Date.now();
+    const granted = await grantMembership({
+      userId: user.id,
+      tierId: tier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    expect(granted.membership.startsAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(granted.membership.startsAt.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("defers a lower-tier grant behind higher-tier rights but starts an upgrade immediately", async () => {
+    const { user, tier: lowTier } = await seed();
+    const [highTier] = await db
+      .insert(membershipTiers)
+      .values({
+        name: "Premium",
+        slug: `premium-${randomUUID()}`,
+        priceLabel: "1000",
+        level: 20,
+        durationDays: 31,
+      })
+      .returning();
+    const highGrant = await grantMembership({
+      userId: user.id,
+      tierId: highTier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    const lowGrant = await grantMembership({
+      userId: user.id,
+      tierId: lowTier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    expect(lowGrant.membership.startsAt.toISOString()).toBe(
+      highGrant.membership.endsAt.toISOString(),
+    );
+
+    const [secondUser] = await db
+      .insert(users)
+      .values({ email: `upgrade-${randomUUID()}@example.com` })
+      .returning();
+    const lowActive = await grantMembership({
+      userId: secondUser.id,
+      tierId: lowTier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    const beforeUpgrade = Date.now();
+    const upgrade = await grantMembership({
+      userId: secondUser.id,
+      tierId: highTier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    expect(upgrade.membership.startsAt.getTime()).toBeGreaterThanOrEqual(beforeUpgrade);
+    expect(upgrade.membership.startsAt.getTime()).toBeLessThan(
+      lowActive.membership.endsAt.getTime(),
+    );
   });
 });

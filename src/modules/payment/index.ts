@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 
-import { type DbClient, getDb } from "@/db";
+import { type DbClient, getDb, type TxClient } from "@/db";
 import {
   files,
   memberships,
@@ -74,6 +74,16 @@ export async function deletePaymentMethod(id: string): Promise<void> {
 
 // ---------- 付款申请 ----------
 
+/**
+ * 所有进入 pending_review / pending_payment 的路径共享此事务锁。
+ * createAutoCheckout 的固定锁序为 checkout-dedupe -> payment-pending。
+ */
+export async function acquirePendingPaymentLock(tx: TxClient, userId: string): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`payment-pending:${userId}`}, 0))`,
+  );
+}
+
 export type PaymentRequestDetail = {
   request: PaymentRequest;
   tier: MembershipTier;
@@ -115,36 +125,48 @@ export async function createPaymentRequest(input: {
   if (input.paymentMethodId) await assertActivePaymentMethod(input.paymentMethodId);
   if (input.proofFileId) await assertOwnProofFile(input.proofFileId, input.userId);
 
-  // 同等级 pending 去重（PRD §10.8）
-  const [existing] = await db
-    .select()
-    .from(paymentRequests)
-    .where(
-      and(
-        eq(paymentRequests.userId, input.userId),
-        eq(paymentRequests.tierId, input.tierId),
-        eq(paymentRequests.status, "pending_review"),
-      ),
-    )
-    .limit(1);
-  if (existing) {
-    throw new ApiError(400, "pendingPaymentExists");
-  }
+  const request = await db.transaction(async (tx) => {
+    await acquirePendingPaymentLock(tx, input.userId);
+    // pending uniqueness is serialized by PostgreSQL transactions.
+    const [existing] = await tx
+      .select()
+      .from(paymentRequests)
+      .where(
+        and(
+          eq(paymentRequests.userId, input.userId),
+          eq(paymentRequests.tierId, input.tierId),
+          or(
+            eq(paymentRequests.status, "pending_review"),
+            eq(paymentRequests.status, "pending_payment"),
+          ),
+        ),
+      )
+      .limit(1);
+    if (existing) {
+      throw new ApiError(400, "pendingPaymentExists");
+    }
 
-  const [request] = await db
-    .insert(paymentRequests)
-    .values({
-      userId: input.userId,
-      tierId: input.tierId,
-      paymentMethodId: input.paymentMethodId ?? null,
-      status: "pending_review",
-      flow: "manual",
-      amountLabel: tier.priceLabel,
-      durationDays: tier.durationDays,
-      proofFileId: input.proofFileId ?? null,
-      note: input.note ?? null,
-    })
-    .returning();
+    const [created] = await tx
+      .insert(paymentRequests)
+      .values({
+        userId: input.userId,
+        tierId: input.tierId,
+        paymentMethodId: input.paymentMethodId ?? null,
+        status: "pending_review",
+        flow: "manual",
+        amountLabel: tier.priceLabel,
+        durationDays: tier.durationDays,
+        proofFileId: input.proofFileId ?? null,
+        note: input.note ?? null,
+      })
+      .onConflictDoNothing({
+        target: [paymentRequests.userId, paymentRequests.tierId],
+        where: sql.raw("status in ('pending_review', 'pending_payment')"),
+      })
+      .returning();
+    if (!created) throw new ApiError(400, "pendingPaymentExists");
+    return created;
+  });
 
   await recordEvent("payment_request_created", {
     requestId: request.id,
@@ -212,13 +234,17 @@ export async function resubmitPaymentProof(input: {
   userId: string;
   proofFileId: string;
 }): Promise<PaymentRequest> {
-  const request = await getPaymentRequest(input.requestId);
-  if (!request || request.userId !== input.userId) {
-    throw new ApiError(404, "paymentRequestNotFound");
-  }
   await assertOwnProofFile(input.proofFileId, input.userId);
   const correlationId = randomUUID();
   return getDb().transaction(async (tx) => {
+    await acquirePendingPaymentLock(tx, input.userId);
+    const [request] = await tx
+      .select()
+      .from(paymentRequests)
+      .where(and(eq(paymentRequests.id, input.requestId), eq(paymentRequests.userId, input.userId)))
+      .limit(1);
+    if (!request) throw new ApiError(404, "paymentRequestNotFound");
+
     const [updated] = await tx
       .update(paymentRequests)
       .set({
@@ -231,10 +257,29 @@ export async function resubmitPaymentProof(input: {
           eq(paymentRequests.id, input.requestId),
           eq(paymentRequests.userId, input.userId),
           eq(paymentRequests.status, "rejected"),
+          sql`not exists (
+            select 1
+              from payment_requests other_pending
+             where other_pending.user_id = ${input.userId}
+               and other_pending.tier_id = ${request.tierId}
+               and other_pending.status in ('pending_review', 'pending_payment')
+               and other_pending.id <> ${input.requestId}
+          )`,
         ),
       )
       .returning();
-    if (!updated) throw new ApiError(400, "resubmitRejectedOnly");
+    if (!updated) {
+      const [current] = await tx
+        .select({ status: paymentRequests.status })
+        .from(paymentRequests)
+        .where(
+          and(eq(paymentRequests.id, input.requestId), eq(paymentRequests.userId, input.userId)),
+        )
+        .limit(1);
+      if (!current) throw new ApiError(404, "paymentRequestNotFound");
+      if (current.status !== "rejected") throw new ApiError(400, "resubmitRejectedOnly");
+      throw new ApiError(400, "pendingPaymentExists");
+    }
     await recordAudit(tx, {
       entityType: "payment_request",
       entityId: updated.id,
@@ -282,13 +327,19 @@ export async function approvePaymentRequest(
   reviewerId: string,
 ): Promise<PaymentRequest> {
   const db = getDb();
-  const request = await getPaymentRequest(requestId);
-  if (!request) throw new ApiError(404, "paymentRequestNotFound");
   const correlationId = randomUUID();
 
-  // 状态流转与会员开通在同一事务内完成；
-  // 条件更新作为并发守卫，重复审核（双击/重试）只会有一次成功
+  // 固定锁序：payment_requests 行锁 -> membership grant advisory lock。
   return db.transaction(async (tx) => {
+    const [locked] = await tx
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, requestId))
+      .limit(1)
+      .for("update");
+    if (!locked) throw new ApiError(404, "paymentRequestNotFound");
+    if (locked.status !== "pending_review") throw new ApiError(400, "paymentNotPending");
+
     const [row] = await tx
       .update(paymentRequests)
       .set({
@@ -329,7 +380,7 @@ type ApprovalContext = {
 };
 
 async function finalizeApprovedPayment(
-  tx: DbClient,
+  tx: TxClient,
   row: PaymentRequest,
   context: ApprovalContext,
 ): Promise<PaymentRequest> {
@@ -401,9 +452,11 @@ export async function createAutoCheckout(input: {
   const provider = await getPaymentProvider("stripe", { requireEnabled: true });
   const claimToken = `creating:${randomUUID()}`;
   const checkoutClaim = await db.transaction(async (tx) => {
+    // Fixed order: checkout dedupe lock -> shared pending-entry lock.
     await tx.execute(
       sql`select pg_advisory_xact_lock(hashtext(${`stripe:${input.userId}:${input.tierId}`}))`,
     );
+    await acquirePendingPaymentLock(tx, input.userId);
     const [existing] = await tx
       .select()
       .from(paymentRequests)
@@ -411,12 +464,21 @@ export async function createAutoCheckout(input: {
         and(
           eq(paymentRequests.userId, input.userId),
           eq(paymentRequests.tierId, input.tierId),
-          eq(paymentRequests.flow, "auto"),
-          eq(paymentRequests.provider, "stripe"),
-          eq(paymentRequests.status, "pending_payment"),
+          or(
+            eq(paymentRequests.status, "pending_review"),
+            eq(paymentRequests.status, "pending_payment"),
+          ),
         ),
       )
       .limit(1);
+    if (
+      existing &&
+      (existing.flow !== "auto" ||
+        existing.provider !== "stripe" ||
+        existing.status !== "pending_payment")
+    ) {
+      throw new ApiError(400, "pendingPaymentExists");
+    }
     if (existing?.providerRef) {
       if (existing.providerRef.startsWith("creating:")) {
         const [reclaimed] = await tx
@@ -461,7 +523,12 @@ export async function createAutoCheckout(input: {
         amountLabel: tier.priceLabel,
         durationDays: tier.durationDays,
       })
+      .onConflictDoNothing({
+        target: [paymentRequests.userId, paymentRequests.tierId],
+        where: sql.raw("status in ('pending_review', 'pending_payment')"),
+      })
       .returning();
+    if (!created) throw new ApiError(400, "pendingPaymentExists");
     return { request: created, claimToken };
   });
   const { request } = checkoutClaim;

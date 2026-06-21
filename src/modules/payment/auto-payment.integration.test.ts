@@ -15,6 +15,7 @@ vi.mock("./providers", () => ({
 import { getDb } from "@/db";
 import {
   auditEvents,
+  files,
   memberships,
   membershipTiers,
   paymentRequests,
@@ -22,8 +23,16 @@ import {
   users,
 } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
+import { grantMembership } from "@/modules/membership";
 
-import { confirmAutoPayment, createAutoCheckout, expireAutoPayment } from "./index";
+import {
+  approvePaymentRequest,
+  confirmAutoPayment,
+  createAutoCheckout,
+  createPaymentRequest,
+  expireAutoPayment,
+  resubmitPaymentProof,
+} from "./index";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -116,6 +125,130 @@ describeWithDatabase("Stripe automatic payment integration", () => {
       successUrl: "https://site.test/success",
       cancelUrl: "https://site.test/cancel",
     });
+  });
+
+  it("rejects auto checkout when a manual pending request already exists", async () => {
+    const { user, tier } = await seed();
+    await createPaymentRequest({ userId: user.id, tierId: tier.id });
+
+    await expect(
+      createAutoCheckout({
+        userId: user.id,
+        tierId: tier.id,
+        successUrl: "https://site.test/success",
+        cancelUrl: "https://site.test/cancel",
+      }),
+    ).rejects.toMatchObject({ status: 400, code: "pendingPaymentExists" });
+    expect(providerMocks.createCheckout).not.toHaveBeenCalled();
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(1);
+  });
+
+  it("serializes manual and automatic creation to one pending request", async () => {
+    const { user, tier } = await seed();
+    const autoInput = {
+      userId: user.id,
+      tierId: tier.id,
+      successUrl: "https://site.test/success",
+      cancelUrl: "https://site.test/cancel",
+    };
+    const results = await Promise.allSettled([
+      createPaymentRequest({ userId: user.id, tierId: tier.id }),
+      createAutoCheckout(autoInput),
+    ]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ status: 400, code: "pendingPaymentExists" });
+    const rows = await db.select().from(paymentRequests);
+    expect(rows).toHaveLength(1);
+    expect(["pending_review", "pending_payment"]).toContain(rows[0]!.status);
+  });
+
+  it("serializes automatic creation against rejected-proof resubmission", async () => {
+    const { user, tier } = await seed();
+    const [rejected] = await db
+      .insert(paymentRequests)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        flow: "manual",
+        status: "rejected",
+        amountLabel: tier.priceLabel,
+        durationDays: tier.durationDays,
+      })
+      .returning();
+    const [proof] = await db
+      .insert(files)
+      .values({
+        storageDriver: "local",
+        objectKey: `proof-${randomUUID()}`,
+        originalName: "proof.png",
+        mimeType: "image/png",
+        sizeBytes: 128,
+        purpose: "payment_proof",
+        createdBy: user.id,
+      })
+      .returning();
+    const results = await Promise.allSettled([
+      createAutoCheckout({
+        userId: user.id,
+        tierId: tier.id,
+        successUrl: "https://site.test/success",
+        cancelUrl: "https://site.test/cancel",
+      }),
+      resubmitPaymentProof({
+        requestId: rejected.id,
+        userId: user.id,
+        proofFileId: proof.id,
+      }),
+    ]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const failed = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+
+    expect(fulfilled).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.reason).toMatchObject({ status: 400, code: "pendingPaymentExists" });
+    const pending = (await db.select().from(paymentRequests)).filter((request) =>
+      ["pending_review", "pending_payment"].includes(request.status),
+    );
+    expect(pending).toHaveLength(1);
+  });
+
+  it("keeps one row when two auto checkouts race", async () => {
+    const { user, tier } = await seed();
+    let releaseCheckout!: () => void;
+    let markStarted!: () => void;
+    const release = new Promise<void>((resolve) => (releaseCheckout = resolve));
+    const started = new Promise<void>((resolve) => (markStarted = resolve));
+    providerMocks.createCheckout.mockImplementationOnce(async () => {
+      markStarted();
+      await release;
+      return {
+        redirectUrl: "https://checkout.stripe.test/race",
+        providerRef: "cs_race",
+      };
+    });
+    const input = {
+      userId: user.id,
+      tierId: tier.id,
+      successUrl: "https://site.test/success",
+      cancelUrl: "https://site.test/cancel",
+    };
+    const first = createAutoCheckout(input);
+    await started;
+    await expect(createAutoCheckout(input)).rejects.toMatchObject({
+      status: 409,
+      code: "paymentCheckoutChanged",
+    });
+    releaseCheckout();
+    await expect(first).resolves.toEqual({ redirectUrl: "https://checkout.stripe.test/race" });
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(1);
   });
 
   it("keeps a failed checkout request retryable without creating duplicate rows", async () => {
@@ -385,6 +518,102 @@ describeWithDatabase("Stripe automatic payment integration", () => {
     });
     await expect(db.select().from(memberships)).resolves.toHaveLength(0);
     await expect(db.select().from(tasks)).resolves.toHaveLength(0);
+  });
+
+  it("serializes automatic confirmation with manual approval for the same user", async () => {
+    const { user, tier } = await seed();
+    const [admin] = await db
+      .insert(users)
+      .values({ email: `admin-${randomUUID()}@example.test`, role: "admin" })
+      .returning();
+    const [manualTier] = await db
+      .insert(membershipTiers)
+      .values({
+        name: "Manual alternate",
+        slug: `manual-alt-${randomUUID()}`,
+        priceLabel: "$5",
+        level: tier.level,
+        durationDays: 31,
+      })
+      .returning();
+    const [manualRequest] = await db
+      .insert(paymentRequests)
+      .values({
+        userId: user.id,
+        tierId: manualTier.id,
+        flow: "manual",
+        status: "pending_review",
+        amountLabel: manualTier.priceLabel,
+        durationDays: manualTier.durationDays,
+      })
+      .returning();
+    await db.insert(paymentRequests).values({
+      userId: user.id,
+      tierId: tier.id,
+      flow: "auto",
+      status: "pending_payment",
+      provider: "stripe",
+      providerRef: "cs_concurrent_auto_manual",
+      amountMinor: 500,
+      currency: "usd",
+      amountLabel: tier.priceLabel,
+      durationDays: tier.durationDays,
+    });
+
+    await Promise.all([
+      approvePaymentRequest(manualRequest.id, admin.id),
+      confirmAutoPayment("stripe", {
+        type: "paid",
+        providerRef: "cs_concurrent_auto_manual",
+        paymentRef: "pi_concurrent_auto_manual",
+        providerEventId: "evt_concurrent_auto_manual",
+        amountMinor: 500,
+        currency: "usd",
+      }),
+    ]);
+    const grants = (
+      await db.select().from(memberships).where(eq(memberships.userId, user.id))
+    ).sort((left, right) => left.startsAt.getTime() - right.startsAt.getTime());
+    expect(grants).toHaveLength(2);
+    expect(grants[1]!.startsAt.toISOString()).toBe(grants[0]!.endsAt.toISOString());
+  });
+
+  it("serializes an administrator grant with automatic payment confirmation", async () => {
+    const { user, tier } = await seed();
+    await db.insert(paymentRequests).values({
+      userId: user.id,
+      tierId: tier.id,
+      flow: "auto",
+      status: "pending_payment",
+      provider: "stripe",
+      providerRef: "cs_concurrent_admin_auto",
+      amountMinor: 500,
+      currency: "usd",
+      amountLabel: tier.priceLabel,
+      durationDays: tier.durationDays,
+    });
+
+    await Promise.all([
+      grantMembership({
+        userId: user.id,
+        tierId: tier.id,
+        source: "manual",
+        actor: { type: "system", id: null },
+      }),
+      confirmAutoPayment("stripe", {
+        type: "paid",
+        providerRef: "cs_concurrent_admin_auto",
+        paymentRef: "pi_concurrent_admin_auto",
+        providerEventId: "evt_concurrent_admin_auto",
+        amountMinor: 500,
+        currency: "usd",
+      }),
+    ]);
+    const grants = (
+      await db.select().from(memberships).where(eq(memberships.userId, user.id))
+    ).sort((left, right) => left.startsAt.getTime() - right.startsAt.getTime());
+    expect(grants).toHaveLength(2);
+    expect(grants[1]!.startsAt.toISOString()).toBe(grants[0]!.endsAt.toISOString());
   });
 
   it("confirms once and commits membership, audit, and email outbox atomically", async () => {

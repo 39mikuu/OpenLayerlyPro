@@ -184,6 +184,9 @@ export const paymentRequests = pgTable(
     index("payment_requests_user_created_idx").on(table.userId, table.createdAt.desc()),
     index("payment_requests_status_created_idx").on(table.status, table.createdAt),
     index("payment_requests_pending_user_tier_idx").on(table.userId, table.tierId, table.status),
+    uniqueIndex("payment_requests_pending_user_tier_unique")
+      .on(table.userId, table.tierId)
+      .where(sql`${table.status} in ('pending_review', 'pending_payment')`),
     uniqueIndex("payment_requests_granted_membership_id_unique").on(table.grantedMembershipId),
     uniqueIndex("payment_requests_provider_event_id_unique").on(table.providerEventId),
     uniqueIndex("payment_requests_provider_payment_ref_unique")
