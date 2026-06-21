@@ -44,10 +44,10 @@ export async function acquireUserGrantLock(tx: TxClient, userId: string): Promis
 **叠加基准含 scheduled 行(必须,否则锁也救不了重叠)**:`grantMembershipTx` 取锁后计算 `startsAt` 时,**不要**只用 `getActiveMembership`(它过滤 `startsAt<=now`,看不到排期行)。改用「最新权益到期」查询:
 ```sql
 select max(ends_at) from memberships
- where user_id = $1 and status = 'active' and ends_at > now()
+ where user_id = $1 and status <> 'revoked' and ends_at > now()   -- 含 active+suspended+scheduled，仅排除 revoked
    and tier_id in (<同/高 level 的 tier id>)   -- 或 join membershipTiers 比 level
 ```
-`startsAt = max(now, 上述 max(endsAt))`;无则 `now`。这样背靠背续费**首尾相接、零重叠、不丢已付时长**。锁保证串行、基准查询保证串行后读到前一笔排期,二者缺一不可。
+`startsAt = max(now, 上述 max(endsAt))`;无则 `now`。**用 `status <> 'revoked'`(与 ADR 红线一致),不要窄到 `status='active'`**——否则 admin 暂停(suspended)的当前/未来窗口会被忽略,新 grant 从 `now` 起又造成重叠/绕过被暂停窗口。这样背靠背续费**首尾相接、零重叠、不丢已付时长**。锁保证串行、基准查询保证串行后读到前一笔排期,二者缺一不可。
 
 ### 2.2 不要动 checkout 去重锁;grant 锁只在 grant 路径 + 固定锁序
 
@@ -59,6 +59,7 @@ select max(ends_at) from memberships
 
 ### 2.3 人工 pending 部分唯一
 - 迁移加 `UNIQUE(user_id, tier_id) WHERE status IN ('pending_review','pending_payment')`(drizzle `uniqueIndex(...).where(...)`)。
+- **所有进入 pending 的写入路径必须共享同一把 per-user(或 user+tier)序列化锁**:`createPaymentRequest` / `createAutoCheckout`(INSERT)与 `resubmitPaymentProof`(UPDATE)**都**先取 `pg_advisory_xact_lock(hashtextextended('payment-pending:'||userId, 0))`(事务内),再做检查/写入。否则在 READ COMMITTED 下,resubmit 的 `NOT EXISTS` 可能在并发 INSERT 提交前求值 → 随后撞部分唯一索引;而 UPDATE **无 `ON CONFLICT`**,会冒出原始唯一违例而非 `pendingPaymentExists`。共享锁后,三条路径互斥,检查-写入无竞争。(此锁与 grant 锁是不同关注点,可用不同 key;也可统一用 `membership-grant:userId`,只要三条 pending 写入与 grant 都用它即不冲突。)
 - **所有进入 pending 的写入路径都要冲突处理**(部分唯一跨 `pending_review`+`pending_payment`、跨人工/自动)。按操作类型分两种正确写法(**`ON CONFLICT` 仅 `INSERT` 支持,`UPDATE` 不支持**):
   - **INSERT 路径**(`createPaymentRequest` 插 `pending_review`、`createAutoCheckout` 插 `pending_payment`):`INSERT ... ON CONFLICT DO NOTHING RETURNING`;无返回 = 已有未决 → 抛 `pendingPaymentExists`。
   - **UPDATE 路径**(`resubmitPaymentProof`:rejected→`pending_review`):**不能**用 `ON CONFLICT`。改**条件更新**:
@@ -107,7 +108,9 @@ base `main`,Draft 直到真实 PG 集成 + CI 全绿,关联 issue,标题 `fix(pa
 - [ ] 所有 grant 路径(人工/自动/管理员/gift/订阅)经取锁入口且在事务内(审计无旁路)
 - [ ] `createAutoCheckout` 的 checkout 去重锁**保留不动**;user grant 锁**只在 grant 路径**;固定锁序 **行锁→user-grant 锁**(无路径反序)
 - [ ] **叠加基准含 scheduled 行**(max(endsAt) of 同/高 tier、非 revoked、endsAt>now,非仅 `getActiveMembership`)→ 背靠背续费零重叠
+- [ ] 叠加基准 SQL 用 `status <> 'revoked'`(含 suspended/scheduled),非 `'active'`
 - [ ] pending 部分唯一;**INSERT 入口**(createPaymentRequest/createAutoCheckout)用 `ON CONFLICT DO NOTHING RETURNING`,**UPDATE 入口**(resubmitPaymentProof)用条件更新 + `NOT EXISTS` 守卫(`ON CONFLICT` 不支持 UPDATE);均返回 `pendingPaymentExists`、**不 catch 唯一违例**;auto claim/恢复兼容唯一索引
+- [ ] **所有 pending 写入路径共享同一 per-user 序列化锁**(防 UPDATE 的 NOT EXISTS 与并发 INSERT 竞争撞原始违例);加并发 create-vs-resubmit 测试
 - [ ] **测试证明锁在 read 与 insert 期间持续持有**(并发被阻塞 / `pg_locks` 跨 read→insert)
 - [ ] 迁移:确定性检测 SQL → 有重复则**明确失败打印 user/tier/count** + 独立 remediation 脚本(不自动删财务)+ 升级文档
 - [ ] 真实 PG 并发测试:无重复 pending、无重叠会员期
