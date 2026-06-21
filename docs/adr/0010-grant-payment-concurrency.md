@@ -32,6 +32,14 @@ ADR 0009 的订阅又**新增**了 `grantMembershipForPeriod`,若不先建立统
 - **现有 `stripe:user:tier` 锁是另一回事,保留不动**:它在 `createAutoCheckout`,是 **checkout 创建去重**锁(防重复 Stripe 会话),**不是** grant 锁——**不替换、不合并**;grant 锁是**新增**的、**仅在 grant 路径**获取(覆盖人工/自动/管理员/gift/订阅)。
 - **固定锁序防死锁**:同时持「`payment_requests` 行锁」与「user grant 锁」的路径(`confirmAutoPayment`/`approvePaymentRequest`)统一为 **行锁(FOR UPDATE)→ user grant 锁**(现状即如此);任何路径不得反序。
 
+### 1.5 叠加基准必须包含 scheduled(未来)行（否则锁也救不了重叠）
+
+> 仅加锁**不够**:`getActiveMembership` 过滤 `startsAt <= now`,**看不到已排期的未来行**。用户已有 active 同/高 tier 时,首次 grant 插入从 `endsAt` 起的**未来行**;**即便串行**,第二次 grant 仍读到旧 active 行(未来行被过滤)→ 计算出**重叠的未来期** → 背靠背续费丢失已付时长。这是与并发无关的**既有缺陷**,本切片一并修。
+
+- grant 计算 `startsAt` 的**叠加基准** = `max(now, 该用户所有【非 revoked、`endsAt > now`、tier.level ≥ 目标 tier】成员的最大 `endsAt`)`——**同时涵盖 active 与 scheduled(未来)行**,而非仅 `getActiveMembership`。
+- 即:新增一个「最新权益到期」查询(不限 `startsAt <= now`),取同/高 tier 的 `max(endsAt)` 作基准;无则 `now`。
+- 与锁配合:锁保证串行,基准查询保证串行后也读到前一笔排期 → **背靠背续费首尾相接、零重叠、不丢时长**。
+
 > 选 advisory xact lock 而非行锁:grant 是 INSERT 新行(无既有行可 `FOR UPDATE`);按 userId 串行即可保证「读基准→插新行」原子,且事务结束自动释放。
 
 ### 2. 人工 pending 唯一:部分唯一索引兜底
@@ -39,6 +47,7 @@ ADR 0009 的订阅又**新增**了 `grantMembershipForPeriod`,若不先建立统
 - 加**部分唯一索引**:每 `(user_id, tier_id)` 至多一个**未决**付款请求——`UNIQUE(user_id, tier_id) WHERE status IN ('pending_review','pending_payment')`。
 - check-then-insert 的 TOCTOU 即便在锁外也由约束兜底(双保险);命中冲突按 `pendingPaymentExists` 处理(用 `ON CONFLICT DO NOTHING RETURNING` 判定,**勿**在同事务 catch 唯一冲突)。
 - 自动流的并发创建同样受益(同一未决唯一)。
+- **所有进入 pending 的写入路径都要处理冲突**:部分唯一覆盖 `pending_review` 与 `pending_payment`、跨人工/自动。除 `createPaymentRequest` 外,**`createAutoCheckout`(插 `pending_payment`)** 与 **`resubmitPaymentProof`(rejected→`pending_review`)** 也必须用同样的 `ON CONFLICT DO NOTHING`/冲突判定,命中已有未决 → 返回 `pendingPaymentExists`,**不得**触发原始唯一违例/事务 abort。语义 = **每 (user,tier) 跨流程至多一个未决**(故意);auto 路径现有 `creating:` claim/stale 恢复**复用同一行**(不新插)须与唯一索引兼容。
 - **迁移 remediation(自托管升级可执行)**:迁移先跑确定性检测 SQL;有重复未决 → **明确失败并打印 user/tier/count**(不静默、不自动改财务);提供独立 remediation 脚本由管理员择一保留、其余 `cancelled`/`rejected`(带审计);修复后重跑迁移;升级文档写明。
 
 ### 3. 不改按笔账本与反转语义
@@ -67,4 +76,6 @@ ADR 0009 的订阅又**新增**了 `grantMembershipForPeriod`,若不先建立统
 - 高 tier active + 低 tier grant 并发 → 调度正确。
 - 双 webhook / 双管理员审批 / 自动+人工 并发组合 → 不重复开通、不重叠。
 - **锁在 read 与 insert 期间持续持有**:并发第二个 grant 阻塞至第一个提交(或 `pg_locks` 断言跨 read→insert);传 root client 的误用被类型/结构挡住。
+- **背靠背续费(已有 active 同/高 tier 时连续两次 grant)→ 首尾相接、零重叠、不丢时长**(基准含 scheduled 行);仅靠锁但基准只看 active → 应能复现重叠(回归基线)。
+- **所有 pending 入口**(createPaymentRequest / createAutoCheckout / resubmitPaymentProof)在已有未决时返回 `pendingPaymentExists`,不抛原始唯一违例;auto `creating:` claim/stale 恢复与唯一索引兼容。
 - 部分唯一迁移前存在重复未决 → 迁移**明确失败 + 打印** + remediation 脚本 + 重跑通过。
