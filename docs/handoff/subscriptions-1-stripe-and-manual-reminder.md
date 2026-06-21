@@ -61,6 +61,8 @@ subscriptions(
 )
 // UNIQUE(provider, provider_subscription_ref) WHERE provider_subscription_ref IS NOT NULL
 // 部分唯一：每 (user_id,tier_id,provider) 至多一个非终态订阅（status NOT IN ('canceled','expired')）（B2）
+//   ⚠️ PG 唯一索引把 NULL 视为相异 → provider=NULL（手动提醒，PR-B）不会被去重，会出现多个非终态手动订阅 + 重复提醒。
+//   必须处理 NULL：用 `NULLS NOT DISTINCT`（PG15+）、或 coalesce(provider,'manual') 表达式键、或对 provider IS NULL 单独建部分唯一索引。
 
 payment_provider_events(   // 持久化 inbox（B5）
   id, provider, provider_event_id, event_type, object_ref,
@@ -113,7 +115,9 @@ webhook(经 dispatcher)与 reconcile **都调** `applyPaidInvoice({providerInvoi
 - **对象级幂等(用 `ON CONFLICT DO NOTHING RETURNING`,勿 catch 唯一冲突——会让事务 abort)**:
   ```sql
   INSERT INTO payment_requests(... status='approved', provider, provider_invoice_ref, subscription_id, amount, currency, provider_event_id|null)
-  ON CONFLICT (provider, provider_invoice_ref) DO NOTHING RETURNING *;
+  ON CONFLICT (provider, provider_invoice_ref) WHERE provider_invoice_ref IS NOT NULL DO NOTHING RETURNING *;
+  -- ⚠️ provider_invoice_ref 是【部分】唯一索引，ON CONFLICT 目标必须带上同样的 WHERE 谓词，
+  --    否则 PG/Drizzle 推断不到该索引、INSERT 直接报错而非幂等 no-op。（或把唯一改成非部分约束。）
   ```
   - 返回行(无既有)→ 该期未反转 → `grantMembershipForPeriod(period)` + 更新 subscription `current_period_ends_at`(按 `providerCreatedAt` 防乱序)+ 审计 + 续费邮件 task。
   - 无返回(冲突)→ 查既有行 status:`approved`=幂等 no-op;**`reversed`(墓碑)= 不授予**(B1)。
@@ -123,7 +127,7 @@ webhook(经 dispatcher)与 reconcile **都调** `applyPaidInvoice({providerInvoi
 
 **续费 reversal-first 墓碑（B1）**——`charge.refunded`/`dispute` 早于 `invoice.paid` 时:
 - 把 refund/dispute **解析到关联 invoice id**(Stripe charge→invoice,不只 PaymentIntent)。
-- 在任何 grant 前 `INSERT payment_request(status='reversed', provider_invoice_ref, subscription_id, reversal_event_id) ON CONFLICT DO NOTHING`。
+- 在任何 grant 前 `INSERT payment_request(status='reversed', provider_invoice_ref, subscription_id, reversal_event_id) ON CONFLICT (provider, provider_invoice_ref) WHERE provider_invoice_ref IS NOT NULL DO NOTHING`(同样带部分索引谓词)。
 - 之后 `applyPaidInvoice` 命中墓碑 → 不授予;后到 paid 可补 `provider_payment_ref` 等引用但**不开通**。
 - grant 已存在时的退款/拒付:复用 #49 按唯一 `granted_membership_id` 吊销那一行(目标发现扩展为「按 invoice 找 grant」)。
 
@@ -203,7 +207,8 @@ pnpm build:migrator && pnpm build
 - [ ] 复用 `memberships` 按笔账本:每笔已付 invoice 一行、Stripe 实际周期、反转吊销那一行;**无 memberships 迁移、不改 #49**
 - [ ] `grantMembershipForPeriod` 逐字写 period 不重锚;投影确定性 + 不超已付边界(测试)
 - [ ] **持久化 inbox + dispatcher**:webhook 验签后只持久化 + 200;dispatcher lease/fencing/`max_attempts`→`dead`;业务+审计+`processed` **严格同事务**,fencing 失败整体回滚
-- [ ] `provider_invoice_ref` + `UNIQUE` + **`ON CONFLICT DO NOTHING RETURNING`**(不 catch 冲突);webhook 与 reconcile 同走 `applyPaidInvoice`,同期仅授予一次;reconcile 不伪造 event id
+- [ ] `provider_invoice_ref` 部分 `UNIQUE` + **`ON CONFLICT (...) WHERE provider_invoice_ref IS NOT NULL DO NOTHING RETURNING`**(目标谓词匹配部分索引,否则报错;不 catch 冲突);webhook 与 reconcile 同走 `applyPaidInvoice`,同期仅授予一次;reconcile 不伪造 event id
+- [ ] 订阅非终态唯一**正确处理 `provider=NULL`**(手动提醒):`NULLS NOT DISTINCT`/coalesce 键/单独部分索引,杜绝同 user/tier 多个非终态手动订阅 + 重复提醒
 - [ ] **续费 reversal-first 墓碑**:refund/dispute 早于 paid → 解析到 invoice id、先落 `reversed` 行、后到 paid 不授予
 - [ ] **下单并发安全**:部分唯一 `(user,tier,provider)` 非终态 + claim/lease + Stripe 幂等键;返回既有 open checkout;active/past_due 拒绝;会话成功本地崩溃可恢复
 - [ ] **价格合同快照**:订阅存 `provider_price_ref`/`expected_amount`/`currency`,续费按快照校验;改 tier 价不影响老订阅
