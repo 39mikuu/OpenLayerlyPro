@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { getPostById, listPostTranslations, upsertDraftTranslation } from "@/modules/content";
 import { MAX_POST_BODY_LENGTH } from "@/modules/content/markdown";
@@ -43,9 +45,9 @@ const bodySchema = z.object({
 
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     await requireAdmin();
     const { id } = await ctx.params;
-    const input = bodySchema.parse(await req.json());
     const translation = await upsertDraftTranslation(id, input.locale, {
       title: input.title,
       summary: input.summary,

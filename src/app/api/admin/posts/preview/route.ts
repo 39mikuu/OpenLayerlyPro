@@ -2,7 +2,9 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { ApiError, handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { MAX_POST_BODY_LENGTH, renderMarkdown } from "@/modules/content/markdown";
 
@@ -18,12 +20,12 @@ const previewSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, previewSchema);
     const admin = await requireAdmin();
     if (!rateLimit(`admin-markdown-preview:${admin.id}`, PREVIEW_LIMIT, PREVIEW_WINDOW_MS)) {
       throw new ApiError(429, "requestRateLimited");
     }
 
-    const input = previewSchema.parse(await req.json());
     return jsonOk(
       { html: renderMarkdown(input.markdown, { embedMode: input.embedMode }) },
       { headers: { "Cache-Control": "no-store" } },

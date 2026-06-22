@@ -12,9 +12,11 @@ vi.mock("@/modules/user", () => ({ updateUserLocale }));
 import { PUT } from "./route";
 
 function request(locale: string): NextRequest {
-  return {
-    json: async () => ({ locale }),
-  } as unknown as NextRequest;
+  return new Request("http://localhost/api/me/locale", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ locale }),
+  }) as NextRequest;
 }
 
 describe("PUT /api/me/locale", () => {

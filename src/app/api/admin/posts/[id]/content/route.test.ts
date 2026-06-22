@@ -81,7 +81,7 @@ describe("published post body API", () => {
       context(),
     );
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(413);
     expect(mocks.savePublishedPostBody).not.toHaveBeenCalled();
   });
 });

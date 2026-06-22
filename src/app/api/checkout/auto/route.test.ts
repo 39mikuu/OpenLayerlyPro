@@ -19,7 +19,10 @@ describe("automatic checkout route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.requireUser.mockResolvedValue({ id: "11111111-1111-4111-8111-111111111111" });
-    mocks.getEnv.mockReturnValue({ APP_URL: "https://site.example/" });
+    mocks.getEnv.mockReturnValue({
+      APP_URL: "https://site.example/",
+      REQUEST_JSON_MAX_BYTES: 65_536,
+    });
     mocks.createAutoCheckout.mockResolvedValue({
       redirectUrl: "https://checkout.stripe.test/session",
     });

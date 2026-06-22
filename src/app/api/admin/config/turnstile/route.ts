@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 
 import { handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import {
   clearTurnstileConfig,
@@ -22,8 +24,12 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
+    const input = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      turnstileConfigSchema,
+    );
     await requireAdmin();
-    const input = turnstileConfigSchema.parse(await req.json());
     await saveTurnstileConfig(input);
     return jsonOk(await getTurnstileAdminView());
   } catch (err) {

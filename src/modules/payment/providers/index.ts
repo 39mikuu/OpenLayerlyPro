@@ -54,7 +54,7 @@ export interface PaymentProvider {
     status: "open" | "complete" | "expired";
     redirectUrl: string | null;
   }>;
-  parseWebhook(rawBody: string, signature: string | null): Promise<NormalizedPaymentEvent>;
+  parseWebhook(rawBody: Buffer, signature: string | null): Promise<NormalizedPaymentEvent>;
   resolveCheckoutByPaymentIntent(paymentRef: string): Promise<{
     providerRef: string;
     requestId?: string;

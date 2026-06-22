@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
 
 import { getEnv } from "@/lib/env";
+import {
+  InvalidContentLengthError,
+  InvalidJsonBodyError,
+  InvalidMultipartBodyError,
+  InvalidTextBodyError,
+  RequestBodyReadError,
+  RequestBodyTooLargeError,
+} from "@/lib/request-body";
 import { DEFAULT_LOCALE, translate } from "@/modules/i18n";
 
 export function jsonOk<T>(data: T, init?: ResponseInit): NextResponse {
@@ -70,6 +78,20 @@ export class ApiError extends Error {
 }
 
 export function handleApiError(err: unknown): NextResponse {
+  if (err instanceof RequestBodyTooLargeError) {
+    return jsonError(413, "requestBodyTooLarge");
+  }
+  if (err instanceof InvalidContentLengthError) {
+    return jsonError(400, "invalidRequest", { field: "content-length" });
+  }
+  if (
+    err instanceof InvalidJsonBodyError ||
+    err instanceof InvalidTextBodyError ||
+    err instanceof InvalidMultipartBodyError ||
+    err instanceof RequestBodyReadError
+  ) {
+    return jsonError(400, "invalidRequest", { field: "body" });
+  }
   if (err instanceof ApiError) {
     return jsonError(err.status, err.code, err.params);
   }

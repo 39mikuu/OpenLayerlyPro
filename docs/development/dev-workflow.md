@@ -20,12 +20,15 @@ pnpm dev
 ```bash
 pnpm lint           # ESLint（含 import 排序、no-explicit-any 告警）
 pnpm format         # Prettier 写入；pnpm format:check 只检查不改
+pnpm check:request-bodies # 检查生产 Route Handler 的请求体读取
 pnpm test           # vitest 运行单元测试；pnpm test:watch 监听模式
 pnpm exec tsc --noEmit   # 类型检查
 pnpm build          # next build
 ```
 
-CI（.github/workflows/ci.yml）执行 lint → format:check → tsc → test → build:migrator → build。
+CI（.github/workflows/ci.yml）执行 lint → format:check → check:request-bodies → tsc → test → build:migrator → build。
+
+若请求体检查失败，请按输出的文件和行号改用 `src/lib/request-body.ts` 中的 bounded helper。检查仅扫描生产 `route.*` 文件，不扫描测试 fixture。
 
 提交前 husky 的 `pre-commit` 会对暂存的 `.ts/.tsx` 自动跑 `eslint --fix` + `prettier --write`，`commit-msg` 用 commitlint 校验提交信息格式。代码风格与工具链细节见 [code-style.md](./code-style.md)。
 

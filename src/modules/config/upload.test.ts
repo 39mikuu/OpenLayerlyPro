@@ -43,6 +43,15 @@ describe("getUploadConfig", () => {
     });
   });
 
+  it("DB 付款截图配置不能高于部署传输层上限", async () => {
+    mockedGet.mockResolvedValue({ paymentProofMaxSizeMb: 50 });
+    const { getUploadConfig } = await import("./upload");
+    await expect(getUploadConfig()).resolves.toEqual({
+      maxUploadSizeMb: 500,
+      paymentProofMaxSizeMb: 10,
+    });
+  });
+
   it("部分字段缺失时该字段回落 env", async () => {
     mockedGet.mockResolvedValue({ maxUploadSizeMb: 300 });
     const { getUploadConfig } = await import("./upload");

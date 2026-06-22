@@ -57,7 +57,7 @@ export class StripePaymentProvider implements PaymentProvider {
     return { redirectUrl: session.url, providerRef: session.id };
   }
 
-  async parseWebhook(rawBody: string, signature: string | null): Promise<NormalizedPaymentEvent> {
+  async parseWebhook(rawBody: Buffer, signature: string | null): Promise<NormalizedPaymentEvent> {
     if (!signature) throw new ApiError(401, "stripeSignatureInvalid");
 
     let event: Stripe.Event;

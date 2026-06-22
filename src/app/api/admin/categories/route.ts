@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { createCategory, listCategories } from "@/modules/taxonomy";
 
@@ -24,8 +26,9 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
+    const input = await readJsonWithLimit(request, getEnv().REQUEST_JSON_MAX_BYTES, categorySchema);
     await requireAdmin();
-    return jsonOk(await createCategory(categorySchema.parse(await request.json())));
+    return jsonOk(await createCategory(input));
   } catch (error) {
     return handleApiError(error);
   }

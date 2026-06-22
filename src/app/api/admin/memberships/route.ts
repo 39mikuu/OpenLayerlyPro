@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { grantMembership, listMemberships } from "@/modules/membership";
 import { findOrCreateUserByEmail, findUserByEmail } from "@/modules/user";
@@ -27,8 +29,8 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const admin = await requireAdmin();
-    const input = bodySchema.parse(await req.json());
     const user = input.createUserIfMissing
       ? await findOrCreateUserByEmail(input.userEmail)
       : await findUserByEmail(input.userEmail);

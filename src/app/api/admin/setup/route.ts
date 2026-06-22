@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { setupSite } from "@/modules/site";
 
 export const runtime = "nodejs";
@@ -16,7 +18,7 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    const input = bodySchema.parse(await req.json());
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     await setupSite(input);
     return jsonOk({ initialized: true });
   } catch (err) {

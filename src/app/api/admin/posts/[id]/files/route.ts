@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import {
   attachFileToPost,
@@ -20,10 +22,10 @@ const attachSchema = z.object({
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, attachSchema);
     await requireAdmin();
     const { id } = await ctx.params;
     if (!(await getPostById(id))) return jsonError(404, "postNotFound");
-    const input = attachSchema.parse(await req.json());
     const link = await attachFileToPost({ postId: id, ...input });
     return jsonOk(link);
   } catch (err) {
@@ -47,9 +49,9 @@ const detachSchema = z.object({
 
 export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
+    const { fileId } = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, detachSchema);
     await requireAdmin();
     const { id } = await ctx.params;
-    const { fileId } = detachSchema.parse(await req.json());
     await detachFileFromPost(id, fileId);
     return jsonOk({ detached: true });
   } catch (err) {

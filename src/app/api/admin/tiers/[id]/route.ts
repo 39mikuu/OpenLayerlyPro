@@ -5,6 +5,8 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { memberships, membershipTiers, paymentRequests, posts } from "@/db/schema";
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 
 export const runtime = "nodejs";
@@ -36,9 +38,9 @@ const patchSchema = z.object({
 
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, patchSchema);
     await requireAdmin();
     const { id } = await ctx.params;
-    const input = patchSchema.parse(await req.json());
     const [tier] = await getDb()
       .update(membershipTiers)
       .set({ ...input, updatedAt: new Date() })

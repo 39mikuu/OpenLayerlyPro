@@ -70,7 +70,7 @@ describe("admin Markdown preview API", () => {
     const response = await route.POST(
       request({ markdown: "x".repeat(MAX_POST_BODY_LENGTH + 1), embedMode: "preview" }),
     );
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(413);
   });
 
   it("accepts only preview embed mode", async () => {

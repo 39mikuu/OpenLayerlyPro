@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 
 import { handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import {
   clearStripeConfig,
@@ -22,8 +24,9 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, stripeConfigSchema);
     await requireAdmin();
-    await saveStripeConfig(stripeConfigSchema.parse(await req.json()));
+    await saveStripeConfig(input);
     return jsonOk(await getStripeAdminView());
   } catch (error) {
     return handleApiError(error);
