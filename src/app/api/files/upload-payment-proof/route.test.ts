@@ -21,6 +21,22 @@ function transferLimit(): number {
   return multipartTransferLimitBytes(getEnv().PAYMENT_PROOF_MAX_SIZE_MB);
 }
 
+function unreadRequest(headers: HeadersInit = {}): {
+  request: NextRequest;
+  getReader: ReturnType<typeof vi.fn>;
+} {
+  const request = new Request("http://localhost/api/files/upload-payment-proof", {
+    method: "POST",
+    headers: {
+      "content-type": "multipart/form-data; boundary=bounded-test",
+      ...headers,
+    },
+  }) as NextRequest;
+  const getReader = vi.fn();
+  Object.defineProperty(request, "body", { value: { getReader } });
+  return { request, getReader };
+}
+
 function streamRequest(chunks: Uint8Array[], headers: HeadersInit = {}): NextRequest {
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -83,7 +99,7 @@ describe("payment proof multipart upload", () => {
     const response = await POST(streamRequest([new Uint8Array(limit), Uint8Array.from([1])]));
 
     expect(response.status).toBe(413);
-    expect(mocks.requireUser).not.toHaveBeenCalled();
+    expect(mocks.requireUser).toHaveBeenCalledOnce();
     expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
   });
 
@@ -96,7 +112,7 @@ describe("payment proof multipart upload", () => {
     );
 
     expect(response.status).toBe(413);
-    expect(mocks.requireUser).not.toHaveBeenCalled();
+    expect(mocks.requireUser).toHaveBeenCalledOnce();
     expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
   });
 
@@ -113,8 +129,45 @@ describe("payment proof multipart upload", () => {
     );
 
     expect(response.status).toBe(413);
-    expect(mocks.requireUser).not.toHaveBeenCalled();
+    expect(mocks.requireUser).toHaveBeenCalledOnce();
     expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
+  });
+
+  it("does not read an unauthenticated request body", async () => {
+    const { request, getReader } = unreadRequest({ "content-length": String(transferLimit()) });
+    mocks.requireUser.mockRejectedValue(new ApiError(401, "authRequired"));
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(401);
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(1);
+    expect(getReader).not.toHaveBeenCalled();
+    expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects a concurrent request at the pre-auth bucket before auth or body reads", async () => {
+    let resolveFirstAuth!: (value: { id: string; role: string }) => void;
+    mocks.requireUser.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirstAuth = resolve;
+        }),
+    );
+    mocks.rateLimit.mockReturnValue(true).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    const first = unreadRequest({ "content-length": String(transferLimit()) });
+    const second = unreadRequest({ "content-length": String(transferLimit()) });
+
+    const firstResponsePromise = POST(first.request);
+    await vi.waitFor(() => expect(mocks.requireUser).toHaveBeenCalledTimes(1));
+    const secondResponse = await POST(second.request);
+
+    expect(secondResponse.status).toBe(429);
+    expect(mocks.requireUser).toHaveBeenCalledTimes(1);
+    expect(first.getReader).not.toHaveBeenCalled();
+    expect(second.getReader).not.toHaveBeenCalled();
+
+    resolveFirstAuth({ id: "user-1", role: "fan" });
+    await firstResponsePromise;
   });
 
   it("preserves the existing per-file business size validation below the transfer ceiling", async () => {

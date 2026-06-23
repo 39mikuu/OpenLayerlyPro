@@ -67,14 +67,18 @@ function decodeUtf8(rawBody: Uint8Array, invalidBodyError: Error): string {
   }
 }
 
-/** Read an exact, unmodified request body while enforcing a byte limit before buffering it. */
-export async function readBoundedRawBody(request: Request, maxBytes: number): Promise<Buffer> {
+export function assertContentLengthWithinLimit(request: Request, maxBytes: number): void {
   assertMaxBytes(maxBytes);
 
   const declaredLength = parseContentLength(request.headers.get("content-length"));
   if (declaredLength !== null && declaredLength > maxBytes) {
     throw new RequestBodyTooLargeError();
   }
+}
+
+/** Read an exact, unmodified request body while enforcing a byte limit before buffering it. */
+export async function readBoundedRawBody(request: Request, maxBytes: number): Promise<Buffer> {
+  assertContentLengthWithinLimit(request, maxBytes);
 
   if (request.body === null) return Buffer.alloc(0);
 
@@ -156,8 +160,7 @@ export async function readTextWithLimit(request: Request, maxBytes: number): Pro
   return decodeUtf8(rawBody, new InvalidTextBodyError());
 }
 
-export async function readFormDataWithLimit(request: Request, maxBytes: number): Promise<FormData> {
-  const rawBody = await readBoundedRawBody(request, maxBytes);
+export async function parseFormDataBody(request: Request, rawBody: Uint8Array): Promise<FormData> {
   const boundedRequest = new Request(request.url, {
     method: request.method,
     headers: new Headers(request.headers),
@@ -169,6 +172,10 @@ export async function readFormDataWithLimit(request: Request, maxBytes: number):
   } catch {
     throw new InvalidMultipartBodyError();
   }
+}
+
+export async function readFormDataWithLimit(request: Request, maxBytes: number): Promise<FormData> {
+  return parseFormDataBody(request, await readBoundedRawBody(request, maxBytes));
 }
 
 export const MULTIPART_TRANSFER_OVERHEAD_BYTES = 256 * 1024;

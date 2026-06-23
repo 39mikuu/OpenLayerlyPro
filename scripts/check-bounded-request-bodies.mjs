@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
 const BODY_METHODS = new Set(["json", "text", "formData"]);
-const REQUEST_NAMES = new Set(["req", "request"]);
+const HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]);
 const ROUTE_FILE_PATTERN = /^route\.(?:[cm]?[jt]sx?)$/;
 
 async function collectRouteFiles(root) {
@@ -19,6 +19,117 @@ async function collectRouteFiles(root) {
   return files;
 }
 
+function unwrapExpression(node) {
+  let current = node;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isPartiallyEmittedExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function routeHandlerName(node) {
+  if (ts.isFunctionDeclaration(node) && node.name && HTTP_METHODS.has(node.name.text)) {
+    return node.name.text;
+  }
+
+  if (
+    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+    ts.isVariableDeclaration(node.parent) &&
+    ts.isIdentifier(node.parent.name) &&
+    HTTP_METHODS.has(node.parent.name.text)
+  ) {
+    return node.parent.name.text;
+  }
+
+  return null;
+}
+
+function collectRouteHandlers(sourceFile) {
+  const handlers = [];
+
+  function visit(node) {
+    const name = routeHandlerName(node);
+    if (name) handlers.push({ name, node });
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return handlers;
+}
+
+function isAliasExpression(expression, aliases) {
+  const unwrapped = unwrapExpression(expression);
+  return ts.isIdentifier(unwrapped) && aliases.has(unwrapped.text);
+}
+
+function collectRequestAliases(handler) {
+  const firstParameter = handler.parameters[0];
+  if (!firstParameter || !ts.isIdentifier(firstParameter.name)) return new Set();
+
+  const aliases = new Set([firstParameter.name.text]);
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+
+    function visit(node) {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer &&
+        isAliasExpression(node.initializer, aliases) &&
+        !aliases.has(node.name.text)
+      ) {
+        aliases.add(node.name.text);
+        changed = true;
+      }
+
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isIdentifier(node.left) &&
+        isAliasExpression(node.right, aliases) &&
+        !aliases.has(node.left.text)
+      ) {
+        aliases.add(node.left.text);
+        changed = true;
+      }
+
+      ts.forEachChild(node, visit);
+    }
+
+    if (handler.body) visit(handler.body);
+  }
+
+  return aliases;
+}
+
+function getBodyRead(call, aliases) {
+  const callee = unwrapExpression(call.expression);
+  let target;
+  let method;
+
+  if (ts.isPropertyAccessExpression(callee)) {
+    target = unwrapExpression(callee.expression);
+    method = callee.name.text;
+  } else if (ts.isElementAccessExpression(callee)) {
+    target = unwrapExpression(callee.expression);
+    const argument = callee.argumentExpression && unwrapExpression(callee.argumentExpression);
+    if (argument && ts.isStringLiteralLike(argument)) method = argument.text;
+  }
+
+  if (!method || !BODY_METHODS.has(method) || !target || !ts.isIdentifier(target)) return null;
+  if (!aliases.has(target.text)) return null;
+  return { requestName: target.text, method };
+}
+
 export function findDirectBodyReads(source, fileName = "route.ts") {
   const sourceFile = ts.createSourceFile(
     fileName,
@@ -29,24 +140,28 @@ export function findDirectBodyReads(source, fileName = "route.ts") {
   );
   const violations = [];
 
-  function visit(node) {
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-      const target = node.expression.expression;
-      const method = node.expression.name.text;
-      if (ts.isIdentifier(target) && REQUEST_NAMES.has(target.text) && BODY_METHODS.has(method)) {
-        const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-        violations.push({
-          line: position.line + 1,
-          column: position.character + 1,
-          requestName: target.text,
-          method,
-        });
+  for (const { node: handler } of collectRouteHandlers(sourceFile)) {
+    const aliases = collectRequestAliases(handler);
+    if (aliases.size === 0) continue;
+
+    function visit(node) {
+      if (ts.isCallExpression(node)) {
+        const bodyRead = getBodyRead(node, aliases);
+        if (bodyRead) {
+          const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+          violations.push({
+            line: position.line + 1,
+            column: position.character + 1,
+            ...bodyRead,
+          });
+        }
       }
+      ts.forEachChild(node, visit);
     }
-    ts.forEachChild(node, visit);
+
+    if (handler.body) visit(handler.body);
   }
 
-  visit(sourceFile);
   return violations;
 }
 
@@ -66,7 +181,7 @@ export async function checkRouteTree(root) {
 }
 
 async function main() {
-  const root = process.argv[2] ?? "src/app/api";
+  const root = process.argv[2] ?? "src/app";
   const violations = await checkRouteTree(root);
   if (violations.length === 0) {
     console.log(`Bounded request-body check passed (${path.resolve(root)})`);
