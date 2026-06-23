@@ -50,6 +50,11 @@ describeWithDatabase("pending payment migration and remediation", () => {
     await admin.unsafe(`create database "${databaseName}"`);
     db = postgres(testUrl.toString(), { max: 1, onnotice: () => {} });
     await db.unsafe(`
+      create table users (
+        id uuid primary key,
+        email text unique not null,
+        role text not null default 'member'
+      );
       create table payment_requests (
         id uuid primary key,
         user_id uuid not null,
@@ -99,7 +104,15 @@ describeWithDatabase("pending payment migration and remediation", () => {
     const tierId = randomUUID();
     const keepId = randomUUID();
     const duplicateIds = [randomUUID(), randomUUID()];
-    const actorId = randomUUID();
+    const adminActorId = randomUUID();
+    const memberActorId = randomUUID();
+    const missingActorId = randomUUID();
+    await db`
+      insert into users (id, email, role)
+      values
+        (${adminActorId}, ${`admin-${adminActorId}@example.test`}, 'admin'),
+        (${memberActorId}, ${`member-${memberActorId}@example.test`}, 'member')
+    `;
     for (const id of [keepId, ...duplicateIds]) {
       await db`
         insert into payment_requests (id, user_id, tier_id, status)
@@ -134,6 +147,31 @@ describeWithDatabase("pending payment migration and remediation", () => {
     `;
     expect(beforeApply.every((row) => row.status === "pending_review")).toBe(true);
 
+    for (const invalidActorId of [missingActorId, memberActorId]) {
+      const rejected = await runRemediation(testUrl.toString(), [
+        "--keep",
+        keepId,
+        "--resolve",
+        "cancelled",
+        "--apply",
+        "--actor-id",
+        invalidActorId,
+        "--reason",
+        "Reviewed duplicate pending requests",
+      ]);
+      expect(rejected.code).not.toBe(0);
+      expect(rejected.stderr).toContain("Actor must reference an existing admin user");
+
+      const unchangedRows = await db`
+        select id, status, reviewed_by from payment_requests order by id
+      `;
+      expect(unchangedRows.every((row) => row.status === "pending_review")).toBe(true);
+      expect(unchangedRows.every((row) => row.reviewed_by === null)).toBe(true);
+      await expect(db`select count(*)::integer as count from audit_events`).resolves.toMatchObject([
+        { count: 0 },
+      ]);
+    }
+
     const applied = await runRemediation(testUrl.toString(), [
       "--keep",
       keepId,
@@ -141,7 +179,7 @@ describeWithDatabase("pending payment migration and remediation", () => {
       "cancelled",
       "--apply",
       "--actor-id",
-      actorId,
+      adminActorId,
       "--reason",
       "Reviewed duplicate pending requests",
     ]);
@@ -167,7 +205,7 @@ describeWithDatabase("pending payment migration and remediation", () => {
     `;
     expect(audits).toHaveLength(2);
     expect(audits.every((event) => event.action === "dedupe_pending_payment")).toBe(true);
-    expect(audits.every((event) => event.actor_id === actorId)).toBe(true);
+    expect(audits.every((event) => event.actor_id === adminActorId)).toBe(true);
     expect(audits.every((event) => event.after_json.keptRequestId === keepId)).toBe(true);
 
     const repeated = await runRemediation(testUrl.toString(), [
@@ -177,7 +215,7 @@ describeWithDatabase("pending payment migration and remediation", () => {
       "cancelled",
       "--apply",
       "--actor-id",
-      actorId,
+      adminActorId,
       "--reason",
       "Reviewed duplicate pending requests",
     ]);

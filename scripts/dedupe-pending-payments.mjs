@@ -58,6 +58,19 @@ try {
     process.exitCode = conflicts.length === 0 ? 0 : 2;
   } else {
     const summary = await sql.begin(async (tx) => {
+      if (options.apply) {
+        const [actor] = await tx`
+          select id
+            from users
+           where id = ${options.actorId}
+             and role = 'admin'
+           limit 1
+        `;
+        if (!actor) {
+          throw new Error(`Actor must reference an existing admin user: ${options.actorId}`);
+        }
+      }
+
       const [target] = await tx`
       select id, user_id, tier_id
         from payment_requests
