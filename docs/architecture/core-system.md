@@ -66,10 +66,11 @@ src/
 
 - **正确码优先**：任何失败计数或 wrong-attempt limiter 都不得在比较正确码前返回 429。
 - **错误后限流**：verify 的 IP、email+IP、unresolved 桶只在核心确认错误后记账；正确码不消费也不受这些桶影响。
-- **高熵验证码**：默认至少 9 位 uppercase Crockford base32；生成、规范化、API schema、UI、i18n 与测试同源。
+- **高熵验证码**：默认至少 16 位 uppercase Crockford base32（80 bit）；安全性不依赖 wrong-attempt limiter 真正封顶比较次数。
 - **request-code 无纯 email 阻断**：删除纯 email 小时 429 与 cooldown；保留 IP 主门禁、真实发送 email+IP 预算、非阻断并发安全 dedupe。
 - **email identity**：先 `trim().toLowerCase()`，再使用 keyed HMAC-SHA-256 派生 limiter/dedupe key；`hashtext` 只可用于 advisory lock 槽位。
-- **投递一致性**：同一 email 并发只允许一码一封；code 与 durable task/outbox 原子创建，或同步 SMTP 失败可靠补偿。
+- **投递一致性**：同一 email 并发只允许一码一个 encrypted durable task；任务每次执行/重试前确认 codeId 仍为该 email 最新有效 code，stale task 成功 no-op。
+- **任务敏感载荷**：验证码明文不得出现在 task JSON、日志或后台任务详情中，必须加密存储。
 
 权威实施规范见 [../handoff/harden-s4-auth-rate-limiting.md](../handoff/harden-s4-auth-rate-limiting.md)。在实现 PR 合并前，上述 S4 条目不得标记为已实现。
 
