@@ -32,16 +32,28 @@
 
 - 上传时**按真实字节内容嗅探**类型(magic number;栅格图由 sharp 解码结果确定),得到**权威 content type**。
 - 数据库 `mimeType` 与 storage `contentType` **只允许**写入服务端确定的类型,**永不**写入 `file.name` 之外的客户端 `file.type`。
-- **三者一致性**:扩展名 ↔ 嗅探类型 ↔(栅格)重编码输出类型,三者必须落在同一 purpose 白名单内且彼此相符;任一不符 → 拒绝(`unsupportedFileType`),不做「猜测纠正」。
+- **权威判定 = 嗅探类型**,经**显式输入→输出转换矩阵**(§2 表)决定落盘格式/MIME/扩展名;**扩展名只作上传前的廉价预过滤**(不在 purpose 扩展名白名单 → 早拒),**不参与**最终类型决策、不做「按扩展名猜测纠正」。嗅探类型 ∉ 该 purpose 的矩阵输入集 → 拒绝(`unsupportedFileType`)。
 
-### 2. 栅格图片 purpose 强制重编码(artist_avatar / payment_qr / payment_proof / content_image / cover / thumbnail）
+### 2. 栅格图片 purpose 强制重编码（显式转换矩阵）
 
-- 接受的嗅探类型**仅** `{ image/jpeg, image/png, image/webp }`(`content_image` 另议 GIF,见 §3);**显式拒绝 `image/svg+xml`、`text/html`、以及任何非栅格/未知类型**。SVG 在**任何** purpose 都不接受。
-- **强制经 sharp 解码→重编码**为规范输出(同族格式即可:jpeg/png/webp),从而:
-  - 剥离尾部/夹带字节(polyglot)、EXIF/元数据(附带隐私收益)、任何非像素负载;
-  - 输出字节 = 落盘字节,`mimeType` = **输出格式**的规范类型。
-- sharp 加固:`failOn` 从严、设 `limitInputPixels`(防解压炸弹)、配合既有 byte 上限;解码失败 → `imageInvalid` 拒绝。
-- **不再**把原始上传字节落盘;落盘的是重编码产物。
+涉及 purpose:`artist_avatar / payment_qr / payment_proof / content_image / cover / thumbnail`。
+
+**输入→输出转换矩阵(权威,唯一真相源)**:
+
+| 嗅探输入类型 | 允许的 purpose | sharp 输出 | 落盘 mimeType / 扩展名 |
+|---|---|---|---|
+| `image/jpeg` | 全部栅格 purpose | re-encode JPEG(strip metadata) | `image/jpeg` / `.jpg` |
+| `image/png` | 全部栅格 purpose | re-encode PNG | `image/png` / `.png` |
+| `image/webp`(静态/动图) | 全部栅格 purpose | re-encode WebP(保留动/静) | `image/webp` / `.webp` |
+| `image/gif` | **仅 `content_image`** | re-encode **动图 WebP** | `image/webp` / `.webp` |
+| 其它(svg/html/tiff/bmp/avif/heic/未知…) | —— | —— | **拒绝 `unsupportedFileType`** |
+
+- 落盘 `mimeType`、storage `contentType`、objectKey 扩展名**一律取矩阵输出列**(非原扩展名、非客户端 `file.type`);原始 `originalName` 仅作展示保留。
+- **强制经 sharp 解码→重编码**:剥离尾部/夹带字节(polyglot)、EXIF/元数据(隐私收益)、任何非像素负载;**落盘的是重编码产物,绝不落原始上传字节**。
+- **解码资源上限(防解压炸弹 / 帧炸弹)**:
+  - `limitInputPixels` 限单帧像素;
+  - **动画输入额外限制**:`metadata().pages`(帧数)≤ `IMAGE_MAX_FRAMES`(env,默认如 300)、**总解码像素**(`pages × width × height`)≤ `IMAGE_MAX_TOTAL_PIXELS`(env);**先读 metadata 预检超限即拒**,再全量解码;
+  - `failOn` 从严;配合既有 byte 上限。任一超限/解码失败 → `imageInvalid`/`fileTooLarge` 拒绝(不落盘、不写库)。
 
 ### 3. content_image 的 GIF 处理（已锁定：动图 WebP）
 
@@ -54,21 +66,36 @@
 - **始终 attachment 直出**(`Content-Disposition: attachment`),**永不 inline**——唯一例外是 ADR 0007 既有的**白名单内联视频**(受控 `Content-Type`、Range 流式),该例外保留。
 - 不可重编码 → 安全性由「attachment + 文件响应 CSP(§5)+ nosniff + 不采信客户端 MIME」保证。
 
-### 5. 文件响应脚本隔离(下载路由,纵深防御）
+### 5. 文件响应脚本隔离（按服务层锁定实现边界）
 
-- **所有**文件字节响应(`/api/files/[id]/download` 及 `/download/[fileId]`、以及 S3 签名直出的等价 disposition)统一附加**强限制 CSP**:
-  `Content-Security-Policy: default-src 'none'; script-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox` —— 即便有坏文件漏网,也无法执行脚本/插件/被 iframe 嵌入。保留既有 `X-Content-Type-Options: nosniff`、`Cache-Control: private, no-store`。
-- **`payment_proof` 改为 attachment(不再 inline,已锁定）**:管理员查看付款凭证不需要同源内联渲染;attachment 彻底消除「管理员会话内同源渲染」这一最高危面。后台 UI 以下载方式呈现(从 `INLINE_PURPOSES` 移除 `payment_proof`)。
-- `content_image`(正文插图,必须 inline 给所有会员)与 `cover/thumbnail/avatar/qr` 预览**保留 inline**,但此时它们已是「重编码后的纯栅格 + 服务端权威 MIME + 上述 CSP」,渲染安全。
-- S3 签名直出路径的 `disposition/contentType` 必须与上述每 purpose 策略一致(proof=attachment、权威 contentType),不得绕过。
+> 关键约束:文件可能由**应用直接流式**(local 驱动 / 私有视频)或由 **S3 预签名 URL 直出**(浏览器直连 S3)送达。**S3 预签名响应不经过应用,应用无法在其上设置 `Content-Security-Policy` / `X-Content-Type-Options`**;S3 预签名仅支持有限的 `response-content-type` / `response-content-disposition` 覆盖。因此安全保证**不得依赖 CSP**,CSP 只作可得即用的纵深加固。
+
+- **首要保证(全服务层一致,不依赖响应头)**:§2 重编码后的**纯净字节** + **权威 content-type** + **disposition**。proof 与一切非内联 purpose = `attachment`;内联 purpose 的字节本身已无脚本。
+- **应用直接流式响应**(`/api/files/[id]/download`、`/download/[fileId]` 的 `mode:stream`):由统一响应头函数设置
+  `Content-Security-Policy: default-src 'none'; script-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox` + `X-Content-Type-Options: nosniff` + `Cache-Control: private, no-store` + 正确 disposition/权威 content-type。
+- **S3 预签名直出**:应用在生成预签名 URL 时**必须**设 `response-content-disposition`(proof 及非内联=attachment)与 `response-content-type`=权威类型;并在 **PUT 时**把对象自身的 `Content-Type`/`Content-Disposition` 也设为权威值(双保险)。**CSP/nosniff 在此层不可得**——这是**显式记录的边界**,其安全由「重编码纯净字节 + 权威类型 + attachment」承担。
+- **CDN / 应用前置代理(推荐部署形态)**:若文件域前置 CDN 或反代,**应在该层为文件路径统一注入** `Content-Security-Policy` + `X-Content-Type-Options: nosniff`,从而对 local 与 S3 两种 origin 都补齐 CSP。ADR 推荐生产以 CDN/代理承载文件响应头;无 CDN 时 S3-direct 按上一条的残余边界运行(已由重编码兜底)。
+- **`payment_proof` = attachment(从 `INLINE_PURPOSES` 移除,已锁定)**:无论哪一层都消除「管理员会话内同源渲染」最高危面。
+- `content_image`(正文插图,内联给会员)与 `cover/thumbnail/avatar/qr` 预览保留内联,字节已是重编码纯栅格 + 权威 MIME;CSP 按其所在服务层(应用流式直接得到、S3 经 CDN 得到)。
 
 ### 6. 既有数据 remediation（已锁定：强制 backfill）
 
 - §5 的服务端硬化对存量**立即生效**,是第一道兜底;但本 ADR 进一步**要求一次性强制 backfill**(不止兜底):
   - 对存量栅格图(image purpose)**重新嗅探真实字节并按 §2/§3 重编码**,改写 `mimeType` 为权威输出类型、落盘为重编码产物;
-  - 嗅探为 **svg/html/非栅格**的存量行 → **隔离并告警**(标记 + 后台可见),**不静默删除**财务/凭证文件(对齐 ADR 0010 的「不自动改财务」原则);需管理员审阅后处置。
-  - backfill 以独立脚本 + 进度/审计执行,**幂等**、可分批、dry-run 默认;不可重编码的 `content_attachment` 不动(其安全性由 attachment + CSP 保证)。
+  - 嗅探为 **svg/html/非栅格**的存量行 → **进入 quarantine 状态**(见下),**不静默删除**财务/凭证文件(对齐 ADR 0010「不自动改财务」原则);
+  - backfill 以独立脚本 + 进度/审计执行,**幂等**、可分批、dry-run 默认;不可重编码的 `content_attachment` 不动(安全性由 attachment + CSP 承担);
   - 升级文档写明:backfill 在部署新版本后运行;运行前后均受 §5 服务端硬化保护。
+
+**quarantine 的持久化状态与访问规则(锁定)**:
+
+- **持久化状态**:`files` 加 `quarantined_at timestamptz NULL` + `quarantine_reason text NULL`(`quarantined_at IS NOT NULL` 即隔离)。状态是**行级持久**的,不靠运行时推断。
+- **谁会进入**:仅 backfill 发现的「存量 svg/html/非栅格」行;**新上传永不进入 quarantine**(新上传不合规直接拒绝、根本不落盘)。
+- **访问规则**:
+  - 下载/serving 路由对 `quarantined_at` 非空的文件**一律拒绝**(对所有人,含普通后台查看)——返回 `410 Gone`,**绝不**出字节、绝不签发 S3 预签名 URL;
+  - 隔离文件**不参与**任何渲染/引用/内联;
+  - 仅在后台**「隔离文件」专用列表**可见其元数据 + `quarantine_reason`(不直出内容);
+  - **不自动删除**;清除/导出需管理员**显式操作**(如需取证下载,走显式 override + 强制 attachment + CSP,留审计)。
+- backfill 对每个 quarantine 行写审计事件(file id / purpose / 原 mimeType / 嗅探结果 / reason)。
 
 ### 7. 不变的边界
 
@@ -92,6 +119,8 @@
 - ⚠️ **后台 proof 查看 UX 变化**:inline→attachment,后台需以下载/受控预览呈现。
 - ⚠️ **存量数据**:旧 `mimeType` 仍为客户端值,靠 §5 服务端硬化兜底;如需彻底纠正需 §6 backfill。
 - ⚠️ 所有 purpose 的落盘/直出都必须经统一入口与统一响应头函数——**审计每一处 `saveUploadedFile`/`saveStreamedFile` 调用与每一处文件字节响应**,确保无旁路。
+- ⚠️ **schema 变更**:`files` 加 `quarantined_at` / `quarantine_reason`(迁移);新增 env `IMAGE_MAX_FRAMES` / `IMAGE_MAX_TOTAL_PIXELS`(有界正整数,越界拒绝)。
+- ⚠️ **CSP 依赖部署形态**:S3-direct 无法承载 CSP/nosniff,完整 CSP 覆盖需 CDN/前置代理;无 CDN 时该面由重编码 + attachment + 权威类型兜底(已记录的残余边界)。
 
 ## 已锁定决策（owner 确认 2026-06-25）
 
@@ -101,12 +130,13 @@
 
 ## 必须覆盖的测试
 
-- 上传 `evil.png`(实体 SVG / 声明 `image/svg+xml`)→ **拒绝**(不落盘、不写库);声明 `text/html` 的 polyglot → 拒绝或重编码后为纯栅格、`mimeType` 为输出类型,**绝不**为 svg/html。
-- 每栅格 purpose:上传合法 jpeg/png/webp → 落盘为**重编码产物**、`mimeType`=输出类型;EXIF 被剥离;尾部夹带字节被去除(落盘 sha 与原始不同)。
-- 三者不一致(`.png` 扩展名 + 实体 jpeg / 声明 webp)→ 按策略拒绝,不静默纠正。
-- 下载响应:image/attachment 均带 `script-src 'none'; object-src 'none'; sandbox` CSP + `nosniff`;`payment_proof` 为 `attachment`;`content_image` 为 `inline` 且为纯栅格类型;S3 签名直出 disposition/contentType 与策略一致。
-- 解压炸弹(超大 pixel)→ `limitInputPixels` 拒绝;损坏图片 → `imageInvalid`。
+- 上传 `evil.png`(实体 SVG / 声明 `image/svg+xml`)→ **拒绝**(不落盘、不写库);声明 `text/html` 的 polyglot → 拒绝或重编码后为纯栅格、`mimeType` 为矩阵输出类型,**绝不**为 svg/html。
+- **转换矩阵**:每个矩阵输入(jpeg/png/webp,content_image 的 gif)→ 落盘为对应输出格式、`mimeType`/objectKey 扩展名=输出列;矩阵外输入(tiff/bmp/avif/svg/html)→ 拒绝。`.png` 扩展名 + 实体 jpeg → 权威判定按嗅探(jpeg),落盘为 jpeg 输出(不按扩展名纠正、不拒绝)。
+- 每栅格 purpose:合法 jpeg/png/webp → 落盘为**重编码产物**、EXIF 被剥离、尾部夹带字节去除(落盘 sha ≠ 原始)。
+- GIF(content_image)→ 动图 WebP、`mimeType=image/webp`、动画保留;其它 purpose 的 gif → 拒绝。
+- **帧炸弹 / 解压炸弹**:超 `IMAGE_MAX_FRAMES` 帧的动图、或总解码像素超 `IMAGE_MAX_TOTAL_PIXELS`、或单帧超 `limitInputPixels` → **metadata 预检即拒**,不进全量解码;损坏图片 → `imageInvalid`。env 越界拒绝(非 clamp)。
+- **响应分层**:应用流式响应带 `script-src 'none'; object-src 'none'; sandbox` CSP + `nosniff` + 正确 disposition;S3 预签名 URL 带 `response-content-disposition`(proof/非内联=attachment)+ `response-content-type`=权威类型(断言 CSP 不在 S3-direct 上、由重编码+attachment 兜底);`payment_proof` 任何层均 attachment;`content_image` 内联且为纯栅格类型。
 - content_attachment 仍 attachment(白名单视频内联例外保留),MIME 为扩展名推导而非客户端值。
-- GIF(content_image)上传 → 落盘为动图 WebP、`mimeType=image/webp`、动画保留。
-- **backfill 脚本**:存量栅格图被重嗅探/重编码、`mimeType` 改写为权威值;存量 svg/html 行被隔离告警**不删除**;脚本幂等、dry-run 默认、可分批、有审计。
+- **backfill 脚本**:存量栅格图被重嗅探/重编码、`mimeType` 改写为权威值;脚本幂等、dry-run 默认、可分批、有审计。
+- **quarantine**:存量 svg/html 行 backfill 后 `quarantined_at` 置值;下载/serving 对其返回 **410**、**不签发 S3 URL**、**不删除**;仅后台隔离列表可见元数据;普通后台查看也取不到字节。
 - 回归:既有上传/下载/视频 Range/内联插图正常。
