@@ -14,6 +14,7 @@ import {
 import { ApiError } from "@/lib/api";
 import { addDays } from "@/lib/dates";
 import { pickMembershipAudit, recordAudit } from "@/modules/audit";
+import { advanceManualReminderAfterGrant } from "@/modules/membership/renewal-reminders";
 
 export type ActiveMembership = {
   membership: Membership;
@@ -235,6 +236,12 @@ async function grantMembershipTx(
     after: pickMembershipAudit(membership),
     correlationId: input.correlationId ?? randomUUID(),
     causationId: input.causationId ?? null,
+  });
+
+  await advanceManualReminderAfterGrant(tx, {
+    userId: input.userId,
+    tierId: input.tierId,
+    targetLevel: tier.level,
   });
 
   return { membership, tier };

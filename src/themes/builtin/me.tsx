@@ -1,6 +1,7 @@
 import { CalendarDays, FileText, Home, Mail, Newspaper, Sparkles } from "lucide-react";
 import Link from "next/link";
 
+import { RenewalReminderToggle } from "@/components/membership/renewal-reminder-toggle";
 import { SubscriptionCancelButton } from "@/components/payment/subscription-cancel-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,9 +46,15 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
                 {t("me.validUntil", { date: formatDate(view.membership.endsAt) })}
               </p>
             </div>
-            <Button asChild>
-              <Link href="/tiers">{t("me.renew")}</Link>
-            </Button>
+            <div className="flex flex-col gap-2 sm:items-end">
+              <Button asChild>
+                <Link href="/tiers">{t("me.renew")}</Link>
+              </Button>
+              <RenewalReminderToggle
+                tierId={view.membership.tierId}
+                enabled={view.membership.renewalReminderEnabled}
+              />
+            </div>
           </div>
         </section>
       ) : (
