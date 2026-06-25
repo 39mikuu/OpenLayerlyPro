@@ -256,10 +256,7 @@ export async function dispatchPaymentProviderEvent(eventRowId: string): Promise<
 
   try {
     const event = revivePaymentEvent(claimed.payloadJson);
-    const isLegacyOneTimeEvent =
-      event.type === "paid" ||
-      event.type === "expired" ||
-      ((event.type === "refunded" || event.type === "disputed") && !event.providerInvoiceRef);
+    const isLegacyOneTimeEvent = event.type === "paid" || event.type === "expired";
 
     if (isLegacyOneTimeEvent) {
       if (event.type === "paid") await confirmAutoPayment(claimed.provider, event);

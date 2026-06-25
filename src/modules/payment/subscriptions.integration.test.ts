@@ -451,6 +451,233 @@ describeWithDatabase("Stripe subscription integration", () => {
     ).resolves.toHaveLength(1);
   });
 
+  it("resolves a subscription dispute without invoiceRef and revokes the paid period", async () => {
+    const { user, subscription } = await seedSubscription();
+    const paid = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_dispute_resolved",
+      providerPaymentRef: "pi_dispute_resolved",
+    });
+    await db.transaction((tx) => applyPaidInvoice(tx, "stripe", paid));
+    providerMocks.resolveInvoiceByPaymentIntent.mockResolvedValue({
+      providerInvoiceRef: paid.providerInvoiceRef,
+      providerSubscriptionRef: subscription.providerSubscriptionRef,
+      localSubscriptionId: subscription.id,
+    });
+    await persistPaymentProviderEvent("stripe", {
+      type: "disputed",
+      paymentRef: paid.providerPaymentRef!,
+      providerEventId: "evt_dispute_without_invoice",
+      providerCreatedAt: new Date("2026-02-02T00:00:00.000Z"),
+    });
+    const [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_dispute_without_invoice"));
+
+    await dispatchPaymentProviderEvent(row!.id);
+
+    expect(providerMocks.resolveInvoiceByPaymentIntent).toHaveBeenCalledWith(
+      paid.providerPaymentRef,
+    );
+    const [request] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.providerInvoiceRef, paid.providerInvoiceRef));
+    const [membership] = await db.select().from(memberships).where(eq(memberships.userId, user.id));
+    expect(request?.status).toBe("reversed");
+    expect(membership?.status).toBe("revoked");
+  });
+
+  it("falls back to one-time reversal when a refund cannot resolve an invoice", async () => {
+    const { user, tier } = await seed();
+    const [request] = await db
+      .insert(paymentRequests)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        flow: "auto",
+        status: "pending_payment",
+        provider: "stripe",
+        providerRef: "cs_one_time_refund",
+        amountMinor: 900,
+        currency: "usd",
+        amountLabel: "$9",
+        durationDays: 31,
+      })
+      .returning();
+    const oneTimePaid = {
+      type: "paid" as const,
+      providerRef: "cs_one_time_refund",
+      paymentRef: "pi_one_time_refund",
+      requestId: request!.id,
+      providerEventId: "evt_one_time_paid",
+      amountMinor: 900,
+      currency: "usd",
+    };
+    await persistPaymentProviderEvent("stripe", oneTimePaid);
+    await persistPaymentProviderEvent("stripe", oneTimePaid);
+    let [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_one_time_paid"));
+    await Promise.all([
+      dispatchPaymentProviderEvent(row!.id),
+      dispatchPaymentProviderEvent(row!.id),
+    ]);
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(1);
+
+    providerMocks.resolveInvoiceByPaymentIntent.mockResolvedValue(null);
+    await persistPaymentProviderEvent("stripe", {
+      type: "refunded",
+      paymentRef: "pi_one_time_refund",
+      providerEventId: "evt_one_time_refund",
+    });
+    [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_one_time_refund"));
+    await dispatchPaymentProviderEvent(row!.id);
+
+    expect(providerMocks.resolveInvoiceByPaymentIntent).toHaveBeenCalledWith("pi_one_time_refund");
+    const [stored] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, request!.id));
+    const [membership] = await db
+      .select()
+      .from(memberships)
+      .where(eq(memberships.id, stored!.grantedMembershipId!));
+    expect(stored?.status).toBe("reversed");
+    expect(membership?.status).toBe("revoked");
+  });
+
+  it("keeps paid entitlement when invoice.paid arrives before subscription.created", async () => {
+    const { user, subscription } = await seedSubscription();
+    const paid = paidInvoiceEvent({ localSubscriptionId: subscription.id });
+    await db.transaction((tx) => applyPaidInvoice(tx, "stripe", paid));
+    await persistPaymentProviderEvent("stripe", {
+      type: "subscription_activated",
+      localSubscriptionId: subscription.id,
+      providerSubscriptionRef: subscription.providerSubscriptionRef!,
+      providerCustomerRef: "cus_late_created",
+      currentPeriodEndsAt: paid.lines[0]!.periodEnd,
+      cancelAtPeriodEnd: false,
+      providerEventId: "evt_late_subscription_created",
+      providerCreatedAt: new Date("2026-02-01T00:00:20.000Z"),
+    });
+    const [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_late_subscription_created"));
+    await dispatchPaymentProviderEvent(row!.id);
+
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("grants a paid invoice even when subscription.deleted arrived first", async () => {
+    const { user, subscription } = await seedSubscription();
+    await persistPaymentProviderEvent("stripe", {
+      type: "subscription_canceled",
+      providerSubscriptionRef: subscription.providerSubscriptionRef!,
+      canceledAt: new Date("2026-01-31T23:59:00.000Z"),
+      providerEventId: "evt_canceled_before_paid",
+      providerCreatedAt: new Date("2026-01-31T23:59:00.000Z"),
+    });
+    const [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_canceled_before_paid"));
+    await dispatchPaymentProviderEvent(row!.id);
+
+    const paid = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_after_canceled",
+      providerCreatedAt: new Date("2026-02-01T00:00:10.000Z"),
+    });
+    await db.transaction((tx) => applyPaidInvoice(tx, "stripe", paid));
+
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("does not let an old failed event replay roll back a later paid invoice", async () => {
+    const { user, subscription } = await seedSubscription();
+    const failedAt = new Date("2026-02-01T00:00:00.000Z");
+    await persistPaymentProviderEvent("stripe", {
+      type: "subscription_payment_failed",
+      localSubscriptionId: subscription.id,
+      providerSubscriptionRef: subscription.providerSubscriptionRef!,
+      providerInvoiceRef: "in_failed_then_paid",
+      providerEventId: "evt_failed_first",
+      providerCreatedAt: failedAt,
+    });
+    let [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_failed_first"));
+    await dispatchPaymentProviderEvent(row!.id);
+
+    const paid = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_failed_then_paid",
+      providerCreatedAt: new Date("2026-02-01T00:01:00.000Z"),
+    });
+    await db.transaction((tx) => applyPaidInvoice(tx, "stripe", paid));
+
+    await persistPaymentProviderEvent("stripe", {
+      type: "subscription_payment_failed",
+      localSubscriptionId: subscription.id,
+      providerSubscriptionRef: subscription.providerSubscriptionRef!,
+      providerInvoiceRef: "in_failed_then_paid",
+      providerEventId: "evt_failed_replay",
+      providerCreatedAt: failedAt,
+    });
+    [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_failed_replay"));
+    await dispatchPaymentProviderEvent(row!.id);
+
+    const [stored] = await db.select().from(subscriptions);
+    expect(stored?.status).toBe("active");
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("grants back-to-back renewal periods with no overlap or gap", async () => {
+    const { user, subscription } = await seedSubscription();
+    const first = paidInvoiceEvent({ localSubscriptionId: subscription.id });
+    const second = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_renewal_second",
+      providerPaymentRef: "pi_renewal_second",
+      providerEventId: "evt_renewal_second",
+      providerCreatedAt: new Date("2026-03-01T00:00:10.000Z"),
+      lines: [
+        {
+          providerPriceRef: "price_monthly_snapshot",
+          periodStart: first.lines[0]!.periodEnd,
+          periodEnd: new Date("2026-04-01T00:00:00.000Z"),
+          amountMinor: 900,
+        },
+      ],
+    });
+    await db.transaction((tx) => applyPaidInvoice(tx, "stripe", first));
+    await db.transaction((tx) => applyPaidInvoice(tx, "stripe", second));
+
+    const rows = await db.select().from(memberships).where(eq(memberships.userId, user.id));
+    rows.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.endsAt).toEqual(rows[1]!.startsAt);
+  });
+
   it("dispatches identical provider event ids independently by inbox row UUID", async () => {
     const providerEventId = `evt_shared_${randomUUID()}`;
     const event = {
