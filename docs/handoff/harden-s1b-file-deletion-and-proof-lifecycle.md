@@ -69,21 +69,30 @@
 - 前提:**rejected/cancelled 转换必定入队** cleanup task(§3.2 入队时机),否则脱离的旧 proof 无人回收 → 务必保证该入队存在(测试覆盖)。
 - 新 proof:请求回到 pending_review,被保留;待其终态再各自排单。
 
-## 4. 每用户凭证配额（防存储滥用,持久计数 + 并发原子)
+## 4. 每用户凭证配额（预留模型:防并发超额 + 不误扣失败上传)
 
-- **计数源必须持久、不随文件清理消失**:**不要**数 `files`(清理后行被删 → 计数回退 → 可绕过)。改用**只追加、不随 proof 删除而消失**的来源:新增轻量 append-only 表 `payment_proof_upload_log(id, user_id, created_at)`(或复用带 `userId` 的上传审计事件),每次成功上传 proof **追加一行**,**清理 proof 文件时不删该日志**。配额 = `count(*) where user_id=u and created_at > now - 24h`。
-- **并发原子**:check-then-insert 有 TOCTOU(两个并发上传都过检查再各插一条 → 超额)。在路由(鉴权后、`saveUploadedFile` 前)用**同一事务 + per-user advisory 锁**串行:
-  `pg_advisory_xact_lock(hashtextextended('proof-upload-quota:'||userId, 0))` → 数窗口内日志 → `>= PAYMENT_PROOF_MAX_PER_DAY` → `429 uploadQuotaExceeded` → 否则**插入一条日志**(同事务,与计数原子)→ 提交后再 `saveUploadedFile`。同一用户并发上传被串行,不会双双过关。
-- 与 S1a/#70 既有 per-user/IP 突发限流叠加(本配额是日累计、防长期堆积 + 不可经清理绕过)。`PAYMENT_PROOF_MAX_PER_DAY`(env,默认 20,越界拒绝)。
-- 日志表加 `(user_id, created_at)` 索引;可选周期清理超 30 天的日志行(不影响 24h 窗口)。
+> **不要**用「先插日志→提交→再上传」:那会让**失败/中断上传也消耗配额**,且与「每次成功才计数」自相矛盾。改用 **pending reservation + 短 TTL** 模型。
+
+- **持久预留表** `payment_proof_upload_reservations(id, user_id, status: 'pending'|'succeeded'|'failed', created_at, expires_at)`,索引 `(user_id, status, created_at)`。**append-only 语义**:成功记录长期保留、**不随 proof 文件清理删除**(故清理不能绕过配额)。
+- **有效配额计数** = 该用户
+  - `status='succeeded' AND created_at > now - 24h`(成功的,24h 滚动窗口)
+  - `+ status='pending' AND expires_at > now`(在途未过期的预留)。
+- **流程**:
+  1. **预留(短事务 + per-user advisory 锁)**:`pg_advisory_xact_lock(hashtextextended('proof-upload-quota:'||userId,0))` → 按上式 count 有效预留 → `>= PAYMENT_PROOF_MAX_PER_DAY` → `429 uploadQuotaExceeded`(不预留)→ 否则**插入一条 `pending`**(`expires_at = now + PROOF_UPLOAD_RESERVATION_TTL`,如 5 分钟)→ 提交释放锁。锁只在「count+插 pending」期间持有,**不**跨上传。
+  2. **上传**:锁外执行 `saveUploadedFile`。
+  3. **成功** → 该预留 `status='succeeded'`(计入 24h 窗口)。
+  4. **失败(catch/finally)** → 该预留 `status='failed'`(或删除)→ 立即不再计数。
+  5. **崩溃兜底**:进程在上传后、标记前崩溃 → `pending` 预留到 `expires_at` 后自动失效(count 只数未过期 pending)→ **不永久误扣**。
+- 效果:并发上传被 advisory 锁串行、各占一个 pending 槽(防超额);失败/中断不长期占额;成功在 24h 窗口内持久计数、清理不可绕过。可选周期清理超 30 天的 reservation 行(不影响窗口与在途判定)。`PAYMENT_PROOF_MAX_PER_DAY`(env,默认 20,越界拒绝);`PROOF_UPLOAD_RESERVATION_TTL` 可为常量或 env(默认 ~5 分钟,覆盖正常上传+重编码耗时)。
 
 ## 5. Schema / env / 迁移
 
-- **新增 1 张表** `payment_proof_upload_log(id, user_id, created_at)`(§4 持久配额计数源,append-only,不随 proof 清理删除;索引 `(user_id, created_at)`)。`payment_requests`/`files` 字段够用(`proofFileId` 置 null 即摘除);两阶段删除是真删行 + 异步删对象,**不加软删列**。`drizzle-kit generate` 仅应有该日志表。
+- **新增 1 张表** `payment_proof_upload_reservations(id, user_id, status:'pending'|'succeeded'|'failed', created_at, expires_at)`(§4 配额预留源,成功记录持久、不随 proof 清理删除;索引 `(user_id, status, created_at)`)。`payment_requests`/`files` 字段够用(`proofFileId` 置 null 即摘除);两阶段删除是真删行 + 异步删对象,**不加软删列**。`drizzle-kit generate` 仅应有该预留表。
 - **env**(有界正整数,越界拒绝,沿用既有写法):
   ```text
   PAYMENT_PROOF_RETENTION_DAYS    # 默认 30,rejected/cancelled 凭证宽限
-  PAYMENT_PROOF_MAX_PER_DAY       # 默认 20,每用户日上传配额
+  PAYMENT_PROOF_MAX_PER_DAY       # 默认 20,每用户日有效预留上限
+  PROOF_UPLOAD_RESERVATION_TTL_MINUTES  # 默认 5,pending 预留 TTL(常量亦可)
   ```
 - **创作者可配置站点设置**(后台 UI 可改,经 `siteSettings`/config 中心,**非 env**):
   ```text
@@ -106,8 +115,10 @@
 - 清理对象删除 task 幂等(已删=成功);保留 `payment_requests` 行与审计。
 
 **配额**
-- 用户日内第 21 次 proof 上传 → `429`;**清理了已上传的 proof 文件后再传仍计入(计数源是持久日志,不随文件删除回退)**;窗口滚动后恢复;env 越界拒绝。
-- **并发原子**:同一用户并发多次上传 → per-user advisory 锁串行,日志条数不超 `PAYMENT_PROOF_MAX_PER_DAY`(不出现两个并发都过关)。
+- 用户日内第 21 次有效预留 → `429`;**清理已上传 proof 文件后再传仍计入**(成功 reservation 持久、不随文件删除回退)。
+- **失败/中断不误扣**:上传失败 → reservation 置 `failed`/删 → 立即不计;成功 → `succeeded` 计入 24h 窗口。
+- **崩溃兜底**:插 pending 后崩溃 → 该 pending 到 `expires_at` 后不再计数(不永久占额);TTL 内重复尝试受额限。
+- **并发原子**:同一用户并发上传 → advisory 锁串行,各占一 pending 槽,有效计数不超 `PAYMENT_PROOF_MAX_PER_DAY`(不双双过关)。env 越界拒绝。
 
 **回归**:S1a 上传/下载/quarantine、`cleanupOrphanFile`、现有支付审批/反转/#49 正常。
 
@@ -133,7 +144,7 @@ base `main`,Draft 直到真实 PG + 完整 CI 全绿,关联 issue,标题 `fix(fi
 - [ ] resubmit **不立即删**旧 proof;旧 proof 经原宽限 cleanup task(脱离分支)到期回收
 - [ ] cleanup handler 按**当前**设置/env **重算 due + `deferUntil`**(设置改长顺延、改 0 保留)
 - [ ] approved/reversed 默认永久保留;创作者设置 `payment_proof_approved_retention_days`>0 时启用审计窗口清理,改回 0 即停(handler 重读、不追溯存量)
-- [ ] 配额计数源 = 持久 append-only 日志(不随 proof 清理回退);per-user advisory 锁保证并发原子;`PAYMENT_PROOF_MAX_PER_DAY`(429)、env 越界拒绝
+- [ ] 配额 = pending reservation + 短 TTL 模型:advisory 锁内 count(succeeded 24h + 未过期 pending)→ 插 pending → 上传成功标 succeeded / 失败标 failed-删 / 崩溃靠 TTL 失效;**失败上传不误扣**、并发不超额、清理不可绕过;`PAYMENT_PROOF_MAX_PER_DAY`/`PROOF_UPLOAD_RESERVATION_TTL` env 越界拒绝
 - [ ] 复用 `storage.delete_object` 两阶段范式与 dedupeKey;删除幂等
 - [ ] 真实 PG 测试齐;S1a / cleanupOrphan / 支付回归绿
 
