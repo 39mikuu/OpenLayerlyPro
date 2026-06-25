@@ -109,14 +109,16 @@ async function quarantineFile(file: FileRecord, reason: string): Promise<boolean
 async function switchRemediatedObject(input: {
   file: FileRecord;
   objectKey: string;
+  bucket: string | null;
   output: Awaited<ReturnType<typeof normalizeRasterImage>>;
   oversize: boolean;
 }): Promise<boolean> {
-  const { file, objectKey, output, oversize } = input;
+  const { file, objectKey, bucket, output, oversize } = input;
   return getDb().transaction(async (tx) => {
     const [updated] = await tx
       .update(files)
       .set({
+        bucket,
         objectKey,
         mimeType: output.mimeType,
         sizeBytes: output.sizeBytes,
@@ -231,13 +233,21 @@ async function runFileSafetyBackfillWithDb(
         continue;
       }
 
-      await storage.putObject({
+      const stored = await storage.putObject({
         objectKey: newObjectKey,
         body: output.outputBuffer,
         contentType: output.mimeType,
         contentDisposition: attachmentDisposition(file, output.ext),
       });
-      if (await switchRemediatedObject({ file, objectKey: newObjectKey, output, oversize })) {
+      if (
+        await switchRemediatedObject({
+          file,
+          objectKey: stored.objectKey,
+          bucket: stored.bucket,
+          output,
+          oversize,
+        })
+      ) {
         result.remediated += 1;
       }
     }
