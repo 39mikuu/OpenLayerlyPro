@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { getClientIp, getUserAgent, handleApiError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
-import { readJsonWithLimit } from "@/lib/request-body";
+import { assertContentLengthWithinLimit, readJsonWithLimit } from "@/lib/request-body";
 import { verifyLoginCode } from "@/modules/auth/login-code";
 import { createSession, setSessionCookie } from "@/modules/auth/session";
 import { resolveLocale } from "@/modules/i18n/server";
@@ -17,6 +17,8 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    assertContentLengthWithinLimit(req, getEnv().REQUEST_JSON_MAX_BYTES);
+    // Pre-read IP rate limiting is intentionally deferred to S4 (#66).
     const { email, code } = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,

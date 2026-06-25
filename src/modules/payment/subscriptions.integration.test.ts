@@ -27,6 +27,7 @@ import {
   paymentProviderEvents,
   paymentRequests,
   subscriptions,
+  tasks,
   users,
 } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
@@ -38,6 +39,7 @@ import {
   createSubscriptionCheckout,
   dispatchPaymentProviderEvent,
   persistPaymentProviderEvent,
+  reconcileSubscriptions,
 } from "./subscriptions";
 
 const describeWithDatabase =
@@ -303,9 +305,13 @@ describeWithDatabase("Stripe subscription integration", () => {
     const { user, subscription } = await seedSubscription();
     const event = paidInvoiceEvent({ localSubscriptionId: subscription.id });
     await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select({ id: paymentProviderEvents.id })
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
     await Promise.all([
-      dispatchPaymentProviderEvent(event.providerEventId),
-      dispatchPaymentProviderEvent(event.providerEventId),
+      dispatchPaymentProviderEvent(eventRow!.id),
+      dispatchPaymentProviderEvent(eventRow!.id),
     ]);
 
     const granted = await db.select().from(memberships).where(eq(memberships.userId, user.id));
@@ -316,5 +322,165 @@ describeWithDatabase("Stripe subscription integration", () => {
       status: "processed",
       attempts: 1,
     });
+  });
+
+  it("recovers a missing pending subscription through its checkout and paid invoice", async () => {
+    const { user, tier } = await seed();
+    const [subscription] = await db
+      .insert(subscriptions)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        status: "pending",
+        provider: "stripe",
+        providerCheckoutRef: "cs_missing_webhooks",
+        providerPriceRef: "price_monthly_snapshot",
+        expectedAmountMinor: 900,
+        expectedCurrency: "usd",
+        quantity: 1,
+      })
+      .returning();
+    const invoice = paidInvoiceEvent({
+      localSubscriptionId: subscription!.id,
+      providerSubscriptionRef: "sub_recovered",
+      providerInvoiceRef: "in_recovered",
+    });
+    providerMocks.getSubscriptionCheckoutState.mockResolvedValue({
+      status: "complete",
+      redirectUrl: null,
+      providerSubscriptionRef: "sub_recovered",
+    });
+    providerMocks.retrieveSubscription.mockResolvedValue({
+      status: "active",
+      providerSubscriptionRef: "sub_recovered",
+      providerCustomerRef: "cus_recovered",
+      currentPeriodEndsAt: invoice.lines[0]!.periodEnd,
+      cancelAtPeriodEnd: false,
+    });
+    providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([invoice]);
+
+    await expect(reconcileSubscriptions()).resolves.toBe(1);
+
+    const [updated] = await db.select().from(subscriptions);
+    expect(updated).toMatchObject({
+      providerSubscriptionRef: "sub_recovered",
+      providerCustomerRef: "cus_recovered",
+      status: "active",
+    });
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("marks an abandoned checkout expired and stops remote subscription reconciliation", async () => {
+    const { user, tier } = await seed();
+    await db.insert(subscriptions).values({
+      userId: user.id,
+      tierId: tier.id,
+      status: "pending",
+      provider: "stripe",
+      providerCheckoutRef: "cs_abandoned",
+      providerPriceRef: "price_monthly_snapshot",
+      expectedAmountMinor: 900,
+      expectedCurrency: "usd",
+      quantity: 1,
+    });
+    providerMocks.getSubscriptionCheckoutState.mockResolvedValue({
+      status: "expired",
+      redirectUrl: null,
+      providerSubscriptionRef: null,
+    });
+
+    await expect(reconcileSubscriptions()).resolves.toBe(1);
+
+    const [updated] = await db.select().from(subscriptions);
+    expect(updated?.status).toBe("expired");
+    expect(providerMocks.retrieveSubscription).not.toHaveBeenCalled();
+    expect(providerMocks.listPaidSubscriptionInvoices).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates a webhook racing reconciliation for the same paid invoice", async () => {
+    const { user, subscription } = await seedSubscription();
+    const event = paidInvoiceEvent({ localSubscriptionId: subscription.id });
+    providerMocks.retrieveSubscription.mockResolvedValue({
+      status: "active",
+      providerSubscriptionRef: subscription.providerSubscriptionRef!,
+      providerCustomerRef: "cus_race",
+      currentPeriodEndsAt: event.lines[0]!.periodEnd,
+      cancelAtPeriodEnd: false,
+    });
+    providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([event]);
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db.select().from(paymentProviderEvents);
+
+    await Promise.all([reconcileSubscriptions(), dispatchPaymentProviderEvent(eventRow!.id)]);
+
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(1);
+    await expect(
+      db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.providerInvoiceRef, event.providerInvoiceRef)),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("recovers a missing paid period for a recently canceled subscription", async () => {
+    const { user, subscription } = await seedSubscription();
+    await db
+      .update(subscriptions)
+      .set({ status: "canceled", canceledAt: new Date() })
+      .where(eq(subscriptions.id, subscription.id));
+    const event = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_canceled_missing",
+    });
+    providerMocks.retrieveSubscription.mockResolvedValue({
+      status: "canceled",
+      providerSubscriptionRef: subscription.providerSubscriptionRef!,
+      providerCustomerRef: "cus_canceled",
+      currentPeriodEndsAt: event.lines[0]!.periodEnd,
+      cancelAtPeriodEnd: false,
+    });
+    providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([event]);
+
+    await expect(reconcileSubscriptions()).resolves.toBe(1);
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("dispatches identical provider event ids independently by inbox row UUID", async () => {
+    const providerEventId = `evt_shared_${randomUUID()}`;
+    const event = {
+      type: "ignored" as const,
+      providerEventId,
+      providerCreatedAt: new Date(),
+    };
+
+    await persistPaymentProviderEvent("stripe", event);
+    await persistPaymentProviderEvent("other-provider", event);
+
+    const rows = await db.select().from(paymentProviderEvents);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.provider).sort()).toEqual(["other-provider", "stripe"]);
+
+    await Promise.all(
+      rows.flatMap((row) => [
+        dispatchPaymentProviderEvent(row.id),
+        dispatchPaymentProviderEvent(row.id),
+      ]),
+    );
+
+    const dispatched = await db.select().from(paymentProviderEvents);
+    expect(dispatched).toHaveLength(2);
+    expect(dispatched.every((row) => row.status === "processed" && row.attempts === 1)).toBe(true);
+
+    const dispatchTasks = (await db.select().from(tasks)).filter(
+      (task) => task.kind === "payment_provider_event.dispatch",
+    );
+    expect(dispatchTasks).toHaveLength(2);
+    expect(new Set(dispatchTasks.map((task) => task.dedupeKey)).size).toBe(2);
   });
 });

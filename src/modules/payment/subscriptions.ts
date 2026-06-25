@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, eq, inArray, lte, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 
 import { getDb, type TxClient } from "@/db";
 import {
@@ -14,6 +14,7 @@ import {
   users,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import { getEnv } from "@/lib/env";
 import { recordAudit } from "@/modules/audit";
 import { grantMembershipForPeriod, revokeMembership } from "@/modules/membership";
 import { enqueueTask } from "@/modules/tasks";
@@ -100,12 +101,28 @@ function revivePaymentEvent(payload: unknown): NormalizedPaymentEvent {
   return event;
 }
 
-async function enqueueProviderEventTask(tx: TxClient, providerEventId: string): Promise<void> {
+async function enqueueProviderEventTask(tx: TxClient, eventRowId: string): Promise<void> {
   await enqueueTask(tx, {
     kind: "payment_provider_event.dispatch",
-    dedupeKey: `payment-provider-event:${providerEventId}`,
-    payload: { providerEventId },
+    dedupeKey: `payment-provider-event:${eventRowId}`,
+    payload: { eventRowId },
   });
+}
+
+export async function enqueueSubscriptionReconcileTask(
+  tx: TxClient,
+  runAfter = new Date(),
+): Promise<void> {
+  await enqueueTask(tx, {
+    kind: "subscription.reconcile",
+    dedupeKey: "subscription.reconcile",
+    payload: {},
+    runAfter,
+  });
+}
+
+export function nextSubscriptionReconcileAt(now = new Date()): Date {
+  return new Date(now.getTime() + getEnv().SUBSCRIPTION_RECONCILE_INTERVAL_MINUTES * 60 * 1000);
 }
 
 export async function persistPaymentProviderEvent(
@@ -113,7 +130,7 @@ export async function persistPaymentProviderEvent(
   event: NormalizedPaymentEvent,
 ): Promise<void> {
   await getDb().transaction(async (tx) => {
-    await tx
+    const [inserted] = await tx
       .insert(paymentProviderEvents)
       .values({
         provider,
@@ -126,13 +143,30 @@ export async function persistPaymentProviderEvent(
       })
       .onConflictDoNothing({
         target: [paymentProviderEvents.provider, paymentProviderEvents.providerEventId],
-      });
-    await enqueueProviderEventTask(tx, event.providerEventId);
+      })
+      .returning({ id: paymentProviderEvents.id });
+    const eventRowId =
+      inserted?.id ??
+      (
+        await tx
+          .select({ id: paymentProviderEvents.id })
+          .from(paymentProviderEvents)
+          .where(
+            and(
+              eq(paymentProviderEvents.provider, provider),
+              eq(paymentProviderEvents.providerEventId, event.providerEventId),
+            ),
+          )
+          .limit(1)
+      )[0]?.id;
+    if (!eventRowId) throw new Error("Payment provider event conflict row missing");
+    await enqueueProviderEventTask(tx, eventRowId);
+    await enqueueSubscriptionReconcileTask(tx);
   });
 }
 
 async function claimProviderEvent(
-  providerEventId: string,
+  eventRowId: string,
   lockToken: string,
 ): Promise<PaymentProviderEvent | null> {
   return getDb().transaction(async (tx) => {
@@ -147,7 +181,7 @@ async function claimProviderEvent(
       })
       .where(
         and(
-          eq(paymentProviderEvents.providerEventId, providerEventId),
+          eq(paymentProviderEvents.id, eventRowId),
           eq(paymentProviderEvents.status, "processing"),
           sql`${paymentProviderEvents.leaseUntil} < now()`,
           sql`${paymentProviderEvents.attempts} >= ${paymentProviderEvents.maxAttempts}`,
@@ -165,7 +199,7 @@ async function claimProviderEvent(
       })
       .where(
         and(
-          eq(paymentProviderEvents.providerEventId, providerEventId),
+          eq(paymentProviderEvents.id, eventRowId),
           sql`${paymentProviderEvents.attempts} < ${paymentProviderEvents.maxAttempts}`,
           or(
             eq(paymentProviderEvents.status, "received"),
@@ -215,15 +249,28 @@ async function markProviderEventFailed(
   });
 }
 
-export async function dispatchPaymentProviderEvent(providerEventId: string): Promise<void> {
+export async function dispatchPaymentProviderEvent(eventRowId: string): Promise<void> {
   const lockToken = randomUUID();
-  const claimed = await claimProviderEvent(providerEventId, lockToken);
+  const claimed = await claimProviderEvent(eventRowId, lockToken);
   if (!claimed) return;
 
   try {
     const event = revivePaymentEvent(claimed.payloadJson);
+    const isLegacyOneTimeEvent =
+      event.type === "paid" ||
+      event.type === "expired" ||
+      ((event.type === "refunded" || event.type === "disputed") && !event.providerInvoiceRef);
+
+    if (isLegacyOneTimeEvent) {
+      if (event.type === "paid") await confirmAutoPayment(claimed.provider, event);
+      else if (event.type === "expired") await expireAutoPayment(claimed.provider, event);
+      else await reverseAutoPayment(claimed.provider, event);
+    }
+
     await getDb().transaction(async (tx) => {
-      await applyProviderEventInTransaction(tx, claimed.provider, event);
+      if (!isLegacyOneTimeEvent) {
+        await applyProviderEventInTransaction(tx, claimed.provider, event);
+      }
       const [processed] = await tx
         .update(paymentProviderEvents)
         .set({
@@ -763,6 +810,7 @@ export async function createSubscriptionCheckout(
       })
       .returning();
     if (!created) throw new ApiError(400, "subscriptionAlreadyExists");
+    await enqueueSubscriptionReconcileTask(tx);
     return { subscription: created, claimToken };
   });
 
@@ -865,7 +913,7 @@ export async function reconcileSubscriptions(): Promise<number> {
         inArray(subscriptions.status, ["pending", "active", "past_due"]),
         and(
           inArray(subscriptions.status, ["canceled", "expired"]),
-          sql`${subscriptions.updatedAt} >= ${cutoff}`,
+          gte(subscriptions.updatedAt, cutoff),
         ),
       ),
     );
