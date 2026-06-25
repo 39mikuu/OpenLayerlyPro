@@ -1,6 +1,6 @@
 # ADR 0011：上传文件安全 —— 服务端权威 MIME + 强制重编码 + 文件响应隔离
 
-- **Status**：Proposed ▶（2026-06-25）
+- **Status**：Accepted ✅（2026-06-25）
 - **相关 issue**：v1.0 安全硬化 / S1a（epic #64）
 - **依赖**：[ADR 0006](0006-markdown-editor.md)（正文内联插图）、[ADR 0007](0007-inline-video-playback.md)（内联视频 Range）、[ADR 0008](0008-public-video-embeds.md)（嵌入白名单）。本 ADR 收紧的是「**上传入口 + 文件响应**」的安全契约,不改既有访问控制/计费语义。
 
