@@ -55,12 +55,31 @@
 - `TRUSTED_PROXY_HEADER`（白名单 enum，默认 `x-forwarded-for`）：可选 `x-real-ip` / `cf-connecting-ip` / `true-client-ip`。
 
 规则：
+
 - `x-forwarded-for` 模式：取列表「右数第 HOPS 个」（标准 trust-N-hops）。`HOPS=0` 或列表长度不足时返回 `null`（默认不信任、失败即安全，绝不退回客户端可控的最左条目）。
 - 单值头模式：直接返回该头的值；**仅当源站不直接暴露、只接受可信边缘流量时才安全**。
 
-真实 IP 会被登录验证码、Turnstile、下载和上传等限流/审计路径使用。Cloudflare Tunnel / Cloudflare CDN 推荐 `TRUSTED_PROXY_HEADER=cf-connecting-ip`；常规反向代理使用 `TRUSTED_PROXY_HEADER=x-forwarded-for` 并设置准确的 `TRUSTED_PROXY_HOPS`。未配置可信代理头时，应用无法做精确 per-IP 限流；Turnstile 会避免所有未知 IP 共享低阈值桶，退回较高阈值的全局 Siteverify 保护。
-- 解析出的 IP 用于按 IP 限流与审计记录（`sessions` / `loginCodes` / `downloadLogs` 已落 IP）。默认 `HOPS=0` 时 IP 不可用，按 IP 限流自动跳过（按邮箱 / 用户的限流不受影响）。
+真实 IP 会被登录验证码、Turnstile、下载和上传等限流/审计路径使用。Cloudflare Tunnel / Cloudflare CDN 推荐 `TRUSTED_PROXY_HEADER=cf-connecting-ip`；常规反向代理使用 `TRUSTED_PROXY_HEADER=x-forwarded-for` 并设置准确的 `TRUSTED_PROXY_HOPS`。
+
+未解析出可信 IP 时：
+
+- 不得落到低阈值全局 `unknown` 桶；
+- 各操作使用独立 unresolved emergency 桶，与 resolved-IP 桶隔离；
+- unresolved 客户端之间仍共享该操作桶，这是无可信 IP 时无法消除的残余风险；
+- S4 verify-code 只在确认错误码后记账 unresolved 桶，正确码不得被其阻断；
+- 生产环境应记录节流告警，提醒修复代理配置。
+
+## 进程内限流与多实例边界
+
+当前 `src/lib/rate-limit.ts` 是单进程内存状态：
+
+- 单实例部署可按策略使用；
+- 多个 app 副本会各自计数，攻击者可在副本间分散请求；
+- readiness/启动日志应在检测到多实例部署配置时给出明确警告；
+- v1.0 不实现 Redis/PG 共享 limiter，但策略 key 与阈值必须集中，保留未来 adapter 接缝。
+
+S4 的目标认证限流语义见 [../handoff/harden-s4-auth-rate-limiting.md](../handoff/harden-s4-auth-rate-limiting.md)。该 handoff 在实现 PR 合并前属于计划，不应被运维文档描述为当前已生效行为。
 
 ## Phase 10 及以后 🚧
 
-- 多实例负载均衡与高可用（进程内限流 / 会话等状态外置为前提）。
+- 多实例负载均衡与高可用（共享限流、会话等跨实例状态外置为前提）。

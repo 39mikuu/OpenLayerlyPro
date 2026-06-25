@@ -50,15 +50,29 @@ src/
 2. **统一错误模型**：业务错误抛 `ApiError(status, message)`，响应格式 `{ ok, data | error }`。
 3. **env 集中校验**：所有环境变量经 `src/lib/env.ts` 的 zod schema 进入应用；生产环境运行时强校验（如 SESSION_SECRET），`next build` 阶段跳过。
 4. **存储驱动按文件记录**：切换 `STORAGE_DRIVER` 不迁移历史文件，读取与删除按 `files` 表记录的驱动执行。
-5. **敏感信息不落日志**:密钥、token、验证码原文不输出。
-6. **限流**：进程内滑动窗口（`src/lib/rate-limit.ts`）。bucket 按自身窗口清理，避免短窗口 key 固定保留 1 小时，并有基础最大 bucket 数保护。多实例部署时仍需外置（Phase 10，可选 Redis / Valkey adapter，当前不内置依赖）。
+5. **敏感信息不落日志**：密钥、token、验证码原文、raw email 不输出。
+6. **限流**：当前底层实现是进程内滑动窗口。bucket 按自身窗口清理，并有最大 bucket 数保护。多实例部署仍需未来外置共享 limiter；v1.0 仅做告警、文档与策略接缝。
 
 ## 登录安全与真实 IP
 
+### 当前已实现
+
 - 邮箱验证码使用 HMAC 哈希入库，不保存明文验证码。
-- 验证码有尝试次数上限，成功后一次性使用；校验过程在数据库事务内完成，避免并发请求绕过尝试次数或重复使用同一验证码。
-- Turnstile 开启后会在调用 Cloudflare Siteverify 前做轻量限流：有可信客户端 IP 时按 IP 限流；没有可信 IP 时不使用低阈值 `unknown` 共享桶，而是退回较高阈值的全局保护。
-- 真实 IP 只来自已配置的可信代理层。默认不信任 `X-Forwarded-For`，Cloudflare Tunnel / CDN 推荐 `TRUSTED_PROXY_HEADER=cf-connecting-ip`，常规反代使用 `TRUSTED_PROXY_HEADER=x-forwarded-for` + 正确的 `TRUSTED_PROXY_HOPS`。
+- 验证码成功后一次性使用；当前校验过程在数据库事务内完成。
+- Turnstile 开启后，会在调用 Cloudflare Siteverify 前执行保护逻辑。
+- 真实 IP 只来自已配置可信代理层。默认不信任 `X-Forwarded-For`；Cloudflare 推荐 `cf-connecting-ip`，常规反代使用 `x-forwarded-for` + 正确 hops。
+
+### S4 目标语义（尚未实现）🚧
+
+- **正确码优先**：任何失败计数或 wrong-attempt limiter 都不得在比较正确码前返回 429。
+- **错误后限流**：verify 的 IP、email+IP、unresolved 桶只在核心确认错误后记账；正确码不消费也不受这些桶影响。
+- **高熵验证码**：默认至少 16 位 uppercase Crockford base32（80 bit）；安全性不依赖 wrong-attempt limiter 真正封顶比较次数。
+- **request-code 无纯 email 阻断**：删除纯 email 小时 429 与 cooldown；保留 IP 主门禁、真实发送 email+IP 预算、非阻断并发安全 dedupe。
+- **email identity**：先 `trim().toLowerCase()`，再使用 keyed HMAC-SHA-256 派生 limiter/dedupe key；`hashtext` 只可用于 advisory lock 槽位。
+- **投递一致性**：同一 email 并发只允许一码一个 encrypted durable task；任务每次执行/重试前确认 codeId 仍为该 email 最新有效 code，stale task 成功 no-op。
+- **任务敏感载荷**：验证码明文不得出现在 task JSON、日志或后台任务详情中，必须加密存储。
+
+权威实施规范见 [../handoff/harden-s4-auth-rate-limiting.md](../handoff/harden-s4-auth-rate-limiting.md)。在实现 PR 合并前，上述 S4 条目不得标记为已实现。
 
 ## 配置加密（Phase 1 铺垫）
 
