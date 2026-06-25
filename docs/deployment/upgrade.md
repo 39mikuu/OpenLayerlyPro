@@ -29,24 +29,104 @@ Record the exact archive path and the current Git commit or image tag:
 git rev-parse HEAD
 ```
 
-## 3. Pull and Deploy the New Version
+## 3. Stage the New Version Without Starting Migrations
 
-Source checkout deployment:
+The S3 concurrency migration adds a partial unique index that permits at most one
+`pending_review` or `pending_payment` row for each `(user_id, tier_id)`. The migration first
+checks existing data and fails with the conflicting user, tier, and row count. It never deletes
+or silently rewrites financial records.
+
+Obtain the new remediation tool before stopping the old application, but do not start the new
+application yet. Starting the normal app entrypoint would run migrations immediately.
+
+For a source checkout deployment, update the checkout and build only the new app image:
 
 ```bash
 git pull --ff-only
-docker compose up -d --build
+docker compose build app
 ```
 
-Image-based deployments should pull the new immutable image tag first, update the Compose image reference, and then run:
+`docker compose build app` creates the image containing
+`/app/scripts/dedupe-pending-payments.mjs`; it does not run the image or its entrypoint.
+
+For an image-based deployment, update the Compose image reference to the new immutable tag and
+pull it without starting a container:
 
 ```bash
-docker compose up -d
+docker compose pull app
 ```
 
-The application entrypoint runs database migrations before starting the server. Migrations are forward-only. If migration fails, the application container exits instead of serving traffic.
+Do not run `docker compose up` yet.
 
-## 4. Verify the Upgrade
+## 4. Stop Payment Writes and Resolve Duplicate Pending Payments
+
+Stop every old application replica before remediation so no old process can create another
+pending payment between cleanup and index creation. A maintenance mode is acceptable only when
+it blocks all payment creation and resubmission writes.
+
+```bash
+docker compose stop app
+```
+
+Keep PostgreSQL running. Use the staged new image with an overridden entrypoint, which avoids the
+normal automatic migration. Report conflicts first:
+
+```bash
+docker compose run --rm --no-deps --entrypoint node app \
+  /app/scripts/dedupe-pending-payments.mjs
+```
+
+The report command exits with status `2` while conflicts exist. For each conflict, review the
+listed request IDs and explicitly choose the request that remains pending. Preview the change:
+
+```bash
+docker compose run --rm --no-deps --entrypoint node app \
+  /app/scripts/dedupe-pending-payments.mjs \
+  --keep <request-id> --resolve cancelled --dry-run
+```
+
+Apply only after an existing administrator has reviewed the payment evidence and chosen the
+outcome:
+
+```bash
+docker compose run --rm --no-deps --entrypoint node app \
+  /app/scripts/dedupe-pending-payments.mjs \
+  --keep <request-id> --resolve cancelled --apply \
+  --actor-id <admin-user-id> --reason "Resolve duplicate pending requests before upgrade"
+```
+
+`--resolve rejected` is also supported. The tool verifies that `--actor-id` belongs to an
+existing administrator in the same transaction as the changes. It is idempotent, updates rather
+than deletes the other pending rows, writes an audit event for every changed request, and prints
+a modification summary.
+
+Run the report again immediately before migrating. Do not proceed until it exits with status `0`
+and reports no conflicts:
+
+```bash
+docker compose run --rm --no-deps --entrypoint node app \
+  /app/scripts/dedupe-pending-payments.mjs
+```
+
+## 5. Run the Migration and Start the New Version
+
+With all old application replicas still stopped, run the migration from the staged new image:
+
+```bash
+docker compose run --rm --no-deps --entrypoint node app /app/dist/migrate.mjs
+```
+
+Start the new application only after the migration succeeds:
+
+```bash
+docker compose up -d app
+```
+
+The normal application entrypoint reruns the forward-only migration idempotently before starting
+the server. If migration fails, the application container exits instead of serving traffic.
+Keep the pre-upgrade backup until the migration and application checks are complete.
+
+## 6. Verify the Upgrade
 
 Inspect startup and migration logs:
 
@@ -71,7 +151,7 @@ Also sample the operational paths relevant to the deployment:
 - one local-file download, or one S3/R2 signed download;
 - mail configuration visibility without exposing its password.
 
-## 5. Failure and Rollback
+## 7. Failure and Rollback
 
 Do not attempt to reverse a database migration manually. Application code rollback alone is unsafe after a forward schema migration.
 

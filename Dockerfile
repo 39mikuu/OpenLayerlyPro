@@ -32,6 +32,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/src/db/migrations ./src/db/migrations
 COPY --from=builder --chown=nextjs:nodejs /app/dist/migrate.mjs ./dist/migrate.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/admin-reset.mjs ./dist/admin-reset.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/dedupe-pending-payments.mjs ./scripts/dedupe-pending-payments.mjs
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
   && mkdir -p /app/uploads /app/secrets \

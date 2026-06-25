@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
@@ -17,6 +17,7 @@ import { getActiveMembership } from "@/modules/membership";
 import {
   approvePaymentRequest,
   cancelPaymentRequest,
+  createPaymentRequest,
   rejectPaymentRequest,
   resubmitPaymentProof,
   reversePaymentApproval,
@@ -41,6 +42,7 @@ describeWithDatabase("payment review audit integration", () => {
   async function seedRequest(
     status:
       | "pending_review"
+      | "pending_payment"
       | "approved"
       | "rejected"
       | "cancelled"
@@ -76,6 +78,173 @@ describeWithDatabase("payment review audit integration", () => {
       .returning();
     return { admin, request, tier, user };
   }
+
+  it("allows only one concurrent manual pending request", async () => {
+    const { tier, user } = await seedRequest("cancelled");
+    const results = await Promise.allSettled([
+      createPaymentRequest({ userId: user.id, tierId: tier.id }),
+      createPaymentRequest({ userId: user.id, tierId: tier.id }),
+    ]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ status: 400, code: "pendingPaymentExists" });
+    const pending = await db
+      .select()
+      .from(paymentRequests)
+      .where(
+        and(
+          eq(paymentRequests.userId, user.id),
+          eq(paymentRequests.tierId, tier.id),
+          or(
+            eq(paymentRequests.status, "pending_review"),
+            eq(paymentRequests.status, "pending_payment"),
+          ),
+        ),
+      );
+    expect(pending).toHaveLength(1);
+  });
+
+  it("rejects a manual request when an automatic pending request already exists", async () => {
+    const { tier, user } = await seedRequest("cancelled");
+    await db.insert(paymentRequests).values({
+      userId: user.id,
+      tierId: tier.id,
+      status: "pending_payment",
+      flow: "auto",
+      provider: "stripe",
+      providerRef: `creating:${randomUUID()}`,
+      amountLabel: tier.priceLabel,
+      durationDays: tier.durationDays,
+    });
+
+    await expect(createPaymentRequest({ userId: user.id, tierId: tier.id })).rejects.toMatchObject({
+      status: 400,
+      code: "pendingPaymentExists",
+    });
+  });
+
+  it("maps resubmit conflicts to pendingPaymentExists without exposing a unique violation", async () => {
+    const { request, tier, user } = await seedRequest("rejected");
+    const [proof] = await db
+      .insert(files)
+      .values({
+        storageDriver: "local",
+        objectKey: `proof-${randomUUID()}`,
+        originalName: "proof.png",
+        mimeType: "image/png",
+        sizeBytes: 128,
+        purpose: "payment_proof",
+        createdBy: user.id,
+      })
+      .returning();
+    await db.insert(paymentRequests).values({
+      userId: user.id,
+      tierId: tier.id,
+      status: "pending_payment",
+      flow: "auto",
+      provider: "stripe",
+      providerRef: `creating:${randomUUID()}`,
+      amountLabel: tier.priceLabel,
+      durationDays: tier.durationDays,
+    });
+
+    await expect(
+      resubmitPaymentProof({ requestId: request.id, userId: user.id, proofFileId: proof.id }),
+    ).rejects.toMatchObject({ status: 400, code: "pendingPaymentExists" });
+    const [stored] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, request.id));
+    expect(stored?.status).toBe("rejected");
+  });
+
+  it("serializes create against resubmit so exactly one request becomes pending", async () => {
+    const { request, tier, user } = await seedRequest("rejected");
+    const [proof] = await db
+      .insert(files)
+      .values({
+        storageDriver: "local",
+        objectKey: `proof-${randomUUID()}`,
+        originalName: "proof.png",
+        mimeType: "image/png",
+        sizeBytes: 128,
+        purpose: "payment_proof",
+        createdBy: user.id,
+      })
+      .returning();
+    const results = await Promise.allSettled([
+      createPaymentRequest({ userId: user.id, tierId: tier.id }),
+      resubmitPaymentProof({ requestId: request.id, userId: user.id, proofFileId: proof.id }),
+    ]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ status: 400, code: "pendingPaymentExists" });
+
+    const pending = await db
+      .select()
+      .from(paymentRequests)
+      .where(
+        and(
+          eq(paymentRequests.userId, user.id),
+          eq(paymentRequests.tierId, tier.id),
+          or(
+            eq(paymentRequests.status, "pending_review"),
+            eq(paymentRequests.status, "pending_payment"),
+          ),
+        ),
+      );
+    expect(pending).toHaveLength(1);
+  });
+
+  it("serializes two administrators approving separate grants for one user", async () => {
+    const { admin, request, tier, user } = await seedRequest();
+    const [secondAdmin] = await db
+      .insert(users)
+      .values({ email: `admin-${randomUUID()}@example.com`, role: "admin" })
+      .returning();
+    const [secondTier] = await db
+      .insert(membershipTiers)
+      .values({
+        name: "Supporter alternate",
+        slug: `supporter-alt-${randomUUID()}`,
+        priceLabel: "500",
+        level: tier.level,
+        durationDays: 31,
+      })
+      .returning();
+    const [secondRequest] = await db
+      .insert(paymentRequests)
+      .values({
+        userId: user.id,
+        tierId: secondTier.id,
+        status: "pending_review",
+        amountLabel: secondTier.priceLabel,
+        durationDays: secondTier.durationDays,
+      })
+      .returning();
+
+    await Promise.all([
+      approvePaymentRequest(request.id, admin.id),
+      approvePaymentRequest(secondRequest.id, secondAdmin.id),
+    ]);
+    const grants = (
+      await db.select().from(memberships).where(eq(memberships.userId, user.id))
+    ).sort((left, right) => left.startsAt.getTime() - right.startsAt.getTime());
+    expect(grants).toHaveLength(2);
+    expect(grants[1]!.startsAt.toISOString()).toBe(grants[0]!.endsAt.toISOString());
+    expect(grants[1]!.endsAt.getTime() - grants[0]!.startsAt.getTime()).toBe(
+      62 * 24 * 60 * 60 * 1000,
+    );
+  });
 
   it("approves once under concurrency and links the membership grant causally", async () => {
     const { admin, request, user } = await seedRequest();

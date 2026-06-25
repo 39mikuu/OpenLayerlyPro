@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:migrate": "node scripts/migrate.mjs",
+    "payments:dedupe-pending": "node scripts/dedupe-pending-payments.mjs",
     "build:migrator": "esbuild scripts/migrate.mjs --bundle --platform=node --format=esm --outfile=dist/migrate.mjs",
     "admin:reset": "node scripts/admin-reset.mjs",
     "build:admin-reset": "esbuild scripts/admin-reset.mjs --bundle --platform=node --format=esm --outfile=dist/admin-reset.mjs",

@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
-import { and, asc, desc, eq, gt, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, lte, max, ne, sql } from "drizzle-orm";
 
-import { type DbClient, getDb } from "@/db";
+import { type DbClient, getDb, type TxClient } from "@/db";
 import {
   type AuditEvent,
   auditEvents,
@@ -139,37 +139,63 @@ type GrantMembershipInput = {
   causationId?: string | null;
 };
 
+/** Transaction-scoped lock for all membership grants for one user. */
+export async function acquireUserGrantLock(tx: TxClient, userId: string): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`membership-grant:${userId}`}, 0))`,
+  );
+}
+
+async function getLatestGrantAnchor(
+  tx: TxClient,
+  userId: string,
+  targetLevel: number,
+  now: Date,
+): Promise<Date> {
+  const [row] = await tx
+    .select({ latestEndsAt: max(memberships.endsAt) })
+    .from(memberships)
+    .innerJoin(membershipTiers, eq(memberships.tierId, membershipTiers.id))
+    .where(
+      and(
+        eq(memberships.userId, userId),
+        ne(memberships.status, "revoked"),
+        gt(memberships.endsAt, now),
+        gte(membershipTiers.level, targetLevel),
+      ),
+    );
+  return row?.latestEndsAt && row.latestEndsAt > now ? row.latestEndsAt : now;
+}
+
 /**
  * 开通会员。
- * 若用户已有同等级或更高等级的有效会员，新会员从现有会员到期时间顺延开始（PRD §12.6）。
- * 低等级有效会员不影响：直接从现在开始创建新的高等级会员。
+ * 同一用户的所有 grant 在显式事务中串行；同/高等级的 active、scheduled、suspended
+ * 未结束权益都会作为顺延基准。低等级权益不阻止高等级立即生效。
  */
 export async function grantMembership(
   input: GrantMembershipInput,
   dbc?: DbClient,
 ): Promise<{ membership: Membership; tier: MembershipTier }> {
-  if (dbc) return grantMembershipWithClient(input, dbc);
-  return getDb().transaction((tx) => grantMembershipWithClient(input, tx));
+  if (dbc && "rollback" in dbc) return grantMembershipTx(input, dbc as TxClient);
+  const db = dbc && "transaction" in dbc ? dbc : getDb();
+  return db.transaction((tx) => grantMembershipTx(input, tx));
 }
 
-async function grantMembershipWithClient(
+async function grantMembershipTx(
   input: GrantMembershipInput,
-  dbc: DbClient,
+  tx: TxClient,
 ): Promise<{ membership: Membership; tier: MembershipTier }> {
-  const tier = await getTierById(input.tierId, dbc);
+  await acquireUserGrantLock(tx, input.userId);
+
+  const tier = await getTierById(input.tierId, tx);
   if (!tier) throw new ApiError(404, "tierNotFound");
 
   const duration = input.durationDays ?? tier.durationDays;
   const now = new Date();
-
-  const current = await getActiveMembership(input.userId, dbc);
-  const startsAt =
-    current && current.tier.level >= tier.level && current.membership.endsAt > now
-      ? current.membership.endsAt
-      : now;
+  const startsAt = await getLatestGrantAnchor(tx, input.userId, tier.level, now);
   const endsAt = addDays(startsAt, duration);
 
-  const [membership] = await dbc
+  const [membership] = await tx
     .insert(memberships)
     .values({
       userId: input.userId,
@@ -188,7 +214,7 @@ async function grantMembershipWithClient(
     (input.createdBy
       ? ({ type: "admin", id: input.createdBy } as const)
       : ({ type: "system", id: null } as const));
-  await recordAudit(dbc, {
+  await recordAudit(tx, {
     entityType: "membership",
     entityId: membership.id,
     action: "grant",
