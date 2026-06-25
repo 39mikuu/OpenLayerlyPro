@@ -31,8 +31,8 @@ SMTP_FROM="Artist Site <no-reply@example.com>"
 
 - 应用默认只适合**单实例**运行进程内限流。多个 app 副本会各自计数，v1.0 尚未提供共享 Redis/PG limiter。
 - 使用 Cloudflare Tunnel/CDN 时，推荐 `TRUSTED_PROXY_HEADER=cf-connecting-ip`；自建反代使用 `x-forwarded-for` 并设置准确的 `TRUSTED_PROXY_HOPS`。
-- 若应用无法解析可信客户端 IP，认证、下载与上传会退回各操作专用的 unresolved emergency 桶；这不会影响 resolved-IP 用户，但 unresolved 用户之间仍共享计数。
-- S4 实现合并后，请同时检查新增的 auth rate-limit、验证码长度/字母表与 dedupe env；所有值都有边界，越界会启动失败。实施前以 [S4 handoff](handoff/harden-s4-auth-rate-limiting.md) 为准，不要提前在生产环境配置尚未存在的变量。
+- 若应用无法解析可信客户端 IP，当前认证路径仍是 S4 前行为：`admin-login` 会落到 `admin-login:unknown`，`request-code` / `verify-code` 尚未启用 pre-read IP 门禁。生产环境应优先修复可信 IP 解析，不要把 S4 计划中的 auth unresolved emergency 桶当作当前隔离保护。
+- S4 实现合并后，认证会改用各操作专用的 unresolved emergency 桶；请同时检查新增的 auth rate-limit、验证码长度/字母表与 dedupe env。所有值都有边界，越界会启动失败。实施前以 [S4 handoff](handoff/harden-s4-auth-rate-limiting.md) 为准，不要提前在生产环境配置尚未存在的变量。
 
 ## 3. 启动
 
