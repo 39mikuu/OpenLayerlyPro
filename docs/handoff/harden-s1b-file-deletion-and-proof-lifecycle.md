@@ -46,32 +46,40 @@
 > **创作者可配置项(已锁定)**:站点设置 `payment_proof_approved_retention_days`(后台可改,**非仅 env**,默认 `0 = 永久保留`)。设为 `>0` 时,`approved`/`reversed` 凭证在「结算时刻 + N 天」后被清理。**默认 0**(永久)。首次启用时对**存量**已 approved 凭证不追溯清理(仅对设置启用后新进入 approved/reversed 的请求排单)——文档化、不在本切片做周期扫描。
 
 ### 3.2 终态清理 task `payment_proof.cleanup`
-- payload `{ requestId, fileId }`。
-- **入队时机**(在该状态变更的同事务内,固定 dedupeKey=`proof-cleanup:${requestId}:${fileId}`):
-  - 进入 `rejected`/`cancelled` → `enqueueTask(runAfter = now + PAYMENT_PROOF_RETENTION_DAYS)`;
-  - 进入 `approved`/`reversed` 且站点设置 `payment_proof_approved_retention_days > 0` → `enqueueTask(runAfter = now + 该设置天数)`;设置为 0(默认)→ **不入队**(永久保留)。
-- **handler**(事务 + `FOR UPDATE` 该 request):
-  - 重新读状态 + 当前生效保留策略:
-    - rejected/cancelled 分支:若已离开该状态(如 resubmit 回 pending_review)→ **no-op**;
-    - approved/reversed 分支:若设置已被创作者**改回 0**(关闭清理)→ **no-op**(保留);
-  - 若 `request.proofFileId !== payload.fileId`(已换/已清)→ no-op;
-  - 否则:确认该 file 未被其它引用(post_files/cover/qr/其它 request/settings) → **两阶段删**:`tx.update(paymentRequests).set({ proofFileId: null })` + `enqueueTask(storage.delete_object)` + `tx.delete(files).where(id)`,同事务;**保留 `payment_requests` 行与审计**(只摘除 proof 文件,不动财务记录)。
-  - 幂等:file 已不存在 → no-op。
-- 宽限/审计窗口给用户查看驳回原因·再提交、或留财务取证的时间;到期且策略仍生效即回收存储。
+- payload `{ requestId, fileId }`;dedupeKey=`proof-cleanup:${requestId}:${fileId}`(每 (request,file) 一条)。
+- **入队时机**(在该状态变更的同事务内):
+  - 进入 `rejected`/`cancelled` → `enqueueTask(runAfter = reviewedAt + PAYMENT_PROOF_RETENTION_DAYS)`;
+  - 进入 `approved`/`reversed` 且站点设置 `payment_proof_approved_retention_days > 0` → `enqueueTask(runAfter = reviewedAt + 该设置天数)`;设置为 0(默认)→ **不入队**。
+  - runAfter 仅为初始排期;**到期判定以 handler 重算为准**(下)。
+- **handler 按当前设置重算 due,必要时 defer**(事务 + `FOR UPDATE` 该 request):
+  1. 读 file `payload.fileId`;不存在 → no-op(幂等)。
+  2. `payload.fileId` 被 post_files/cover/qr/settings 引用 → no-op(他处在用)。
+  3. 读 request `requestId`,判保留:
+     - **`request.proofFileId === payload.fileId`(仍挂在本请求)**:
+       - `pending_review`/`pending_payment` → **no-op**(在用);
+       - `approved`/`reversed` → 读**当前**站点设置:`=0` → **no-op**(永久保留);`>0` 则 `due = reviewedAt + 设置`;`now < due` → **`return { deferUntil: due }`**(创作者改长/改短设置后按现值重算);`now >= due` → 删;
+       - `rejected`/`cancelled` → `due = reviewedAt + PAYMENT_PROOF_RETENTION_DAYS(当前 env)`;`now < due` → **defer**;否则删。
+     - **`request.proofFileId !== payload.fileId`(已被 resubmit 取代而脱离)** → 该旧 proof 不再是活动凭证 → 直接进入删(它已按原排期到点,见 §3.3)。
+  4. **删(两阶段)**:若仍等于则 `set proofFileId=null` + `enqueueTask(storage.delete_object)` + `tx.delete(files).where(id)`,同事务;**保留 request 行与审计**。
+- 通过 `deferUntil` 让 handler 成为**到期权威**:设置改长 → 自动顺延;改回 0 → no-op 保留;env 宽限改动同理。
 
-### 3.3 resubmit 清旧凭证
-- `resubmitPaymentProof`:在更新 `proofFileId = 新` 的**同一事务**内,取旧 `proofFileId`,若旧 ≠ 新且旧文件不被其它引用 → **立即两阶段删旧 proof**(`enqueueTask(storage.delete_object)` + `tx.delete(files)` 旧行);旧 proof 是被取代的失败尝试,无审计价值(原 reject 审计已记 fileId)。
-- 与 §3.2 兼容:若旧 proof 之前已排了 cleanup task,handler 的 `proofFileId !== fileId` / file 不存在守卫使其 no-op,不重复删。
+### 3.3 resubmit:旧凭证保留至原宽限期（已锁定:不立即删)
+- `resubmitPaymentProof`:仅 `proofFileId = 新` + 状态回 `pending_review`,**不立即删旧 proof**。
+- 旧 proof 在该请求 **rejected 时已排好** cleanup task(runAfter = rejected reviewedAt + `PAYMENT_PROOF_RETENTION_DAYS`),resubmit **不取消、不改**它。该 task 到点触发时,§3.2 走「`proofFileId !== payload.fileId`(已脱离)+ 未被引用」分支 → 删旧 proof。**于是旧凭证保留至其原始宽限期到期才回收**(给驳回-再提交留取证窗口)。
+- 前提:**rejected/cancelled 转换必定入队** cleanup task(§3.2 入队时机),否则脱离的旧 proof 无人回收 → 务必保证该入队存在(测试覆盖)。
+- 新 proof:请求回到 pending_review,被保留;待其终态再各自排单。
 
-## 4. 每用户凭证配额（防存储滥用)
+## 4. 每用户凭证配额（防存储滥用,持久计数 + 并发原子)
 
-- 在 `upload-payment-proof` 路由,鉴权后、`saveUploadedFile` 前,加**每用户滚动窗口配额**:`PAYMENT_PROOF_MAX_PER_DAY`(env,默认 20)——统计该用户近 24h 上传的 proof 文件数(`files` where purpose='payment_proof' and created_by=user and createdAt> now-24h),超限 → `429 uploadQuotaExceeded`。
-- 与 S1a/#70 既有的 per-user/IP 速率限流叠加(那是突发限流,本配额是日累计防长期堆积)。
-- 配额计的是「上传次数」,清理后的历史不减计数(防绕过);用 createdAt 窗口即可。
+- **计数源必须持久、不随文件清理消失**:**不要**数 `files`(清理后行被删 → 计数回退 → 可绕过)。改用**只追加、不随 proof 删除而消失**的来源:新增轻量 append-only 表 `payment_proof_upload_log(id, user_id, created_at)`(或复用带 `userId` 的上传审计事件),每次成功上传 proof **追加一行**,**清理 proof 文件时不删该日志**。配额 = `count(*) where user_id=u and created_at > now - 24h`。
+- **并发原子**:check-then-insert 有 TOCTOU(两个并发上传都过检查再各插一条 → 超额)。在路由(鉴权后、`saveUploadedFile` 前)用**同一事务 + per-user advisory 锁**串行:
+  `pg_advisory_xact_lock(hashtextextended('proof-upload-quota:'||userId, 0))` → 数窗口内日志 → `>= PAYMENT_PROOF_MAX_PER_DAY` → `429 uploadQuotaExceeded` → 否则**插入一条日志**(同事务,与计数原子)→ 提交后再 `saveUploadedFile`。同一用户并发上传被串行,不会双双过关。
+- 与 S1a/#70 既有 per-user/IP 突发限流叠加(本配额是日累计、防长期堆积 + 不可经清理绕过)。`PAYMENT_PROOF_MAX_PER_DAY`(env,默认 20,越界拒绝)。
+- 日志表加 `(user_id, created_at)` 索引;可选周期清理超 30 天的日志行(不影响 24h 窗口)。
 
 ## 5. Schema / env / 迁移
 
-- **无新表**;`payment_requests`/`files` 字段够用(`proofFileId` 置 null 即摘除)。如需记录清理时间可选加 `files.deleted_at` tombstone——**默认不加**(两阶段删除是真删行 + 异步删对象,无需软删)。确认 `drizzle-kit generate` 无意外 schema 变更。
+- **新增 1 张表** `payment_proof_upload_log(id, user_id, created_at)`(§4 持久配额计数源,append-only,不随 proof 清理删除;索引 `(user_id, created_at)`)。`payment_requests`/`files` 字段够用(`proofFileId` 置 null 即摘除);两阶段删除是真删行 + 异步删对象,**不加软删列**。`drizzle-kit generate` 仅应有该日志表。
 - **env**(有界正整数,越界拒绝,沿用既有写法):
   ```text
   PAYMENT_PROOF_RETENTION_DAYS    # 默认 30,rejected/cancelled 凭证宽限
@@ -92,13 +100,14 @@
 
 **凭证生命周期**
 - request → rejected/cancelled 入队 cleanup(`runAfter` 正确);宽限内不删;到期 handler 删 proof(摘 `proofFileId`、删 file、入队 storage 删除)、**保留 request 行与审计**。
-- 宽限内 resubmit 回 pending_review → cleanup handler no-op(凭证又在用)。
-- **approved/reversed 保留策略**:设置=0(默认)→ 不排单、永久保留;设置=N>0 → 结算+N 天后清理;窗口内把设置改回 0 → handler no-op(保留)。首次启用不追溯存量(文档化行为)。
-- resubmit:旧 proof 立即两阶段删、新 proof 生效;旧 proof 同时有 cleanup task 时不重复删(守卫 no-op)。
-- 清理对象删除 task 幂等(已删=成功)。
+- **handler 按当前设置重算 due**:approved 窗口内设置改长 → handler `deferUntil` 顺延;改回 0 → no-op 保留;env 宽限改动同理(改长顺延)。
+- **approved/reversed 保留**:设置=0(默认)→ 不排单、永久保留;设置=N>0 → 结算+N 天后清理;首次启用不追溯存量。
+- **resubmit 保留旧 proof 至原宽限**:resubmit **不立即删**旧 proof;旧 proof 的原 cleanup task(rejected+宽限)到点经「脱离 + 未引用」分支删之 → 旧凭证恰在原宽限期到期回收;新 pending 请求被保留。
+- 清理对象删除 task 幂等(已删=成功);保留 `payment_requests` 行与审计。
 
 **配额**
-- 用户日内第 21 次 proof 上传 → `429`;窗口滚动后恢复;清理历史不减计数。env 越界拒绝。
+- 用户日内第 21 次 proof 上传 → `429`;**清理了已上传的 proof 文件后再传仍计入(计数源是持久日志,不随文件删除回退)**;窗口滚动后恢复;env 越界拒绝。
+- **并发原子**:同一用户并发多次上传 → per-user advisory 锁串行,日志条数不超 `PAYMENT_PROOF_MAX_PER_DAY`(不出现两个并发都过关)。
 
 **回归**:S1a 上传/下载/quarantine、`cleanupOrphanFile`、现有支付审批/反转/#49 正常。
 
@@ -121,9 +130,10 @@ base `main`,Draft 直到真实 PG + 完整 CI 全绿,关联 issue,标题 `fix(fi
 - [ ] `deleteFile` 两阶段原子(事务内删行 + 入队 storage 删除,不再先删对象);`FOR UPDATE`
 - [ ] 引用检查补 `post_files`;被引用(含任意状态 proof)→ `fileInUse`
 - [ ] `payment_proof.cleanup` task:rejected/cancelled 入队 + 宽限;handler 状态/归属/引用守卫 + 两阶段删 + 保留 request/审计;幂等
-- [ ] resubmit 同事务清旧 proof;与 cleanup task 守卫不重复删
+- [ ] resubmit **不立即删**旧 proof;旧 proof 经原宽限 cleanup task(脱离分支)到期回收
+- [ ] cleanup handler 按**当前**设置/env **重算 due + `deferUntil`**(设置改长顺延、改 0 保留)
 - [ ] approved/reversed 默认永久保留;创作者设置 `payment_proof_approved_retention_days`>0 时启用审计窗口清理,改回 0 即停(handler 重读、不追溯存量)
-- [ ] 每用户 `PAYMENT_PROOF_MAX_PER_DAY` 配额(429);env 越界拒绝
+- [ ] 配额计数源 = 持久 append-only 日志(不随 proof 清理回退);per-user advisory 锁保证并发原子;`PAYMENT_PROOF_MAX_PER_DAY`(429)、env 越界拒绝
 - [ ] 复用 `storage.delete_object` 两阶段范式与 dedupeKey;删除幂等
 - [ ] 真实 PG 测试齐;S1a / cleanupOrphan / 支付回归绿
 
