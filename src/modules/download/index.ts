@@ -18,6 +18,17 @@ import type { ByteRange } from "./range";
 import { isInlineVideoMime } from "./video";
 
 const SIGNED_URL_TTL_SECONDS = 5 * 60;
+const DEFAULT_INLINE_PURPOSES = new Set<FileRecord["purpose"]>([
+  "artist_avatar",
+  "payment_qr",
+  "cover",
+  "thumbnail",
+  "content_image",
+]);
+
+export function shouldInlineFileByDefault(file: Pick<FileRecord, "purpose">): boolean {
+  return DEFAULT_INLINE_PURPOSES.has(file.purpose);
+}
 
 export type AuthorizedFileAccess = {
   postId: string | null;
@@ -150,6 +161,9 @@ export async function authorizeFileAccess(
   if (!decision.allowed) {
     throw new ApiError(user ? 403 : 401, decision.errorCode ?? "accessDenied");
   }
+  if (file.quarantinedAt) {
+    throw new ApiError(410, "fileQuarantined");
+  }
   return { postId: decision.postId, visibility: decision.visibility };
 }
 
@@ -209,7 +223,7 @@ export async function prepareAuthorizedDownload(input: {
         bucket: file.bucket,
         expiresInSeconds: SIGNED_URL_TTL_SECONDS,
         downloadName: file.originalName,
-        disposition: "attachment",
+        disposition: input.inline ? "inline" : "attachment",
         contentType: file.mimeType,
       });
       return { mode: "redirect", url };
@@ -237,7 +251,7 @@ export async function authorizeAndPrepareDownload(input: {
   return prepareAuthorizedDownload({
     ...input,
     access,
-    inline: false,
+    inline: shouldInlineFileByDefault(input.file),
     log: input.log !== false,
   });
 }

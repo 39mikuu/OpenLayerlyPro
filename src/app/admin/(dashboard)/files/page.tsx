@@ -9,7 +9,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDateTime } from "@/lib/dates";
-import { listFiles } from "@/modules/file";
+import { listFiles, listQuarantinedFiles } from "@/modules/file";
 import { getT } from "@/modules/i18n/server";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +20,7 @@ function formatSize(bytes: number): string {
 }
 
 export default async function AdminFilesPage() {
-  const files = await listFiles();
+  const [files, quarantinedFiles] = await Promise.all([listFiles(), listQuarantinedFiles()]);
   const t = await getT();
   return (
     <div className="space-y-6">
@@ -63,6 +63,39 @@ export default async function AdminFilesPage() {
       {files.length === 0 && (
         <p className="text-sm text-muted-foreground">{t("admin.files.empty")}</p>
       )}
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold">Quarantined files</h2>
+        <p className="text-sm text-muted-foreground">
+          Metadata only. Quarantined bytes cannot be downloaded, previewed, exported, or overridden.
+        </p>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>ID</TableHead>
+              <TableHead>{t("admin.files.name")}</TableHead>
+              <TableHead>{t("admin.files.purpose")}</TableHead>
+              <TableHead>Reason</TableHead>
+              <TableHead>Quarantined at</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {quarantinedFiles.map((file) => (
+              <TableRow key={file.id}>
+                <TableCell className="font-mono text-xs">{file.id}</TableCell>
+                <TableCell className="max-w-60 truncate">{file.originalName}</TableCell>
+                <TableCell>
+                  <Badge variant="secondary">{file.purpose}</Badge>
+                </TableCell>
+                <TableCell>{file.quarantineReason ?? "unknown"}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {file.quarantinedAt ? formatDateTime(file.quarantinedAt) : "-"}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </section>
     </div>
   );
 }

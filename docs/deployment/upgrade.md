@@ -116,7 +116,21 @@ With all old application replicas still stopped, run the migration from the stag
 docker compose run --rm --no-deps --entrypoint node app /app/dist/migrate.mjs
 ```
 
-Start the new application only after the migration succeeds:
+After the migration succeeds, preview the mandatory file-safety remediation. The command is dry-run by default and does not modify database rows or objects:
+
+```bash
+docker compose run --rm --no-deps --entrypoint node app /app/dist/files-backfill.mjs
+```
+
+Review the reported remediations and quarantines, then apply them:
+
+```bash
+docker compose run --rm --no-deps --entrypoint node app /app/dist/files-backfill.mjs --apply
+```
+
+The backfill rewrites image-purpose files to deterministic `remediated/v1/` object keys, atomically switches each database row and queues deletion of the old object. Unsafe legacy SVG/HTML/non-raster bytes are quarantined without deletion. Re-running is safe and skips rows already at the target remediation version.
+
+Start the new application after the migration and backfill complete:
 
 ```bash
 docker compose up -d app
@@ -150,6 +164,16 @@ Also sample the operational paths relevant to the deployment:
 - membership access;
 - one local-file download, or one S3/R2 signed download;
 - mail configuration visibility without exposing its password.
+- the admin quarantined-file metadata endpoint (`/api/admin/files?quarantined=true`) without any byte-access action.
+
+For production file delivery, place the application or S3 file origin behind a CDN/reverse proxy and inject these headers on file paths:
+
+```text
+Content-Security-Policy: default-src 'none'; script-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox
+X-Content-Type-Options: nosniff
+```
+
+Application-streamed responses already include both headers. S3-direct signed responses cannot carry CSP/nosniff, so the proxy/CDN is the recommended defense-in-depth layer; signed URLs still force the authoritative content type and disposition.
 
 ## 7. Failure and Rollback
 

@@ -8,6 +8,7 @@ import { getCurrentUser } from "@/modules/auth/session";
 import {
   authorizeFileAccess,
   prepareAuthorizedDownload,
+  shouldInlineFileByDefault,
   shouldLogInitialFileRequest,
 } from "@/modules/download";
 import { parseSingleRange } from "@/modules/download/range";
@@ -23,17 +24,6 @@ import { getFileById } from "@/modules/file";
 
 export const runtime = "nodejs";
 
-// Existing preview assets remain inline. content_attachment is inline only for
-// an explicit, allowlisted video playback request.
-const INLINE_PURPOSES = new Set([
-  "artist_avatar",
-  "payment_qr",
-  "cover",
-  "thumbnail",
-  "payment_proof",
-  "content_image",
-]);
-
 function secureStreamHeaders(input: {
   mimeType: string;
   originalName: string;
@@ -48,6 +38,8 @@ function secureStreamHeaders(input: {
     "Accept-Ranges": "bytes",
     ...(input.contentRange ? { "Content-Range": input.contentRange } : {}),
     "Cache-Control": "private, no-store",
+    "Content-Security-Policy":
+      "default-src 'none'; script-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox",
     "X-Content-Type-Options": "nosniff",
   };
 }
@@ -80,7 +72,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const rangeHeader = req.headers.get("range");
     const inlineRequested = req.nextUrl.searchParams.get("mode") === "inline";
     const video = file.purpose === "content_attachment" && isInlineVideoMime(file.mimeType);
-    const inline = video && inlineRequested;
+    const inline = video ? inlineRequested : !inlineRequested && shouldInlineFileByDefault(file);
     const videoRequest = video && (inlineRequested || rangeHeader !== null);
 
     if (videoRequest) {
@@ -113,6 +105,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
           "Content-Range": `bytes */${file.sizeBytes}`,
           "Accept-Ranges": "bytes",
           "Cache-Control": "private, no-store",
+          "Content-Security-Policy":
+            "default-src 'none'; script-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox",
           "X-Content-Type-Options": "nosniff",
         },
       });
@@ -136,14 +130,13 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       return response;
     }
 
-    const dispositionInline = inline || (!inlineRequested && INLINE_PURPOSES.has(file.purpose));
     if (parsedRange) {
       return new NextResponse(Readable.toWeb(result.stream) as ReadableStream, {
         status: 206,
         headers: secureStreamHeaders({
           mimeType: file.mimeType,
           originalName: file.originalName,
-          inline: dispositionInline,
+          inline,
           contentLength: parsedRange.end - parsedRange.start + 1,
           contentRange: `bytes ${parsedRange.start}-${parsedRange.end}/${file.sizeBytes}`,
         }),
@@ -154,7 +147,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       headers: secureStreamHeaders({
         mimeType: file.mimeType,
         originalName: file.originalName,
-        inline: dispositionInline,
+        inline,
         contentLength: file.sizeBytes,
       }),
     });

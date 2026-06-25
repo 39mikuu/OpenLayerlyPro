@@ -17,7 +17,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock("server-only", () => ({}));
 vi.mock("@/db", () => ({ getDb: mocks.getDb }));
 vi.mock("@/lib/env", () => ({
-  getEnv: () => ({ INLINE_UPLOAD_GRACE_PERIOD_HOURS: 24 }),
+  getEnv: () => ({
+    INLINE_UPLOAD_GRACE_PERIOD_HOURS: 24,
+    IMAGE_MAX_FRAMES: 300,
+    IMAGE_MAX_TOTAL_PIXELS: 300_000_000,
+  }),
 }));
 vi.mock("@/modules/config", () => ({
   getUploadConfig: vi.fn(async () => ({
@@ -135,17 +139,26 @@ describe("streamed file persistence", () => {
   });
 
   it("keeps the buffered image validation path working", async () => {
-    const png = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n5sAAAAASUVORK5CYII=",
-      "base64",
-    );
-    const file = new File([png], "pixel.png", { type: "image/png" });
+    const png = await (
+      await import("sharp")
+    )
+      .default({ create: { width: 1, height: 1, channels: 4, background: "white" } })
+      .png()
+      .toBuffer();
+    const file = new File([new Uint8Array(png)], "pixel.png", { type: "image/png" });
 
     await saveUploadedFile({ file, purpose: "content_image", createdBy: "admin-1" });
 
     expect(mocks.putObject).toHaveBeenCalledWith(
-      expect.objectContaining({ body: png, contentType: "image/png" }),
+      expect.objectContaining({ contentType: "image/png" }),
     );
+    const storedBody = mocks.putObject.mock.calls[0]?.[0]?.body as Buffer;
+    expect(Buffer.isBuffer(storedBody)).toBe(true);
+    await expect((await import("sharp")).default(storedBody).metadata()).resolves.toMatchObject({
+      format: "png",
+      width: 1,
+      height: 1,
+    });
     expect(mocks.values).toHaveBeenCalledWith(
       expect.objectContaining({ width: 1, height: 1, purpose: "content_image" }),
     );
@@ -157,6 +170,42 @@ describe("streamed file persistence", () => {
         runAfter: expect.any(Date),
       }),
     );
+  });
+
+  it("uses sniffed output type instead of the client MIME or extension", async () => {
+    const jpeg = await (
+      await import("sharp")
+    )
+      .default({ create: { width: 2, height: 1, channels: 3, background: "red" } })
+      .jpeg()
+      .toBuffer();
+    const file = new File([new Uint8Array(jpeg)], "pretends-to-be.png", { type: "text/html" });
+
+    await saveUploadedFile({ file, purpose: "payment_proof", createdBy: "member-1" });
+
+    expect(mocks.putObject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contentType: "image/jpeg",
+        contentDisposition: expect.stringContaining("attachment"),
+        objectKey: expect.stringMatching(/\.jpg$/),
+      }),
+    );
+    expect(mocks.values).toHaveBeenCalledWith(
+      expect.objectContaining({ mimeType: "image/jpeg", originalName: "pretends-to-be.png" }),
+    );
+  });
+
+  it("rejects SVG bytes even when the upload uses an allowed image extension", async () => {
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+    );
+    const file = new File([new Uint8Array(svg)], "evil.png", { type: "image/svg+xml" });
+
+    await expect(saveUploadedFile({ file, purpose: "content_image" })).rejects.toMatchObject({
+      code: "unsupportedFileType",
+    });
+    expect(mocks.putObject).not.toHaveBeenCalled();
+    expect(mocks.insert).not.toHaveBeenCalled();
   });
 });
 

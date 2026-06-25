@@ -77,6 +77,7 @@ export class S3StorageAdapter implements StorageAdapter {
         Key: input.objectKey,
         Body: input.body,
         ContentType: input.contentType,
+        ContentDisposition: input.contentDisposition,
       }),
     );
     return { objectKey: input.objectKey, bucket: this.bucket };
@@ -95,6 +96,7 @@ export class S3StorageAdapter implements StorageAdapter {
         Key: input.objectKey,
         Body: measured.stream,
         ContentType: input.contentType,
+        ContentDisposition: input.contentDisposition,
       },
       queueSize: S3_UPLOAD_QUEUE_SIZE,
       partSize: S3_UPLOAD_PART_SIZE,

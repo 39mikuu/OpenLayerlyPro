@@ -1,7 +1,6 @@
-import { createHash, randomUUID } from "crypto";
-import { and, count, desc, eq } from "drizzle-orm";
+import { randomUUID } from "crypto";
+import { and, count, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import path from "path";
-import sharp from "sharp";
 import type { Readable } from "stream";
 
 import { getDb } from "@/db";
@@ -14,6 +13,12 @@ import { getStorage, getStorageForDriver } from "@/modules/storage";
 import { StorageObjectTooLargeError } from "@/modules/storage/stream";
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask } from "@/modules/tasks";
+
+import {
+  normalizeRasterImage,
+  UnsafeRasterImageError,
+  UnsupportedRasterImageError,
+} from "./normalizeRasterImage";
 
 export type FilePurpose = FileRecord["purpose"];
 
@@ -141,11 +146,15 @@ export async function getContentAttachmentUploadLimit(): Promise<{
   return getPurposeLimit("content_attachment");
 }
 
-function createObjectKey(purpose: FilePurpose, fileName: string): string {
+function createObjectKey(purpose: FilePurpose, fileName: string, outputExt?: string): string {
   const now = new Date();
   const yyyy = String(now.getFullYear());
   const mm = String(now.getMonth() + 1).padStart(2, "0");
-  return `${PURPOSE_DIRS[purpose]}/${yyyy}/${mm}/${randomUUID()}-${sanitizeFileName(fileName)}`;
+  const safeName = sanitizeFileName(fileName);
+  const normalizedName = outputExt
+    ? `${path.parse(safeName).name || "file"}.${outputExt}`
+    : safeName;
+  return `${PURPOSE_DIRS[purpose]}/${yyyy}/${mm}/${randomUUID()}-${normalizedName}`;
 }
 
 export async function saveUploadedFile(input: {
@@ -159,8 +168,9 @@ export async function saveUploadedFile(input: {
   }
   const rules = PURPOSE_RULES[purpose];
   if (!rules) throw new ApiError(400, "unsupportedFilePurpose");
+  const originalName = validateOriginalFileName(file.name);
 
-  const ext = getExtension(file.name);
+  const ext = getExtension(originalName);
   if (!rules.extensions.includes(ext)) {
     throw new ApiError(400, "unsupportedFileType", {
       extension: ext,
@@ -177,27 +187,33 @@ export async function saveUploadedFile(input: {
   }
 
   const body = Buffer.from(await file.arrayBuffer());
-  const sha = createHash("sha256").update(body).digest("hex");
-
-  let width: number | null = null;
-  let height: number | null = null;
-  if (IMAGE_EXTENSIONS.includes(ext) || ext === "gif") {
-    try {
-      const meta = await sharp(body).metadata();
-      width = meta.width ?? null;
-      height = meta.height ?? null;
-    } catch {
+  let normalized;
+  try {
+    normalized = await normalizeRasterImage(body, purpose);
+  } catch (error) {
+    if (error instanceof UnsupportedRasterImageError) {
+      throw new ApiError(400, "unsupportedFileType");
+    }
+    if (error instanceof UnsafeRasterImageError) {
       throw new ApiError(400, "imageInvalid");
     }
+    throw error;
+  }
+  if (normalized.sizeBytes > maxBytes) {
+    throw new ApiError(400, "fileTooLarge", { maxMb });
   }
 
-  const objectKey = createObjectKey(purpose, file.name);
+  const objectKey = createObjectKey(purpose, originalName, normalized.ext);
 
   const storage = await getStorage();
   const stored = await storage.putObject({
     objectKey,
-    body,
-    contentType: file.type || "application/octet-stream",
+    body: normalized.outputBuffer,
+    contentType: normalized.mimeType,
+    contentDisposition:
+      purpose === "payment_proof"
+        ? `attachment; filename*=UTF-8''${encodeURIComponent(originalName)}`
+        : undefined,
   });
 
   let record: FileRecord;
@@ -209,12 +225,12 @@ export async function saveUploadedFile(input: {
           storageDriver: storage.driver,
           bucket: stored.bucket,
           objectKey: stored.objectKey,
-          originalName: file.name,
-          mimeType: file.type || "application/octet-stream",
-          sizeBytes: file.size,
-          sha256: sha,
-          width,
-          height,
+          originalName,
+          mimeType: normalized.mimeType,
+          sizeBytes: normalized.sizeBytes,
+          sha256: normalized.sha256,
+          width: normalized.width,
+          height: normalized.height,
           purpose,
           createdBy: input.createdBy ?? null,
         })
@@ -275,6 +291,7 @@ export async function saveStreamedFile(input: {
       objectKey,
       body: input.body,
       contentType: normalizedContentType(fileName),
+      contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
       maxBytes,
       signal: input.signal,
     });
@@ -330,7 +347,25 @@ export async function getFileById(id: string): Promise<FileRecord | null> {
 }
 
 export async function listFiles(): Promise<FileRecord[]> {
-  return getDb().select().from(files).orderBy(desc(files.createdAt));
+  return getDb()
+    .select()
+    .from(files)
+    .where(isNull(files.quarantinedAt))
+    .orderBy(desc(files.createdAt));
+}
+
+export async function listQuarantinedFiles() {
+  return getDb()
+    .select({
+      id: files.id,
+      purpose: files.purpose,
+      originalName: files.originalName,
+      quarantineReason: files.quarantineReason,
+      quarantinedAt: files.quarantinedAt,
+    })
+    .from(files)
+    .where(isNotNull(files.quarantinedAt))
+    .orderBy(desc(files.quarantinedAt));
 }
 
 /** 删除会破坏功能的引用检查；post_files 关联会随删除级联解除，不在此列 */
@@ -370,6 +405,7 @@ async function assertFileNotReferenced(id: string): Promise<void> {
 export async function deleteFile(id: string): Promise<void> {
   const record = await getFileById(id);
   if (!record) throw new ApiError(404, "fileNotFound");
+  if (record.quarantinedAt) throw new ApiError(410, "fileQuarantined");
   await assertFileNotReferenced(id);
   const storage = await getStorageForDriver(record.storageDriver);
   await storage.deleteObject({ objectKey: record.objectKey, bucket: record.bucket });

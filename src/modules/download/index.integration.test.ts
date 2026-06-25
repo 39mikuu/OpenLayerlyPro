@@ -742,6 +742,46 @@ describeWithDatabase("private file download authorization integration", () => {
     expect(storageMocks.createSignedDownloadUrl).not.toHaveBeenCalled();
   });
 
+  it("uses authoritative MIME and purpose disposition for signed raster files", async () => {
+    const { owner } = await seedUsers();
+    const qr = await seedFile("payment_qr", null, "s3", "image/png");
+    const proof = await seedFile("payment_proof", owner.id, "s3", "image/jpeg");
+
+    const qrAccess = await authorizeFileAccess(null, qr);
+    await prepareAuthorizedDownload({
+      user: null,
+      file: qr,
+      access: qrAccess,
+      inline: true,
+      log: false,
+    });
+    expect(storageMocks.createSignedDownloadUrl).toHaveBeenLastCalledWith({
+      objectKey: qr.objectKey,
+      bucket: qr.bucket,
+      expiresInSeconds: 300,
+      downloadName: qr.originalName,
+      disposition: "inline",
+      contentType: "image/png",
+    });
+
+    const proofAccess = await authorizeFileAccess(owner, proof);
+    await prepareAuthorizedDownload({
+      user: owner,
+      file: proof,
+      access: proofAccess,
+      inline: false,
+      log: false,
+    });
+    expect(storageMocks.createSignedDownloadUrl).toHaveBeenLastCalledWith({
+      objectKey: proof.objectKey,
+      bucket: proof.bucket,
+      expiresInSeconds: 300,
+      downloadName: proof.originalName,
+      disposition: "attachment",
+      contentType: "image/jpeg",
+    });
+  });
+
   it("keeps non-video S3 attachments on the short attachment signed URL path", async () => {
     const { file } = await seedPostFile({
       purpose: "content_attachment",
@@ -893,6 +933,31 @@ describeWithDatabase("private file download authorization integration", () => {
       .set({ status: "archived", publishedAt: null })
       .where(eq(posts.id, post.id));
     await expect(authorizeFileAccess(owner, file)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("reveals quarantine only after normal authorization and never signs or streams bytes", async () => {
+    const { owner, other } = await seedUsers();
+    const seeded = await seedFile("payment_proof", owner.id, "s3", "image/jpeg");
+    await db
+      .update(files)
+      .set({ quarantinedAt: new Date(), quarantineReason: "unsupported-format:svg" })
+      .where(eq(files.id, seeded.id));
+    const [file] = await db.select().from(files).where(eq(files.id, seeded.id));
+
+    await expect(authorizeFileAccess(owner, file!)).rejects.toMatchObject({
+      status: 410,
+      code: "fileQuarantined",
+    });
+    await expect(authorizeFileAccess(other, file!)).rejects.toMatchObject({
+      status: 403,
+      code: "accessDenied",
+    });
+    await expect(authorizeFileAccess(null, file!)).rejects.toMatchObject({
+      status: 401,
+      code: "authRequired",
+    });
+    expect(storageMocks.createSignedDownloadUrl).not.toHaveBeenCalled();
+    expect(storageMocks.getObject).not.toHaveBeenCalled();
   });
 
   it("does not reuse login authorization after the next request becomes anonymous", async () => {

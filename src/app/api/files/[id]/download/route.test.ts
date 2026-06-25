@@ -68,6 +68,15 @@ const IMAGE_FILE = {
   mimeType: "image/png",
 };
 
+const PAYMENT_PROOF_FILE = {
+  ...IMAGE_FILE,
+  id: "550e8400-e29b-41d4-a716-446655440003",
+  purpose: "payment_proof",
+  objectKey: "payment-proof/proof.jpg",
+  originalName: "proof.jpg",
+  mimeType: "image/jpeg",
+};
+
 const DEFAULT_ENV = {
   NODE_ENV: "test",
   FILE_PREAUTH_RATE_LIMIT_MAX: 100,
@@ -324,6 +333,9 @@ describe("file download route security and Range behavior", () => {
     expect(response.headers.get("content-range")).toBeNull();
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("content-security-policy")).toContain("script-src 'none'");
+    expect(response.headers.get("content-security-policy")).toContain("object-src 'none'");
+    expect(response.headers.get("content-security-policy")).toContain("sandbox");
     expect(mocks.prepareAuthorizedDownload).toHaveBeenCalledWith(
       expect.objectContaining({ inline: true, range: undefined, log: true }),
     );
@@ -400,6 +412,22 @@ describe("file download route security and Range behavior", () => {
     expect(explicitResponse.headers.get("content-disposition")).toBe(
       "attachment; filename*=UTF-8''image.png",
     );
+  });
+
+  it("always serves payment proof as attachment", async () => {
+    mocks.getFileById.mockResolvedValue(PAYMENT_PROOF_FILE);
+    mocks.prepareAuthorizedDownload.mockResolvedValue({
+      mode: "stream",
+      stream: Readable.from([Buffer.alloc(1000)]),
+      file: PAYMENT_PROOF_FILE,
+    });
+
+    const response = await call(PAYMENT_PROOF_FILE.id);
+
+    expect(response.headers.get("content-disposition")).toBe(
+      "attachment; filename*=UTF-8''proof.jpg",
+    );
+    expect(response.headers.get("content-type")).toBe("image/jpeg");
   });
 
   it("applies a configurable per-principal, per-file video bucket", async () => {
