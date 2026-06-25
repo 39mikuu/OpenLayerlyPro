@@ -759,7 +759,7 @@ describeWithDatabase("private file download authorization integration", () => {
       objectKey: qr.objectKey,
       bucket: qr.bucket,
       expiresInSeconds: 300,
-      downloadName: qr.originalName,
+      downloadName: "payment_qr.png",
       disposition: "inline",
       contentType: "image/png",
     });
@@ -776,7 +776,7 @@ describeWithDatabase("private file download authorization integration", () => {
       objectKey: proof.objectKey,
       bucket: proof.bucket,
       expiresInSeconds: 300,
-      downloadName: proof.originalName,
+      downloadName: "payment_proof.jpg",
       disposition: "attachment",
       contentType: "image/jpeg",
     });

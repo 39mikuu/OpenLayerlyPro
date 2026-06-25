@@ -414,6 +414,22 @@ describe("file download route security and Range behavior", () => {
     );
   });
 
+  it("uses the authoritative raster extension in the download filename", async () => {
+    const disguisedProof = { ...PAYMENT_PROOF_FILE, originalName: "proof.png" };
+    mocks.getFileById.mockResolvedValue(disguisedProof);
+    mocks.prepareAuthorizedDownload.mockResolvedValue({
+      mode: "stream",
+      stream: Readable.from([Buffer.alloc(1000)]),
+      file: disguisedProof,
+    });
+
+    const response = await call(disguisedProof.id);
+
+    expect(response.headers.get("content-disposition")).toBe(
+      "attachment; filename*=UTF-8''proof.jpg",
+    );
+  });
+
   it("always serves payment proof as attachment", async () => {
     mocks.getFileById.mockResolvedValue(PAYMENT_PROOF_FILE);
     mocks.prepareAuthorizedDownload.mockResolvedValue({

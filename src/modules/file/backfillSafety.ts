@@ -1,12 +1,13 @@
 import { and, asc, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import type { Readable } from "stream";
 
-import { getDb } from "@/db";
+import { type DbClient, getDb } from "@/db";
 import { appEvents, type FileRecord, files } from "@/db/schema";
 import { getUploadConfig } from "@/modules/config";
 import { getStorageForDriver } from "@/modules/storage";
 import { enqueueTask } from "@/modules/tasks";
 
+import { withAuthoritativeExtension } from "./authoritativeName";
 import {
   normalizeRasterImage,
   type RasterImagePurpose,
@@ -15,6 +16,15 @@ import {
 } from "./normalizeRasterImage";
 
 export const FILE_SAFETY_REMEDIATION_VERSION = 1;
+const FILE_SAFETY_BACKFILL_LOCK_KEY = `file-safety-backfill:v${FILE_SAFETY_REMEDIATION_VERSION}`;
+
+export class FileSafetyBackfillAlreadyRunningError extends Error {
+  constructor() {
+    super("File safety backfill is already running");
+    this.name = "FileSafetyBackfillAlreadyRunningError";
+  }
+}
+
 export const FILE_SAFETY_IMAGE_PURPOSES = [
   "artist_avatar",
   "payment_qr",
@@ -56,9 +66,9 @@ function quarantineReason(error: unknown): string {
   return "unsafe-image:unknown";
 }
 
-function attachmentDisposition(file: FileRecord): string | undefined {
+function attachmentDisposition(file: FileRecord, outputExt: string): string | undefined {
   return file.purpose === "payment_proof"
-    ? `attachment; filename*=UTF-8''${encodeURIComponent(file.originalName)}`
+    ? `attachment; filename*=UTF-8''${encodeURIComponent(withAuthoritativeExtension(file.originalName, outputExt))}`
     : undefined;
 }
 
@@ -81,6 +91,7 @@ async function quarantineFile(file: FileRecord, reason: string): Promise<boolean
       )
       .returning({ id: files.id });
     if (!updated) return false;
+
     await tx.insert(appEvents).values({
       type: "file_safety_quarantined",
       payloadJson: {
@@ -153,12 +164,13 @@ async function switchRemediatedObject(input: {
   });
 }
 
-export async function runFileSafetyBackfill(
+async function runFileSafetyBackfillWithDb(
+  db: DbClient,
   options: {
     apply?: boolean;
     batchSize?: number;
     onProgress?: (message: string) => void;
-  } = {},
+  },
 ): Promise<FileSafetyBackfillResult> {
   const apply = options.apply === true;
   const batchSize = Math.min(Math.max(options.batchSize ?? 100, 1), 1_000);
@@ -177,7 +189,7 @@ export async function runFileSafetyBackfill(
       lt(files.remediationVersion, FILE_SAFETY_REMEDIATION_VERSION),
     ];
     if (cursor) conditions.push(gt(files.id, cursor));
-    const batch = await getDb()
+    const batch = await db
       .select()
       .from(files)
       .where(and(...conditions))
@@ -223,7 +235,7 @@ export async function runFileSafetyBackfill(
         objectKey: newObjectKey,
         body: output.outputBuffer,
         contentType: output.mimeType,
-        contentDisposition: attachmentDisposition(file),
+        contentDisposition: attachmentDisposition(file, output.ext),
       });
       if (await switchRemediatedObject({ file, objectKey: newObjectKey, output, oversize })) {
         result.remediated += 1;
@@ -234,4 +246,26 @@ export async function runFileSafetyBackfill(
   }
 
   return result;
+}
+
+export async function runFileSafetyBackfill(
+  options: {
+    apply?: boolean;
+    batchSize?: number;
+    onProgress?: (message: string) => void;
+  } = {},
+): Promise<FileSafetyBackfillResult> {
+  if (options.apply !== true) {
+    return runFileSafetyBackfillWithDb(getDb(), options);
+  }
+
+  return getDb().transaction(async (tx) => {
+    const lockResult = await tx.execute<{ acquired: boolean }>(
+      sql`select pg_try_advisory_xact_lock(hashtextextended(${FILE_SAFETY_BACKFILL_LOCK_KEY}, 0)) as acquired`,
+    );
+    if (lockResult[0]?.acquired !== true) {
+      throw new FileSafetyBackfillAlreadyRunningError();
+    }
+    return runFileSafetyBackfillWithDb(getDb(), options);
+  });
 }

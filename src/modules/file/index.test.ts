@@ -186,7 +186,7 @@ describe("streamed file persistence", () => {
     expect(mocks.putObject).toHaveBeenCalledWith(
       expect.objectContaining({
         contentType: "image/jpeg",
-        contentDisposition: expect.stringContaining("attachment"),
+        contentDisposition: "attachment; filename*=UTF-8''pretends-to-be.jpg",
         objectKey: expect.stringMatching(/\.jpg$/),
       }),
     );

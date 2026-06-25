@@ -34,7 +34,11 @@ import { getDb } from "@/db";
 import { appEvents, files, tasks } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 
-import { FILE_SAFETY_REMEDIATION_VERSION, runFileSafetyBackfill } from "./backfillSafety";
+import {
+  FILE_SAFETY_REMEDIATION_VERSION,
+  FileSafetyBackfillAlreadyRunningError,
+  runFileSafetyBackfill,
+} from "./backfillSafety";
 import { normalizeRasterImage } from "./normalizeRasterImage";
 
 const describeWithDatabase =
@@ -135,6 +139,12 @@ describeWithDatabase("file safety backfill integration", () => {
       },
     });
     expect(storageState.objects.has("legacy/polyglot.png")).toBe(true);
+    expect(storageState.putObject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objectKey: `remediated/v${FILE_SAFETY_REMEDIATION_VERSION}/${file.id}.jpg`,
+        contentType: "image/jpeg",
+      }),
+    );
     await expect(db.select().from(appEvents)).resolves.toEqual([
       expect.objectContaining({ type: "file_safety_remediated" }),
     ]);
@@ -143,6 +153,38 @@ describeWithDatabase("file safety backfill integration", () => {
     await expect(runFileSafetyBackfill({ apply: true })).resolves.toMatchObject({ scanned: 0 });
     expect(storageState.putObject).toHaveBeenCalledTimes(putCalls);
     await expect(db.select().from(tasks)).resolves.toHaveLength(1);
+  });
+
+  it("fences concurrent apply runs with one database-wide advisory lock", async () => {
+    const input = await sharp({
+      create: { width: 2, height: 2, channels: 3, background: "white" },
+    })
+      .jpeg()
+      .toBuffer();
+    await seedFile({ body: input, objectKey: "legacy/fenced.jpg" });
+
+    let releaseFirst!: () => void;
+    let firstReadStarted!: () => void;
+    const firstRead = new Promise<void>((resolve) => {
+      firstReadStarted = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    storageState.getObject.mockImplementationOnce(async () => {
+      firstReadStarted();
+      await release;
+      return Readable.from([input]);
+    });
+
+    const firstRun = runFileSafetyBackfill({ apply: true });
+    await firstRead;
+    await expect(runFileSafetyBackfill({ apply: true })).rejects.toBeInstanceOf(
+      FileSafetyBackfillAlreadyRunningError,
+    );
+    releaseFirst();
+    await expect(firstRun).resolves.toMatchObject({ remediated: 1 });
+    expect(storageState.getObject).toHaveBeenCalledTimes(1);
   });
 
   it("quarantines legacy SVG without rewriting or deleting its original object", async () => {

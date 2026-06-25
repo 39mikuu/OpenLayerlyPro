@@ -11,6 +11,7 @@ import {
   listPostLinksForFile,
   listPostsForFile,
 } from "@/modules/content";
+import { authoritativeDownloadName } from "@/modules/file/authoritativeName";
 import { getStorageForDriver } from "@/modules/storage";
 import { recordEvent } from "@/modules/system/events";
 
@@ -202,6 +203,7 @@ export async function prepareAuthorizedDownload(input: {
   }
 
   const storage = await getStorageForDriver(file.storageDriver);
+  const downloadName = authoritativeDownloadName(file);
   const video = file.purpose === "content_attachment" && isInlineVideoMime(file.mimeType);
   if (file.storageDriver === "s3" && storage.createSignedDownloadUrl) {
     if (video && input.inline && access.visibility === "public") {
@@ -209,7 +211,7 @@ export async function prepareAuthorizedDownload(input: {
         objectKey: file.objectKey,
         bucket: file.bucket,
         expiresInSeconds: getEnv().PUBLIC_VIDEO_SIGNED_URL_TTL_SECONDS,
-        downloadName: file.originalName,
+        downloadName,
         disposition: "inline",
         contentType: file.mimeType,
       });
@@ -222,7 +224,7 @@ export async function prepareAuthorizedDownload(input: {
         objectKey: file.objectKey,
         bucket: file.bucket,
         expiresInSeconds: SIGNED_URL_TTL_SECONDS,
-        downloadName: file.originalName,
+        downloadName,
         disposition: input.inline ? "inline" : "attachment",
         contentType: file.mimeType,
       });

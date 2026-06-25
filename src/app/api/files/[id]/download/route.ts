@@ -21,12 +21,13 @@ import {
 } from "@/modules/download/rate-limit-policy";
 import { isInlineVideoMime } from "@/modules/download/video";
 import { getFileById } from "@/modules/file";
+import { authoritativeDownloadName } from "@/modules/file/authoritativeName";
 
 export const runtime = "nodejs";
 
 function secureStreamHeaders(input: {
   mimeType: string;
-  originalName: string;
+  downloadName: string;
   inline: boolean;
   contentLength: number;
   contentRange?: string;
@@ -34,7 +35,7 @@ function secureStreamHeaders(input: {
   return {
     "Content-Type": input.mimeType,
     "Content-Length": String(input.contentLength),
-    "Content-Disposition": `${input.inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(input.originalName)}`,
+    "Content-Disposition": `${input.inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(input.downloadName)}`,
     "Accept-Ranges": "bytes",
     ...(input.contentRange ? { "Content-Range": input.contentRange } : {}),
     "Cache-Control": "private, no-store",
@@ -71,6 +72,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
 
     const rangeHeader = req.headers.get("range");
     const inlineRequested = req.nextUrl.searchParams.get("mode") === "inline";
+    const downloadName = authoritativeDownloadName(file);
     const video = file.purpose === "content_attachment" && isInlineVideoMime(file.mimeType);
     const inline = video ? inlineRequested : !inlineRequested && shouldInlineFileByDefault(file);
     const videoRequest = video && (inlineRequested || rangeHeader !== null);
@@ -135,7 +137,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         status: 206,
         headers: secureStreamHeaders({
           mimeType: file.mimeType,
-          originalName: file.originalName,
+          downloadName,
           inline,
           contentLength: parsedRange.end - parsedRange.start + 1,
           contentRange: `bytes ${parsedRange.start}-${parsedRange.end}/${file.sizeBytes}`,
@@ -146,7 +148,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     return new NextResponse(Readable.toWeb(result.stream) as ReadableStream, {
       headers: secureStreamHeaders({
         mimeType: file.mimeType,
-        originalName: file.originalName,
+        downloadName,
         inline,
         contentLength: file.sizeBytes,
       }),

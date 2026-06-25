@@ -14,6 +14,7 @@ import { StorageObjectTooLargeError } from "@/modules/storage/stream";
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask } from "@/modules/tasks";
 
+import { withAuthoritativeExtension } from "./authoritativeName";
 import {
   normalizeRasterImage,
   UnsafeRasterImageError,
@@ -204,6 +205,7 @@ export async function saveUploadedFile(input: {
   }
 
   const objectKey = createObjectKey(purpose, originalName, normalized.ext);
+  const downloadName = withAuthoritativeExtension(originalName, normalized.ext);
 
   const storage = await getStorage();
   const stored = await storage.putObject({
@@ -212,7 +214,7 @@ export async function saveUploadedFile(input: {
     contentType: normalized.mimeType,
     contentDisposition:
       purpose === "payment_proof"
-        ? `attachment; filename*=UTF-8''${encodeURIComponent(originalName)}`
+        ? `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`
         : undefined,
   });
 
