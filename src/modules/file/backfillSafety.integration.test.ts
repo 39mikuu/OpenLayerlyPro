@@ -6,6 +6,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const storageState = vi.hoisted(() => ({
   objects: new Map<string, Buffer>(),
+  putBucket: null as string | null,
   putObject: vi.fn(),
   getObject: vi.fn(),
   deleteObject: vi.fn(),
@@ -51,6 +52,7 @@ describeWithDatabase("file safety backfill integration", () => {
     await resetDatabase(db);
     vi.clearAllMocks();
     storageState.objects.clear();
+    storageState.putBucket = null;
     uploadConfigState.paymentProofMaxSizeMb = 10;
     storageState.getObject.mockImplementation(async ({ objectKey }: { objectKey: string }) => {
       const body = storageState.objects.get(objectKey);
@@ -60,7 +62,7 @@ describeWithDatabase("file safety backfill integration", () => {
     storageState.putObject.mockImplementation(
       async ({ objectKey, body }: { objectKey: string; body: Buffer }) => {
         storageState.objects.set(objectKey, Buffer.from(body));
-        return { objectKey, bucket: null };
+        return { objectKey, bucket: storageState.putBucket };
       },
     );
     storageState.deleteObject.mockResolvedValue(undefined);
@@ -75,6 +77,7 @@ describeWithDatabase("file safety backfill integration", () => {
     purpose?: "content_image" | "payment_proof";
     mimeType?: string;
     objectKey?: string;
+    bucket?: string | null;
   }) {
     const objectKey = input.objectKey ?? `legacy/${randomUUID()}.png`;
     storageState.objects.set(objectKey, input.body);
@@ -82,7 +85,7 @@ describeWithDatabase("file safety backfill integration", () => {
       .insert(files)
       .values({
         storageDriver: "local",
-        bucket: null,
+        bucket: input.bucket ?? null,
         objectKey,
         originalName: "legacy.png",
         mimeType: input.mimeType ?? "text/html",
@@ -115,6 +118,7 @@ describeWithDatabase("file safety backfill integration", () => {
 
     const [updated] = await db.select().from(files).where(eq(files.id, file.id));
     expect(updated).toMatchObject({
+      bucket: null,
       objectKey: `remediated/v${FILE_SAFETY_REMEDIATION_VERSION}/${file.id}.jpg`,
       mimeType: "image/jpeg",
       width: 3,
@@ -153,6 +157,40 @@ describeWithDatabase("file safety backfill integration", () => {
     await expect(runFileSafetyBackfill({ apply: true })).resolves.toMatchObject({ scanned: 0 });
     expect(storageState.putObject).toHaveBeenCalledTimes(putCalls);
     await expect(db.select().from(tasks)).resolves.toHaveLength(1);
+  });
+
+  it("switches to the adapter bucket while queuing deletion from the old bucket", async () => {
+    storageState.putBucket = "current-adapter-bucket";
+    const input = await sharp({
+      create: { width: 4, height: 3, channels: 3, background: "white" },
+    })
+      .jpeg()
+      .toBuffer();
+    const file = await seedFile({
+      body: input,
+      objectKey: "legacy/old-bucket.jpg",
+      bucket: "legacy-row-bucket",
+    });
+
+    await expect(runFileSafetyBackfill({ apply: true })).resolves.toMatchObject({ remediated: 1 });
+
+    const [updated] = await db.select().from(files).where(eq(files.id, file.id));
+    expect(updated).toMatchObject({
+      bucket: "current-adapter-bucket",
+      objectKey: `remediated/v${FILE_SAFETY_REMEDIATION_VERSION}/${file.id}.jpg`,
+      remediationVersion: FILE_SAFETY_REMEDIATION_VERSION,
+    });
+    expect(storageState.objects.get(updated!.objectKey)).toBeDefined();
+    await expect(db.select().from(tasks)).resolves.toEqual([
+      expect.objectContaining({
+        kind: "storage.delete_object",
+        payloadJson: {
+          storageDriver: "local",
+          bucket: "legacy-row-bucket",
+          objectKey: "legacy/old-bucket.jpg",
+        },
+      }),
+    ]);
   });
 
   it("fences concurrent apply runs with one database-wide advisory lock", async () => {
