@@ -4,6 +4,9 @@ const BODY_ENV_KEYS = [
   "REQUEST_JSON_MAX_BYTES",
   "STRIPE_WEBHOOK_MAX_BYTES",
   "PAYMENT_PROOF_MAX_SIZE_MB",
+  "PAYMENT_PROOF_RETENTION_DAYS",
+  "PAYMENT_PROOF_MAX_PER_DAY",
+  "PROOF_UPLOAD_RESERVATION_TTL_MINUTES",
 ] as const;
 
 const originalValues = new Map(BODY_ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -38,6 +41,9 @@ describe("request body environment configuration", () => {
     expect(env.REQUEST_JSON_MAX_BYTES).toBe(65_536);
     expect(env.STRIPE_WEBHOOK_MAX_BYTES).toBe(262_144);
     expect(env.PAYMENT_PROOF_MAX_SIZE_MB).toBe(10);
+    expect(env.PAYMENT_PROOF_RETENTION_DAYS).toBe(30);
+    expect(env.PAYMENT_PROOF_MAX_PER_DAY).toBe(20);
+    expect(env.PROOF_UPLOAD_RESERVATION_TTL_MINUTES).toBe(5);
   });
 
   it("accepts finite integer values at the configured boundaries", async () => {
@@ -46,11 +52,17 @@ describe("request body environment configuration", () => {
         REQUEST_JSON_MAX_BYTES: "1024",
         STRIPE_WEBHOOK_MAX_BYTES: "1048576",
         PAYMENT_PROOF_MAX_SIZE_MB: "100",
+        PAYMENT_PROOF_RETENTION_DAYS: "3650",
+        PAYMENT_PROOF_MAX_PER_DAY: "1000",
+        PROOF_UPLOAD_RESERVATION_TTL_MINUTES: "60",
       }),
     ).resolves.toMatchObject({
       REQUEST_JSON_MAX_BYTES: 1024,
       STRIPE_WEBHOOK_MAX_BYTES: 1_048_576,
       PAYMENT_PROOF_MAX_SIZE_MB: 100,
+      PAYMENT_PROOF_RETENTION_DAYS: 3650,
+      PAYMENT_PROOF_MAX_PER_DAY: 1000,
+      PROOF_UPLOAD_RESERVATION_TTL_MINUTES: 60,
     });
   });
 
@@ -64,6 +76,12 @@ describe("request body environment configuration", () => {
     ["PAYMENT_PROOF_MAX_SIZE_MB", "0"],
     ["PAYMENT_PROOF_MAX_SIZE_MB", "-1"],
     ["PAYMENT_PROOF_MAX_SIZE_MB", "101"],
+    ["PAYMENT_PROOF_RETENTION_DAYS", "0"],
+    ["PAYMENT_PROOF_RETENTION_DAYS", "3651"],
+    ["PAYMENT_PROOF_MAX_PER_DAY", "0"],
+    ["PAYMENT_PROOF_MAX_PER_DAY", "1001"],
+    ["PROOF_UPLOAD_RESERVATION_TTL_MINUTES", "0"],
+    ["PROOF_UPLOAD_RESERVATION_TTL_MINUTES", "61"],
     ["REQUEST_JSON_MAX_BYTES", "1.5"],
     ["STRIPE_WEBHOOK_MAX_BYTES", "NaN"],
     ["PAYMENT_PROOF_MAX_SIZE_MB", "Infinity"],

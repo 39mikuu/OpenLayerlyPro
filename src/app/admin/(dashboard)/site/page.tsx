@@ -25,6 +25,7 @@ export default async function AdminSitePage() {
           siteLogoFileId: site.siteLogoFileId,
           siteIconFileId: site.siteIconFileId,
           customFooterHtml: site.customFooterHtml,
+          paymentProofApprovedRetentionDays: site.paymentProofApprovedRetentionDays,
           socialLinks: site.socialLinks,
         }}
       />

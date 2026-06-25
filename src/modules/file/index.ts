@@ -1,20 +1,28 @@
 import { randomUUID } from "crypto";
-import { and, count, desc, eq, isNotNull, isNull } from "drizzle-orm";
+import { count, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import path from "path";
 import type { Readable } from "stream";
 
 import { getDb } from "@/db";
-import { type FileRecord, files, paymentMethods, paymentRequests, posts } from "@/db/schema";
+import {
+  type FileRecord,
+  files,
+  paymentMethods,
+  paymentRequests,
+  postFiles,
+  posts,
+  siteSettings,
+} from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { getUploadConfig } from "@/modules/config";
-import { getSetting } from "@/modules/site";
-import { getStorage, getStorageForDriver } from "@/modules/storage";
+import { getStorage } from "@/modules/storage";
 import { StorageObjectTooLargeError } from "@/modules/storage/stream";
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask } from "@/modules/tasks";
 
 import { withAuthoritativeExtension } from "./authoritativeName";
+import { deleteFileRowWithStorageTask } from "./cleanup";
 import {
   normalizeRasterImage,
   UnsafeRasterImageError,
@@ -370,46 +378,39 @@ export async function listQuarantinedFiles() {
     .orderBy(desc(files.quarantinedAt));
 }
 
-/** 删除会破坏功能的引用检查；post_files 关联会随删除级联解除，不在此列 */
-async function assertFileNotReferenced(id: string): Promise<void> {
-  const db = getDb();
-  const [[qr], [cover], [proof]] = await Promise.all([
-    db.select({ c: count() }).from(paymentMethods).where(eq(paymentMethods.qrFileId, id)),
-    db.select({ c: count() }).from(posts).where(eq(posts.coverFileId, id)),
-    db
-      .select({ c: count() })
-      .from(paymentRequests)
-      .where(
-        and(eq(paymentRequests.proofFileId, id), eq(paymentRequests.status, "pending_review")),
-      ),
-  ]);
-  const [avatarFileId, logoFileId, iconFileId] = await Promise.all([
-    getSetting<string>("artist_avatar_file_id"),
-    getSetting<string>("site_logo_file_id"),
-    getSetting<string>("site_icon_file_id"),
-  ]);
-  const avatar = avatarFileId === id ? 1 : 0;
-  const siteLogo = logoFileId === id ? 1 : 0;
-  const siteIcon = iconFileId === id ? 1 : 0;
-  const params = {
-    paymentMethods: Number(qr.c),
-    covers: Number(cover.c),
-    proofs: Number(proof.c),
-    avatar,
-    siteLogo,
-    siteIcon,
-  };
-  if (Object.values(params).some((value) => value > 0)) {
-    throw new ApiError(400, "fileInUse", params);
-  }
-}
+const PROTECTED_SETTING_KEYS = [
+  "artist_avatar_file_id",
+  "site_logo_file_id",
+  "site_icon_file_id",
+] as const;
 
 export async function deleteFile(id: string): Promise<void> {
-  const record = await getFileById(id);
-  if (!record) throw new ApiError(404, "fileNotFound");
-  if (record.quarantinedAt) throw new ApiError(410, "fileQuarantined");
-  await assertFileNotReferenced(id);
-  const storage = await getStorageForDriver(record.storageDriver);
-  await storage.deleteObject({ objectKey: record.objectKey, bucket: record.bucket });
-  await getDb().delete(files).where(eq(files.id, id));
+  await getDb().transaction(async (tx) => {
+    const [record] = await tx.select().from(files).where(eq(files.id, id)).limit(1).for("update");
+    if (!record) throw new ApiError(404, "fileNotFound");
+    if (record.quarantinedAt) throw new ApiError(410, "fileQuarantined");
+
+    const [[postFile], [qr], [cover], [proof], settingRows] = await Promise.all([
+      tx.select({ c: count() }).from(postFiles).where(eq(postFiles.fileId, id)),
+      tx.select({ c: count() }).from(paymentMethods).where(eq(paymentMethods.qrFileId, id)),
+      tx.select({ c: count() }).from(posts).where(eq(posts.coverFileId, id)),
+      tx.select({ c: count() }).from(paymentRequests).where(eq(paymentRequests.proofFileId, id)),
+      tx
+        .select({ value: siteSettings.valueJson })
+        .from(siteSettings)
+        .where(inArray(siteSettings.key, [...PROTECTED_SETTING_KEYS])),
+    ]);
+    const params = {
+      postFiles: Number(postFile.c),
+      paymentMethods: Number(qr.c),
+      covers: Number(cover.c),
+      proofs: Number(proof.c),
+      settings: settingRows.filter((row) => row.value === id).length,
+    };
+    if (Object.values(params).some((value) => value > 0)) {
+      throw new ApiError(400, "fileInUse", params);
+    }
+
+    await deleteFileRowWithStorageTask(tx, record);
+  });
 }

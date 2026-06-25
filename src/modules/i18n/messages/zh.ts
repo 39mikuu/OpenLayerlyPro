@@ -607,6 +607,11 @@ export const zh = {
       customFooterWarning:
         "自定义代码会直接插入公开页面。请只粘贴可信代码，错误脚本可能影响访客页面。",
       clearCustomFooter: "清空页脚代码",
+      paymentProofRetention: "付款凭证保留",
+      paymentProofRetentionDescription: "设置已批准和已撤销付款凭证的审计保留周期。",
+      paymentProofApprovedRetentionDays: "已批准凭证保留天数",
+      paymentProofApprovedRetentionHelp:
+        "设为 0 表示永久保留；设为 1–3650 时，仅对之后进入已批准或已撤销状态的申请安排延迟清理。",
       socialLinks: "社交链接",
       platformName: "平台名称",
       addLink: "添加链接",
@@ -797,6 +802,7 @@ export const zh = {
     cooldownRateLimited: "发送过于频繁，请 {seconds} 秒后再试",
     downloadRateLimited: "下载过于频繁，请稍后再试",
     uploadRateLimited: "上传过于频繁，请稍后再试",
+    uploadQuotaExceeded: "今日付款凭证上传次数已达上限",
     mailNotConfigured: "站点未配置邮件服务，请联系管理员",
     codeExpired: "验证码无效或已过期，请重新获取",
     codeAttemptsExceeded: "尝试次数过多，请重新获取验证码",

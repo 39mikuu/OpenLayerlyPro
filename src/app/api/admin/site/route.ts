@@ -26,6 +26,7 @@ const bodySchema = z.object({
   siteLogoFileId: z.string().uuid().nullable().optional(),
   siteIconFileId: z.string().uuid().nullable().optional(),
   customFooterHtml: z.string().max(20000).optional(),
+  paymentProofApprovedRetentionDays: z.number().int().min(0).max(3650).optional(),
   socialLinks: z
     .array(
       z.object({
@@ -53,6 +54,11 @@ export async function PUT(req: NextRequest) {
       await writeOptionalFileSetting("site_icon_file_id", input.siteIconFileId);
     if (input.customFooterHtml !== undefined)
       await setSetting("custom_footer_html", input.customFooterHtml);
+    if (input.paymentProofApprovedRetentionDays !== undefined)
+      await setSetting(
+        "payment_proof_approved_retention_days",
+        input.paymentProofApprovedRetentionDays,
+      );
     if (input.socialLinks !== undefined) await setSetting("social_links", input.socialLinks);
     return jsonOk(await readAdminSiteInfo());
   } catch (err) {

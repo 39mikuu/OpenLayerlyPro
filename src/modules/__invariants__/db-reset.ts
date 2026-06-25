@@ -13,6 +13,7 @@ export async function resetDatabase(db: DbClient = getDb()): Promise<void> {
       tasks,
       app_events,
       payment_provider_events,
+      payment_proof_upload_reservations,
       download_logs,
       post_tags,
       post_categories,

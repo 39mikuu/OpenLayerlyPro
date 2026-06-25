@@ -23,6 +23,7 @@ export function SiteSettingsForm({
     siteLogoFileId: string | null;
     siteIconFileId: string | null;
     customFooterHtml: string;
+    paymentProofApprovedRetentionDays: number;
     socialLinks: SocialLink[];
   };
 }) {
@@ -35,6 +36,9 @@ export function SiteSettingsForm({
   const [logoFileId, setLogoFileId] = useState(initial.siteLogoFileId);
   const [iconFileId, setIconFileId] = useState(initial.siteIconFileId);
   const [customFooterHtml, setCustomFooterHtml] = useState(initial.customFooterHtml);
+  const [paymentProofApprovedRetentionDays, setPaymentProofApprovedRetentionDays] = useState(
+    initial.paymentProofApprovedRetentionDays,
+  );
   const [links, setLinks] = useState<SocialLink[]>(initial.socialLinks);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -53,6 +57,7 @@ export function SiteSettingsForm({
           siteLogoFileId: logoFileId,
           siteIconFileId: iconFileId,
           customFooterHtml,
+          paymentProofApprovedRetentionDays,
           socialLinks: links.filter((l) => l.name && l.url),
         },
       });
@@ -189,6 +194,29 @@ export function SiteSettingsForm({
             onChange={(e) => uploadBrandAsset(e.target.files?.[0] ?? null, "icon")}
           />
           <p className="text-xs text-muted-foreground">{t("admin.site.iconHelp")}</p>
+        </div>
+      </section>
+
+      <section className="space-y-4 rounded-lg border p-4">
+        <div>
+          <h2 className="text-base font-semibold">{t("admin.site.paymentProofRetention")}</h2>
+          <p className="text-sm text-muted-foreground">
+            {t("admin.site.paymentProofRetentionDescription")}
+          </p>
+        </div>
+        <div className="space-y-2">
+          <Label>{t("admin.site.paymentProofApprovedRetentionDays")}</Label>
+          <Input
+            type="number"
+            min={0}
+            max={3650}
+            step={1}
+            value={paymentProofApprovedRetentionDays}
+            onChange={(e) => setPaymentProofApprovedRetentionDays(Number(e.target.value))}
+          />
+          <p className="text-xs text-muted-foreground">
+            {t("admin.site.paymentProofApprovedRetentionHelp")}
+          </p>
         </div>
       </section>
 

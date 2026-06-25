@@ -120,6 +120,13 @@
       "when": 1782384870512,
       "tag": "0016_tired_bishop",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1782403506646,
+      "tag": "0017_cold_hellfire_club",
+      "breakpoints": true
     }
   ]
 }

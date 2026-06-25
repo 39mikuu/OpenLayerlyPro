@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
-import { getDb } from "@/db";
+import { getDb, type TxClient } from "@/db";
 import {
   files,
   paymentMethods,
@@ -27,7 +27,7 @@ const PROTECTED_SETTING_KEYS = [
   "site_icon_file_id",
 ] as const;
 
-function storageDeleteDedupeKey(payload: StorageDeletePayload): string {
+export function storageDeleteDedupeKey(payload: StorageDeletePayload): string {
   const identity = `${payload.storageDriver}\0${payload.bucket ?? ""}\0${payload.objectKey}`;
   const hash = createHash("sha256").update(identity).digest("hex");
   return `storage:delete_object:${hash}`;
@@ -80,19 +80,33 @@ export async function cleanupOrphanFile(
       return "referenced";
     }
 
-    const payload: StorageDeletePayload = {
-      storageDriver: file.storageDriver,
-      bucket: file.bucket,
-      objectKey: file.objectKey,
-    };
-    await enqueueTask(tx, {
-      kind: "storage.delete_object",
-      dedupeKey: storageDeleteDedupeKey(payload),
-      payload,
-    });
-    await tx.delete(files).where(and(eq(files.id, fileId), eq(files.purpose, "content_image")));
+    await deleteFileRowWithStorageTask(tx, file);
     return "deleted";
   });
+}
+
+export async function enqueueFileStorageDeletion(
+  tx: TxClient,
+  file: Pick<typeof files.$inferSelect, "storageDriver" | "bucket" | "objectKey">,
+): Promise<void> {
+  const payload: StorageDeletePayload = {
+    storageDriver: file.storageDriver,
+    bucket: file.bucket,
+    objectKey: file.objectKey,
+  };
+  await enqueueTask(tx, {
+    kind: "storage.delete_object",
+    dedupeKey: storageDeleteDedupeKey(payload),
+    payload,
+  });
+}
+
+export async function deleteFileRowWithStorageTask(
+  tx: TxClient,
+  file: Pick<typeof files.$inferSelect, "id" | "storageDriver" | "bucket" | "objectKey">,
+): Promise<void> {
+  await enqueueFileStorageDeletion(tx, file);
+  await tx.delete(files).where(eq(files.id, file.id));
 }
 
 export async function deleteStorageObject(payload: StorageDeletePayload): Promise<void> {

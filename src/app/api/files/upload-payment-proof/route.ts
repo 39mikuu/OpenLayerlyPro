@@ -11,6 +11,10 @@ import {
 } from "@/lib/request-body";
 import { requireUser } from "@/modules/auth/session";
 import { saveUploadedFile } from "@/modules/file";
+import {
+  completePaymentProofUploadReservation,
+  reservePaymentProofUpload,
+} from "@/modules/payment/proof-upload-quota";
 
 export const runtime = "nodejs";
 
@@ -47,12 +51,19 @@ export async function POST(req: NextRequest) {
     if (!(file instanceof File) || uploadedFiles.length !== 1) {
       return jsonError(400, "fileRequired");
     }
-    const record = await saveUploadedFile({
-      file,
-      purpose: "payment_proof",
-      createdBy: user.id,
-    });
-    return jsonOk({ id: record.id, originalName: record.originalName });
+    const reservationId = await reservePaymentProofUpload(user.id);
+    try {
+      const record = await saveUploadedFile({
+        file,
+        purpose: "payment_proof",
+        createdBy: user.id,
+      });
+      await completePaymentProofUploadReservation(reservationId, true);
+      return jsonOk({ id: record.id, originalName: record.originalName });
+    } catch (error) {
+      await completePaymentProofUploadReservation(reservationId, false);
+      throw error;
+    }
   } catch (err) {
     return handleApiError(err);
   }

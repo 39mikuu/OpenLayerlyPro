@@ -9,11 +9,17 @@ const mocks = vi.hoisted(() => ({
   requireUser: vi.fn(),
   rateLimit: vi.fn(),
   saveUploadedFile: vi.fn(),
+  reservePaymentProofUpload: vi.fn(),
+  completePaymentProofUploadReservation: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/session", () => ({ requireUser: mocks.requireUser }));
 vi.mock("@/lib/rate-limit", () => ({ rateLimit: mocks.rateLimit }));
 vi.mock("@/modules/file", () => ({ saveUploadedFile: mocks.saveUploadedFile }));
+vi.mock("@/modules/payment/proof-upload-quota", () => ({
+  reservePaymentProofUpload: mocks.reservePaymentProofUpload,
+  completePaymentProofUploadReservation: mocks.completePaymentProofUploadReservation,
+}));
 
 import { POST } from "./route";
 
@@ -61,6 +67,8 @@ describe("payment proof multipart upload", () => {
     mocks.requireUser.mockResolvedValue({ id: "user-1", role: "fan" });
     mocks.rateLimit.mockReturnValue(true);
     mocks.saveUploadedFile.mockResolvedValue({ id: "file-1", originalName: "proof.png" });
+    mocks.reservePaymentProofUpload.mockResolvedValue("reservation-1");
+    mocks.completePaymentProofUploadReservation.mockResolvedValue(undefined);
   });
 
   it("accepts one normal payment screenshot", async () => {
@@ -76,9 +84,11 @@ describe("payment proof multipart upload", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.requireUser).toHaveBeenCalledOnce();
+    expect(mocks.reservePaymentProofUpload).toHaveBeenCalledWith("user-1");
     expect(mocks.saveUploadedFile).toHaveBeenCalledWith(
       expect.objectContaining({ purpose: "payment_proof", createdBy: "user-1" }),
     );
+    expect(mocks.completePaymentProofUploadReservation).toHaveBeenCalledWith("reservation-1", true);
   });
 
   it("pre-rejects an oversized Content-Length before auth, image handling, storage, or DB", async () => {
@@ -186,6 +196,10 @@ describe("payment proof multipart upload", () => {
 
     expect(response.status).toBe(400);
     expect(mocks.saveUploadedFile).toHaveBeenCalledOnce();
+    expect(mocks.completePaymentProofUploadReservation).toHaveBeenCalledWith(
+      "reservation-1",
+      false,
+    );
   });
 
   it("rejects a missing file and multiple files", async () => {

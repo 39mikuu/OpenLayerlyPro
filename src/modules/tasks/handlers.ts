@@ -19,6 +19,7 @@ import {
   handleRenewalReminder,
   shouldSendRenewalReminderEmail,
 } from "@/modules/membership/renewal-reminders";
+import { cleanupPaymentProof } from "@/modules/payment/proof-lifecycle";
 import {
   dispatchPaymentProviderEvent,
   nextSubscriptionReconcileAt,
@@ -81,6 +82,10 @@ const storageDeletePayloadSchema = z.object({
   objectKey: z.string().min(1),
 });
 const paymentProviderEventPayloadSchema = z.object({ eventRowId: z.string().uuid() });
+const paymentProofCleanupPayloadSchema = z.object({
+  requestId: z.string().uuid(),
+  fileId: z.string().uuid(),
+});
 const renewalReminderPayloadSchema = z.object({
   subscriptionId: z.string().uuid(),
   periodEndsAt: z.string().datetime(),
@@ -171,6 +176,11 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
       return runCleanupOrphanTask(task);
     case "storage.delete_object":
       return runStorageDeleteTask(task);
+    case "payment_proof.cleanup": {
+      const parsed = paymentProofCleanupPayloadSchema.safeParse(task.payloadJson);
+      if (!parsed.success) throw new PermanentTaskError("Invalid payment proof cleanup payload");
+      return cleanupPaymentProof(parsed.data);
+    }
     case "payment_provider_event.dispatch": {
       const parsed = paymentProviderEventPayloadSchema.safeParse(task.payloadJson);
       if (!parsed.success) throw new PermanentTaskError("Invalid payment provider event payload");
