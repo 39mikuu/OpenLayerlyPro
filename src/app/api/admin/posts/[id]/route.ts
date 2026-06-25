@@ -2,11 +2,10 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
-import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { deletePost, getPostById, listPostFiles, updatePost } from "@/modules/content";
-import { MAX_POST_BODY_LENGTH } from "@/modules/content/markdown";
+import { MAX_POST_BODY_LENGTH, POST_JSON_MAX_BYTES } from "@/modules/content/markdown";
 import { getPostTaxonomy } from "@/modules/taxonomy";
 
 export const runtime = "nodejs";
@@ -46,7 +45,7 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
   try {
     const { categoryIds, tagIds, ...input } = await readJsonWithLimit(
       req,
-      getEnv().REQUEST_JSON_MAX_BYTES,
+      POST_JSON_MAX_BYTES,
       patchSchema,
     );
     await requireAdmin();

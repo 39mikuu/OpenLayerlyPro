@@ -1,23 +1,30 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError } from "@/lib/api";
 import { MAX_POST_BODY_LENGTH, POST_JSON_MAX_BYTES } from "@/modules/content/markdown";
 
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
-  savePublishedPostBody: vi.fn(),
+  deletePost: vi.fn(),
+  getPostById: vi.fn(),
+  listPostFiles: vi.fn(),
+  updatePost: vi.fn(),
+  getPostTaxonomy: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/session", () => ({ requireAdmin: mocks.requireAdmin }));
 vi.mock("@/modules/content", () => ({
-  savePublishedPostBody: mocks.savePublishedPostBody,
+  deletePost: mocks.deletePost,
+  getPostById: mocks.getPostById,
+  listPostFiles: mocks.listPostFiles,
+  updatePost: mocks.updatePost,
 }));
+vi.mock("@/modules/taxonomy", () => ({ getPostTaxonomy: mocks.getPostTaxonomy }));
 
 import * as route from "./route";
 
 function request(body: unknown) {
-  return new NextRequest("http://localhost/api/admin/posts/post-1/content", {
+  return new NextRequest("http://localhost/api/admin/posts/post-1", {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -28,31 +35,11 @@ function context() {
   return { params: Promise.resolve({ id: "post-1" }) };
 }
 
-describe("published post body API", () => {
+describe("admin post update API JSON transfer limit", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.requireAdmin.mockResolvedValue({ id: "admin", role: "admin" });
-    mocks.savePublishedPostBody.mockResolvedValue({ id: "post-1", body: "Updated" });
-  });
-
-  it.each([
-    [401, "authRequired"],
-    [403, "adminRequired"],
-  ])("requires admin access (%s)", async (status, code) => {
-    mocks.requireAdmin.mockRejectedValue(new ApiError(status, code));
-
-    const response = await route.PUT(request({ body: "Updated" }), context());
-
-    expect(response.status).toBe(status);
-    expect(mocks.savePublishedPostBody).not.toHaveBeenCalled();
-  });
-
-  it("updates only the published body through the narrow helper", async () => {
-    const response = await route.PUT(request({ body: "Updated" }), context());
-
-    expect(response.status).toBe(200);
-    expect(mocks.savePublishedPostBody).toHaveBeenCalledWith("post-1", "Updated");
-    expect("GET" in route).toBe(false);
+    mocks.updatePost.mockResolvedValue({ id: "post-1" });
   });
 
   it("accepts a 90,000 character ASCII body before business validation", async () => {
@@ -60,7 +47,7 @@ describe("published post body API", () => {
     const response = await route.PUT(request({ body }), context());
 
     expect(response.status).toBe(200);
-    expect(mocks.savePublishedPostBody).toHaveBeenCalledWith("post-1", body);
+    expect(mocks.updatePost).toHaveBeenCalledWith("post-1", { body }, {});
   });
 
   it("accepts a near-limit multi-byte CJK body before business validation", async () => {
@@ -68,27 +55,7 @@ describe("published post body API", () => {
     const response = await route.PUT(request({ body }), context());
 
     expect(response.status).toBe(200);
-    expect(mocks.savePublishedPostBody).toHaveBeenCalledWith("post-1", body);
-  });
-
-  it.each([
-    "title",
-    "slug",
-    "summary",
-    "originalLocale",
-    "visibility",
-    "requiredTierId",
-    "coverFileId",
-    "categoryIds",
-    "tagIds",
-  ])("rejects protected published metadata field %s", async (field) => {
-    const response = await route.PUT(
-      request({ body: "Updated", [field]: field.endsWith("Ids") ? [] : "changed" }),
-      context(),
-    );
-
-    expect(response.status).toBe(400);
-    expect(mocks.savePublishedPostBody).not.toHaveBeenCalled();
+    expect(mocks.updatePost).toHaveBeenCalledWith("post-1", { body }, {});
   });
 
   it("keeps the schema character limit at 100,000 characters", async () => {
@@ -98,7 +65,7 @@ describe("published post body API", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.savePublishedPostBody).not.toHaveBeenCalled();
+    expect(mocks.updatePost).not.toHaveBeenCalled();
   });
 
   it("rejects JSON transfers above the post-specific byte limit", async () => {
@@ -106,6 +73,6 @@ describe("published post body API", () => {
 
     expect(response.status).toBe(413);
     await expect(response.json()).resolves.toMatchObject({ code: "requestBodyTooLarge" });
-    expect(mocks.savePublishedPostBody).not.toHaveBeenCalled();
+    expect(mocks.updatePost).not.toHaveBeenCalled();
   });
 });

@@ -20,6 +20,9 @@ export type RenderMarkdownOptions = {
 };
 
 export const MAX_POST_BODY_LENGTH = 100_000;
+// 文章正文 schema 上限为 MAX_POST_BODY_LENGTH 字符。请求体传输上限须覆盖
+// 最坏情况：每字符 \uXXXX 转义（6 字节）+ 标题/slug/excerpt/categoryIds/tagIds 等信封字段。
+export const POST_JSON_MAX_BYTES = MAX_POST_BODY_LENGTH * 6 + 64 * 1024; // 约 664 KiB，仍在 env 1MiB 上限内。
 
 const INTERNAL_IMAGE_PATH =
   /^\/api\/files\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/download$/i;

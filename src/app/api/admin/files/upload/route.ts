@@ -41,6 +41,8 @@ export async function POST(req: NextRequest) {
     }
 
     const admin = await requireAdmin();
+    // Bounded read intentionally runs after auth so unauthenticated requests cannot trigger large buffering;
+    // absent or understated Content-Length paths are covered by the lightweight pre-auth IP bucket above.
     const rawBody = await readBoundedRawBody(req, transferLimit);
     const form = await parseFormDataBody(req, rawBody);
     const file = form.get("file");

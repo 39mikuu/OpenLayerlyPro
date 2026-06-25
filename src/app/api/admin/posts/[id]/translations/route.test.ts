@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/lib/api";
+import { MAX_POST_BODY_LENGTH, POST_JSON_MAX_BYTES } from "@/modules/content/markdown";
 
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
@@ -163,6 +164,73 @@ describe("admin post translation APIs", () => {
       body: "Body",
       source: "manual",
     });
+  });
+
+  it("accepts a 90,000 character ASCII body before business validation", async () => {
+    const body = "x".repeat(90_000);
+    const response = await PUT(
+      request("PUT", {
+        locale: "ja",
+        title: "日本語タイトル",
+        body,
+      }),
+      postContext(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.upsertDraftTranslation).toHaveBeenCalledWith(
+      "post-1",
+      "ja",
+      expect.objectContaining({ body }),
+    );
+  });
+
+  it("accepts a near-limit multi-byte CJK body before business validation", async () => {
+    const body = "界".repeat(MAX_POST_BODY_LENGTH - 1);
+    const response = await PUT(
+      request("PUT", {
+        locale: "ja",
+        title: "日本語タイトル",
+        body,
+      }),
+      postContext(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.upsertDraftTranslation).toHaveBeenCalledWith(
+      "post-1",
+      "ja",
+      expect.objectContaining({ body }),
+    );
+  });
+
+  it("keeps the schema character limit at 100,000 characters", async () => {
+    const response = await PUT(
+      request("PUT", {
+        locale: "ja",
+        title: "日本語タイトル",
+        body: "x".repeat(MAX_POST_BODY_LENGTH + 1),
+      }),
+      postContext(),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.upsertDraftTranslation).not.toHaveBeenCalled();
+  });
+
+  it("rejects JSON transfers above the post-specific byte limit", async () => {
+    const response = await PUT(
+      request("PUT", {
+        locale: "ja",
+        title: "日本語タイトル",
+        body: "x".repeat(POST_JSON_MAX_BYTES),
+      }),
+      postContext(),
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ code: "requestBodyTooLarge" });
+    expect(mocks.upsertDraftTranslation).not.toHaveBeenCalled();
   });
 
   it("preserves the machine source when an admin edits a review draft", async () => {
