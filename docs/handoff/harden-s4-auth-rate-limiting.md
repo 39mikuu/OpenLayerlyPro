@@ -107,7 +107,10 @@ base `main`,Draft 直到 CI 全绿,关联 S4/#66 issue,标题 `fix(auth): harden
 - [ ] env 有界越界拒绝;**多实例内存限流**经 readiness/文档明确(共享存储为后续/owner 决策)
 - [ ] 真实测试:#66 异 IP 不可锁死受害者 + 同源暴力仍挡;unknown→emergency 不锁全站;回归绿
 
-## 需 owner 确认
+## 已锁定决策（owner 确认 2026-06-26）
 
-1. **多实例共享限流存储**(Redis/PG)是否纳入 v1.0?默认**仅文档 + readiness 告警**(单创作者自托管多为单实例);如需横向扩容再实现。
-2. 各默认阈值(verify IP 30/10min、email+IP 10/10min;request IP 20/hr、email+IP 5/hr、email 15/hr;admin 10/10min)是否合适。
+1. **多实例共享限流存储(Redis/PG)= 不纳入 v1.0**:本切片**仅文档 + readiness 告警**(单创作者自托管多为单实例,内存限流够用);策略模块集中 key/阈作为未来接共享存储的接缝,横向扩容时再实现。
+2. **默认阈值采用以下值**(均经 env 可调、越界拒绝):
+   - verify-code:IP `30/10min`、(email+IP) `10/10min`,unresolved 专用高阈;
+   - request-code:IP `20/hr`、(email+IP) `5/hr`、email 防轰炸 `15/hr`、cooldown `60s`;
+   - admin-login:`10/10min`,unresolved 专用高阈。
