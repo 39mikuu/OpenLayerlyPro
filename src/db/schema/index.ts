@@ -249,6 +249,28 @@ export const paymentRequests = pgTable(
   ],
 );
 
+export const paymentProofUploadReservations = pgTable(
+  "payment_proof_upload_reservations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["pending", "succeeded", "failed"] })
+      .notNull()
+      .default("pending"),
+    createdAt: createdAt(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index("payment_proof_upload_reservations_user_status_created_idx").on(
+      table.userId,
+      table.status,
+      table.createdAt,
+    ),
+  ],
+);
+
 export const paymentProviderEvents = pgTable(
   "payment_provider_events",
   {
@@ -531,6 +553,7 @@ export type Membership = typeof memberships.$inferSelect;
 export type Subscription = typeof subscriptions.$inferSelect;
 export type PaymentMethod = typeof paymentMethods.$inferSelect;
 export type PaymentRequest = typeof paymentRequests.$inferSelect;
+export type PaymentProofUploadReservation = typeof paymentProofUploadReservations.$inferSelect;
 export type PaymentProviderEvent = typeof paymentProviderEvents.$inferSelect;
 export type Post = typeof posts.$inferSelect;
 export type Category = typeof categories.$inferSelect;

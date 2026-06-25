@@ -616,6 +616,12 @@ export const ja: Messages = {
       customFooterWarning:
         "カスタムコードは公開ページへ直接挿入されます。信頼できるコードだけを貼り付けてください。不正なスクリプトは訪問者ページに影響します。",
       clearCustomFooter: "フッターコードをクリア",
+      paymentProofRetention: "支払い証明の保持",
+      paymentProofRetentionDescription:
+        "承認済み・取消済みの支払い証明を監査目的で保持する期間を設定します。",
+      paymentProofApprovedRetentionDays: "承認済み証明の保持日数",
+      paymentProofApprovedRetentionHelp:
+        "0 は永久保持です。1～3650 を指定すると、以後に承認済みまたは取消済みとなる申請へ遅延クリーンアップを設定します。",
       socialLinks: "ソーシャルリンク",
       platformName: "プラットフォーム名",
       addLink: "リンクを追加",
@@ -816,6 +822,7 @@ export const ja: Messages = {
     cooldownRateLimited: "{seconds} 秒待ってから再送信してください。",
     downloadRateLimited: "ダウンロードが多すぎます。しばらくしてから再度お試しください。",
     uploadRateLimited: "アップロードが多すぎます。しばらくしてから再度お試しください。",
+    uploadQuotaExceeded: "本日の支払い証明アップロード上限に達しました。",
     mailNotConfigured: "メールサービスが設定されていません。管理者にお問い合わせください。",
     codeExpired: "認証コードが無効または期限切れです。新しいコードを取得してください。",
     codeAttemptsExceeded: "試行回数が多すぎます。新しい認証コードを取得してください。",

@@ -17,6 +17,7 @@ import { ApiError } from "@/lib/api";
 import { logger } from "@/lib/logger";
 import { recordAudit } from "@/modules/audit";
 import { grantMembership, revokeMembership } from "@/modules/membership";
+import { enqueuePaymentProofCleanup } from "@/modules/payment/proof-lifecycle";
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask } from "@/modules/tasks";
 
@@ -298,9 +299,10 @@ export async function cancelPaymentRequest(requestId: string, userId: string): P
   if (!request || request.userId !== userId) throw new ApiError(404, "paymentRequestNotFound");
   const correlationId = randomUUID();
   await getDb().transaction(async (tx) => {
+    const reviewedAt = new Date();
     const [updated] = await tx
       .update(paymentRequests)
-      .set({ status: "cancelled", updatedAt: new Date() })
+      .set({ status: "cancelled", reviewedAt, updatedAt: reviewedAt })
       .where(
         and(
           eq(paymentRequests.id, requestId),
@@ -310,6 +312,7 @@ export async function cancelPaymentRequest(requestId: string, userId: string): P
       )
       .returning();
     if (!updated) throw new ApiError(400, "cancelPendingOnly");
+    await enqueuePaymentProofCleanup(tx, updated);
     await recordAudit(tx, {
       entityType: "payment_request",
       entityId: updated.id,
@@ -352,6 +355,7 @@ export async function approvePaymentRequest(
       .returning();
     if (!row) throw new ApiError(400, "paymentNotPending");
 
+    await enqueuePaymentProofCleanup(tx, row);
     const approveEvent = await recordAudit(tx, {
       entityType: "payment_request",
       entityId: row.id,
@@ -678,6 +682,7 @@ export async function confirmAutoPayment(
       .where(and(eq(paymentRequests.id, request.id), eq(paymentRequests.status, "pending_payment")))
       .returning();
     if (!approved) return;
+    await enqueuePaymentProofCleanup(tx, approved);
     const paymentEvent = await recordAudit(tx, {
       entityType: "payment_request",
       entityId: approved.id,
@@ -737,12 +742,14 @@ export async function expireAutoPayment(
         status: "cancelled",
         providerRef: event.providerRef,
         providerEventId: event.providerEventId,
+        reviewedAt: expiredAt,
         updatedAt: expiredAt,
       })
       .where(and(eq(paymentRequests.id, request.id), eq(paymentRequests.status, "pending_payment")))
       .returning();
     if (!cancelled) return;
 
+    await enqueuePaymentProofCleanup(tx, cancelled);
     await recordAudit(tx, {
       entityType: "payment_request",
       entityId: cancelled.id,
@@ -782,6 +789,7 @@ export async function rejectPaymentRequest(
       .where(and(eq(paymentRequests.id, requestId), eq(paymentRequests.status, "pending_review")))
       .returning();
     if (!row) throw new ApiError(400, "paymentNotPending");
+    await enqueuePaymentProofCleanup(tx, row);
     await recordAudit(tx, {
       entityType: "payment_request",
       entityId: row.id,
@@ -834,6 +842,7 @@ async function applyApprovedPaymentReversal(
     throw new ApiError(409, "paymentGrantLinkMissing");
   }
 
+  await enqueuePaymentProofCleanup(tx, reversed);
   const reverseEvent = await recordAudit(tx, {
     entityType: "payment_request",
     entityId: reversed.id,
@@ -1027,6 +1036,7 @@ export async function reverseAutoPayment(
       kind: event.type,
     };
     if (previousStatus === "pending_payment") {
+      await enqueuePaymentProofCleanup(tx, reversed);
       await recordAudit(tx, {
         entityType: "payment_request",
         entityId: reversed.id,

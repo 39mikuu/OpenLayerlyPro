@@ -27,6 +27,7 @@ export type PublicSiteInfo = {
 
 export type AdminSiteInfo = PublicSiteInfo & {
   customFooterHtml: string;
+  paymentProofApprovedRetentionDays: number;
 };
 
 export async function getSetting<T>(key: string): Promise<T | null> {
@@ -77,7 +78,11 @@ const PUBLIC_SITE_SETTING_KEYS = [
   "social_links",
 ] as const;
 
-const ADMIN_SITE_SETTING_KEYS = [...PUBLIC_SITE_SETTING_KEYS, "custom_footer_html"] as const;
+const ADMIN_SITE_SETTING_KEYS = [
+  ...PUBLIC_SITE_SETTING_KEYS,
+  "custom_footer_html",
+  "payment_proof_approved_retention_days",
+] as const;
 
 export async function readPublicSiteInfo(): Promise<PublicSiteInfo> {
   const settings = await getSettings([...PUBLIC_SITE_SETTING_KEYS]);
@@ -117,6 +122,10 @@ export async function readAdminSiteInfo(): Promise<AdminSiteInfo> {
     socialLinks: Array.isArray(socialLinks) ? (socialLinks as SocialLink[]) : [],
     customFooterHtml:
       typeof settings.custom_footer_html === "string" ? settings.custom_footer_html : "",
+    paymentProofApprovedRetentionDays:
+      typeof settings.payment_proof_approved_retention_days === "number"
+        ? settings.payment_proof_approved_retention_days
+        : 0,
   };
 }
 

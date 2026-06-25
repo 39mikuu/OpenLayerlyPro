@@ -46,6 +46,9 @@ const envSchema = z.object({
 
   MAX_UPLOAD_SIZE_MB: z.coerce.number().default(500),
   PAYMENT_PROOF_MAX_SIZE_MB: z.coerce.number().finite().int().min(1).max(100).default(10),
+  PAYMENT_PROOF_RETENTION_DAYS: z.coerce.number().finite().int().min(1).max(3650).default(30),
+  PAYMENT_PROOF_MAX_PER_DAY: z.coerce.number().finite().int().min(1).max(1000).default(20),
+  PROOF_UPLOAD_RESERVATION_TTL_MINUTES: z.coerce.number().finite().int().min(1).max(60).default(5),
   REQUEST_JSON_MAX_BYTES: z.coerce
     .number()
     .finite()

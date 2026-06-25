@@ -172,6 +172,37 @@ describe("streamed file persistence", () => {
     );
   });
 
+  it("compensates the stored object when transactional finalization fails", async () => {
+    const png = await (
+      await import("sharp")
+    )
+      .default({ create: { width: 1, height: 1, channels: 4, background: "white" } })
+      .png()
+      .toBuffer();
+    const file = new File([new Uint8Array(png)], "proof.png", { type: "image/png" });
+    const finalizeInTransaction = vi
+      .fn()
+      .mockRejectedValue(new Error("reservation finalize failed"));
+
+    await expect(
+      saveUploadedFile({
+        file,
+        purpose: "payment_proof",
+        createdBy: "member-1",
+        finalizeInTransaction,
+      }),
+    ).rejects.toThrow("reservation finalize failed");
+
+    expect(finalizeInTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: "file-1" }),
+    );
+    expect(mocks.deleteObject).toHaveBeenCalledWith({
+      objectKey: "content/image.png",
+      bucket: null,
+    });
+  });
+
   it("uses sniffed output type instead of the client MIME or extension", async () => {
     const jpeg = await (
       await import("sharp")

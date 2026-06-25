@@ -622,6 +622,12 @@ export const en: Messages = {
       customFooterWarning:
         "Custom code is inserted directly into public pages. Only paste trusted code; broken scripts can affect visitor pages.",
       clearCustomFooter: "Clear footer code",
+      paymentProofRetention: "Payment proof retention",
+      paymentProofRetentionDescription:
+        "Control how long approved and reversed payment proofs are retained for audit purposes.",
+      paymentProofApprovedRetentionDays: "Approved proof retention (days)",
+      paymentProofApprovedRetentionHelp:
+        "Use 0 to retain approved and reversed proofs permanently; 1–3650 enables delayed cleanup for future terminal transitions.",
       socialLinks: "Social links",
       platformName: "Platform name",
       addLink: "Add link",
@@ -823,6 +829,7 @@ export const en: Messages = {
     cooldownRateLimited: "Please wait {seconds} seconds before sending again.",
     downloadRateLimited: "Too many downloads. Please try again later.",
     uploadRateLimited: "Too many uploads. Please try again later.",
+    uploadQuotaExceeded: "Daily payment-proof upload quota exceeded.",
     mailNotConfigured: "Email service is not configured. Please contact the administrator.",
     codeExpired: "The code is invalid or expired. Request a new one.",
     codeAttemptsExceeded: "Too many attempts. Request a new code.",
