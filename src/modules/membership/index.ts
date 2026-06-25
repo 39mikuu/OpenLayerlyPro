@@ -139,6 +139,19 @@ type GrantMembershipInput = {
   causationId?: string | null;
 };
 
+type GrantMembershipForPeriodInput = {
+  userId: string;
+  tierId: string;
+  source: "payment_auto";
+  startsAt: Date;
+  endsAt: Date;
+  note?: string | null;
+  createdBy?: string | null;
+  actor?: LifecycleActor;
+  correlationId?: string;
+  causationId?: string | null;
+};
+
 /** Transaction-scoped lock for all membership grants for one user. */
 export async function acquireUserGrantLock(tx: TxClient, userId: string): Promise<void> {
   await tx.execute(
@@ -203,6 +216,53 @@ async function grantMembershipTx(
       source: input.source,
       startsAt,
       endsAt,
+      note: input.note ?? null,
+      status: "active",
+      createdBy: input.createdBy ?? null,
+    })
+    .returning();
+
+  const actor =
+    input.actor ??
+    (input.createdBy
+      ? ({ type: "admin", id: input.createdBy } as const)
+      : ({ type: "system", id: null } as const));
+  await recordAudit(tx, {
+    entityType: "membership",
+    entityId: membership.id,
+    action: "grant",
+    actor,
+    after: pickMembershipAudit(membership),
+    correlationId: input.correlationId ?? randomUUID(),
+    causationId: input.causationId ?? null,
+  });
+
+  return { membership, tier };
+}
+
+/**
+ * 开通指定周期的会员。
+ * 订阅续费必须逐字写入 Stripe invoice period，不以 now/current 重新锚定。
+ */
+export async function grantMembershipForPeriod(
+  input: GrantMembershipForPeriodInput,
+  tx: TxClient,
+): Promise<{ membership: Membership; tier: MembershipTier }> {
+  await acquireUserGrantLock(tx, input.userId);
+
+  if (input.endsAt <= input.startsAt) throw new ApiError(400, "invalidMembershipPeriod");
+
+  const tier = await getTierById(input.tierId, tx);
+  if (!tier) throw new ApiError(404, "tierNotFound");
+
+  const [membership] = await tx
+    .insert(memberships)
+    .values({
+      userId: input.userId,
+      tierId: input.tierId,
+      source: input.source,
+      startsAt: input.startsAt,
+      endsAt: input.endsAt,
       note: input.note ?? null,
       status: "active",
       createdBy: input.createdBy ?? null,

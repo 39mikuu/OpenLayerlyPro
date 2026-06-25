@@ -95,6 +95,7 @@ export const membershipTiers = pgTable("membership_tiers", {
   priceLabel: text("price_label").notNull(),
   priceAmountMinor: bigint("price_amount_minor", { mode: "number" }),
   currency: text("currency"),
+  stripePriceId: text("stripe_price_id"),
   level: integer("level").notNull(),
   durationDays: integer("duration_days").notNull().default(31),
   purchaseEnabled: boolean("purchase_enabled").notNull().default(true),
@@ -134,6 +135,49 @@ export const memberships = pgTable(
   ],
 );
 
+export const subscriptions = pgTable(
+  "subscriptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tierId: uuid("tier_id")
+      .notNull()
+      .references(() => membershipTiers.id),
+    status: text("status", {
+      enum: ["pending", "active", "past_due", "canceled", "expired"],
+    }).notNull(),
+    provider: text("provider"),
+    providerSubscriptionRef: text("provider_subscription_ref"),
+    providerCheckoutRef: text("provider_checkout_ref"),
+    providerCustomerRef: text("provider_customer_ref"),
+    providerPriceRef: text("provider_price_ref"),
+    expectedAmountMinor: bigint("expected_amount_minor", { mode: "number" }),
+    expectedCurrency: text("expected_currency"),
+    quantity: integer("quantity"),
+    currentPeriodEndsAt: timestamp("current_period_ends_at", { withTimezone: true }),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+    canceledAt: timestamp("canceled_at", { withTimezone: true }),
+    statusEventAt: timestamp("status_event_at", { withTimezone: true }),
+    checkoutClaimToken: text("checkout_claim_token"),
+    checkoutClaimedAt: timestamp("checkout_claimed_at", { withTimezone: true }),
+    version: integer("version").notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("subscriptions_user_status_idx").on(table.userId, table.status),
+    index("subscriptions_reconcile_idx").on(table.status, table.updatedAt),
+    uniqueIndex("subscriptions_provider_subscription_ref_unique")
+      .on(table.provider, table.providerSubscriptionRef)
+      .where(sql`${table.providerSubscriptionRef} is not null`),
+    // subscriptions_one_nonterminal_per_identity is created by a hand-written
+    // migration because drizzle-orm 0.45 cannot express PostgreSQL's
+    // NULLS NOT DISTINCT unique-index clause.
+  ],
+);
+
 export const paymentMethods = pgTable("payment_methods", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -166,7 +210,9 @@ export const paymentRequests = pgTable(
     providerRef: text("provider_ref"),
     providerEventId: text("provider_event_id"),
     providerPaymentRef: text("provider_payment_ref"),
+    providerInvoiceRef: text("provider_invoice_ref"),
     reversalEventId: text("reversal_event_id"),
+    subscriptionId: uuid("subscription_id").references(() => subscriptions.id),
     amountMinor: bigint("amount_minor", { mode: "number" }),
     currency: text("currency"),
     grantedMembershipId: uuid("granted_membership_id").references(() => memberships.id),
@@ -192,10 +238,47 @@ export const paymentRequests = pgTable(
     uniqueIndex("payment_requests_provider_payment_ref_unique")
       .on(table.provider, table.providerPaymentRef)
       .where(sql`${table.provider} is not null and ${table.providerPaymentRef} is not null`),
+    uniqueIndex("payment_requests_provider_invoice_ref_unique")
+      .on(table.provider, table.providerInvoiceRef)
+      .where(sql`${table.providerInvoiceRef} is not null`),
     uniqueIndex("payment_requests_reversal_event_id_unique")
       .on(table.provider, table.reversalEventId)
       .where(sql`${table.provider} is not null and ${table.reversalEventId} is not null`),
     index("payment_requests_provider_ref_idx").on(table.providerRef),
+    index("payment_requests_subscription_idx").on(table.subscriptionId),
+  ],
+);
+
+export const paymentProviderEvents = pgTable(
+  "payment_provider_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider: text("provider").notNull(),
+    providerEventId: text("provider_event_id").notNull(),
+    eventType: text("event_type").notNull(),
+    objectRef: text("object_ref"),
+    providerCreatedAt: timestamp("provider_created_at", { withTimezone: true }).notNull(),
+    payloadJson: jsonb("payload_json").notNull(),
+    status: text("status", {
+      enum: ["received", "processing", "processed", "failed", "dead"],
+    })
+      .notNull()
+      .default("received"),
+    lockedBy: text("locked_by"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    error: text("error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("payment_provider_events_provider_event_unique").on(
+      table.provider,
+      table.providerEventId,
+    ),
+    index("payment_provider_events_claim_idx").on(table.status, table.createdAt),
   ],
 );
 
@@ -442,8 +525,10 @@ export type LoginCode = typeof loginCodes.$inferSelect;
 export type SiteSetting = typeof siteSettings.$inferSelect;
 export type MembershipTier = typeof membershipTiers.$inferSelect;
 export type Membership = typeof memberships.$inferSelect;
+export type Subscription = typeof subscriptions.$inferSelect;
 export type PaymentMethod = typeof paymentMethods.$inferSelect;
 export type PaymentRequest = typeof paymentRequests.$inferSelect;
+export type PaymentProviderEvent = typeof paymentProviderEvents.$inferSelect;
 export type Post = typeof posts.$inferSelect;
 export type Category = typeof categories.$inferSelect;
 export type Tag = typeof tags.$inferSelect;

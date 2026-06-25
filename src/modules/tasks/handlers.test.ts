@@ -7,6 +7,9 @@ const mocks = vi.hoisted(() => ({
   sendMembershipActivatedEmail: vi.fn(),
   sendMembershipRevokedEmail: vi.fn(),
   sendPaymentRejectedEmail: vi.fn(),
+  dispatchPaymentProviderEvent: vi.fn(),
+  reconcileSubscriptions: vi.fn(),
+  nextSubscriptionReconcileAt: vi.fn(),
 }));
 
 vi.mock("@/modules/config", () => ({ getSmtpConfig: mocks.getSmtpConfig }));
@@ -19,6 +22,11 @@ vi.mock("@/modules/mail", () => ({
   sendMembershipActivatedEmail: mocks.sendMembershipActivatedEmail,
   sendMembershipRevokedEmail: mocks.sendMembershipRevokedEmail,
   sendPaymentRejectedEmail: mocks.sendPaymentRejectedEmail,
+}));
+vi.mock("@/modules/payment/subscriptions", () => ({
+  dispatchPaymentProviderEvent: mocks.dispatchPaymentProviderEvent,
+  reconcileSubscriptions: mocks.reconcileSubscriptions,
+  nextSubscriptionReconcileAt: mocks.nextSubscriptionReconcileAt,
 }));
 
 import type { Task } from "@/db/schema";
@@ -51,6 +59,9 @@ describe("task handlers", () => {
     mocks.getSmtpConfig.mockResolvedValue({ configured: true });
     mocks.cleanupOrphanFile.mockResolvedValue("deleted");
     mocks.deleteStorageObject.mockResolvedValue(undefined);
+    mocks.dispatchPaymentProviderEvent.mockResolvedValue(undefined);
+    mocks.reconcileSubscriptions.mockResolvedValue(0);
+    mocks.nextSubscriptionReconcileAt.mockReturnValue(new Date("2026-06-25T08:00:00.000Z"));
   });
 
   it("treats missing SMTP configuration as a successful no-op", async () => {
@@ -141,6 +152,25 @@ describe("task handlers", () => {
     } as const;
     await runTaskHandler(task(payload, "storage.delete_object"));
     expect(mocks.deleteStorageObject).toHaveBeenCalledWith(payload);
+  });
+
+  it("dispatches provider inbox tasks by row UUID", async () => {
+    const eventRowId = "550e8400-e29b-41d4-a716-446655440000";
+    await runTaskHandler(task({ eventRowId }, "payment_provider_event.dispatch"));
+    expect(mocks.dispatchPaymentProviderEvent).toHaveBeenCalledWith(eventRowId);
+  });
+
+  it("reuses the deduplicated reconcile task row by deferring it after success", async () => {
+    const result = await runTaskHandler(task({}, "subscription.reconcile"));
+    expect(mocks.reconcileSubscriptions).toHaveBeenCalledOnce();
+    expect(result.deferUntil).toEqual(new Date("2026-06-25T08:00:00.000Z"));
+  });
+
+  it("propagates reconciliation failures so the durable task retry policy applies", async () => {
+    mocks.reconcileSubscriptions.mockRejectedValue(new Error("provider unavailable"));
+    await expect(runTaskHandler(task({}, "subscription.reconcile"))).rejects.toThrow(
+      "provider unavailable",
+    );
   });
 
   it("propagates temporary storage failures so the dispatcher can retry", async () => {

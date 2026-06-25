@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { SubscriptionCheckoutButton } from "@/components/payment/subscription-checkout-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Translate } from "@/modules/i18n";
@@ -50,11 +51,16 @@ export function Tiers({ view, t }: { view: TiersView; t: Translate }) {
                 </p>
               </div>
               {tier.purchaseEnabled ? (
-                <Button className="mt-5 w-full" asChild>
-                  <Link href={view.isLoggedIn ? `/checkout/${tier.id}` : "/login"}>
-                    {view.isLoggedIn ? t("tiers.open") : t("tiers.loginToOpen")}
-                  </Link>
-                </Button>
+                <div className="mt-5 space-y-2">
+                  {view.isLoggedIn && tier.subscriptionEnabled && (
+                    <SubscriptionCheckoutButton tierId={tier.id} />
+                  )}
+                  <Button className="w-full" asChild>
+                    <Link href={view.isLoggedIn ? `/checkout/${tier.id}` : "/login"}>
+                      {view.isLoggedIn ? t("tiers.open") : t("tiers.loginToOpen")}
+                    </Link>
+                  </Button>
+                </div>
               ) : (
                 <Button className="mt-5 w-full" variant="outline" disabled>
                   {t("tiers.notPurchasable")}

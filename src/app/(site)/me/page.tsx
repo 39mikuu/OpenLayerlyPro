@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/modules/auth/session";
 import { getT } from "@/modules/i18n/server";
 import { getActiveMembership } from "@/modules/membership";
+import { getCurrentStripeSubscription } from "@/modules/payment/subscriptions";
 import { getActiveTheme } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
@@ -10,8 +11,9 @@ export const dynamic = "force-dynamic";
 export default async function MePage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const [active, theme, t] = await Promise.all([
+  const [active, subscription, theme, t] = await Promise.all([
     getActiveMembership(user.id),
+    getCurrentStripeSubscription(user.id),
     getActiveTheme(),
     getT(),
   ]);
@@ -24,6 +26,15 @@ export default async function MePage() {
         isAdmin: user.role === "admin",
         membership: active
           ? { tierName: active.tier.name, endsAt: active.membership.endsAt }
+          : null,
+        subscription: subscription
+          ? {
+              id: subscription.subscription.id,
+              status: subscription.subscription.status,
+              tierName: subscription.tier.name,
+              currentPeriodEndsAt: subscription.subscription.currentPeriodEndsAt,
+              cancelAtPeriodEnd: subscription.subscription.cancelAtPeriodEnd,
+            }
           : null,
       }}
     />

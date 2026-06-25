@@ -1,6 +1,7 @@
 import { CalendarDays, FileText, Home, Mail, Newspaper, Sparkles } from "lucide-react";
 import Link from "next/link";
 
+import { SubscriptionCancelButton } from "@/components/payment/subscription-cancel-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatDate } from "@/lib/dates";
@@ -57,6 +58,42 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
           <Button className="mt-4" asChild>
             <Link href="/tiers">{t("me.open")}</Link>
           </Button>
+        </section>
+      )}
+
+      {view.subscription && (
+        <section className="rounded-xl border bg-card p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)] sm:p-6">
+          <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-medium text-muted-foreground">
+                {t("me.subscriptionStatus")}
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <h2 className="text-lg font-semibold">{view.subscription.tierName}</h2>
+                <Badge variant={view.subscription.status === "past_due" ? "secondary" : "default"}>
+                  {t(`me.subscription${view.subscription.status}`)}
+                </Badge>
+              </div>
+              {view.subscription.currentPeriodEndsAt && (
+                <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+                  <CalendarDays className="size-4" />
+                  {t(
+                    view.subscription.cancelAtPeriodEnd
+                      ? "me.subscriptionEndsOn"
+                      : "me.subscriptionRenewsOn",
+                    {
+                      date: formatDate(view.subscription.currentPeriodEndsAt),
+                    },
+                  )}
+                </p>
+              )}
+            </div>
+            {!view.subscription.cancelAtPeriodEnd &&
+              (view.subscription.status === "active" ||
+                view.subscription.status === "past_due") && (
+                <SubscriptionCancelButton subscriptionId={view.subscription.id} />
+              )}
+          </div>
         </section>
       )}
 

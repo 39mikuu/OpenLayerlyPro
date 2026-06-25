@@ -17,6 +17,7 @@ export type TierData = {
   description: string | null;
   priceLabel: string;
   priceAmountMinor: number | null;
+  stripePriceId: string | null;
   currency: string | null;
   level: number;
   durationDays: number;
@@ -42,6 +43,7 @@ function TierEditor({
     description: tier.description ?? "",
     priceLabel: tier.priceLabel ?? "",
     priceAmountMinor: tier.priceAmountMinor == null ? "" : String(tier.priceAmountMinor),
+    stripePriceId: tier.stripePriceId ?? "",
     currency: tier.currency ?? "",
     level: tier.level ?? 10,
     durationDays: tier.durationDays ?? 31,
@@ -113,6 +115,15 @@ function TierEditor({
           />
         </div>
         <div className="space-y-1">
+          <Label>{t("admin.tiers.stripePriceId")}</Label>
+          <Input
+            placeholder="price_..."
+            value={form.stripePriceId}
+            onChange={(e) => setForm({ ...form, stripePriceId: e.target.value.trim() })}
+          />
+          <p className="text-xs text-muted-foreground">{t("admin.tiers.stripePriceIdHint")}</p>
+        </div>
+        <div className="space-y-1">
           <Label>{t("admin.tiers.duration")}</Label>
           <Input
             type="number"
@@ -165,6 +176,7 @@ function TierEditor({
                 ...form,
                 description: form.description || null,
                 priceAmountMinor: form.priceAmountMinor ? Number(form.priceAmountMinor) : null,
+                stripePriceId: form.stripePriceId || null,
                 currency: form.currency || null,
               }),
             )

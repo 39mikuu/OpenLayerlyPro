@@ -34,6 +34,7 @@ export default async function HomePage() {
     description: tier.description,
     durationDays: tier.durationDays,
     purchaseEnabled: tier.purchaseEnabled,
+    subscriptionEnabled: tier.purchaseEnabled && Boolean(tier.stripePriceId),
   }));
 
   const Home = theme.components.Home;

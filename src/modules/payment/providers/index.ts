@@ -9,6 +9,7 @@ export type PaidPaymentEvent = {
   paymentRef: string;
   requestId?: string;
   providerEventId: string;
+  providerCreatedAt?: Date;
   amountMinor: number;
   currency: string;
 };
@@ -18,27 +19,86 @@ export type ExpiredPaymentEvent = {
   providerRef: string;
   requestId?: string;
   providerEventId: string;
+  providerCreatedAt?: Date;
 };
 
 export type RefundedPaymentEvent = {
   type: "refunded";
   paymentRef: string;
+  providerInvoiceRef?: string;
   providerEventId: string;
+  providerCreatedAt?: Date;
 };
 
 export type DisputedPaymentEvent = {
   type: "disputed";
   paymentRef: string;
+  providerInvoiceRef?: string;
   providerEventId: string;
+  providerCreatedAt?: Date;
 };
 
 export type ReversalPaymentEvent = RefundedPaymentEvent | DisputedPaymentEvent;
+
+export type SubscriptionRenewedPaymentEvent = {
+  type: "subscription_renewed";
+  localSubscriptionId?: string;
+  providerSubscriptionRef: string;
+  providerInvoiceRef: string;
+  providerPaymentRef: string | null;
+  providerPriceRef?: string;
+  lines: {
+    providerPriceRef: string;
+    periodStart: Date;
+    periodEnd: Date;
+    amountMinor: number;
+  }[];
+  currency: string;
+  providerEventId: string;
+  providerCreatedAt: Date;
+};
+
+export type SubscriptionActivatedPaymentEvent = {
+  type: "subscription_activated";
+  localSubscriptionId?: string;
+  providerSubscriptionRef: string;
+  providerCustomerRef: string | null;
+  currentPeriodEndsAt: Date | null;
+  cancelAtPeriodEnd: boolean;
+  providerEventId: string;
+  providerCreatedAt: Date;
+};
+
+export type SubscriptionPaymentFailedEvent = {
+  type: "subscription_payment_failed";
+  localSubscriptionId?: string;
+  providerSubscriptionRef: string | null;
+  providerInvoiceRef: string | null;
+  providerEventId: string;
+  providerCreatedAt: Date;
+};
+
+export type SubscriptionCanceledPaymentEvent = {
+  type: "subscription_canceled";
+  localSubscriptionId?: string;
+  providerSubscriptionRef: string;
+  canceledAt: Date | null;
+  providerEventId: string;
+  providerCreatedAt: Date;
+};
+
+export type SubscriptionPaymentEvent =
+  | SubscriptionRenewedPaymentEvent
+  | SubscriptionActivatedPaymentEvent
+  | SubscriptionPaymentFailedEvent
+  | SubscriptionCanceledPaymentEvent;
 
 export type NormalizedPaymentEvent =
   | PaidPaymentEvent
   | ExpiredPaymentEvent
   | ReversalPaymentEvent
-  | { type: "ignored"; providerEventId: string };
+  | SubscriptionPaymentEvent
+  | { type: "ignored"; providerEventId: string; providerCreatedAt?: Date };
 
 export interface PaymentProvider {
   id: "stripe";
@@ -50,10 +110,43 @@ export interface PaymentProvider {
     successUrl: string;
     cancelUrl: string;
   }): Promise<{ redirectUrl: string; providerRef: string }>;
+  createSubscriptionCheckout?(input: {
+    subscriptionId: string;
+    priceRef: string;
+    providerPriceRef?: string;
+    successUrl: string;
+    cancelUrl: string;
+  }): Promise<{ redirectUrl: string; providerCheckoutRef: string }>;
+  cancelSubscription?(
+    providerSubscriptionRef: string,
+    options: { atPeriodEnd: boolean },
+  ): Promise<void>;
   getCheckoutState(providerRef: string): Promise<{
     status: "open" | "complete" | "expired";
     redirectUrl: string | null;
   }>;
+  getSubscriptionCheckoutState?(providerRef: string): Promise<{
+    status: "open" | "complete" | "expired";
+    redirectUrl: string | null;
+    providerSubscriptionRef: string | null;
+  }>;
+  retrieveSubscription?(providerSubscriptionRef: string): Promise<{
+    status: "active" | "past_due" | "canceled" | "expired" | "pending";
+    providerSubscriptionRef: string;
+    providerCustomerRef: string | null;
+    currentPeriodEndsAt: Date | null;
+    cancelAtPeriodEnd: boolean;
+  }>;
+  listPaidSubscriptionInvoices?(
+    providerSubscriptionRef: string,
+    providerPriceRef: string,
+    localSubscriptionId?: string,
+  ): Promise<SubscriptionRenewedPaymentEvent[]>;
+  resolveInvoiceByPaymentIntent?(paymentRef: string): Promise<{
+    providerInvoiceRef: string;
+    providerSubscriptionRef: string | null;
+    localSubscriptionId?: string;
+  } | null>;
   parseWebhook(rawBody: Buffer, signature: string | null): Promise<NormalizedPaymentEvent>;
   resolveCheckoutByPaymentIntent(paymentRef: string): Promise<{
     providerRef: string;
