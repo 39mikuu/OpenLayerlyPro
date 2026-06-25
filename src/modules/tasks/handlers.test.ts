@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   sendMembershipActivatedEmail: vi.fn(),
   sendMembershipRevokedEmail: vi.fn(),
   sendPaymentRejectedEmail: vi.fn(),
+  sendRenewalReminderEmail: vi.fn(),
   dispatchPaymentProviderEvent: vi.fn(),
   reconcileSubscriptions: vi.fn(),
   nextSubscriptionReconcileAt: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("@/modules/mail", () => ({
   sendMembershipActivatedEmail: mocks.sendMembershipActivatedEmail,
   sendMembershipRevokedEmail: mocks.sendMembershipRevokedEmail,
   sendPaymentRejectedEmail: mocks.sendPaymentRejectedEmail,
+  sendRenewalReminderEmail: mocks.sendRenewalReminderEmail,
 }));
 vi.mock("@/modules/payment/subscriptions", () => ({
   dispatchPaymentProviderEvent: mocks.dispatchPaymentProviderEvent,

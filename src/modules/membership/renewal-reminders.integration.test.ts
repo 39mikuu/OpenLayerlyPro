@@ -1,6 +1,22 @@
 import { randomUUID } from "crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  getSmtpConfig: vi.fn(),
+  sendMembershipActivatedEmail: vi.fn(),
+  sendMembershipRevokedEmail: vi.fn(),
+  sendPaymentRejectedEmail: vi.fn(),
+  sendRenewalReminderEmail: vi.fn(),
+}));
+
+vi.mock("@/modules/config", () => ({ getSmtpConfig: mocks.getSmtpConfig }));
+vi.mock("@/modules/mail", () => ({
+  sendMembershipActivatedEmail: mocks.sendMembershipActivatedEmail,
+  sendMembershipRevokedEmail: mocks.sendMembershipRevokedEmail,
+  sendPaymentRejectedEmail: mocks.sendPaymentRejectedEmail,
+  sendRenewalReminderEmail: mocks.sendRenewalReminderEmail,
+}));
 
 import { getDb } from "@/db";
 import { memberships, membershipTiers, subscriptions, tasks, users } from "@/db/schema";
@@ -22,6 +38,8 @@ describeWithDatabase("manual renewal reminders", () => {
   const db = getDb();
 
   beforeEach(async () => {
+    vi.clearAllMocks();
+    mocks.getSmtpConfig.mockResolvedValue({ configured: true });
     await resetDatabase(db);
   });
 
@@ -102,6 +120,8 @@ describeWithDatabase("manual renewal reminders", () => {
     );
     expect(emailTasks[0]!.payloadJson).toMatchObject({
       template: "renewal_reminder",
+      subscriptionId: subscription!.id,
+      periodEndsAt: membership.endsAt.toISOString(),
       to: user.email,
       locale: "ja",
       params: { tierName: tier.name, endsAt: membership.endsAt.toISOString() },
@@ -186,6 +206,47 @@ describeWithDatabase("manual renewal reminders", () => {
       .from(subscriptions)
       .where(eq(subscriptions.id, subscription!.id));
     expect(updated!.currentPeriodEndsAt?.toISOString()).toBe(grant.membership.endsAt.toISOString());
+  });
+
+  it("skips an already queued email when reminders are disabled before delivery", async () => {
+    const { user, tier } = await seed();
+    await enableManualRenewalReminder({ userId: user.id, tierId: tier.id });
+    const [reminderTask] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.kind, "subscription.renewal_reminder"));
+
+    await runTaskHandler(reminderTask!);
+    const [emailTask] = await db.select().from(tasks).where(eq(tasks.kind, "email"));
+    await disableManualRenewalReminder({ userId: user.id, tierId: tier.id });
+
+    const result = await runTaskHandler(emailTask!);
+
+    expect(result.note).toContain("inactive or stale");
+    expect(mocks.sendRenewalReminderEmail).not.toHaveBeenCalled();
+  });
+
+  it("skips an old-period email when a grant advances the reminder period before delivery", async () => {
+    const { user, tier } = await seed();
+    await enableManualRenewalReminder({ userId: user.id, tierId: tier.id });
+    const [reminderTask] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.kind, "subscription.renewal_reminder"));
+
+    await runTaskHandler(reminderTask!);
+    const [oldEmailTask] = await db.select().from(tasks).where(eq(tasks.kind, "email"));
+    await grantMembership({
+      userId: user.id,
+      tierId: tier.id,
+      source: "manual",
+      durationDays: 30,
+    });
+
+    const result = await runTaskHandler(oldEmailTask!);
+
+    expect(result.note).toContain("inactive or stale");
+    expect(mocks.sendRenewalReminderEmail).not.toHaveBeenCalled();
   });
 
   it("task dispatch does not reschedule another reminder", async () => {

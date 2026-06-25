@@ -177,6 +177,25 @@ export async function getManualReminderTiers(userId: string): Promise<Set<string
   return new Set(rows.map((row) => row.tierId));
 }
 
+export async function shouldSendRenewalReminderEmail(input: {
+  subscriptionId: string;
+  periodEndsAt: Date;
+}): Promise<boolean> {
+  const [subscription] = await getDb()
+    .select({ id: subscriptions.id })
+    .from(subscriptions)
+    .where(
+      and(
+        eq(subscriptions.id, input.subscriptionId),
+        sql`${subscriptions.provider} is null`,
+        eq(subscriptions.status, "active"),
+        eq(subscriptions.currentPeriodEndsAt, input.periodEndsAt),
+      ),
+    )
+    .limit(1);
+  return Boolean(subscription);
+}
+
 export async function handleRenewalReminder(input: {
   subscriptionId: string;
   periodEndsAt: Date;
@@ -207,6 +226,8 @@ export async function handleRenewalReminder(input: {
       dedupeKey: `email:renewal_reminder:${input.subscriptionId}:${iso}`,
       payload: {
         template: "renewal_reminder",
+        subscriptionId: input.subscriptionId,
+        periodEndsAt: iso,
         to: row.email,
         locale: row.locale,
         params: { tierName: row.tierName, endsAt: iso },

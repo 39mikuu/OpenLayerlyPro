@@ -15,7 +15,10 @@ import {
   sendPaymentRejectedEmail,
   sendRenewalReminderEmail,
 } from "@/modules/mail";
-import { handleRenewalReminder } from "@/modules/membership/renewal-reminders";
+import {
+  handleRenewalReminder,
+  shouldSendRenewalReminderEmail,
+} from "@/modules/membership/renewal-reminders";
 import {
   dispatchPaymentProviderEvent,
   nextSubscriptionReconcileAt,
@@ -53,6 +56,8 @@ const emailPayloadSchema = z.discriminatedUnion("template", [
   }),
   z.object({
     template: z.literal("renewal_reminder"),
+    subscriptionId: z.string().uuid(),
+    periodEndsAt: z.string().datetime(),
     to: z.string().email(),
     locale: z.enum(SUPPORTED_LOCALES),
     params: z.object({
@@ -105,6 +110,13 @@ async function runEmailTask(task: Task): Promise<TaskHandlerResult> {
       payload.locale,
     );
   } else {
+    const periodEndsAt = new Date(payload.periodEndsAt);
+    const shouldSend = await shouldSendRenewalReminderEmail({
+      subscriptionId: payload.subscriptionId,
+      periodEndsAt,
+    });
+    if (!shouldSend) return { note: "Renewal reminder became inactive or stale; delivery skipped" };
+
     await sendRenewalReminderEmail(
       payload.to,
       payload.params.tierName,
