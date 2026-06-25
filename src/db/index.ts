@@ -28,4 +28,11 @@ export function getDb(): Db {
   return globalForDb.__db;
 }
 
+export async function closeDb(): Promise<void> {
+  const db = globalForDb.__db;
+  if (!db) return;
+  globalForDb.__db = undefined;
+  await db.$client.end({ timeout: 5 });
+}
+
 export { schema };
