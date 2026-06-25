@@ -86,8 +86,9 @@ Core 边界原则：
 | 现有验证码发送限流：纯 email 每小时 5 次、60s 429 冷却、IP 每小时 20 次 | ✅（将由 S4 替换） |
 | S4 request-code：删除纯 email 阻断；保留 IP 主门禁、真实发送 email+IP 预算、非阻断并发安全 dedupe | 🚧 |
 | S4 verify-code：正确码先比较并绕过所有 wrong-attempt limiter；错误后才按 IP / email+IP 记账 | 🚧 |
-| S4 验证码熵：默认至少 9 位 uppercase Crockford base32，并同步生成/API/UI/i18n | 🚧 |
+| S4 验证码熵：默认至少 16 位 uppercase Crockford base32（80 bit），安全性不依赖 limiter 封顶比较次数 | 🚧 |
 | S4 email identity：规范化后使用 keyed HMAC-SHA-256，raw email 不进入限流/去重键 | 🚧 |
+| S4 登录码投递：encrypted durable task；每次发送/重试前确认 codeId 仍为最新有效 code，stale task no-op | 🚧 |
 | Cloudflare Turnstile 保护验证码发送接口（可选开启） | ✅ |
 | Turnstile Siteverify 调用前的 IP 限流 | ✅ |
 | 配置加密根密钥自动生成并持久化（权限 600，不打印密钥） | ✅ |
@@ -129,7 +130,7 @@ Phase 0 MVP（已完成）→ Phase 1 安全基础 → Phase 2 配置中心 → 
 7. `/api/health` 返回 200；`/api/ready` 数据库正常时 200、异常时 503，且不暴露任何 secret。
 8. 文档区分已实现与计划中，不夸大。
 
-> 上述 Phase 1 条目是历史验收口径。S4 将改变验证码限流与验证码格式，实施时以 S4 handoff 为准。
+> 上述 Phase 1 条目是历史验收口径。S4 将改变验证码限流、验证码格式与投递模型，实施时以 S4 handoff 为准。
 
 ### 后续 Phase
 
