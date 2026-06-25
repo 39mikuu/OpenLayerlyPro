@@ -50,10 +50,15 @@
 
 > ⚠️ 因 §3.1 移除了「全局 per-code 失败上限」(它原是总猜测次数的边界、但也是 #66 的锁死原语),**总猜测次数的边界只剩 per-IP + (email+IP) 限流**。当前 code 为 **6 位数字(10^6)**;handoff 已把**分布式多 IP**纳入威胁模型——攻击者用大量 IP 在 10min TTL 内可凑出可观猜测量,6 位空间对僵尸网络在线枚举**不够安全**。
 
-- **必须提高验证码熵**作为**非锁死**的暴力兜底:把登录码从 6 位数字提到**更高熵**(如 **≥8 位 Crockford base32(≈40bit)** 或 **≥9–10 位数字**;邮件内可复制,UX 可接受)。
-- **熵预算判据**:`(per-IP × (email+IP) 限流在 TTL 内对单 email 的最大猜测量) × 合理 IP 规模 / 码空间` 必须**远小于 1**(留足安全裕度,如 ≤2^-20)。以 email+IP `10/10min` + TTL `10min` 计:K 个 IP ≈ `10K` 次/码;码空间须使 `10K / 空间` 可忽略(40bit ≈ 10^12 → 即便 K=10^6 也 ~10^-5)。
+- **最小熵必须从预算【推导】,不得拍脑袋给不达标的示例**。判据:`成功率 = 猜测预算 B / 码空间 ≤ 目标(默认 2^-20 ≈ 9.5e-7)` ⇒ **码空间 ≥ B / 2^-20**。
+- **预算 B**:email+IP `10/10min` + TTL `10min` ⇒ 每 IP ≈ 10 次/码;K 个 IP ⇒ `B = 10·K`。
+- **据此推导**(目标 2^-20):
+  - 取保守 **K=10^6**(大型僵尸网络)⇒ `B=10^7` ⇒ 码空间 ≥ `10^7 / 9.5e-7 ≈ 1.05e13 ≈ 2^43.3`。
+  - 满足该值需:**≥14 位数字(10^14)** 或 **≥9 位 Crockford base32(2^45≈3.5e13)**。**8 位 base32(2^40)/9–10 位数字均不达标**(分别约 1e-5 / 1%–0.1%)。
+  - **推荐 9 位 base32**(邮件复制,UX 可接受;K=10^6 时成功率 ≈ 2.9e-7 ✓)。若按更小、更现实的 K(如 10^3–10^4)推导,可用更短码——**实现方须以【自己选定的 K】按上式推导最小长度,并在 PR 写明所用 K 与达标计算**。
 - 这样既满足 §3.1「正确码不可被作废」(无全局锁),又使**分布式在线枚举不可行**,无需任何锁死式上限。
 - (`MAX_ATTEMPTS` 仅保留为对**错误**尝试的 429 速率信号,不再承担总量边界。)
+- **生成器与校验器/文案/测试必须一起改(否则新码被旧校验拒)**:`verify-code/route.ts` 现 `code: z.string().regex(/^\d{6}$/)` 会**在 `verifyLoginCode` 之前**拒掉非 6 位数字的新码。须把 **`generateLoginCode` 的字母表/长度、verify-code 请求 schema 的正则、i18n 错误文案、相关测试** 一并按 `LOGIN_CODE_ALPHABET/LENGTH` 同源更新(schema 校验集合 = 生成集合)。
 
 ### 3.2 纵深:路由前置门禁(`verify-code/route.ts`)
 ```
@@ -102,7 +107,7 @@ ADMIN_LOGIN_RATE_MAX / _WINDOW_MS / _UNRESOLVED_MAX
 VERIFY_CODE_IP_RATE_MAX / VERIFY_CODE_EMAIL_IP_RATE_MAX / _WINDOW_MS / _UNRESOLVED_MAX
 REQUEST_CODE_IP_RATE_MAX / REQUEST_CODE_EMAIL_IP_RATE_MAX / _WINDOW_MS / _UNRESOLVED_MAX
 REQUEST_CODE_SEND_DEDUPE_SECONDS    # 发信抑制窗口(非阻断,默认 60)
-LOGIN_CODE_LENGTH / LOGIN_CODE_ALPHABET   # §3.3 验证码熵(默认提到 ≥8 char base32 或 ≥9–10 位数字;`generateLoginCode` 据此)
+LOGIN_CODE_LENGTH / LOGIN_CODE_ALPHABET   # §3.3 验证码熵,从预算推导(默认如 9 base32 / 14 digits;`generateLoginCode` + verify schema 同源据此)
 ```
 (无任何 `REQUEST_CODE_EMAIL_RATE_MAX` 纯 email 阻断键;可合并复用同一 window;合理默认 + 上下限;`.env.example` 同步;测试默认/越界拒绝。)
 
@@ -113,7 +118,8 @@ LOGIN_CODE_LENGTH / LOGIN_CODE_ALPHABET   # §3.3 验证码熵(默认提到 ≥8
 - **request-code 无纯 email 硬锁**:攻击者跨任意 IP 触发后,**受害者(异 IP)仍能 `200` 请求**(端点无纯 email 429);单 IP 触发命中 IP/(email+IP) 429。
 - **request-code 防轰炸非阻断**:同一 email 在抑制窗口内多次请求 → 仍 `200`、**不重复发信**(断言未多发邮件、未返回 429)。
 - **防窗口无限延长**:每 59s 请求一次(< 窗口)→ **抑制不刷新时间戳**,跨过窗口后下一次仍发出真实邮件(断言:被抑制请求不更新时间戳;每窗口 ≥1 封真实邮件,攻击者无法靠高频轮询永久压制)。
-- **验证码熵(§3.3)**:登录码达到目标熵(位数/字符集);以「per-IP×(email+IP)×TTL 的猜测预算 / 码空间」断言枚举成功概率 ≪ 1(防分布式爆破);正确码在任意失败计数下仍成功。
+- **验证码熵(§3.3)**:码空间 ≥ `B/2^-20`(B 由所选 K 推导,PR 写明);默认达标值(如 9 base32 / 14 digits);正确码在任意失败计数下仍成功。
+- **生成↔校验同源**:`generateLoginCode` 产出的码能通过 verify-code 请求 schema(新字母表/长度);旧 `^\d{6}$` 之外的合法码不再被路由预拒;畸形码仍 400;i18n 文案更新。
 - **unresolved 不双计(§3.2/§4)**:单个 unresolved verify/request 请求**只让 emergency 桶 +1**(非 +2);达配置第 N 次才 `429`(而非约 N/2);verify 与 request-code 都覆盖。
 - **unresolved**:IP 未解析并发 admin/verify/request → 落**该操作 emergency 桶**,**不波及 resolved-IP 客户端**;告警触发(节流)。(不断言 unresolved 间隔离——设计上不隔离。)
 - env 越界拒绝;email 以 hash 入 key(不明文)。
@@ -136,7 +142,8 @@ base `main`,Draft 直到 CI 全绿,关联 S4/#66 issue,标题 `fix(auth): harden
 ## 11. 验收 checklist
 
 - [ ] **verify-code 核心**:`verifyLoginCode` 先比对正确性、**正确码始终成功**(不受 `attempt_count` 阻断);失败计数只挡后续错误;**第三方错误提交不能作废正确码**(跨多 IP 也不能)
-- [ ] **暴力兜底(非锁死)**:提高验证码熵(§3.3)替代被移除的全局上限;熵预算使分布式枚举不可行
+- [ ] **暴力兜底(非锁死)**:验证码熵**从预算推导**(码空间 ≥ B/2^-20,PR 写明 K 与计算;默认如 9 base32 / 14 digits,8 base32/9–10 digits 不达标)
+- [ ] **生成↔校验同源**:`generateLoginCode` 字母表/长度 + verify-code 请求 schema 正则 + i18n 文案 + 测试一起改;新码不被 `^\d{6}$` 预拒
 - [ ] verify-code 纵深:CL → IP 门禁(解析前)→ readJson → **(email+IP)门禁仅 resolved** → verifyLoginCode;**unresolved 不双计 emergency 桶**(request-code 同)
 - [ ] request-code:**删除纯 email 阻断键**(`code-hour:email`、会 429 的 `code-cooldown:email`);阻断只 IP + (email+IP);防轰炸 = 非阻断发信抑制(超窗 200 不发信、不 429);`code-ip` 走 identity
 - [ ] admin-login:去 `?? "unknown"`,用 `resolveClientRateLimitIdentity` + `admin-login-unresolved` emergency 桶
