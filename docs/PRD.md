@@ -83,15 +83,22 @@ Core 边界原则：
 | 需求 | 状态 |
 |---|---|
 | 生产环境禁止默认 / 弱 `SESSION_SECRET`（启动失败） | ✅ |
-| 邮箱验证码限流（邮箱每小时 5 次、60s 冷却、IP 每小时 20 次） | ✅ |
+| 现有验证码发送限流：纯 email 每小时 5 次、60s 429 冷却、IP 每小时 20 次 | ✅（将由 S4 替换） |
+| S4 request-code：删除纯 email 阻断；保留 IP 主门禁、真实发送 email+IP 预算、非阻断并发安全 dedupe | 🚧 |
+| S4 verify-code：正确码先比较并绕过所有 wrong-attempt limiter；错误后才按 IP / email+IP 记账 | 🚧 |
+| S4 验证码熵：默认至少 9 位 uppercase Crockford base32，并同步生成/API/UI/i18n | 🚧 |
+| S4 email identity：规范化后使用 keyed HMAC-SHA-256，raw email 不进入限流/去重键 | 🚧 |
 | Cloudflare Turnstile 保护验证码发送接口（可选开启） | ✅ |
 | Turnstile Siteverify 调用前的 IP 限流 | ✅ |
 | 配置加密根密钥自动生成并持久化（权限 600，不打印密钥） | ✅ |
-| 验证码 HMAC 哈希存储、尝试次数限制 | ✅ |
+| 验证码 HMAC 哈希存储、事务内一次性使用 | ✅ |
 | 下载全量鉴权 + 日志 | ✅ |
 | 敏感配置加密存储（依赖配置中心） | 🚧 |
 | 完整审计日志与导出 | 🚧 |
-| 真实 IP 透传校验（仅信任已配置的代理层） | 🚧 |
+| 可信代理真实 IP 解析 | ✅ |
+| 多实例共享限流存储 | 🚧（不纳入 v1.0） |
+
+S4 的权威实施规范见 [handoff/harden-s4-auth-rate-limiting.md](handoff/harden-s4-auth-rate-limiting.md)。在实现 PR 合并前，不得把 S4 行为写成当前已实现能力。
 
 ## 10. 配置中心方向 🚧
 
@@ -111,16 +118,18 @@ Phase 0 MVP（已完成）→ Phase 1 安全基础 → Phase 2 配置中心 → 
 
 - Docker Compose 启动、数据库迁移、站点初始化、管理员登录、粉丝验证码登录、付款截图上传、后台审核、自动开通会员、会员内容权限下载、local 存储、local/S3 历史文件按记录驱动读取与删除。
 
-### Phase 1（当前轮验收口径）
+### Phase 1（历史验收口径）
 
 1. Turnstile 关闭时，邮箱验证码登录流程与之前完全一致。
 2. Turnstile 开启且 token 缺失 → 400，不发送邮件。
 3. Turnstile 开启且 token 无效 → 403，不发送邮件。
-4. Turnstile 开启且 token 有效 → 正常发送邮件；现有限流逻辑保留。
+4. Turnstile 开启且 token 有效 → 正常发送邮件；当时的限流逻辑保留。
 5. 生产环境 `SESSION_SECRET` 为默认值 / 过短 / 为空时应用启动失败，开发环境不受影响。
 6. Docker 首次启动自动生成 `/app/secrets/config-encryption-key`（600），重启后密钥不变。
 7. `/api/health` 返回 200；`/api/ready` 数据库正常时 200、异常时 503，且不暴露任何 secret。
 8. 文档区分已实现与计划中，不夸大。
+
+> 上述 Phase 1 条目是历史验收口径。S4 将改变验证码限流与验证码格式，实施时以 S4 handoff 为准。
 
 ### 后续 Phase
 
