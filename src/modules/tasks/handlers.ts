@@ -14,6 +14,7 @@ import {
   sendMembershipRevokedEmail,
   sendPaymentRejectedEmail,
 } from "@/modules/mail";
+import { dispatchPaymentProviderEvent } from "@/modules/payment/subscriptions";
 
 import { PermanentTaskError } from "./errors";
 
@@ -59,6 +60,7 @@ const storageDeletePayloadSchema = z.object({
   bucket: z.string().nullable(),
   objectKey: z.string().min(1),
 });
+const paymentProviderEventPayloadSchema = z.object({ providerEventId: z.string().min(1) });
 
 export type TaskHandlerResult = { note?: string; deferUntil?: Date };
 
@@ -131,6 +133,12 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
       return runCleanupOrphanTask(task);
     case "storage.delete_object":
       return runStorageDeleteTask(task);
+    case "payment_provider_event.dispatch": {
+      const parsed = paymentProviderEventPayloadSchema.safeParse(task.payloadJson);
+      if (!parsed.success) throw new PermanentTaskError("Invalid payment provider event payload");
+      await dispatchPaymentProviderEvent(parsed.data.providerEventId);
+      return {};
+    }
     default:
       throw new PermanentTaskError("Unsupported task kind");
   }

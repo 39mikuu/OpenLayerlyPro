@@ -21,6 +21,7 @@ export default async function TiersPage() {
     description: tier.description,
     durationDays: tier.durationDays,
     purchaseEnabled: tier.purchaseEnabled,
+    subscriptionEnabled: tier.purchaseEnabled && Boolean(tier.stripePriceId),
   }));
 
   const Tiers = theme.components.Tiers;

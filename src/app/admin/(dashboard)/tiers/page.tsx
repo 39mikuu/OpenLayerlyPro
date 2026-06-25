@@ -19,6 +19,7 @@ export default async function AdminTiersPage() {
           description: t.description,
           priceLabel: t.priceLabel,
           priceAmountMinor: t.priceAmountMinor,
+          stripePriceId: t.stripePriceId,
           currency: t.currency,
           level: t.level,
           durationDays: t.durationDays,

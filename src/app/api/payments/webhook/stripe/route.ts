@@ -3,8 +3,8 @@ import { NextRequest } from "next/server";
 import { ApiError, handleApiError, jsonError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { readBoundedRawBody } from "@/lib/request-body";
-import { confirmAutoPayment, expireAutoPayment, reverseAutoPayment } from "@/modules/payment";
 import { getPaymentProvider } from "@/modules/payment/providers";
+import { persistPaymentProviderEvent } from "@/modules/payment/subscriptions";
 
 export const runtime = "nodejs";
 
@@ -16,11 +16,7 @@ export async function POST(req: NextRequest) {
 
     const provider = await getPaymentProvider("stripe");
     const event = await provider!.parseWebhook(rawBody, signature);
-    if (event.type === "paid") await confirmAutoPayment("stripe", event);
-    if (event.type === "expired") await expireAutoPayment("stripe", event);
-    if (event.type === "refunded" || event.type === "disputed") {
-      await reverseAutoPayment("stripe", event);
-    }
+    await persistPaymentProviderEvent("stripe", event);
     return jsonOk({ received: true });
   } catch (error) {
     if (error instanceof ApiError && error.code === "stripeConfigIncomplete") {

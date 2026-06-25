@@ -11,6 +11,14 @@ import { listTiers } from "@/modules/membership";
 
 export const runtime = "nodejs";
 
+const optionalStripePriceId = z
+  .string()
+  .trim()
+  .max(255)
+  .transform((value) => value || null)
+  .nullable()
+  .optional();
+
 export async function GET() {
   try {
     await requireAdmin();
@@ -30,6 +38,7 @@ const bodySchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   priceLabel: z.string().min(1).max(100),
   priceAmountMinor: z.number().int().positive().nullable().optional(),
+  stripePriceId: optionalStripePriceId,
   currency: z
     .string()
     .trim()

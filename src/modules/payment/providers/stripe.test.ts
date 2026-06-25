@@ -7,6 +7,13 @@ function provider() {
   const retrieve = vi.fn();
   const retrieveSession = vi.fn();
   const listSessions = vi.fn();
+  const createSubscription = vi.fn();
+  const updateSubscription = vi.fn();
+  const cancelSubscription = vi.fn();
+  const retrieveSubscription = vi.fn();
+  const listInvoices = vi.fn();
+  const retrieveInvoice = vi.fn();
+  const listCharges = vi.fn();
   const constructEvent = vi.fn();
   const instance = new StripePaymentProvider(
     { secretKey: "sk_test_secret", webhookSecret: "whsec_secret" },
@@ -19,10 +26,31 @@ function provider() {
         },
       },
       balance: { retrieve },
+      subscriptions: {
+        update: updateSubscription,
+        cancel: cancelSubscription,
+        retrieve: retrieveSubscription,
+      },
+      invoices: { list: listInvoices, retrieve: retrieveInvoice },
+      charges: { list: listCharges },
       webhooks: { constructEvent },
     } as never,
   );
-  return { instance, create, retrieve, retrieveSession, listSessions, constructEvent };
+  return {
+    instance,
+    create,
+    createSubscription,
+    retrieve,
+    retrieveSession,
+    listSessions,
+    updateSubscription,
+    cancelSubscription,
+    retrieveSubscription,
+    listInvoices,
+    retrieveInvoice,
+    listCharges,
+    constructEvent,
+  };
 }
 
 describe("Stripe payment provider", () => {
@@ -123,6 +151,7 @@ describe("Stripe payment provider", () => {
       paymentRef: "pi_paid",
       requestId: "11111111-1111-4111-8111-111111111111",
       providerEventId: "evt_paid",
+      providerCreatedAt: new Date(0),
       amountMinor: 500,
       currency: "usd",
     });
@@ -167,6 +196,7 @@ describe("Stripe payment provider", () => {
     await expect(instance.parseWebhook(Buffer.from("unpaid"), "sig")).resolves.toEqual({
       type: "ignored",
       providerEventId: "evt_unpaid",
+      providerCreatedAt: new Date(0),
     });
 
     constructEvent.mockReturnValueOnce({
@@ -177,6 +207,7 @@ describe("Stripe payment provider", () => {
     await expect(instance.parseWebhook(Buffer.from("other"), "sig")).resolves.toEqual({
       type: "ignored",
       providerEventId: "evt_other",
+      providerCreatedAt: new Date(0),
     });
   });
 
@@ -198,6 +229,7 @@ describe("Stripe payment provider", () => {
       providerRef: "cs_expired",
       requestId: "11111111-1111-4111-8111-111111111111",
       providerEventId: "evt_expired",
+      providerCreatedAt: new Date(0),
     });
   });
 
@@ -244,15 +276,19 @@ describe("Stripe payment provider", () => {
     await expect(instance.parseWebhook(Buffer.from("full"), "sig")).resolves.toEqual({
       type: "refunded",
       paymentRef: "pi_refunded",
+      providerInvoiceRef: undefined,
       providerEventId: "evt_refund_full",
+      providerCreatedAt: new Date(0),
     });
     await expect(instance.parseWebhook(Buffer.from("partial"), "sig")).resolves.toEqual({
       type: "ignored",
       providerEventId: "evt_refund_partial",
+      providerCreatedAt: new Date(0),
     });
     await expect(instance.parseWebhook(Buffer.from("legacy"), "sig")).resolves.toEqual({
       type: "ignored",
       providerEventId: "evt_refund_legacy",
+      providerCreatedAt: new Date(0),
     });
   });
 
@@ -273,11 +309,135 @@ describe("Stripe payment provider", () => {
     await expect(instance.parseWebhook(Buffer.from("dispute"), "sig")).resolves.toEqual({
       type: "disputed",
       paymentRef: "pi_disputed",
+      providerInvoiceRef: undefined,
       providerEventId: "evt_dispute",
+      providerCreatedAt: new Date(0),
     });
     await expect(instance.parseWebhook(Buffer.from("legacy"), "sig")).resolves.toEqual({
       type: "ignored",
       providerEventId: "evt_dispute_legacy",
+      providerCreatedAt: new Date(0),
+    });
+  });
+
+  it("creates a subscription checkout with a stable local idempotency key", async () => {
+    const { instance, create } = provider();
+    create.mockResolvedValue({
+      id: "cs_sub",
+      url: "https://checkout.stripe.test/sub",
+    });
+
+    await expect(
+      instance.createSubscriptionCheckout({
+        subscriptionId: "33333333-3333-4333-8333-333333333333",
+        priceRef: "price_recurring",
+        providerPriceRef: "price_recurring",
+        successUrl: "https://site.test/me?subscribed=1",
+        cancelUrl: "https://site.test/checkout/tier",
+      }),
+    ).resolves.toEqual({
+      redirectUrl: "https://checkout.stripe.test/sub",
+      providerCheckoutRef: "cs_sub",
+    });
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "subscription",
+        line_items: [{ price: "price_recurring", quantity: 1 }],
+        metadata: {
+          subscriptionId: "33333333-3333-4333-8333-333333333333",
+          providerPriceRef: "price_recurring",
+          app: "openlayerlypro",
+        },
+      }),
+      { idempotencyKey: "subscription-checkout:33333333-3333-4333-8333-333333333333" },
+    );
+  });
+
+  it("normalizes subscription invoices with candidate price lines for snapshot matching", async () => {
+    const { instance, constructEvent } = provider();
+    constructEvent.mockReturnValue({
+      id: "evt_invoice",
+      created: 1767225600,
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_123",
+          subscription: "sub_123",
+          payment_intent: "pi_123",
+          currency: "USD",
+          metadata: {
+            subscriptionId: "33333333-3333-4333-8333-333333333333",
+            providerPriceRef: "price_recurring",
+          },
+          lines: {
+            data: [
+              {
+                price: { id: "price_other" },
+                amount: 100,
+                period: { start: 1767225600, end: 1767312000 },
+              },
+              {
+                price: { id: "price_recurring" },
+                amount: 900,
+                period: { start: 1767225600, end: 1769904000 },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    await expect(instance.parseWebhook(Buffer.from("invoice"), "sig")).resolves.toMatchObject({
+      type: "subscription_renewed",
+      localSubscriptionId: "33333333-3333-4333-8333-333333333333",
+      providerSubscriptionRef: "sub_123",
+      providerInvoiceRef: "in_123",
+      providerPaymentRef: "pi_123",
+      providerPriceRef: "price_recurring",
+      lines: [
+        expect.objectContaining({ providerPriceRef: "price_other", amountMinor: 100 }),
+        expect.objectContaining({ providerPriceRef: "price_recurring", amountMinor: 900 }),
+      ],
+      currency: "usd",
+    });
+  });
+
+  it("normalizes ambiguous invoice lines for the application layer to reject by snapshot", async () => {
+    const { instance, constructEvent } = provider();
+    constructEvent.mockReturnValue({
+      id: "evt_invoice_ambiguous",
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_ambiguous",
+          subscription: "sub_123",
+          payment_intent: "pi_123",
+          currency: "usd",
+          metadata: { providerPriceRef: "price_recurring" },
+          lines: {
+            data: [
+              {
+                price: { id: "price_recurring" },
+                amount: 900,
+                period: { start: 1767225600, end: 1769904000 },
+              },
+              {
+                price: { id: "price_recurring" },
+                amount: 900,
+                period: { start: 1769904000, end: 1772323200 },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    await expect(instance.parseWebhook(Buffer.from("invoice"), "sig")).resolves.toMatchObject({
+      type: "subscription_renewed",
+      lines: [
+        expect.objectContaining({ providerPriceRef: "price_recurring", amountMinor: 900 }),
+        expect.objectContaining({ providerPriceRef: "price_recurring", amountMinor: 900 }),
+      ],
     });
   });
 

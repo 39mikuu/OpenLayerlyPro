@@ -92,6 +92,7 @@ export type TierCardView = {
   description: string | null;
   durationDays: number;
   purchaseEnabled: boolean;
+  subscriptionEnabled: boolean;
 };
 
 export type TiersView = {
@@ -109,6 +110,13 @@ export type MeView = {
   email: string;
   isAdmin: boolean;
   membership: MembershipSummary | null;
+  subscription: {
+    id: string;
+    status: "pending" | "active" | "past_due" | "canceled" | "expired";
+    tierName: string;
+    currentPeriodEndsAt: Date | null;
+    cancelAtPeriodEnd: boolean;
+  } | null;
 };
 
 export type OrderStatus =

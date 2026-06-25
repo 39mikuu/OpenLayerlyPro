@@ -7,18 +7,14 @@ import { getEnv } from "@/lib/env";
 const mocks = vi.hoisted(() => ({
   parseWebhook: vi.fn(),
   getPaymentProvider: vi.fn(),
-  confirmAutoPayment: vi.fn(),
-  expireAutoPayment: vi.fn(),
-  reverseAutoPayment: vi.fn(),
+  persistPaymentProviderEvent: vi.fn(),
 }));
 
 vi.mock("@/modules/payment/providers", () => ({
   getPaymentProvider: mocks.getPaymentProvider,
 }));
-vi.mock("@/modules/payment", () => ({
-  confirmAutoPayment: mocks.confirmAutoPayment,
-  expireAutoPayment: mocks.expireAutoPayment,
-  reverseAutoPayment: mocks.reverseAutoPayment,
+vi.mock("@/modules/payment/subscriptions", () => ({
+  persistPaymentProviderEvent: mocks.persistPaymentProviderEvent,
 }));
 
 import { POST } from "./route";
@@ -29,7 +25,7 @@ describe("Stripe webhook route", () => {
     mocks.getPaymentProvider.mockResolvedValue({ parseWebhook: mocks.parseWebhook });
   });
 
-  it("passes raw body and signature to the provider and confirms paid events", async () => {
+  it("passes raw body and signature to the provider and persists paid events", async () => {
     const event = {
       type: "paid" as const,
       providerRef: "cs_paid",
@@ -48,7 +44,7 @@ describe("Stripe webhook route", () => {
     const response = await POST(request);
     expect(response.status).toBe(200);
     expect(mocks.parseWebhook).toHaveBeenCalledWith(Buffer.from('{"raw":true}'), "signed");
-    expect(mocks.confirmAutoPayment).toHaveBeenCalledWith("stripe", event);
+    expect(mocks.persistPaymentProviderEvent).toHaveBeenCalledWith("stripe", event);
   });
 
   it("returns 401 for a missing signature before loading Stripe configuration", async () => {
@@ -60,7 +56,7 @@ describe("Stripe webhook route", () => {
     expect(response.status).toBe(401);
     expect(mocks.getPaymentProvider).not.toHaveBeenCalled();
     expect(mocks.parseWebhook).not.toHaveBeenCalled();
-    expect(mocks.confirmAutoPayment).not.toHaveBeenCalled();
+    expect(mocks.persistPaymentProviderEvent).not.toHaveBeenCalled();
   });
 
   it("returns 401 for a forged signature", async () => {
@@ -73,10 +69,10 @@ describe("Stripe webhook route", () => {
     const response = await POST(request);
     expect(response.status).toBe(401);
     expect(mocks.parseWebhook).toHaveBeenCalledWith(Buffer.from("{}"), "forged");
-    expect(mocks.confirmAutoPayment).not.toHaveBeenCalled();
+    expect(mocks.persistPaymentProviderEvent).not.toHaveBeenCalled();
   });
 
-  it("cancels pending requests for signed expired-session events", async () => {
+  it("persists signed expired-session events", async () => {
     const event = {
       type: "expired" as const,
       providerRef: "cs_expired",
@@ -93,11 +89,10 @@ describe("Stripe webhook route", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mocks.expireAutoPayment).toHaveBeenCalledWith("stripe", event);
-    expect(mocks.confirmAutoPayment).not.toHaveBeenCalled();
+    expect(mocks.persistPaymentProviderEvent).toHaveBeenCalledWith("stripe", event);
   });
 
-  it("routes signed refund and dispute events to automatic reversal", async () => {
+  it("persists signed refund and dispute events", async () => {
     const event = {
       type: "refunded" as const,
       paymentRef: "pi_refunded",
@@ -114,8 +109,7 @@ describe("Stripe webhook route", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mocks.reverseAutoPayment).toHaveBeenCalledWith("stripe", event);
-    expect(mocks.confirmAutoPayment).not.toHaveBeenCalled();
+    expect(mocks.persistPaymentProviderEvent).toHaveBeenCalledWith("stripe", event);
 
     const dispute = {
       type: "disputed" as const,
@@ -132,7 +126,7 @@ describe("Stripe webhook route", () => {
     );
 
     expect(disputeResponse.status).toBe(200);
-    expect(mocks.reverseAutoPayment).toHaveBeenLastCalledWith("stripe", dispute);
+    expect(mocks.persistPaymentProviderEvent).toHaveBeenLastCalledWith("stripe", dispute);
   });
 
   it("preserves whitespace, newlines, and non-ASCII webhook bytes", async () => {
@@ -179,9 +173,7 @@ describe("Stripe webhook route", () => {
     expect(actualResponse.status).toBe(413);
     expect(mocks.getPaymentProvider).not.toHaveBeenCalled();
     expect(mocks.parseWebhook).not.toHaveBeenCalled();
-    expect(mocks.confirmAutoPayment).not.toHaveBeenCalled();
-    expect(mocks.expireAutoPayment).not.toHaveBeenCalled();
-    expect(mocks.reverseAutoPayment).not.toHaveBeenCalled();
+    expect(mocks.persistPaymentProviderEvent).not.toHaveBeenCalled();
   });
 
   it("accepts a webhook exactly at the configured transfer limit", async () => {
