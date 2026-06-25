@@ -1,3 +1,4 @@
+import { closeDb } from "@/db";
 import { runFileSafetyBackfill } from "@/modules/file/backfillSafety";
 
 const apply = process.argv.includes("--apply");
@@ -8,13 +9,17 @@ if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 1_000) {
   throw new Error("--batch-size must be an integer between 1 and 1000");
 }
 
-const result = await runFileSafetyBackfill({
-  apply,
-  batchSize,
-  onProgress: (message) => console.log(message),
-});
+try {
+  const result = await runFileSafetyBackfill({
+    apply,
+    batchSize,
+    onProgress: (message) => console.log(message),
+  });
 
-console.log(JSON.stringify(result, null, 2));
-if (!apply) {
-  console.log("Dry-run only. Re-run with --apply to persist changes.");
+  console.log(JSON.stringify(result, null, 2));
+  if (!apply) {
+    console.log("Dry-run only. Re-run with --apply to persist changes.");
+  }
+} finally {
+  await closeDb();
 }
