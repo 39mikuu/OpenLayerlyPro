@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { deleteSetting, readAdminSiteInfo, setSetting } from "@/modules/site";
 
@@ -38,8 +40,8 @@ const bodySchema = z.object({
 
 export async function PUT(req: NextRequest) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     await requireAdmin();
-    const input = bodySchema.parse(await req.json());
     if (input.siteName !== undefined) await setSetting("site_name", input.siteName);
     if (input.artistName !== undefined) await setSetting("artist_name", input.artistName);
     if (input.artistBio !== undefined) await setSetting("artist_bio", input.artistBio);

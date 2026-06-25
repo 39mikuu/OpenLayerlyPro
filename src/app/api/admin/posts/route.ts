@@ -2,9 +2,10 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonOk } from "@/lib/api";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { createPost, listPosts } from "@/modules/content";
-import { MAX_POST_BODY_LENGTH } from "@/modules/content/markdown";
+import { MAX_POST_BODY_LENGTH, POST_JSON_MAX_BYTES } from "@/modules/content/markdown";
 
 export const runtime = "nodejs";
 
@@ -35,8 +36,12 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    const { categoryIds, tagIds, ...input } = await readJsonWithLimit(
+      req,
+      POST_JSON_MAX_BYTES,
+      bodySchema,
+    );
     await requireAdmin();
-    const { categoryIds, tagIds, ...input } = bodySchema.parse(await req.json());
     return jsonOk(await createPost(input, { categoryIds, tagIds }));
   } catch (err) {
     return handleApiError(err);

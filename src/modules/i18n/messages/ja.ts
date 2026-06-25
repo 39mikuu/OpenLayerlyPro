@@ -783,6 +783,7 @@ export const ja: Messages = {
     categoryNotFound: "カテゴリーが見つかりません",
     tagNotFound: "タグが見つかりません",
     invalidRequest: "リクエストパラメータが無効です（{field}）",
+    requestBodyTooLarge: "リクエスト本文が許可されたサイズ上限を超えています",
     internalError: "サーバー内部エラー",
     invalidCredentials: "メールアドレスまたはパスワードが正しくありません",
     emailTaken: "このメールアドレスはすでに使用されています",

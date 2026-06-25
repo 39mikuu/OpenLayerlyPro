@@ -45,7 +45,21 @@ const envSchema = z.object({
     .transform((v) => v === "true"),
 
   MAX_UPLOAD_SIZE_MB: z.coerce.number().default(500),
-  PAYMENT_PROOF_MAX_SIZE_MB: z.coerce.number().default(10),
+  PAYMENT_PROOF_MAX_SIZE_MB: z.coerce.number().finite().int().min(1).max(100).default(10),
+  REQUEST_JSON_MAX_BYTES: z.coerce
+    .number()
+    .finite()
+    .int()
+    .min(1_024)
+    .max(1_048_576)
+    .default(65_536),
+  STRIPE_WEBHOOK_MAX_BYTES: z.coerce
+    .number()
+    .finite()
+    .int()
+    .min(1_024)
+    .max(1_048_576)
+    .default(262_144),
   INLINE_UPLOAD_GRACE_PERIOD_HOURS: z.coerce.number().int().min(1).max(720).default(24),
   PUBLIC_VIDEO_SIGNED_URL_TTL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(21_600),
   FILE_PREAUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(100).max(100_000).default(1_200),

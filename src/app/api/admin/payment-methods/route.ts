@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { createPaymentMethod, listPaymentMethods } from "@/modules/payment";
 
@@ -26,8 +28,8 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     await requireAdmin();
-    const input = bodySchema.parse(await req.json());
     return jsonOk(await createPaymentMethod(input));
   } catch (err) {
     return handleApiError(err);

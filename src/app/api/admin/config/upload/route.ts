@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 
 import { handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import {
   clearUploadConfig,
@@ -22,8 +24,8 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, uploadConfigSchema);
     await requireAdmin();
-    const input = uploadConfigSchema.parse(await req.json());
     await saveUploadConfig(input);
     return jsonOk(await getUploadAdminView());
   } catch (err) {

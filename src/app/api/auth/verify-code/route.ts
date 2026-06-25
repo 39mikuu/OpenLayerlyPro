@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { getClientIp, getUserAgent, handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { verifyLoginCode } from "@/modules/auth/login-code";
 import { createSession, setSessionCookie } from "@/modules/auth/session";
 import { resolveLocale } from "@/modules/i18n/server";
@@ -15,7 +17,11 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    const { email, code } = bodySchema.parse(await req.json());
+    const { email, code } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      bodySchema,
+    );
     const user = await verifyLoginCode(email, code, await resolveLocale());
     const { token, expiresAt } = await createSession(user.id, {
       ip: getClientIp(req),

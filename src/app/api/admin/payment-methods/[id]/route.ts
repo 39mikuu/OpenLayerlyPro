@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { deletePaymentMethod, updatePaymentMethod } from "@/modules/payment";
 
@@ -17,9 +19,9 @@ const patchSchema = z.object({
 
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, patchSchema);
     await requireAdmin();
     const { id } = await ctx.params;
-    const input = patchSchema.parse(await req.json());
     return jsonOk(await updatePaymentMethod(id, input));
   } catch (err) {
     return handleApiError(err);

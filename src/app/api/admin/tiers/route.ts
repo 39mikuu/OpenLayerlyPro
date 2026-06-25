@@ -4,6 +4,8 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { membershipTiers } from "@/db/schema";
 import { handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { listTiers } from "@/modules/membership";
 
@@ -44,8 +46,8 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     await requireAdmin();
-    const input = bodySchema.parse(await req.json());
     const [tier] = await getDb().insert(membershipTiers).values(input).returning();
     return jsonOk(tier);
   } catch (err) {

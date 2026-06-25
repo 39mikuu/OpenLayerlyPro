@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 
 import { handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import {
   clearSmtpConfig,
@@ -22,8 +24,8 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, smtpConfigSchema);
     await requireAdmin();
-    const input = smtpConfigSchema.parse(await req.json());
     await saveSmtpConfig(input);
     return jsonOk(await getSmtpAdminView());
   } catch (err) {

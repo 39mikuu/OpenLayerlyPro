@@ -135,8 +135,10 @@ docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 | `DATABASE_URL` | PostgreSQL 连接串 |
 | `SMTP_HOST` / `SMTP_FROM` 等 | SMTP 邮件配置，粉丝验证码登录必需 |
 | `STORAGE_DRIVER` | `local`（默认）或 `s3` |
+| `REQUEST_JSON_MAX_BYTES` | JSON 请求体传输上限（默认 64 KiB） |
+| `STRIPE_WEBHOOK_MAX_BYTES` | Stripe webhook 原始请求体上限（默认 256 KiB） |
 | `MAX_UPLOAD_SIZE_MB` | 内容附件上传上限 |
-| `PAYMENT_PROOF_MAX_SIZE_MB` | 付款截图上传上限 |
+| `PAYMENT_PROOF_MAX_SIZE_MB` | 付款截图/收款码文件上限（1–100 MiB） |
 | `TRUSTED_PROXY_HOPS` / `TRUSTED_PROXY_HEADER` | 可信代理和真实客户端 IP 配置 |
 | `TURNSTILE_ENABLED` | 是否开启 Cloudflare Turnstile |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | Turnstile 密钥对 |
@@ -207,6 +209,8 @@ S3_FORCE_PATH_STYLE=true
 local 上传先写入同目录 `.part` 文件，成功后原子重命名；可捕获失败会删除临时文件，超过 24 小时的遗留 `.part` 会定期清理。S3 multipart 固定使用 8 MiB 分片、2 路并发，因此单次上传的 SDK 分片缓冲约为 16 MiB 加运行时开销。S3 / R2 bucket 还应配置「中止未完成 multipart upload」生命周期规则，作为进程崩溃时的兜底。
 
 `MAX_UPLOAD_SIZE_MB` 是服务端流式实测上限，不再要求小于应用可用内存；同时仍需确认反向代理、隧道或对象存储的请求限制。
+
+JSON、Stripe webhook 和 multipart 图片上传会先按实际传输字节执行应用层有界读取，再进行解析、验签、图片处理或业务访问。付款图片 multipart 总传输上限为文件限制加 256 KiB 协议开销。反向代理的 body limit 只是第二道保护，不能替代应用层限制。
 
 ## 健康检查
 

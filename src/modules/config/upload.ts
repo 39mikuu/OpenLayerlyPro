@@ -8,7 +8,7 @@ export const UPLOAD_GROUP = "upload";
 
 export const uploadConfigSchema = z.object({
   maxUploadSizeMb: z.number().int().positive().optional(),
-  paymentProofMaxSizeMb: z.number().int().positive().optional(),
+  paymentProofMaxSizeMb: z.number().int().min(1).max(100).optional(),
 });
 export type UploadConfigInput = z.infer<typeof uploadConfigSchema>;
 
@@ -31,7 +31,12 @@ function resolveUploadConfig(stored: UploadConfigInput): ResolvedUploadConfig {
   const env = getEnv();
   return {
     maxUploadSizeMb: stored.maxUploadSizeMb ?? env.MAX_UPLOAD_SIZE_MB,
-    paymentProofMaxSizeMb: stored.paymentProofMaxSizeMb ?? env.PAYMENT_PROOF_MAX_SIZE_MB,
+    // The deployment env is the pre-DB multipart transfer ceiling. The admin
+    // override may lower the business limit but cannot raise that hard ceiling.
+    paymentProofMaxSizeMb: Math.min(
+      stored.paymentProofMaxSizeMb ?? env.PAYMENT_PROOF_MAX_SIZE_MB,
+      env.PAYMENT_PROOF_MAX_SIZE_MB,
+    ),
   };
 }
 

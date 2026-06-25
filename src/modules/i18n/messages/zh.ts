@@ -765,6 +765,7 @@ export const zh = {
     categoryNotFound: "分类不存在",
     tagNotFound: "标签不存在",
     invalidRequest: "请求参数无效（{field}）",
+    requestBodyTooLarge: "请求体超过允许的大小限制",
     internalError: "服务器内部错误",
     invalidCredentials: "邮箱或密码错误",
     emailTaken: "该邮箱已被使用",

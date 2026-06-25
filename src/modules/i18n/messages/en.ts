@@ -791,6 +791,7 @@ export const en: Messages = {
     categoryNotFound: "Category not found",
     tagNotFound: "Tag not found",
     invalidRequest: "Invalid request parameter ({field})",
+    requestBodyTooLarge: "Request body exceeds the allowed size limit",
     internalError: "Internal server error",
     invalidCredentials: "Incorrect email or password",
     emailTaken: "This email address is already in use",

@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { getActiveTheme, getThemeConfig, setThemeConfig } from "@/modules/theme";
 
@@ -31,9 +33,13 @@ const bodySchema = z.object({
 
 export async function PUT(req: NextRequest) {
   try {
+    const { colorPreset, customHue } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      bodySchema,
+    );
     await requireAdmin();
     const theme = await getActiveTheme();
-    const { colorPreset, customHue } = bodySchema.parse(await req.json());
     const isCustom = colorPreset === "custom";
     const isKnownPreset = theme.colorPresets.some((p) => p.id === colorPreset);
     // 只接受预设 id 或 custom；绝不接受任意 CSS 变量名/值。

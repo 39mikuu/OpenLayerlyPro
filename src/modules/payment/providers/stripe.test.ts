@@ -73,17 +73,32 @@ describe("Stripe payment provider", () => {
 
   it("rejects missing or invalid signatures", async () => {
     const { instance, constructEvent } = provider();
-    await expect(instance.parseWebhook("{}", null)).rejects.toMatchObject({
+    await expect(instance.parseWebhook(Buffer.from("{}"), null)).rejects.toMatchObject({
       status: 401,
       code: "stripeSignatureInvalid",
     });
     constructEvent.mockImplementation(() => {
       throw new Error("bad signature");
     });
-    await expect(instance.parseWebhook("{}", "bad")).rejects.toMatchObject({
+    await expect(instance.parseWebhook(Buffer.from("{}"), "bad")).rejects.toMatchObject({
       status: 401,
       code: "stripeSignatureInvalid",
     });
+  });
+
+  it("passes the exact raw Buffer, including whitespace and non-ASCII bytes, to Stripe", async () => {
+    const { instance, constructEvent } = provider();
+    constructEvent.mockReturnValue({
+      id: "evt_exact",
+      type: "customer.created",
+      data: { object: {} },
+    });
+    const rawBody = Buffer.from('{\n  "note": "你好"  \n}', "utf8");
+
+    await instance.parseWebhook(rawBody, "sig");
+
+    expect(constructEvent).toHaveBeenCalledWith(rawBody, "sig", "whsec_secret");
+    expect(constructEvent.mock.calls[0]?.[0]).toBe(rawBody);
   });
 
   it("normalizes paid checkout completion with its PaymentIntent", async () => {
@@ -102,7 +117,7 @@ describe("Stripe payment provider", () => {
         },
       },
     });
-    await expect(instance.parseWebhook("paid", "sig")).resolves.toEqual({
+    await expect(instance.parseWebhook(Buffer.from("paid"), "sig")).resolves.toEqual({
       type: "paid",
       providerRef: "cs_paid",
       paymentRef: "pi_paid",
@@ -128,7 +143,7 @@ describe("Stripe payment provider", () => {
         },
       },
     });
-    await expect(instance.parseWebhook("paid", "sig")).rejects.toMatchObject({
+    await expect(instance.parseWebhook(Buffer.from("paid"), "sig")).rejects.toMatchObject({
       status: 422,
       code: "stripeEventInvalid",
     });
@@ -149,7 +164,7 @@ describe("Stripe payment provider", () => {
         },
       },
     });
-    await expect(instance.parseWebhook("unpaid", "sig")).resolves.toEqual({
+    await expect(instance.parseWebhook(Buffer.from("unpaid"), "sig")).resolves.toEqual({
       type: "ignored",
       providerEventId: "evt_unpaid",
     });
@@ -159,7 +174,7 @@ describe("Stripe payment provider", () => {
       type: "customer.created",
       data: { object: {} },
     });
-    await expect(instance.parseWebhook("other", "sig")).resolves.toEqual({
+    await expect(instance.parseWebhook(Buffer.from("other"), "sig")).resolves.toEqual({
       type: "ignored",
       providerEventId: "evt_other",
     });
@@ -178,7 +193,7 @@ describe("Stripe payment provider", () => {
       },
     });
 
-    await expect(instance.parseWebhook("expired", "sig")).resolves.toEqual({
+    await expect(instance.parseWebhook(Buffer.from("expired"), "sig")).resolves.toEqual({
       type: "expired",
       providerRef: "cs_expired",
       requestId: "11111111-1111-4111-8111-111111111111",
@@ -226,16 +241,16 @@ describe("Stripe payment provider", () => {
         },
       });
 
-    await expect(instance.parseWebhook("full", "sig")).resolves.toEqual({
+    await expect(instance.parseWebhook(Buffer.from("full"), "sig")).resolves.toEqual({
       type: "refunded",
       paymentRef: "pi_refunded",
       providerEventId: "evt_refund_full",
     });
-    await expect(instance.parseWebhook("partial", "sig")).resolves.toEqual({
+    await expect(instance.parseWebhook(Buffer.from("partial"), "sig")).resolves.toEqual({
       type: "ignored",
       providerEventId: "evt_refund_partial",
     });
-    await expect(instance.parseWebhook("legacy", "sig")).resolves.toEqual({
+    await expect(instance.parseWebhook(Buffer.from("legacy"), "sig")).resolves.toEqual({
       type: "ignored",
       providerEventId: "evt_refund_legacy",
     });
@@ -255,12 +270,12 @@ describe("Stripe payment provider", () => {
         data: { object: { payment_intent: null } },
       });
 
-    await expect(instance.parseWebhook("dispute", "sig")).resolves.toEqual({
+    await expect(instance.parseWebhook(Buffer.from("dispute"), "sig")).resolves.toEqual({
       type: "disputed",
       paymentRef: "pi_disputed",
       providerEventId: "evt_dispute",
     });
-    await expect(instance.parseWebhook("legacy", "sig")).resolves.toEqual({
+    await expect(instance.parseWebhook(Buffer.from("legacy"), "sig")).resolves.toEqual({
       type: "ignored",
       providerEventId: "evt_dispute_legacy",
     });

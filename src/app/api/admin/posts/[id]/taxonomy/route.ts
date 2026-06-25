@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { handleApiError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { updatePostTaxonomy } from "@/modules/content";
 
@@ -14,9 +16,9 @@ const bodySchema = z.object({
 
 export async function PUT(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
+    const taxonomy = await readJsonWithLimit(request, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     await requireAdmin();
     const { id } = await ctx.params;
-    const taxonomy = bodySchema.parse(await request.json());
     await updatePostTaxonomy(id, taxonomy);
     return jsonOk({ updated: true });
   } catch (error) {

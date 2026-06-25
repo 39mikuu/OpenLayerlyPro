@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/lib/api";
 import { __resetRateLimitForTests } from "@/lib/rate-limit";
-import { MAX_POST_BODY_LENGTH, renderMarkdown } from "@/modules/content/markdown";
+import {
+  MAX_POST_BODY_LENGTH,
+  POST_JSON_MAX_BYTES,
+  renderMarkdown,
+} from "@/modules/content/markdown";
 
 const mocks = vi.hoisted(() => ({ requireAdmin: vi.fn() }));
 
@@ -66,11 +70,34 @@ describe("admin Markdown preview API", () => {
     expect(payload.data.html).not.toContain("<iframe");
   });
 
-  it("rejects an oversized body", async () => {
+  it("accepts a 90,000 character ASCII body before rendering", async () => {
+    const markdown = "x".repeat(90_000);
+    const response = await route.POST(request({ markdown, embedMode: "preview" }));
+
+    expect(response.status).toBe(200);
+  });
+
+  it("accepts a near-limit multi-byte CJK body before rendering", async () => {
+    const markdown = "界".repeat(MAX_POST_BODY_LENGTH - 1);
+    const response = await route.POST(request({ markdown, embedMode: "preview" }));
+
+    expect(response.status).toBe(200);
+  });
+
+  it("keeps the schema character limit at 100,000 characters", async () => {
     const response = await route.POST(
       request({ markdown: "x".repeat(MAX_POST_BODY_LENGTH + 1), embedMode: "preview" }),
     );
     expect(response.status).toBe(400);
+  });
+
+  it("rejects JSON transfers above the post-specific byte limit", async () => {
+    const response = await route.POST(
+      request({ markdown: "x".repeat(POST_JSON_MAX_BYTES), embedMode: "preview" }),
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ code: "requestBodyTooLarge" });
   });
 
   it("accepts only preview embed mode", async () => {

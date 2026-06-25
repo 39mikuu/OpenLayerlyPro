@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { ApiError, handleApiError } from "./api";
+import { RequestBodyTooLargeError } from "./request-body";
 
 function makeReq(headers: Record<string, string>): NextRequest {
   return { headers: new Headers(headers) } as unknown as NextRequest;
@@ -22,6 +23,16 @@ describe("handleApiError", () => {
       code: "cooldownRateLimited",
       params: { seconds: 30 },
       error: "发送过于频繁，请 30 秒后再试",
+    });
+  });
+
+  it("请求体超限映射为稳定 413，且不泄露内部异常", async () => {
+    const res = handleApiError(new RequestBodyTooLargeError());
+    expect(res.status).toBe(413);
+    await expect(res.json()).resolves.toEqual({
+      ok: false,
+      code: "requestBodyTooLarge",
+      error: "请求体超过允许的大小限制",
     });
   });
 

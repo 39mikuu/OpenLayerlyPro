@@ -7,6 +7,8 @@
 - [ ] `TRUSTED_PROXY_HEADER` and `TRUSTED_PROXY_HOPS` match the deployment edge.
 - [ ] File requests resolve distinct trusted client IPs in production; otherwise the shared unresolved-client emergency buckets and rate-limited warning remain active.
 - [ ] Origin app port is not publicly exposed when trusting proxy headers.
+- [ ] Application request-body limits fit expected traffic and available memory.
+- [ ] Proxy request-size limits are configured only as a second layer; application byte limits remain authoritative.
 - [ ] Upload limits fit available memory.
 - [ ] Storage driver is selected intentionally: `local` or `s3`.
 - [ ] S3/R2 credentials are stored through env or admin encrypted config.
@@ -22,6 +24,16 @@
 - [ ] S3/R2 bucket versioning or provider backups are enabled when object storage is used.
 - [ ] A recent archive has been restored successfully in an isolated Compose project.
 - [ ] The restore drill verified `/api/ready`, sample data, uploads, and encrypted settings.
+
+## Application request-body limits
+
+The application reads request bodies through byte-bounded helpers before JSON parsing, multipart parsing, Stripe signature verification, database access, storage, mail, or other business services.
+
+- `REQUEST_JSON_MAX_BYTES` defaults to 65,536 bytes and accepts integers from 1,024 through 1,048,576.
+- `STRIPE_WEBHOOK_MAX_BYTES` defaults to 262,144 bytes and accepts integers from 1,024 through 1,048,576.
+- `PAYMENT_PROOF_MAX_SIZE_MB` defaults to 10 MiB and accepts integers from 1 through 100. It is the deployment hard ceiling; the admin upload setting may lower but cannot raise it. Multipart transfer buffering adds 256 KiB for boundaries, part headers, and text fields while preserving the existing per-file validation.
+
+A reverse proxy may enforce equal or lower limits as defense in depth, but it is not a substitute for these application checks. The application also measures actual streamed bytes when `Content-Length` is absent or inaccurate.
 
 ## Backup Schedule Example
 

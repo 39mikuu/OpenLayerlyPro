@@ -10,6 +10,7 @@
     "lint": "eslint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "check:request-bodies": "node scripts/check-bounded-request-bodies.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "db:migrate": "node scripts/migrate.mjs",
