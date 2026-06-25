@@ -191,6 +191,26 @@ describe("S3StorageAdapter", () => {
     expect(attachmentCommand.input.ResponseContentType).toBeUndefined();
   });
 
+  it("persists authoritative content type and disposition on object PUT", async () => {
+    state.sendMock.mockResolvedValue({});
+    const adapter = new S3StorageAdapter(config);
+
+    await adapter.putObject({
+      objectKey: "payment-proof/proof.jpg",
+      body: Buffer.from("jpeg"),
+      contentType: "image/jpeg",
+      contentDisposition: "attachment; filename*=UTF-8''proof.jpg",
+    });
+
+    const command = state.sendMock.mock.calls[0][0] as PutObjectCommand;
+    expect(command.input).toMatchObject({
+      Bucket: "test-bucket",
+      Key: "payment-proof/proof.jpg",
+      ContentType: "image/jpeg",
+      ContentDisposition: "attachment; filename*=UTF-8''proof.jpg",
+    });
+  });
+
   it("uses bounded multipart settings and streams bytes without whole-file buffering", async () => {
     const adapter = new S3StorageAdapter(config);
     const body = Buffer.from("multipart body");
@@ -199,6 +219,7 @@ describe("S3StorageAdapter", () => {
       objectKey: "content/video.mp4",
       body: Readable.from([body.subarray(0, 4), body.subarray(4)]),
       contentType: "video/mp4",
+      contentDisposition: "attachment",
       maxBytes: 1024,
     });
 
@@ -208,6 +229,7 @@ describe("S3StorageAdapter", () => {
         queueSize: S3_UPLOAD_QUEUE_SIZE,
         partSize: S3_UPLOAD_PART_SIZE,
         leavePartsOnError: false,
+        params: expect.objectContaining({ ContentDisposition: "attachment" }),
       }),
     );
     expect(state.uploadedBodies).toEqual([body]);

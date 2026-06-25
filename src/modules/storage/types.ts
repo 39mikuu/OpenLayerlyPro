@@ -4,12 +4,14 @@ export type PutObjectInput = {
   objectKey: string;
   body: Buffer;
   contentType: string;
+  contentDisposition?: string;
 };
 
 export type PutObjectStreamInput = {
   objectKey: string;
   body: Readable;
   contentType: string;
+  contentDisposition?: string;
   maxBytes: number;
   signal?: AbortSignal;
 };

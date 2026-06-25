@@ -16,6 +16,8 @@
     "db:migrate": "node scripts/migrate.mjs",
     "payments:dedupe-pending": "node scripts/dedupe-pending-payments.mjs",
     "build:migrator": "esbuild scripts/migrate.mjs --bundle --platform=node --format=esm --outfile=dist/migrate.mjs",
+    "build:files-backfill": "esbuild scripts/backfill-file-safety.mjs --bundle --platform=node --format=esm --alias:@=./src --outfile=dist/files-backfill.mjs",
+    "files:backfill-safety": "node dist/files-backfill.mjs",
     "admin:reset": "node scripts/admin-reset.mjs",
     "build:admin-reset": "esbuild scripts/admin-reset.mjs --bundle --platform=node --format=esm --outfile=dist/admin-reset.mjs",
     "prepare": "husky"

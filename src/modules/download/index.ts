@@ -11,6 +11,7 @@ import {
   listPostLinksForFile,
   listPostsForFile,
 } from "@/modules/content";
+import { authoritativeDownloadName } from "@/modules/file/authoritativeName";
 import { getStorageForDriver } from "@/modules/storage";
 import { recordEvent } from "@/modules/system/events";
 
@@ -18,6 +19,17 @@ import type { ByteRange } from "./range";
 import { isInlineVideoMime } from "./video";
 
 const SIGNED_URL_TTL_SECONDS = 5 * 60;
+const DEFAULT_INLINE_PURPOSES = new Set<FileRecord["purpose"]>([
+  "artist_avatar",
+  "payment_qr",
+  "cover",
+  "thumbnail",
+  "content_image",
+]);
+
+export function shouldInlineFileByDefault(file: Pick<FileRecord, "purpose">): boolean {
+  return DEFAULT_INLINE_PURPOSES.has(file.purpose);
+}
 
 export type AuthorizedFileAccess = {
   postId: string | null;
@@ -150,6 +162,9 @@ export async function authorizeFileAccess(
   if (!decision.allowed) {
     throw new ApiError(user ? 403 : 401, decision.errorCode ?? "accessDenied");
   }
+  if (file.quarantinedAt) {
+    throw new ApiError(410, "fileQuarantined");
+  }
   return { postId: decision.postId, visibility: decision.visibility };
 }
 
@@ -188,6 +203,7 @@ export async function prepareAuthorizedDownload(input: {
   }
 
   const storage = await getStorageForDriver(file.storageDriver);
+  const downloadName = authoritativeDownloadName(file);
   const video = file.purpose === "content_attachment" && isInlineVideoMime(file.mimeType);
   if (file.storageDriver === "s3" && storage.createSignedDownloadUrl) {
     if (video && input.inline && access.visibility === "public") {
@@ -195,7 +211,7 @@ export async function prepareAuthorizedDownload(input: {
         objectKey: file.objectKey,
         bucket: file.bucket,
         expiresInSeconds: getEnv().PUBLIC_VIDEO_SIGNED_URL_TTL_SECONDS,
-        downloadName: file.originalName,
+        downloadName,
         disposition: "inline",
         contentType: file.mimeType,
       });
@@ -208,8 +224,8 @@ export async function prepareAuthorizedDownload(input: {
         objectKey: file.objectKey,
         bucket: file.bucket,
         expiresInSeconds: SIGNED_URL_TTL_SECONDS,
-        downloadName: file.originalName,
-        disposition: "attachment",
+        downloadName,
+        disposition: input.inline ? "inline" : "attachment",
         contentType: file.mimeType,
       });
       return { mode: "redirect", url };
@@ -237,7 +253,7 @@ export async function authorizeAndPrepareDownload(input: {
   return prepareAuthorizedDownload({
     ...input,
     access,
-    inline: false,
+    inline: shouldInlineFileByDefault(input.file),
     log: input.log !== false,
   });
 }

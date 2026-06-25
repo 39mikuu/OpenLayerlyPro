@@ -424,6 +424,9 @@ export const files = pgTable("files", {
     ],
   }).notNull(),
   createdBy: uuid("created_by"),
+  quarantinedAt: timestamp("quarantined_at", { withTimezone: true }),
+  quarantineReason: text("quarantine_reason"),
+  remediationVersion: integer("remediation_version").notNull().default(0),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

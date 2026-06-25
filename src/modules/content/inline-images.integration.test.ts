@@ -46,10 +46,7 @@ import { runTaskHandler } from "@/modules/tasks/handlers";
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
 
-const PNG = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n5sAAAAASUVORK5CYII=",
-  "base64",
-);
+let pngFixture: Buffer;
 
 function markdownImage(fileId: string): string {
   return `![inline](/api/files/${fileId}/download)`;
@@ -59,6 +56,12 @@ describeWithDatabase("Markdown inline image lifecycle integration", () => {
   const db = getDb();
 
   beforeEach(async () => {
+    pngFixture ??= await (
+      await import("sharp")
+    )
+      .default({ create: { width: 1, height: 1, channels: 4, background: "white" } })
+      .png()
+      .toBuffer();
     await resetDatabase(db);
     vi.clearAllMocks();
     storageMocks.putObject.mockImplementation(async (input: { objectKey: string }) => ({
@@ -78,7 +81,7 @@ describeWithDatabase("Markdown inline image lifecycle integration", () => {
 
   async function uploadInline(name = "inline.png") {
     return saveUploadedFile({
-      file: new File([PNG], name, { type: "image/png" }),
+      file: new File([new Uint8Array(pngFixture)], name, { type: "image/png" }),
       purpose: "content_image",
     });
   }
