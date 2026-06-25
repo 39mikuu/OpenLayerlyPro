@@ -52,7 +52,8 @@
 - **动画仅 `content_image`**:`artist_avatar / payment_qr / payment_proof / cover / thumbnail` 一律输出**静态**(动图输入 → 取首帧压平),不产生动画文件。
 - 落盘 `mimeType`、storage `contentType`、objectKey 扩展名**一律取矩阵输出列**(非原扩展名、非客户端 `file.type`);原始 `originalName` 仅作展示保留。
 - **重编码管线**:`sharp(input).rotate()`(**先按 EXIF Orientation 物理旋转、规范方向**,避免剥元数据后图片转向)→ 重编码为矩阵输出 → **剥离 EXIF/元数据**、尾部/夹带字节(polyglot)、任何非像素负载;**落盘的是重编码产物,绝不落原始上传字节**。
-- **DB 元数据与限额一律基于【输出字节】**:`sizeBytes`/`sha256`/`width`/`height`/`mimeType` 全部取**重编码输出**(非原始上传);purpose 的 `maxSizeMb` **对输出字节**校验(超限拒绝)。原始上传另受 S2 传输上限 + 下列解码上限约束(仅为解码安全,不作落盘真相)。
+- **purpose `maxSizeMb` 同时约束输入与输出**:**解码前**先对输入字节校验(超限 → 早拒,不进 sharp,省解码开销 + 防超大输入);**重编码后**再对输出字节校验(超限 → 拒绝)。两道都过才落盘。
+- **DB 元数据一律基于【输出字节】**:`sizeBytes`/`sha256`/`width`/`height`/`mimeType` 全部取**重编码输出**(非原始上传)。输入另受 S2 传输上限 + 下列解码上限(pixel/frame)约束,仅为传输/解码安全,不作落盘真相。
 - **解码资源上限(防解压炸弹 / 帧炸弹)**:
   - `limitInputPixels` 限单帧像素;
   - **动画输入额外限制**:`metadata().pages`(帧数)≤ `IMAGE_MAX_FRAMES`(env,默认如 300)、**总解码像素**(`pages × width × height`)≤ `IMAGE_MAX_TOTAL_PIXELS`(env);**先读 metadata 预检超限即拒**,再全量解码;
@@ -85,8 +86,10 @@
 
 - §5 的服务端硬化对存量**立即生效**,是第一道兜底;但本 ADR 进一步**要求一次性强制 backfill**(不止兜底):
   - 对存量栅格图(image purpose)**重新嗅探真实字节并按 §2/§3 重编码**,改写 `mimeType`/`sizeBytes`/`sha256`/`width`/`height` 为**输出字节**的权威值;
-  - **不原地覆盖**:重编码产物写入**新 object key**,再以单条 DB UPDATE **原子切换**该行指向新 key(连同上述元数据),提交后再经两阶段 `storage.delete_object` 删旧对象——崩溃/并发读不会读到半写对象,且**幂等**(已切换的行重跑跳过);
+  - **不原地覆盖**:重编码产物写入**新 object key**(全新 UUID,绝不撞旧 key),以单条 DB UPDATE **原子切换**该行指向新 key + 写元数据 + bump `remediation_version`(见下),提交后再经两阶段 `storage.delete_object` task 删旧对象——崩溃/并发读不会读到半写对象;
+  - **旧对象删除任务的可恢复幂等语义(明确)**:删除 task 的 payload **持久携带旧 {driver,bucket,objectKey}**(不靠内存),**仅在 DB 切换提交后**入队(绝不删活动行仍指向的对象);删除**幂等**——对象已不存在视为**成功 no-op**(非失败);若切换已提交但 task 丢失,重跑 backfill 据 `remediation_version` 识别「已切换但旧对象可能残留」并**重新入队删除**(孤儿不泄漏);task 自身重试也幂等;
   - 嗅探为 **svg/html/非栅格**的存量行 → **进入 quarantine 状态**(见下),**不静默删除**财务/凭证文件(对齐 ADR 0010「不自动改财务」原则);
+  - **持久化 remediation version**:`files` 加 `remediation_version int NOT NULL DEFAULT 0`;backfill 处理 `remediation_version < TARGET` 的行、成功后置为 `TARGET`。由此:进度跨运行/崩溃**durable**、只重处理落后行(幂等)、未来加固可 **bump TARGET 触发再处理**;脚本据此识别「已切换待删旧对象」等中间态以恢复;
   - backfill 以独立脚本 + 进度/审计执行,**幂等**、可分批、dry-run 默认;不可重编码的 `content_attachment` 不动(安全性由 attachment + CSP 承担);
   - 升级文档写明:backfill 在部署新版本后运行;运行前后均受 §5 服务端硬化保护。
 
@@ -123,7 +126,7 @@
 - ⚠️ **后台 proof 查看 UX 变化**:inline→attachment,后台需以下载/受控预览呈现。
 - ⚠️ **存量数据**:旧 `mimeType` 仍为客户端值,靠 §5 服务端硬化兜底;如需彻底纠正需 §6 backfill。
 - ⚠️ 所有 purpose 的落盘/直出都必须经统一入口与统一响应头函数——**审计每一处 `saveUploadedFile`/`saveStreamedFile` 调用与每一处文件字节响应**,确保无旁路。
-- ⚠️ **schema 变更**:`files` 加 `quarantined_at` / `quarantine_reason`(迁移);新增 env `IMAGE_MAX_FRAMES` / `IMAGE_MAX_TOTAL_PIXELS`(有界正整数,越界拒绝)。
+- ⚠️ **schema 变更**:`files` 加 `quarantined_at` / `quarantine_reason` / `remediation_version`(迁移);新增 env `IMAGE_MAX_FRAMES` / `IMAGE_MAX_TOTAL_PIXELS`(有界正整数,越界拒绝)。
 - ⚠️ **CSP 依赖部署形态**:S3-direct 无法承载 CSP/nosniff,完整 CSP 覆盖需 CDN/前置代理;无 CDN 时该面由重编码 + attachment + 权威类型兜底(已记录的残余边界)。
 
 ## 已锁定决策（owner 确认 2026-06-25）
@@ -137,13 +140,15 @@
 - 上传 `evil.png`(实体 SVG / 声明 `image/svg+xml`)→ **拒绝**(不落盘、不写库);声明 `text/html` 的 polyglot → 拒绝或重编码后为纯栅格、`mimeType` 为矩阵输出类型,**绝不**为 svg/html。
 - **转换矩阵**:每个矩阵输入(jpeg/png/webp,content_image 的 gif)→ 落盘为对应输出格式、`mimeType`/objectKey 扩展名=输出列;矩阵外输入(tiff/bmp/avif/svg/html)→ 拒绝。`.png` 扩展名 + 实体 jpeg → 权威判定按嗅探(jpeg),落盘为 jpeg 输出(不按扩展名纠正、不拒绝)。
 - 每栅格 purpose:合法 jpeg/png/webp → 落盘为**重编码产物**、EXIF 被剥离、尾部夹带字节去除(落盘 sha ≠ 原始)。
-- **输出基准元数据/限额**:`sizeBytes`/`sha256`/`width`/`height` 取**输出字节**(动图压平后 dims/size 反映输出);`maxSizeMb` 对输出校验(重编码后超限 → 拒绝;输入合格但输出超限的样例)。
+- **输入+输出双重限额**:输入超 `maxSizeMb` → **解码前**早拒(不进 sharp);重编码后输出超 `maxSizeMb` → 拒绝(输入合格但输出超限样例)。
+- **输出基准元数据**:`sizeBytes`/`sha256`/`width`/`height` 取**输出字节**(动图压平后 dims/size 反映输出)。
 - **EXIF orientation**:带 Orientation=6 的竖拍 JPEG → 输出像素已物理旋转(`width/height` 互换体现),EXIF 被剥离仍正向显示。
 - **动画仅 content_image**:动图 WebP 传 `avatar/proof/cover/thumbnail` → 输出**静态首帧**(`pages`=1);传 `content_image` → 保留动画。
 - GIF(content_image)→ 动图 WebP、`mimeType=image/webp`、动画保留;其它 purpose 的 gif → 拒绝。
 - **帧炸弹 / 解压炸弹**:超 `IMAGE_MAX_FRAMES` 帧的动图、或总解码像素超 `IMAGE_MAX_TOTAL_PIXELS`、或单帧超 `limitInputPixels` → **metadata 预检即拒**,不进全量解码;损坏图片 → `imageInvalid`。env 越界拒绝(非 clamp)。
 - **响应分层**:应用流式响应带 `script-src 'none'; object-src 'none'; sandbox` CSP + `nosniff` + 正确 disposition;S3 预签名 URL 带 `response-content-disposition`(proof/非内联=attachment)+ `response-content-type`=权威类型(断言 CSP 不在 S3-direct 上、由重编码+attachment 兜底);`payment_proof` 任何层均 attachment;`content_image` 内联且为纯栅格类型。
 - content_attachment 仍 attachment(白名单视频内联例外保留),MIME 为扩展名推导而非客户端值。
-- **backfill 脚本**:存量栅格图被重嗅探/重编码、元数据按输出改写;**写新 object key + 原子切换 DB 行 + 提交后删旧对象**(非原地覆盖);中断后重跑幂等(已切换行跳过、旧对象不残留)。
+- **backfill 脚本**:存量栅格图被重嗅探/重编码、元数据按输出改写;**写新 object key + 原子切换 DB 行(bump `remediation_version`)+ 提交后删旧对象**(非原地覆盖);`remediation_version < TARGET` 才处理、成功置 TARGET;bump TARGET 可触发再处理。
+- **旧对象删除可恢复幂等**:删除 task payload 持久带旧 {driver,bucket,objectKey};对象已删 → 成功 no-op;切换已提交但 task 丢失 → 重跑据 version 识别中间态、重新入队删除(无孤儿泄漏);task 重试幂等;删除只在切换提交后入队。
 - **quarantine**:存量 svg/html 行 backfill 后 `quarantined_at` 置值;**有权下载者** → `410`、**不签发 S3 URL**、**不删除**;**无权者** → 与普通文件相同的 404/403(授权前不暴露 quarantine 状态,防枚举);仅后台隔离列表可见元数据。
 - 回归:既有上传/下载/视频 Range/内联插图正常。
