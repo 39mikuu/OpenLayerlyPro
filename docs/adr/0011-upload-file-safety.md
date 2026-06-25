@@ -86,10 +86,11 @@
 
 - §5 的服务端硬化对存量**立即生效**,是第一道兜底;但本 ADR 进一步**要求一次性强制 backfill**(不止兜底):
   - 对存量栅格图(image purpose)**重新嗅探真实字节并按 §2/§3 重编码**,改写 `mimeType`/`sizeBytes`/`sha256`/`width`/`height` 为**输出字节**的权威值;
-  - **不原地覆盖**:重编码产物写入**新 object key**(全新 UUID,绝不撞旧 key),以单条 DB UPDATE **原子切换**该行指向新 key + 写元数据 + bump `remediation_version`(见下),提交后再经两阶段 `storage.delete_object` task 删旧对象——崩溃/并发读不会读到半写对象;
-  - **旧对象删除任务的可恢复幂等语义(明确)**:删除 task 的 payload **持久携带旧 {driver,bucket,objectKey}**(不靠内存),**仅在 DB 切换提交后**入队(绝不删活动行仍指向的对象);删除**幂等**——对象已不存在视为**成功 no-op**(非失败);若切换已提交但 task 丢失,重跑 backfill 据 `remediation_version` 识别「已切换但旧对象可能残留」并**重新入队删除**(孤儿不泄漏);task 自身重试也幂等;
+  - **不原地覆盖,单事务原子切换 + 同事务入队删除**:重编码产物写入**新 object key**(由 `(fileId, 目标 version)` **确定性派生**,retry 覆盖同一新对象、不堆积新侧孤儿;仍区别于旧 key);在**同一事务**内:UPDATE 该行指向新 key + 写输出元数据 + bump `remediation_version` + **入队 `storage.delete_object` task 删旧对象(ADR 0003 outbox 范式,与切换原子提交)**。崩溃/并发读不读半写对象。
+  - **旧 key 的唯一持久来源 = 该删除 task 行**:旧 `{driver,bucket,objectKey}` 持久在 task payload;因与切换**原子提交**,该 task **不会相对切换丢失**(切换提交 ⇒ task 必在)。**故不存在「切换后靠 backfill 重新派生旧 key」**——切换后 `files` 行上已无旧 key、无从派生,这条歧义路径**删除**。
+  - **删除可恢复幂等**:task 失败重试 / 进 `dead` 均为**持久行**,旧 key 仍在其 payload,经现有 dead-task 重试恢复;删除**幂等**——对象已不存在视为**成功 no-op**;切换事务**未提交**即崩溃 → 行仍指旧 key、`remediation_version` 未变、新侧确定性对象被下次 retry 覆盖,重跑 backfill 正常重处理(无孤儿、无双删);
   - 嗅探为 **svg/html/非栅格**的存量行 → **进入 quarantine 状态**(见下),**不静默删除**财务/凭证文件(对齐 ADR 0010「不自动改财务」原则);
-  - **持久化 remediation version**:`files` 加 `remediation_version int NOT NULL DEFAULT 0`;backfill 处理 `remediation_version < TARGET` 的行、成功后置为 `TARGET`。由此:进度跨运行/崩溃**durable**、只重处理落后行(幂等)、未来加固可 **bump TARGET 触发再处理**;脚本据此识别「已切换待删旧对象」等中间态以恢复;
+  - **持久化 remediation version**:`files` 加 `remediation_version int NOT NULL DEFAULT 0`;backfill 处理 `remediation_version < TARGET` 的行、成功后(在上述同一事务内)置为 `TARGET`。由此:进度跨运行/崩溃**durable**、只重处理落后行(幂等)、未来加固可 **bump TARGET 触发全量再处理**。(旧对象删除的恢复由 §上「持久 task 行」承担,**不**靠 version 反推旧 key。)
   - backfill 以独立脚本 + 进度/审计执行,**幂等**、可分批、dry-run 默认;不可重编码的 `content_attachment` 不动(安全性由 attachment + CSP 承担);
   - 升级文档写明:backfill 在部署新版本后运行;运行前后均受 §5 服务端硬化保护。
 
@@ -148,7 +149,7 @@
 - **帧炸弹 / 解压炸弹**:超 `IMAGE_MAX_FRAMES` 帧的动图、或总解码像素超 `IMAGE_MAX_TOTAL_PIXELS`、或单帧超 `limitInputPixels` → **metadata 预检即拒**,不进全量解码;损坏图片 → `imageInvalid`。env 越界拒绝(非 clamp)。
 - **响应分层**:应用流式响应带 `script-src 'none'; object-src 'none'; sandbox` CSP + `nosniff` + 正确 disposition;S3 预签名 URL 带 `response-content-disposition`(proof/非内联=attachment)+ `response-content-type`=权威类型(断言 CSP 不在 S3-direct 上、由重编码+attachment 兜底);`payment_proof` 任何层均 attachment;`content_image` 内联且为纯栅格类型。
 - content_attachment 仍 attachment(白名单视频内联例外保留),MIME 为扩展名推导而非客户端值。
-- **backfill 脚本**:存量栅格图被重嗅探/重编码、元数据按输出改写;**写新 object key + 原子切换 DB 行(bump `remediation_version`)+ 提交后删旧对象**(非原地覆盖);`remediation_version < TARGET` 才处理、成功置 TARGET;bump TARGET 可触发再处理。
-- **旧对象删除可恢复幂等**:删除 task payload 持久带旧 {driver,bucket,objectKey};对象已删 → 成功 no-op;切换已提交但 task 丢失 → 重跑据 version 识别中间态、重新入队删除(无孤儿泄漏);task 重试幂等;删除只在切换提交后入队。
+- **backfill 脚本**:存量栅格图被重嗅探/重编码、元数据按输出改写;**新 object key(确定性派生)+ DB 切换 + bump `remediation_version` + 入队删除 task 全在同一事务**(非原地覆盖);`remediation_version < TARGET` 才处理、成功置 TARGET;bump TARGET 可触发再处理。
+- **旧对象删除可恢复幂等**:切换提交 ⇒ 删除 task 必在(原子),其 payload 带旧 {driver,bucket,objectKey} = 旧 key 唯一持久来源;对象已删 → 成功 no-op;task 失败/dead 经现有重试恢复;切换事务未提交即崩溃 → 行仍指旧 key、version 未变、确定性新对象被 retry 覆盖、重跑正常重处理(无孤儿、无双删)。
 - **quarantine**:存量 svg/html 行 backfill 后 `quarantined_at` 置值;**有权下载者** → `410`、**不签发 S3 URL**、**不删除**;**无权者** → 与普通文件相同的 404/403(授权前不暴露 quarantine 状态,防枚举);仅后台隔离列表可见元数据。
 - 回归:既有上传/下载/视频 Range/内联插图正常。
