@@ -13,7 +13,12 @@ import {
   sendMembershipActivatedEmail,
   sendMembershipRevokedEmail,
   sendPaymentRejectedEmail,
+  sendRenewalReminderEmail,
 } from "@/modules/mail";
+import {
+  handleRenewalReminder,
+  shouldSendRenewalReminderEmail,
+} from "@/modules/membership/renewal-reminders";
 import {
   dispatchPaymentProviderEvent,
   nextSubscriptionReconcileAt,
@@ -49,6 +54,17 @@ const emailPayloadSchema = z.discriminatedUnion("template", [
       reviewNote: z.string().nullable(),
     }),
   }),
+  z.object({
+    template: z.literal("renewal_reminder"),
+    subscriptionId: z.string().uuid(),
+    periodEndsAt: z.string().datetime(),
+    to: z.string().email(),
+    locale: z.enum(SUPPORTED_LOCALES),
+    params: z.object({
+      tierName: z.string(),
+      endsAt: z.string().datetime(),
+    }),
+  }),
 ]);
 
 const publishPostPayloadSchema = z.object({
@@ -65,6 +81,10 @@ const storageDeletePayloadSchema = z.object({
   objectKey: z.string().min(1),
 });
 const paymentProviderEventPayloadSchema = z.object({ eventRowId: z.string().uuid() });
+const renewalReminderPayloadSchema = z.object({
+  subscriptionId: z.string().uuid(),
+  periodEndsAt: z.string().datetime(),
+});
 
 export type TaskHandlerResult = { note?: string; deferUntil?: Date };
 
@@ -82,11 +102,25 @@ async function runEmailTask(task: Task): Promise<TaskHandlerResult> {
     );
   } else if (payload.template === "membership_revoked") {
     await sendMembershipRevokedEmail(payload.to, payload.params.tierName, payload.locale);
-  } else {
+  } else if (payload.template === "payment_rejected") {
     await sendPaymentRejectedEmail(
       payload.to,
       payload.params.tierName,
       payload.params.reviewNote,
+      payload.locale,
+    );
+  } else {
+    const periodEndsAt = new Date(payload.periodEndsAt);
+    const shouldSend = await shouldSendRenewalReminderEmail({
+      subscriptionId: payload.subscriptionId,
+      periodEndsAt,
+    });
+    if (!shouldSend) return { note: "Renewal reminder became inactive or stale; delivery skipped" };
+
+    await sendRenewalReminderEmail(
+      payload.to,
+      payload.params.tierName,
+      new Date(payload.params.endsAt),
       payload.locale,
     );
   }
@@ -141,6 +175,15 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
       const parsed = paymentProviderEventPayloadSchema.safeParse(task.payloadJson);
       if (!parsed.success) throw new PermanentTaskError("Invalid payment provider event payload");
       await dispatchPaymentProviderEvent(parsed.data.eventRowId);
+      return {};
+    }
+    case "subscription.renewal_reminder": {
+      const parsed = renewalReminderPayloadSchema.safeParse(task.payloadJson);
+      if (!parsed.success) throw new PermanentTaskError("Invalid renewal reminder payload");
+      await handleRenewalReminder({
+        subscriptionId: parsed.data.subscriptionId,
+        periodEndsAt: new Date(parsed.data.periodEndsAt),
+      });
       return {};
     }
     case "subscription.reconcile": {

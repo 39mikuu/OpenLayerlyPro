@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/modules/auth/session";
 import { getT } from "@/modules/i18n/server";
 import { getActiveMembership } from "@/modules/membership";
+import { getManualReminderTiers } from "@/modules/membership/renewal-reminders";
 import { getCurrentStripeSubscription } from "@/modules/payment/subscriptions";
 import { getActiveTheme } from "@/modules/theme";
 
@@ -11,9 +12,10 @@ export const dynamic = "force-dynamic";
 export default async function MePage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const [active, subscription, theme, t] = await Promise.all([
+  const [active, subscription, reminderTiers, theme, t] = await Promise.all([
     getActiveMembership(user.id),
     getCurrentStripeSubscription(user.id),
+    getManualReminderTiers(user.id),
     getActiveTheme(),
     getT(),
   ]);
@@ -25,7 +27,12 @@ export default async function MePage() {
         email: user.email,
         isAdmin: user.role === "admin",
         membership: active
-          ? { tierName: active.tier.name, endsAt: active.membership.endsAt }
+          ? {
+              tierId: active.tier.id,
+              tierName: active.tier.name,
+              endsAt: active.membership.endsAt,
+              renewalReminderEnabled: reminderTiers.has(active.tier.id),
+            }
           : null,
         subscription: subscription
           ? {

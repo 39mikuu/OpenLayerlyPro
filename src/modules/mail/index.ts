@@ -101,6 +101,31 @@ export async function sendMembershipRevokedEmail(
   await sendMail(to, message.subject, message.text);
 }
 
+export function renderRenewalReminderEmail(tierName: string, endsAt: Date, locale?: Locale) {
+  const t = mailT(locale);
+  return {
+    subject: t("mail.renewalReminderSubject"),
+    text: [
+      t("mail.renewalReminderBody"),
+      "",
+      t("mail.membershipTier", { tier: tierName }),
+      t("mail.membershipUntil", { date: formatDate(endsAt) }),
+      "",
+      t("mail.renewalReminderAction"),
+    ].join("\n"),
+  };
+}
+
+export async function sendRenewalReminderEmail(
+  to: string,
+  tierName: string,
+  endsAt: Date,
+  locale?: Locale,
+): Promise<void> {
+  const message = renderRenewalReminderEmail(tierName, endsAt, locale);
+  await sendMail(to, message.subject, message.text);
+}
+
 export function renderPaymentRejectedEmail(
   tierName: string,
   reviewNote?: string | null,

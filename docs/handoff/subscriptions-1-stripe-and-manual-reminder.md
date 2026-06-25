@@ -159,7 +159,11 @@ tier 编辑加 `stripe_price_id`(预建 recurring Price 说明)。`me`:订阅状
 
 ## 10. 手动周期提醒（PR-B）
 
-`provider=NULL` 订阅 + task `subscription.renewal_reminder`(payload `{subscriptionId}`):创建/续费后按到期前 N 天(`SUBSCRIPTION_REMINDER_LEAD_DAYS` 默认 7,上下限)`enqueueTask(runAfter)`;handler 校验仍 active/未取消 → 提醒邮件 → 重排(dedupeKey 含期号防同期重复)。粉丝走现有入会再付一期(`grantMembership`,durationDays)→ 重排。
+`provider=NULL` 的一条 subscription 表示「按期提醒 + 人工付款」，复用 `subscriptions_one_nonterminal_per_identity`（`NULLS NOT DISTINCT` + 非终态部分谓词）去重，不新增表或迁移。启用提醒时，以该用户非 revoked、tier.level ≥ 目标 tier 的 `max(endsAt)` 为本期期末，并排一条 `subscription.renewal_reminder`（payload `{subscriptionId,periodEndsAt}`）；`SUBSCRIPTION_REMINDER_LEAD_DAYS` 默认 7，合法范围 1–90，越界直接 env 校验失败，不 clamp。
+
+提醒模型固定为**每期一封**：reminder task 与其派生的 email task 的 dedupe key 都含 `subscriptionId + periodEndsAt ISO`。handler 只在订阅仍 active 且 `current_period_ends_at` 未晚于 payload 期末时排本期邮件；canceled/expired 或 stale payload 均 no-op，**handler 自身不排下一封**。
+
+下一封只由续费推进：人工/一次性付款继续调用现有 `grantMembership(durationDays)`；grant 成功后，在同一事务内查找同 `(user,tier)` 的 active `provider=NULL` 提醒订阅，以非 revoked、tier.level ≥ 目标 tier 的 `max(endsAt)` 更新 `current_period_ends_at`，并排下一期 reminder。停用时置 canceled / `cancel_at_period_end`，之后不再发信。
 
 ## 11. 测试（全部必须,真实 PG）
 

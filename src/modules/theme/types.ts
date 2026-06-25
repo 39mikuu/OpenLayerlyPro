@@ -109,7 +109,12 @@ export type LoginView = {
 export type MeView = {
   email: string;
   isAdmin: boolean;
-  membership: MembershipSummary | null;
+  membership:
+    | (MembershipSummary & {
+        tierId: string;
+        renewalReminderEnabled: boolean;
+      })
+    | null;
   subscription: {
     id: string;
     status: "pending" | "active" | "past_due" | "canceled" | "expired";

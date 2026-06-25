@@ -67,6 +67,7 @@ const envSchema = z.object({
     .min(5)
     .max(10_080)
     .default(60),
+  SUBSCRIPTION_REMINDER_LEAD_DAYS: z.coerce.number().finite().int().min(1).max(90).default(7),
   INLINE_UPLOAD_GRACE_PERIOD_HOURS: z.coerce.number().int().min(1).max(720).default(24),
   PUBLIC_VIDEO_SIGNED_URL_TTL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(21_600),
   FILE_PREAUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(100).max(100_000).default(1_200),
