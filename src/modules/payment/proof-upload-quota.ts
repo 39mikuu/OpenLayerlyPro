@@ -1,6 +1,6 @@
 import { and, eq, gt, or, sql } from "drizzle-orm";
 
-import { getDb } from "@/db";
+import { type DbClient, getDb } from "@/db";
 import { paymentProofUploadReservations } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
@@ -49,8 +49,9 @@ export async function reservePaymentProofUpload(userId: string): Promise<string>
 export async function completePaymentProofUploadReservation(
   reservationId: string,
   succeeded: boolean,
+  db: DbClient = getDb(),
 ): Promise<void> {
-  await getDb()
+  const [updated] = await db
     .update(paymentProofUploadReservations)
     .set({ status: succeeded ? "succeeded" : "failed" })
     .where(
@@ -58,5 +59,9 @@ export async function completePaymentProofUploadReservation(
         eq(paymentProofUploadReservations.id, reservationId),
         eq(paymentProofUploadReservations.status, "pending"),
       ),
-    );
+    )
+    .returning({ id: paymentProofUploadReservations.id });
+  if (!updated) {
+    throw new Error("Payment proof upload reservation is not pending");
+  }
 }

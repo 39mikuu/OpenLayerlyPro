@@ -245,6 +245,38 @@ describeWithDatabase("payment proof lifecycle integration", () => {
     expect(kept?.proofFileId).toBe(newFile.id);
   });
 
+  it("rolls back both file insertion and reservation success when finalization fails", async () => {
+    const { user } = await seedIdentity();
+    const reservationId = await reservePaymentProofUpload(user.id);
+    const objectKey = `payment_proof/${randomUUID()}`;
+
+    await expect(
+      db.transaction(async (tx) => {
+        await tx.insert(files).values({
+          storageDriver: "local",
+          bucket: null,
+          objectKey,
+          originalName: "proof.png",
+          mimeType: "image/png",
+          sizeBytes: 10,
+          purpose: "payment_proof",
+          createdBy: user.id,
+        });
+        await completePaymentProofUploadReservation(reservationId, true, tx);
+        throw new Error("force rollback after finalize");
+      }),
+    ).rejects.toThrow("force rollback after finalize");
+
+    await expect(
+      db.select().from(files).where(eq(files.objectKey, objectKey)),
+    ).resolves.toHaveLength(0);
+    const [reservation] = await db
+      .select()
+      .from(paymentProofUploadReservations)
+      .where(eq(paymentProofUploadReservations.id, reservationId));
+    expect(reservation?.status).toBe("pending");
+  });
+
   it("does not permanently consume quota for failed or expired pending reservations", async () => {
     const { user } = await seedIdentity();
     const failedId = await reservePaymentProofUpload(user.id);

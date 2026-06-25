@@ -3,7 +3,7 @@ import { count, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import path from "path";
 import type { Readable } from "stream";
 
-import { getDb } from "@/db";
+import { getDb, type TxClient } from "@/db";
 import {
   type FileRecord,
   files,
@@ -170,6 +170,7 @@ export async function saveUploadedFile(input: {
   file: File;
   purpose: FilePurpose;
   createdBy?: string | null;
+  finalizeInTransaction?: (tx: TxClient, record: FileRecord) => Promise<void>;
 }): Promise<FileRecord> {
   const { file, purpose } = input;
   if (purpose === "content_attachment") {
@@ -255,6 +256,7 @@ export async function saveUploadedFile(input: {
           runAfter: new Date(Date.now() + gracePeriodMs),
         });
       }
+      await input.finalizeInTransaction?.(tx, inserted);
       return inserted;
     });
   } catch (error) {

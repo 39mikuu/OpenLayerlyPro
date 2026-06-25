@@ -57,8 +57,9 @@ export async function POST(req: NextRequest) {
         file,
         purpose: "payment_proof",
         createdBy: user.id,
+        finalizeInTransaction: (tx) =>
+          completePaymentProofUploadReservation(reservationId, true, tx),
       });
-      await completePaymentProofUploadReservation(reservationId, true);
       return jsonOk({ id: record.id, originalName: record.originalName });
     } catch (error) {
       await completePaymentProofUploadReservation(reservationId, false);

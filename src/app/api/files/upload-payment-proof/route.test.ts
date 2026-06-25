@@ -66,7 +66,10 @@ describe("payment proof multipart upload", () => {
     vi.clearAllMocks();
     mocks.requireUser.mockResolvedValue({ id: "user-1", role: "fan" });
     mocks.rateLimit.mockReturnValue(true);
-    mocks.saveUploadedFile.mockResolvedValue({ id: "file-1", originalName: "proof.png" });
+    mocks.saveUploadedFile.mockImplementation(async (input) => {
+      await input.finalizeInTransaction?.({ transaction: "tx" });
+      return { id: "file-1", originalName: "proof.png" };
+    });
     mocks.reservePaymentProofUpload.mockResolvedValue("reservation-1");
     mocks.completePaymentProofUploadReservation.mockResolvedValue(undefined);
   });
@@ -88,7 +91,32 @@ describe("payment proof multipart upload", () => {
     expect(mocks.saveUploadedFile).toHaveBeenCalledWith(
       expect.objectContaining({ purpose: "payment_proof", createdBy: "user-1" }),
     );
-    expect(mocks.completePaymentProofUploadReservation).toHaveBeenCalledWith("reservation-1", true);
+    expect(mocks.completePaymentProofUploadReservation).toHaveBeenCalledWith(
+      "reservation-1",
+      true,
+      { transaction: "tx" },
+    );
+  });
+
+  it("marks the reservation failed only after transactional finalization rolls back", async () => {
+    const form = new FormData();
+    form.set("file", new File(["image"], "proof.png", { type: "image/png" }));
+    mocks.completePaymentProofUploadReservation
+      .mockRejectedValueOnce(new Error("reservation finalize failed"))
+      .mockResolvedValueOnce(undefined);
+
+    const response = await POST(
+      new Request("http://localhost/api/files/upload-payment-proof", {
+        method: "POST",
+        body: form,
+      }) as NextRequest,
+    );
+
+    expect(response.status).toBe(500);
+    expect(mocks.completePaymentProofUploadReservation.mock.calls).toEqual([
+      ["reservation-1", true, { transaction: "tx" }],
+      ["reservation-1", false],
+    ]);
   });
 
   it("pre-rejects an oversized Content-Length before auth, image handling, storage, or DB", async () => {
