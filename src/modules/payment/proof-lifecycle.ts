@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import {
@@ -113,12 +113,24 @@ export async function cleanupPaymentProof(input: {
       if (now < due) return { note: "Payment proof cleanup deferred", deferUntil: due };
     }
 
+    const [otherProofRef] = await tx
+      .select({ id: paymentRequests.id })
+      .from(paymentRequests)
+      .where(
+        and(eq(paymentRequests.proofFileId, input.fileId), ne(paymentRequests.id, input.requestId)),
+      )
+      .limit(1);
+
     if (request?.proofFileId === input.fileId) {
       await tx
         .update(paymentRequests)
         .set({ proofFileId: null, updatedAt: now })
         .where(eq(paymentRequests.id, request.id));
     }
+    if (otherProofRef) {
+      return { note: "Payment proof is referenced by another payment request" };
+    }
+
     await deleteFileRowWithStorageTask(tx, file);
     return { note: "Payment proof deleted" };
   });

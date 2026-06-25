@@ -224,6 +224,85 @@ describeWithDatabase("payment proof lifecycle integration", () => {
     await expect(db.select().from(files).where(eq(files.id, file.id))).resolves.toHaveLength(1);
   });
 
+  it("clears the due request but keeps a proof shared by another payment request", async () => {
+    const { user, tier } = await seedIdentity();
+    const file = await seedFile(user.id);
+    const requestA = await seedRequest({
+      userId: user.id,
+      tierId: tier.id,
+      fileId: file.id,
+      status: "rejected",
+      reviewedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    const requestB = await seedRequest({
+      userId: user.id,
+      tierId: tier.id,
+      fileId: file.id,
+      status: "pending_review",
+      reviewedAt: null,
+    });
+
+    const result = await cleanupPaymentProof({
+      requestId: requestA.id,
+      fileId: file.id,
+      now: new Date("2026-03-01T00:00:00.000Z"),
+    });
+
+    expect(result.note).toBe("Payment proof is referenced by another payment request");
+    const [keptA] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, requestA.id));
+    const [keptB] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, requestB.id));
+    expect(keptA?.proofFileId).toBeNull();
+    expect(keptB?.proofFileId).toBe(file.id);
+    await expect(db.select().from(files).where(eq(files.id, file.id))).resolves.toHaveLength(1);
+    await expect(
+      db.select().from(tasks).where(eq(tasks.kind, "storage.delete_object")),
+    ).resolves.toHaveLength(0);
+  });
+
+  it("keeps a detached old proof when another payment request still references it", async () => {
+    const { user, tier } = await seedIdentity();
+    const oldFile = await seedFile(user.id);
+    const newFile = await seedFile(user.id);
+    const requestA = await seedRequest({
+      userId: user.id,
+      tierId: tier.id,
+      fileId: newFile.id,
+      status: "pending_review",
+      reviewedAt: null,
+    });
+    const requestB = await seedRequest({
+      userId: user.id,
+      tierId: tier.id,
+      fileId: oldFile.id,
+      status: "approved",
+      reviewedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    const result = await cleanupPaymentProof({ requestId: requestA.id, fileId: oldFile.id });
+
+    expect(result.note).toBe("Payment proof is referenced by another payment request");
+    const [keptA] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, requestA.id));
+    const [keptB] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, requestB.id));
+    expect(keptA?.proofFileId).toBe(newFile.id);
+    expect(keptB?.proofFileId).toBe(oldFile.id);
+    await expect(db.select().from(files).where(eq(files.id, oldFile.id))).resolves.toHaveLength(1);
+    await expect(
+      db.select().from(tasks).where(eq(tasks.kind, "storage.delete_object")),
+    ).resolves.toHaveLength(0);
+  });
+
   it("deletes a detached resubmitted proof when its original task becomes due", async () => {
     const { user, tier } = await seedIdentity();
     const oldFile = await seedFile(user.id);
