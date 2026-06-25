@@ -6,10 +6,11 @@
 
 ## 0. 红线
 
-1. **限流本身不得成为锁死杠杆**:**不做纯按 email 的硬锁**(否则知道邮箱即可锁死受害者);按 **IP + (email+IP)** 门禁,per-code 暴力上限仅作兜底。
-2. **不落全局 `unknown`/单一 unresolved 桶**:IP 未解析时用**专用高阈 emergency 桶**(#60 范式),否则少量未解析请求即锁死全站(如管理员登录)。
-3. **业务/敏感操作前**就限流(CL 预拒 → IP 门禁 → 解析 → email+IP 门禁 → 核心)。
-4. 生产环境 IP 未解析要**告警**;**单进程内存限流**对多实例无效,须文档化 + readiness 提示(共享存储实现见 §6 边界)。
+1. **核心不变量(必须由 `verifyLoginCode` 自身保证,外层限流救不了)**:**未持有正确验证码的第三方,不得仅靠提交错误码使正确码失效**。→ 正确码**始终优先校验并允许成功**(不受失败计数阻断);失败上限**只阻止后续错误尝试**,绝不导致正确码被拒。单纯在路由外叠 IP/email+IP 限流**挡不住**(攻击者用 ≤MAX 次错误、或跨多 IP 各错一次即打满全局 `attempt_count`)。
+2. **request-code 不得有纯 email 的【阻断】门禁**:任何只依赖受害者邮箱、会**返回 429/阻止其请求**的键(cooldown / 小时硬上限)都让攻击者从任意 IP 锁死受害者。阻断门禁只用 **IP + (email+IP)**;防邮件轰炸用**不阻断登录**的手段(发信去重/抑制,返回 200 不报错)。残余(分布式触发的邮件投递噪声)**如实记录**,不宣称已根除。
+3. **不落全局 `unknown`/单一 unresolved 桶**:IP 未解析时用**每操作独立的 emergency 共享桶**(与 resolved-IP 桶分离)。**注意**:emergency 桶仍是「每操作一个共享桶」,unresolved 客户端之间**仍互相消耗**(无 IP 无法相互隔离,#60 同此)——这是**有意的残余**,文档如实写明,不宣称 unresolved 间已隔离。
+4. **业务/敏感操作前**就限流(CL 预拒 → IP 门禁 → 解析 → email+IP 门禁 → 核心)。
+5. 生产 IP 未解析要**告警**;**单进程内存限流**对多实例无效,文档化 + readiness 提示(§6)。
 
 ## 1. 现状（必读,确认漏洞)
 
@@ -23,33 +24,40 @@
 ## 2. 抽共享身份 + 新增 auth 限流策略
 
 - 把 `ClientRateLimitIdentity`/`resolveClientRateLimitIdentity`/`warnUnresolvedClientRateLimitIdentity` 上移到中性模块(如 `src/lib/rate-limit-policy.ts` 或 `src/modules/security/rate-limit-policy.ts`),download 与 auth 共用(download 现引用改为 re-export 或直接引新址,**不破坏其行为/测试**)。
-- 新增 auth 策略(每个返回 `{key,max,windowMs}`,按 identity 分 per-IP / 专用 unresolved emergency 桶):
-  - `getAdminLoginRateLimit(identity)`:`admin-login-ip:${ip}`(默认 10/10min)/ `admin-login-unresolved`(专用高阈,如 30/10min)。
-  - `getVerifyCodeIpRateLimit(identity)`:`verify-ip:${ip}`(如 30/10min)/ `verify-unresolved`(专用高阈)。
-  - `getVerifyCodeEmailIpRateLimit(identity, emailHash)`:`verify-email-ip:${emailHash}:${ip}`(如 10/10min);unresolved 时退化为 `verify-email-unresolved:${emailHash}`(仍按 email 分,但**软上限**、不硬锁)。
-  - `getRequestCodeIpRateLimit(identity)`、`getRequestCodeEmailIpRateLimit(identity, emailHash)`(见 §4)。
-  - email 一律 **hash**(如 `hmacSha256`/`hashtext`)入 key,不明文落限流键。
+- 新增 auth 策略(每个返回 `{key,max,windowMs}`):**resolved → per-IP 桶**;**unresolved → 该操作专用 emergency 共享桶**(与 resolved 桶分离、阈值较高)。
+  - `getAdminLoginRateLimit(identity)`:`admin-login-ip:${ip}`(10/10min)/ `admin-login-unresolved`(高阈)。
+  - `getVerifyCodeIpRateLimit(identity)`:`verify-ip:${ip}`(30/10min)/ `verify-unresolved`(高阈)。
+  - `getVerifyCodeEmailIpRateLimit(identity, emailHash)`:resolved → `verify-email-ip:${emailHash}:${ip}`(10/10min);**unresolved → 同 `verify-unresolved` emergency 桶**(**不**引入纯 email 键)。
+  - `getRequestCodeIpRateLimit(identity)`、`getRequestCodeEmailIpRateLimit(identity, emailHash)`:同上;unresolved → `request-code-unresolved` emergency 桶。**不提供任何纯 email 的阻断策略**(§4)。
+  - email 一律 **hash**(`hmacSha256`/`hashtext`)入 key,不明文落限流键。
+- **诚实记录**:emergency 桶是「每操作一个共享桶」,unresolved 客户端**彼此仍互相消耗**(无 IP 无法相互隔离);它只保证**不波及 resolved-IP 用户**,不保证 unresolved 之间隔离(#60 同此)。
 
-## 3. verify-code:加 IP + (email+IP) 前置门禁（#66 核心)
+## 3. verify-code:核心改语义(#66 必修)+ 前置门禁(纵深)
 
-`src/app/api/auth/verify-code/route.ts`,顺序:
-1. CL 预拒(现状)。
-2. **IP 门禁(解析前)**:`getVerifyCodeIpRateLimit(identity)` → 超 `429`(用 `resolveClientRateLimitIdentity(getClientIp)`;unresolved 专用桶 + 生产告警)。
-3. `readJsonWithLimit` 取 `{email,code}`。
-4. **(email+IP) 门禁**:`getVerifyCodeEmailIpRateLimit(identity, hash(email))` → 超 `429`。
-5. `verifyLoginCode(email,code)`(**保留** per-code `MAX_ATTEMPTS` 作暴力兜底)。
-- **不加纯 email 硬门禁**:否则攻击者从任意 IP 刷受害者 email 即锁死。靠 IP / email+IP 限攻击者速率;per-code 上限挡暴力枚举。
-- 效果:单 IP 无法廉价打满受害者 code 的 5 次;受害者重新 request 新码即恢复(配合 §4 软化)。
+> **关键**:#66 的根因是 `verifyLoginCode` 的**全局 per-code 失败锁**——攻击者用 ≤5 次错误码(或跨 5 个 IP 各 1 次)即把 `attempt_count` 打到 `MAX`,使**正确码也被拒**。这**无法靠路由外叠限流解决**(攻击在限流阈值内即可达成)。**必须改核心语义。**
 
-## 4. request-code:软化 per-email 硬锁,改 IP 为主
+### 3.1 核心:正确码始终优先校验(`src/modules/auth/login-code.ts`)
+重排 `verifyLoginCode`(事务 + 对最新有效 code `FOR UPDATE`):
+1. 取最新「未用、未过期」code 行(无 → `400 codeExpired`);
+2. **先比对** `safeEqual(hmac(submitted), code_hash)`:
+   - **正确** → `usedAt=now()` 成功登录,**完全不看 `attempt_count`**(即便已达 MAX);
+   - **错误** → `attempt_count+1`;若 `attempt_count >= MAX_ATTEMPTS` → `429 codeAttemptsExceeded`(**仅拒后续错误尝试**),否则 `400 codeIncorrect`。
+- 不变量:**第三方提交错误码永远不能让正确码失效**;失败计数只挡持续错误猜测(配合 10min TTL + 下方限流,在线爆破 6 位码本就不可行)。
+- (可选)正确登录后可作废该 email 其它在途 code;**不要**因失败计数作废 code。
 
-`requestLoginCode`(或路由层)调整:
-- **保留** `code-cooldown:${emailHash}` 60s(防刷新,低危:受害者等 60s)。
-- **per-email 纯硬上限 5/hr → 软化**:改为
-  - 主门禁 **per-IP** `getRequestCodeIpRateLimit(identity)`(如 20/hr,unresolved 专用桶);
-  - **(email+IP)** `getRequestCodeEmailIpRateLimit(identity, emailHash)`(如 5/hr,限单 IP 对单 email 的发信);
-  - per-email 仅留**宽松的发信防轰炸上限**(如 `EMAIL` 维度 15/hr,纯保护收件箱,不作为登录阻断的主杠杆)。
-- 关键:**攻击者从单 IP 触发的发信受 IP/email+IP 限**;受害者(不同 IP)不因攻击者耗尽 per-email 而被锁出登录。`code-ip` 改用 #60 identity(不再「仅 ip 存在时」裸跳过)。
+### 3.2 纵深:路由前置门禁(`verify-code/route.ts`)
+顺序:CL 预拒 → **IP 门禁(解析前)** `getVerifyCodeIpRateLimit(identity)` → `readJsonWithLimit{email,code}` → **(email+IP) 门禁** `getVerifyCodeEmailIpRateLimit(identity, hash(email))` → `verifyLoginCode`。
+- 限攻击者在线猜测**速率/体量**(配合 §3.1 的「正确码不可被作废」),unresolved 走专用 emergency 桶 + 生产告警。
+- **不加纯 email 阻断门禁**(否则任意 IP 刷受害者 email 即锁)。
+
+## 4. request-code:移除纯 email 阻断,IP/(email+IP) 为门禁 + 非阻断防轰炸
+
+> 红线:**任何纯 email 的【阻断】键(返回 429)都是定向锁死杠杆**。删除之,防轰炸改用不阻断登录的发信抑制。
+
+- **阻断门禁(429)只用**:per-IP `getRequestCodeIpRateLimit(identity)`(unresolved 专用桶)+ (email+IP) `getRequestCodeEmailIpRateLimit(identity, emailHash)`。`code-ip` 改走 #60 identity(不再「仅 ip 存在时」裸跳过)。
+- **删除** `code-hour:${email}`(纯 email 小时硬上限)与「会 429 的 `code-cooldown:${email}`」——它们让受害者**换 IP 也被锁**。
+- **防邮件轰炸 = 非阻断发信抑制**:每 email 维护「最近发信时间」;若距上次发信 < `SEND_DEDUPE_WINDOW`(如 60s)→ **不再发新邮件,但仍 `200` 成功**(复用现有未过期 code 或静默跳过发信),**绝不 429**。→ 单地址邮件量被压到 ≤1/窗口(防轰炸),而受害者端点**永不被纯 email 硬锁**(最坏 ≤窗口的发信延迟,非小时级锁定)。
+- **如实记录残余**:分布式攻击者跨多 IP 触发仍可造成**邮件投递噪声**、或在抑制窗口内压住某次合法发信(受害者过窗重试即得);这是**有界的投递降级,不是认证硬锁**(正确码不可被作废 §3.1、端点不纯 email-429)。**文档不得宣称分布式投递锁死已根除。**
 
 ## 5. admin-login:去 `unknown`,用 identity
 
@@ -59,7 +67,7 @@
 
 ## 6. 告警 + 多实例边界
 
-- 三个路由 unresolved 命中时 `warnUnresolvedClientRateLimitIdentity`(已节流);确保生产配 `TRUSTED_PROXY_HEADER/HOPS` 才能解析 IP(沿用 #60 提示文案)。
+- 三个路由 unresolved 命中时 `warnUnresolvedClientRateLimitIdentity`(已节流);确保生产配 `TRUSTED_PROXY_HEADER/HOPS` 才能解析 IP(沿用 #60 提示文案)。**emergency 桶仅与 resolved 桶分离,unresolved 间不隔离(§2,文档如实写)。**
 - **多实例**:`@/lib/rate-limit` 是**单进程内存**,横向扩容失效。**本切片不实现共享存储**;但:
   - 在 `/api/ready`(或启动日志)对「多实例 + 内存限流」给出**明确警告/说明**;
   - 策略模块已集中 key/阈,作为未来接 Redis/PG 限流的**接缝**;
@@ -71,15 +79,18 @@
 ```text
 ADMIN_LOGIN_RATE_MAX / _WINDOW_MS / _UNRESOLVED_MAX
 VERIFY_CODE_IP_RATE_MAX / VERIFY_CODE_EMAIL_IP_RATE_MAX / _WINDOW_MS / _UNRESOLVED_MAX
-REQUEST_CODE_IP_RATE_MAX / REQUEST_CODE_EMAIL_IP_RATE_MAX / REQUEST_CODE_EMAIL_RATE_MAX / _WINDOW_MS
+REQUEST_CODE_IP_RATE_MAX / REQUEST_CODE_EMAIL_IP_RATE_MAX / _WINDOW_MS / _UNRESOLVED_MAX
+REQUEST_CODE_SEND_DEDUPE_SECONDS    # 发信抑制窗口(非阻断,默认 60)
 ```
-(可合并复用同一 window;给合理默认 + 上下限;`.env.example` 同步;测试默认/越界拒绝。)
+(无任何 `REQUEST_CODE_EMAIL_RATE_MAX` 纯 email 阻断键;可合并复用同一 window;合理默认 + 上下限;`.env.example` 同步;测试默认/越界拒绝。)
 
 ## 8. 测试（真实行为)
 
-- **verify-code(#66)**:单 IP 连发 N 次错码 → 命中 `verify-ip` / `verify-email-ip` `429`(在 per-code 5 次之前就被限);**受害者**(异 IP)用正确码 → 仍可登录(攻击者未能从异 IP 锁死);per-code MAX_ATTEMPTS 仍挡同源暴力。
-- **request-code**:攻击者单 IP 触发发信 → 命中 IP/email+IP 限;受害者异 IP 仍能请求新码(不被 per-email 硬锁);cooldown 生效;`code-ip` 在 ip 解析/未解析两路径都走 identity。
-- **unknown→unresolved**:IP 未解析的并发 admin-login/verify/request → 落**专用 emergency 桶**,**不**锁死有正常 IP 的客户端;生产告警触发(节流)。
+- **verify-code 核心不变量(#66,必测)**:攻击者(同 IP 或**跨多 IP 各错一次**)把 `attempt_count` 打到/超过 `MAX` 后,**受害者提交正确码仍成功登录**(正确码不被作废)。错误猜测达 MAX 后继续错误 → `429 codeAttemptsExceeded`(只挡错误)。
+- **verify-code 纵深**:单 IP 高频提交 → 命中 `verify-ip`/`verify-email-ip` `429`(限速率/体量,非「在 5 次前」)。
+- **request-code 无纯 email 硬锁**:攻击者跨任意 IP 触发后,**受害者(异 IP)仍能 `200` 请求**(端点无纯 email 429);单 IP 触发命中 IP/(email+IP) 429。
+- **request-code 防轰炸非阻断**:同一 email 在抑制窗口内多次请求 → 仍 `200`、**不重复发信**(断言未多发邮件、未返回 429)。
+- **unresolved**:IP 未解析并发 admin/verify/request → 落**该操作 emergency 桶**,**不波及 resolved-IP 客户端**;告警触发(节流)。(不断言 unresolved 间隔离——设计上不隔离。)
 - env 越界拒绝;email 以 hash 入 key(不明文)。
 - 回归:正常登录/发码/管理员登录、download/#60、proof 上传限流不受影响。
 
@@ -95,22 +106,24 @@ pnpm build:migrator && pnpm build
 
 ## 10. PR
 
-base `main`,Draft 直到 CI 全绿,关联 S4/#66 issue,标题 `fix(auth): harden login rate limiting against targeted lockout`。描述列出:verify-code IP+email+IP 门禁、request-code 软化、admin-login 去 unknown、identity 上移共享、emergency 桶、告警、多实例边界、env、测试。
+base `main`,Draft 直到 CI 全绿,关联 S4/#66 issue,标题 `fix(auth): harden login rate limiting against targeted lockout`。描述列出:**verify-code 核心改语义(正确码不可被作废)** + IP/(email+IP) 纵深门禁、**request-code 删纯 email 阻断** + 非阻断发信抑制(+残余说明)、admin-login 去 unknown、identity 上移共享、emergency 桶(如实表述)、告警、多实例边界、env、测试。
 
 ## 11. 验收 checklist
 
-- [ ] verify-code:CL → IP 门禁(解析前)→ readJson → (email+IP)门禁 → verifyLoginCode;**无纯 email 硬锁**;per-code MAX_ATTEMPTS 保留
-- [ ] request-code:per-email 硬锁软化为 IP 主 + (email+IP) + 宽松 email 防轰炸 + cooldown;`code-ip` 走 identity
-- [ ] admin-login:去 `?? "unknown"`,用 `resolveClientRateLimitIdentity` + `admin-login-unresolved` 专用桶
-- [ ] 三路由 unresolved 走**专用 emergency 桶**(非全局单桶)+ 生产 `warnUnresolvedClientRateLimitIdentity`
-- [ ] identity helpers 上移共享,download 行为不变;email 入 key 前 hash
-- [ ] env 有界越界拒绝;**多实例内存限流**经 readiness/文档明确(共享存储为后续/owner 决策)
-- [ ] 真实测试:#66 异 IP 不可锁死受害者 + 同源暴力仍挡;unknown→emergency 不锁全站;回归绿
+- [ ] **verify-code 核心**:`verifyLoginCode` 先比对正确性、**正确码始终成功**(不受 `attempt_count` 阻断);失败计数只挡后续错误;**第三方错误提交不能作废正确码**(跨多 IP 也不能)
+- [ ] verify-code 纵深:CL → IP 门禁(解析前)→ readJson → (email+IP)门禁 → verifyLoginCode
+- [ ] request-code:**删除纯 email 阻断键**(`code-hour:email`、会 429 的 `code-cooldown:email`);阻断只 IP + (email+IP);防轰炸 = 非阻断发信抑制(超窗 200 不发信、不 429);`code-ip` 走 identity
+- [ ] admin-login:去 `?? "unknown"`,用 `resolveClientRateLimitIdentity` + `admin-login-unresolved` emergency 桶
+- [ ] emergency 桶 = 每操作独立、**与 resolved 桶分离**;文档**如实写 unresolved 间不隔离**;生产告警
+- [ ] identity helpers 上移共享,download 行为不变;email 入 key 前 hash;env 越界拒绝;多实例内存限流文档化
+- [ ] 真实测试:**#66 跨多 IP 仍不能锁死受害者正确码**;request-code 异 IP 不被纯 email 锁;防轰炸不重复发信;unresolved 不波及 resolved;回归绿
 
 ## 已锁定决策（owner 确认 2026-06-26）
 
 1. **多实例共享限流存储(Redis/PG)= 不纳入 v1.0**:本切片**仅文档 + readiness 告警**(单创作者自托管多为单实例,内存限流够用);策略模块集中 key/阈作为未来接共享存储的接缝,横向扩容时再实现。
 2. **默认阈值采用以下值**(均经 env 可调、越界拒绝):
-   - verify-code:IP `30/10min`、(email+IP) `10/10min`,unresolved 专用高阈;
-   - request-code:IP `20/hr`、(email+IP) `5/hr`、email 防轰炸 `15/hr`、cooldown `60s`;
-   - admin-login:`10/10min`,unresolved 专用高阈。
+   - verify-code:IP `30/10min`、(email+IP) `10/10min`,unresolved emergency 高阈;**核心:正确码始终可用(§3.1)**;
+   - request-code:IP `20/hr`、(email+IP) `5/hr`、**发信抑制窗口 `60s`(非阻断,200 不发信)**;**无纯 email 阻断键**;
+   - admin-login:`10/10min`,unresolved emergency 高阈。
+
+> **修订说明(回应评审三阻塞)**:#66 改为**核心语义修复**(正确码优先、不可被失败计数作废),限流退为纵深;request-code **删除纯 email 阻断**,防轰炸用非阻断发信抑制 + 如实记录分布式投递残余;emergency 桶**如实表述**为「每操作共享、与 resolved 分离、unresolved 间不隔离」。
