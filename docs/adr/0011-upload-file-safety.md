@@ -43,13 +43,10 @@
 - sharp 加固:`failOn` 从严、设 `limitInputPixels`(防解压炸弹)、配合既有 byte 上限;解码失败 → `imageInvalid` 拒绝。
 - **不再**把原始上传字节落盘;落盘的是重编码产物。
 
-### 3. content_image 的 GIF 处理(需 owner 确认）
+### 3. content_image 的 GIF 处理（已锁定：动图 WebP）
 
-- 现状 `content_image` 允许 gif。GIF 同样**必须重编码**(不可原样直出)。三个候选:
-  - **(推荐)重编码为动图 WebP**(`sharp(..., { animated: true }).webp()`):保动画、更小、统一走 sharp 安全管线;
-  - 重编码为**静态首帧**(丢动画,最简单);
-  - **不再接受 GIF**。
-- 默认按**推荐(动图 WebP)**落 ADR;owner 可改。
+- `content_image` 继续允许 gif,但 GIF **必须重编码为动图 WebP**(`sharp(input, { animated: true }).webp()`):保动画、更小、统一走 sharp 安全管线;输出 `mimeType = image/webp`。
+- 重编码失败 → `imageInvalid` 拒绝(不退回原 GIF 落盘)。其它栅格 purpose 不收 GIF。
 
 ### 4. content_attachment(不可重编码的创作产物)
 
@@ -61,14 +58,17 @@
 
 - **所有**文件字节响应(`/api/files/[id]/download` 及 `/download/[fileId]`、以及 S3 签名直出的等价 disposition)统一附加**强限制 CSP**:
   `Content-Security-Policy: default-src 'none'; script-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox` —— 即便有坏文件漏网,也无法执行脚本/插件/被 iframe 嵌入。保留既有 `X-Content-Type-Options: nosniff`、`Cache-Control: private, no-store`。
-- **`payment_proof` 改为 attachment(不再 inline）**:管理员查看付款凭证不需要同源内联渲染;attachment 彻底消除「管理员会话内同源渲染」这一最高危面。后台 UI 以下载/受控预览方式呈现。
+- **`payment_proof` 改为 attachment(不再 inline,已锁定）**:管理员查看付款凭证不需要同源内联渲染;attachment 彻底消除「管理员会话内同源渲染」这一最高危面。后台 UI 以下载方式呈现(从 `INLINE_PURPOSES` 移除 `payment_proof`)。
 - `content_image`(正文插图,必须 inline 给所有会员)与 `cover/thumbnail/avatar/qr` 预览**保留 inline**,但此时它们已是「重编码后的纯栅格 + 服务端权威 MIME + 上述 CSP」,渲染安全。
 - S3 签名直出路径的 `disposition/contentType` 必须与上述每 purpose 策略一致(proof=attachment、权威 contentType),不得绕过。
 
-### 6. 既有数据 remediation(需 owner 确认）
+### 6. 既有数据 remediation（已锁定：强制 backfill）
 
-- 历史行的 `mimeType` 是客户端旧值。**§5 的服务端硬化(CSP + proof attachment + 不按客户端类型 sniff 直出)对存量立即生效**,是兜底保证。
-- 可选一次性 backfill:对存量栅格图重新嗅探/重编码并改写 `mimeType`;对嗅探为 svg/html 的存量行**隔离告警**(不静默删财务/凭证)。默认**仅做 §5 服务端硬化**,backfill 列为可选运维任务;owner 可要求强制 backfill。
+- §5 的服务端硬化对存量**立即生效**,是第一道兜底;但本 ADR 进一步**要求一次性强制 backfill**(不止兜底):
+  - 对存量栅格图(image purpose)**重新嗅探真实字节并按 §2/§3 重编码**,改写 `mimeType` 为权威输出类型、落盘为重编码产物;
+  - 嗅探为 **svg/html/非栅格**的存量行 → **隔离并告警**(标记 + 后台可见),**不静默删除**财务/凭证文件(对齐 ADR 0010 的「不自动改财务」原则);需管理员审阅后处置。
+  - backfill 以独立脚本 + 进度/审计执行,**幂等**、可分批、dry-run 默认;不可重编码的 `content_attachment` 不动(其安全性由 attachment + CSP 保证)。
+  - 升级文档写明:backfill 在部署新版本后运行;运行前后均受 §5 服务端硬化保护。
 
 ### 7. 不变的边界
 
@@ -93,11 +93,11 @@
 - ⚠️ **存量数据**:旧 `mimeType` 仍为客户端值,靠 §5 服务端硬化兜底;如需彻底纠正需 §6 backfill。
 - ⚠️ 所有 purpose 的落盘/直出都必须经统一入口与统一响应头函数——**审计每一处 `saveUploadedFile`/`saveStreamedFile` 调用与每一处文件字节响应**,确保无旁路。
 
-## 需 owner 确认的产品决策
+## 已锁定决策（owner 确认 2026-06-25）
 
-1. **GIF(content_image)**:动图 WebP(推荐)/ 静态首帧 / 不收 GIF?
-2. **payment_proof 后台呈现**:改 attachment(推荐,本 ADR 默认)是否可接受,还是要保留受控 inline 预览?
-3. **存量 remediation**:仅 §5 服务端硬化(默认)还是要求一次性 backfill 重编码 + svg/html 存量隔离?
+1. **GIF(content_image)= 重编码为动图 WebP**(保动画,§3)。
+2. **payment_proof = attachment 下载**(从 `INLINE_PURPOSES` 移除,§5)。
+3. **存量 = 强制一次性 backfill**(重编码 + 改写 mimeType;svg/html 存量隔离告警不静默删,§6)。
 
 ## 必须覆盖的测试
 
@@ -107,4 +107,6 @@
 - 下载响应:image/attachment 均带 `script-src 'none'; object-src 'none'; sandbox` CSP + `nosniff`;`payment_proof` 为 `attachment`;`content_image` 为 `inline` 且为纯栅格类型;S3 签名直出 disposition/contentType 与策略一致。
 - 解压炸弹(超大 pixel)→ `limitInputPixels` 拒绝;损坏图片 → `imageInvalid`。
 - content_attachment 仍 attachment(白名单视频内联例外保留),MIME 为扩展名推导而非客户端值。
+- GIF(content_image)上传 → 落盘为动图 WebP、`mimeType=image/webp`、动画保留。
+- **backfill 脚本**:存量栅格图被重嗅探/重编码、`mimeType` 改写为权威值;存量 svg/html 行被隔离告警**不删除**;脚本幂等、dry-run 默认、可分批、有审计。
 - 回归:既有上传/下载/视频 Range/内联插图正常。
