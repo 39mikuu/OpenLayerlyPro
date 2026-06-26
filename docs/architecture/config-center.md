@@ -88,8 +88,9 @@
 ## Translation ✅
 
 - API/UI 位于 `/admin/settings` Translation 配置卡片。
-- 支持 OpenAI-compatible provider、endpoint、model、API key、月度字符上限、direct publish 与 machine label policy。
+- 支持 OpenAI-compatible provider、endpoint、model、API key、`monthlyCharLimit`、direct publish 与 machine label policy。
 - 默认 disabled；API key 不返回前端。
+- **`monthlyCharLimit` 当前仅被持久化/展示，调用路径没有用量账本或 quota 检查，因此不是强制预算。** 运维必须使用 provider 侧 hard limit/alert；本地 enforcement 属于后续工作。
 - Integration registry 提供状态；当前不伪造独立“连接测试”按钮，真实 provider 调用只由 requireAdmin 的生成动作触发。
 
 ## 缓存与多实例边界
