@@ -9,6 +9,12 @@ const MAX_BUCKETS = 10_000;
 
 let lastCleanup = Date.now();
 
+function pruneBucket(bucket: Bucket, now: number, windowMs: number): void {
+  bucket.windowMs = windowMs;
+  bucket.lastSeen = now;
+  bucket.timestamps = bucket.timestamps.filter((t) => now - t < windowMs);
+}
+
 function cleanup(now: number, force = false) {
   if (!force && now - lastCleanup < 60_000) return;
   lastCleanup = now;
@@ -45,12 +51,27 @@ export function rateLimit(key: string, limit: number, windowMs: number): boolean
     bucket = { timestamps: [], windowMs, lastSeen: now };
     store.set(key, bucket);
   }
-  bucket.windowMs = windowMs;
-  bucket.lastSeen = now;
-  bucket.timestamps = bucket.timestamps.filter((t) => now - t < windowMs);
+  pruneBucket(bucket, now, windowMs);
   if (bucket.timestamps.length >= limit) return false;
   bucket.timestamps.push(now);
   return true;
+}
+
+/**
+ * 只读检查滑动窗口是否已经耗尽，不新增时间戳。
+ */
+export function isRateLimited(key: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  cleanup(now);
+  const bucket = store.get(key);
+  if (!bucket) return false;
+
+  pruneBucket(bucket, now, windowMs);
+  if (bucket.timestamps.length === 0) {
+    store.delete(key);
+    return false;
+  }
+  return bucket.timestamps.length >= limit;
 }
 
 /** 距离窗口内最早一次请求过期还需等待的秒数 */
@@ -58,7 +79,7 @@ export function retryAfterSeconds(key: string, windowMs: number): number {
   const now = Date.now();
   const bucket = store.get(key);
   if (!bucket || bucket.timestamps.length === 0) return 0;
-  bucket.timestamps = bucket.timestamps.filter((t) => now - t < windowMs);
+  pruneBucket(bucket, now, windowMs);
   if (bucket.timestamps.length === 0) {
     store.delete(key);
     return 0;
