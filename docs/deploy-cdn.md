@@ -1,31 +1,46 @@
 # CDN 接入
 
-在反向代理（见 [公网 VPS 部署](deploy-vps.md)）之前再叠加 CDN（以 Cloudflare 为例）可获得缓存、防护与就近加速。CDN 是可选项，应用不内置 CDN 逻辑。
+在反向代理之前叠加 CDN（以 Cloudflare 为例）可提供边缘 TLS、防护和静态资源加速。CDN 是可选部署层，不能替代 Core 鉴权、应用请求体上限、S3 bucket 备份或 S6 响应头。
 
 ## DNS 与链路
 
-把域名的 DNS 解析切到 CDN，并开启「代理 / Proxied」（橙色云）。链路变为：
-
 ```txt
-浏览器 → Cloudflare（TLS + 缓存）→ 你的反向代理（TLS）→ app:3000 → postgres + volumes
+浏览器 → CDN/TLS → 反向代理/TLS → app:3000 → postgres + volumes
+                                      └────────→ S3/R2（按配置）
 ```
 
-源站仍由反向代理终止一次 TLS，CDN 到源站走 HTTPS（Cloudflare SSL 模式选 Full / Full(strict)）。
+CDN 到源站应使用 HTTPS 且校验证书；源站必须限制只接受可信边缘/代理流量，不能让攻击者绕过 CDN 直连并伪造单值真实 IP 头。
 
 ## 缓存规则
 
-应用是动态站点，**不要缓存动态与鉴权路径**，只缓存静态资源：
+站点包含认证、会员和短时能力 URL。默认只缓存带指纹的静态资源：
 
-- 绕过缓存：`/api/*`、`/admin/*`、`/login`、文件下载（`/api/files/*/download`，已是带签名/鉴权的短时直链）。
-- 可缓存：`/_next/static/*` 等带指纹的静态资源。
+- 可缓存：`/_next/static/*` 等 immutable 静态资源；
+- 绕过缓存：`/api/*`、`/admin/*`、登录/账号/订单/checkout，以及所有应用代理的文件与视频响应；
+- `Cache-Control: private, no-store` 必须原样保留，不能被 CDN 改写为 public；
+- 不要按 URL 外观假定 `/api/files/*/download` 都是公开 signed redirect：local、private video 和其他受保护路径可能由应用直接代理；
+- public S3 signed redirect 的最终对象缓存行为由签名 TTL、对象响应头和部署策略共同决定，不得扩大授权时间或移除 disposition/content-type 约束。
 
-按需在 CDN 配置 Cache Rules / Page Rules 实现以上。
+S6 #86 实现后，CDN/代理应透传应用的 CSP 和安全头。不要添加第二套宽泛 CSP、`unsafe-inline`、wildcard script origin，或覆盖文件路由更严格的隔离头。
+
+## HTTP Range 与视频
+
+- 转发客户端 `Range`；
+- 保留 200/206/416、`Content-Range`、`Content-Length`、`Accept-Ranges`；
+- 不把 login/member/private S3 视频变成公开可缓存对象；
+- public S3 playback 只有在 Core 确认可由已发布 public post 授权时才使用 signed redirect。
 
 ## 客户端 IP
 
-经 CDN 后，反向代理看到的对端是 CDN 节点。两种取真实访客 IP 的方式（详见 [VPS 指南的「客户端 IP 解析」](deploy-vps.md#4-客户端-ip-解析)）：
+经 CDN 和反代后，可选择：
 
-- **按层数**：CDN + 反代共两层 → `TRUSTED_PROXY_HOPS=2`，从 `X-Forwarded-For` 取右数第 2。
-- **用单值头**：Cloudflare 会写入 `CF-Connecting-IP` 为真实访客 IP → `TRUSTED_PROXY_HEADER=cf-connecting-ip`（此时 `TRUSTED_PROXY_HOPS` 忽略）。
+- **按可信层数解析 XFF**：例如 CDN + 反代共两层时设置准确的 `TRUSTED_PROXY_HOPS`；
+- **可信单值头**：Cloudflare 可使用 `TRUSTED_PROXY_HEADER=cf-connecting-ip`。
 
-> **单值头安全前提**：`cf-connecting-ip` 等单值头只有在源站不直接暴露、只接受可信边缘流量时才可信。裸 VPS 用 Cloudflare 时，务必用防火墙只放行 [Cloudflare IP 段](https://www.cloudflare.com/ips/)，并按 VPS 指南第 2 步锁定 3000 端口，否则攻击者可绕过 CDN 直接伪造该头。
+单值头只有在源站不能被绕过、边缘会覆盖该头时可信。用防火墙/安全组限制源站入口，并实际验证登录、上传和下载日志中的客户端 IP。
+
+解析失败时应用会使用各操作独立的 unresolved emergency bucket并告警；这不是可以长期忽略的正常配置。
+
+## 备份与可恢复性
+
+CDN 缓存不是备份。使用 S3/R2 时仍需 bucket versioning、snapshot 或 provider backup，并在恢复时与数据库备份时点对齐。详见 [备份与恢复](deployment/backup-restore.md)和 S7 #87。
