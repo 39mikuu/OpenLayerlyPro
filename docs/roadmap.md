@@ -175,20 +175,36 @@
 - **#11 备份/恢复/升级**：`backup.sh` / `restore.sh`（DB + uploads + 加密密钥三件套）+ 已验证的干净环境恢复演练
 - **#12 跨切面回归测试**：下载授权全矩阵、因果链、幂等投递、stale/重复、端到端回滚
 
-## v0.2：自动变现 + 规模化 ▶（最终验收）
+## v0.2：自动变现 + 规模化 ✅（代码完成）
 
-v0.2 的代码范围已经完成，当前只等待真实 Stripe、local 与 S3/R2 环境验收。发布门槛见 [v0.2.0 最终验收清单](./release-v0.2-checklist.md)。
+自动支付、订阅、分页、流式上传和视频播放代码均已进入 `main`；真实 Stripe、local、S3/R2、升级与恢复的统一发布验收并入 v1.0 #88。
 
-- **Stripe 一次性自动支付 ✅**：可插拔 `PaymentProvider` 抽象，首个适配器为 Stripe；包含加密配置、托管 Checkout、原始 body webhook 验签、事件幂等、金额/币种校验、事务内会员开通和 durable outbox。
-  - 切片 #1 ✅：卡支付 happy path、稳定 Stripe 幂等键、过期 session 清理，以及带 PostgreSQL 时间和 fencing 的 stale `creating:*` claim 恢复。
-  - 切片 #2 🚧：退款 / chargeback / reconciliation → 复用 #6 `reversePaymentApproval` 撤销会员；不属于 v0.2.0 发布阻塞项。
-  - 仅一次性付款；自动续费 / 订阅推迟。
-- **列表分页（A）✅**：首页限量，作品列表使用 `(published_at, id)` keyset cursor；保留分类、标签、可见性和 locale，并对非法时间戳安全回退第一页。
-- **流式上传（B1）✅**：`content_attachment` 使用 raw-body 流式上传；local `.part` + 原子重命名，S3/R2 有界 multipart，流式 SHA-256 / 字节计数，以及 abort、超限、空文件和 DB 失败补偿。
-- **视频附件基础支持 ✅**：`mp4` / `webm` / `mov` / `m4v` 可流式上传、持久化、权限校验和下载。
-- **发布验收 ▶**：按 `docs/release-v0.2-checklist.md` 完成升级、Stripe Test Mode、local 和真实 S3/R2 smoke test 后创建 tag / Release。
+- **Stripe 一次性自动支付 ✅**：可插拔 `PaymentProvider` 抽象、Stripe Checkout、原始 body webhook 验签、事件幂等、金额/币种校验、事务内会员开通和 durable outbox。
+- **退款 / 拒付 / reconciliation ✅**：全额退款与 chargeback 自动联动撤销会员，支持 reversal-first 墓碑、charge→invoice 解析、重复/乱序 webhook 和 reconciliation。
+- **Stripe 自动订阅 ✅**：订阅 Checkout、续费发票、取消、provider event inbox/dispatch、发票级幂等与 `subscription.reconcile`。
+- **手动续费提醒 ✅**：provider=NULL 的周期提醒、事务内周期推进、用户控制、stale/cancel no-op 与 zh/en/ja 邮件。
+- **列表分页 ✅**：首页限量，作品列表使用 `(published_at, id)` keyset cursor；保留分类、标签、可见性和 locale，并对非法时间戳安全回退第一页。
+- **流式上传 ✅**：`content_attachment` raw-body 流式上传；local `.part` + 原子重命名，S3/R2 有界 multipart，流式 SHA-256 / 字节计数，以及 abort、超限、空文件和 DB 失败补偿。
+- **视频附件与 Range 播放 ✅**：`mp4` / `webm` / `mov` / `m4v` 上传、权限校验、local/S3 单段 Range 200/206/416、公开 signed redirect、私有代理与主题播放器。
 
-**明确推迟**：local HTTP Range/206、浏览器内视频拖动播放、封面/时长/缩略图/转码（B2）、退款与 chargeback 自动联动、订阅续费、Plugin/Hub/HA。
+**明确推迟**：封面/时长/缩略图/转码（视频 B2）、Plugin、Hub 和高可用。
+
+## v1.0 安全硬化 ▶（当前主线）
+
+总 epic：#64。已完成 S2、S3、订阅、S1a、S1b、S4 和 S5；剩余顺序固定为 #86 → #87 → #88。
+
+- **S2 请求体有界化 ✅**：所有生产 body reader 有界化，Stripe 原始字节验签和 CI 静态门禁。
+- **S3 支付/会员并发串行化 ✅**：按 userId grant lock、pending 唯一约束和跨人工/自动路径并发测试。
+- **订阅 #61 / #62 ✅**：Stripe 自动续费与手动续费提醒。
+- **S1a 上传入口安全 ✅**：服务端权威 MIME、强制重编码、quarantine、响应隔离和历史 backfill。
+- **S1b 文件删除与凭证生命周期 ✅**：完整引用检查、两阶段删除、proof cleanup/resubmit/配额。
+- **S4 auth 限流硬化 ✅**：resolved/unresolved 身份、正确码安全、长随机码、pre-compare hard budget；#66 已完成。
+- **S5 邮件可靠性 ✅**：defer/dead、稳定 Message-ID、delivery ledger、后台重发和失败分类。
+- **S6 全局安全响应头 ▶**：#86；实现 nonce CSP、动态来源、legacy footer 迁移和浏览器验证。
+- **S7 备份一致性 🚧**：#87；实现 archive v2、v1 schema 探测、mandatory file-safety backfill、任务中和和 DB↔存储收敛。
+- **v1.0 最终验收与发布 🚧**：#88；完成真实 Stripe、local/S3、升级/恢复、安全攻击回归、tag 与 GitHub Release。
+
+只有 #86、#87 和 #88 全部完成后，才能关闭 #64 并发布 `v1.0.0`。
 
 ## Phase 8：Plugin v0 🚧
 
