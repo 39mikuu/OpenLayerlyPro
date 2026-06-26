@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getEnv: vi.fn(),
+  isRateLimited: vi.fn(),
   rateLimit: vi.fn(),
   verifyLoginCode: vi.fn(),
   createSession: vi.fn(),
@@ -11,7 +12,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/env", () => ({ getEnv: mocks.getEnv }));
-vi.mock("@/lib/rate-limit", () => ({ rateLimit: mocks.rateLimit }));
+vi.mock("@/lib/rate-limit", () => ({
+  isRateLimited: mocks.isRateLimited,
+  rateLimit: mocks.rateLimit,
+}));
 vi.mock("@/modules/auth/login-code", () => ({ verifyLoginCode: mocks.verifyLoginCode }));
 vi.mock("@/modules/auth/session", () => ({
   createSession: mocks.createSession,
@@ -20,6 +24,7 @@ vi.mock("@/modules/auth/session", () => ({
 vi.mock("@/modules/i18n/server", () => ({ resolveLocale: mocks.resolveLocale }));
 
 import { ApiError } from "@/lib/api";
+
 import { POST } from "./route";
 
 const env = {
@@ -48,6 +53,7 @@ describe("verify-code route budgets", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getEnv.mockReturnValue(env);
+    mocks.isRateLimited.mockReturnValue(false);
     mocks.rateLimit.mockReturnValue(true);
     mocks.resolveLocale.mockResolvedValue("zh");
     mocks.verifyLoginCode.mockResolvedValue({
@@ -62,7 +68,7 @@ describe("verify-code route budgets", () => {
     mocks.setSessionCookie.mockResolvedValue(undefined);
   });
 
-  it("checks only the source budget for a correct code", async () => {
+  it("prechecks target exhaustion and consumes only the source budget for success", async () => {
     const response = await POST(
       request(
         { email: " Fan@Example.com ", code: "abcd1234efgh5678" },
@@ -71,6 +77,8 @@ describe("verify-code route budgets", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(mocks.isRateLimited).toHaveBeenCalledOnce();
+    expect(mocks.isRateLimited.mock.calls[0][0]).toContain("verify-code-email-ip:");
     expect(mocks.rateLimit).toHaveBeenCalledOnce();
     expect(mocks.rateLimit).toHaveBeenCalledWith("verify-code-ip:198.51.100.10", 30, 600_000);
     expect(mocks.rateLimit.mock.invocationCallOrder[0]).toBeLessThan(
@@ -79,7 +87,23 @@ describe("verify-code route budgets", () => {
     expect(mocks.verifyLoginCode).toHaveBeenCalledWith("fan@example.com", "ABCD1234EFGH5678", "zh");
   });
 
-  it("blocks an exhausted source before code comparison", async () => {
+  it("blocks an already exhausted target budget before comparison", async () => {
+    mocks.isRateLimited.mockReturnValue(true);
+
+    const response = await POST(
+      request(
+        { email: "fan@example.com", code: "ABCD1234EFGH5678" },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+
+    expect(response.status).toBe(429);
+    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.verifyLoginCode).not.toHaveBeenCalled();
+    expect(mocks.createSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks an exhausted source budget before comparison", async () => {
     mocks.rateLimit.mockReturnValue(false);
 
     const response = await POST(
@@ -94,7 +118,7 @@ describe("verify-code route budgets", () => {
     expect(mocks.createSession).not.toHaveBeenCalled();
   });
 
-  it("charges email+IP only after an incorrect comparison", async () => {
+  it("records email+IP only after an incorrect comparison", async () => {
     mocks.verifyLoginCode.mockRejectedValue(new ApiError(400, "codeIncorrect"));
 
     const response = await POST(
@@ -108,9 +132,6 @@ describe("verify-code route budgets", () => {
     expect(mocks.rateLimit).toHaveBeenCalledTimes(2);
     expect(mocks.rateLimit.mock.calls[0][0]).toBe("verify-code-ip:198.51.100.10");
     expect(mocks.rateLimit.mock.calls[1][0]).toContain("verify-code-email-ip:");
-    expect(mocks.rateLimit.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.verifyLoginCode.mock.invocationCallOrder[0]!,
-    );
     expect(mocks.verifyLoginCode.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.rateLimit.mock.invocationCallOrder[1]!,
     );
@@ -126,11 +147,12 @@ describe("verify-code route budgets", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.verifyLoginCode).not.toHaveBeenCalled();
+    expect(mocks.isRateLimited).not.toHaveBeenCalled();
     expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.verifyLoginCode).not.toHaveBeenCalled();
   });
 
-  it("returns 429 when target-scoped failure accounting is exhausted", async () => {
+  it("returns 429 when failure accounting reaches its limit after comparison", async () => {
     mocks.verifyLoginCode.mockRejectedValue(new ApiError(400, "codeExpired"));
     mocks.rateLimit.mockReturnValueOnce(true).mockReturnValueOnce(false);
 
@@ -151,10 +173,8 @@ describe("verify-code route budgets", () => {
     const response = await POST(request({ email: "fan@example.com", code: "ABCD1234EFGH5678" }));
 
     expect(response.status).toBe(400);
+    expect(mocks.isRateLimited).not.toHaveBeenCalled();
     expect(mocks.rateLimit).toHaveBeenCalledOnce();
     expect(mocks.rateLimit).toHaveBeenCalledWith("verify-code-unresolved", 300, 600_000);
-    expect(mocks.rateLimit.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.verifyLoginCode.mock.invocationCallOrder[0]!,
-    );
   });
 });
