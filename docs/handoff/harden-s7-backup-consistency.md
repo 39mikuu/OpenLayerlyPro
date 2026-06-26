@@ -13,6 +13,7 @@
 5. `CONFIG_ENCRYPTION_KEY(_FILE)`、`SESSION_SECRET` 的恢复语义必须真实；不得声称单归档包含所有外部秘密。
 6. 既有 `umask 077`、归档 `chmod 600`、归档路径校验、直配 `CONFIG_ENCRYPTION_KEY` 时拒绝“单归档完整恢复”、forward-only 迁移等安全属性不得回退。
 7. Stripe DB 快照与实时状态无法原子一致；目标是事件重放 + reconcile + 明确残余，不承诺完全时点一致。
+8. **v1 兼容不能绕过 schema 安全边界。** v1 manifest 没有 migration 标识，必须在破坏目标 DB 前通过隔离临时数据库探测；未知时默认中止，显式 legacy override 也不得绕过已确认的新→旧或迁移分叉。
 
 ## 1. 当前缺口
 
@@ -31,7 +32,7 @@
 
 1. 默认保留热备顺序 `pg_dump(T1) → local uploads(T2)`，明确记录 T1–T2 窗口。低写入站点依靠 §4 收敛；需要完全自洽时提供可选步骤：先停止 app，备份完成后再启动。
 2. `FORMAT_VERSION` 升到 2。先生成 `manifest.env`，再生成 `checksums.sha256`，校验范围覆盖归档中的所有有效载荷成员（`db.sql`、manifest、配置密钥、uploads 全部文件或 S3 marker），**不包含 `checksums.sha256` 自身**。
-3. restore 在任何数据库破坏操作前验证 archive 路径安全、必需成员和全部 sha256；任一失败立即中止。`FORMAT_VERSION=1` 旧档允许恢复，但必须 warn 无校验和保护。
+3. restore 在任何数据库破坏操作前验证 archive 路径安全、必需成员和全部 sha256；任一失败立即中止。`FORMAT_VERSION=1` 旧档允许进入兼容路径，但必须 warn 无校验和保护，并按 §7 在隔离临时数据库完成 schema 探测；这不是无条件恢复承诺。
 4. manifest 记录应用版本、最新 migration 标识、storage driver、uploads 是否包含和创建时间，供 §7 校验与演练记录。
 
 ## 3. app 启动前的 schema 对齐与任务中和
@@ -43,7 +44,8 @@
 ```text
 解包并校验归档
 → 启动 postgres
-→ 替换并导入 DB
+→ v2 读取 manifest 校验 schema；v1 将 db.sql 导入随机隔离临时 DB 并探测 migration 历史
+→ 仅在兼容性确认或显式允许的 v1 unknown override 后，替换并导入正式 DB
 → 还原密钥与 local uploads（S3 则先完成 bucket 时点恢复）
 → 用 one-off app 容器运行 forward migrator
 → 执行任务/支付事件中和 SQL
@@ -52,6 +54,8 @@
 → 等待 /api/ready
 → 核对事件重放、reconcile 和收敛简报
 ```
+
+v1 临时数据库必须使用不可预测/进程唯一名称，只接收本次 `db.sql`，不得启动 app 或 dispatcher；无论成功、失败或收到信号都必须清理。兼容探测完成前不得 `dropdb` 正式目标数据库，也不得覆盖正式 secrets/uploads。
 
 旧归档可能缺 `tasks`、`payment_provider_events` 或 quarantine 字段，因此必须先单独运行目标镜像中的 migrator，再执行中和/收敛。不能依赖正常 app entrypoint 迁移，因为它会同时启动 dispatcher。
 
@@ -102,13 +106,20 @@
 
 ## 7. 版本约束
 
-- 目标 app schema 必须等于或新于归档 migration 标识；更新 schema 的 dump 不得恢复到更旧镜像。
-- restore 在 drop DB 前读取 manifest 并检查目标镜像兼容性；无法确认时默认中止而不是猜测。
+- 目标 app schema 必须等于或新于归档 migration 历史；更新 schema 的 dump 不得恢复到更旧镜像，迁移分叉也不得被当作可前滚。
+- `FORMAT_VERSION=2`：restore 在任何正式 DB 破坏前读取 manifest migration 标识，并与目标镜像内置 migration journal 比较；备份历史必须是目标历史的同序、同 hash 前缀。无法确认、备份更晚或发生分叉时中止。
+- `FORMAT_VERSION=1`：现有 manifest 没有 migration 标识，不能仅凭 warning 跳过检查。restore 必须先创建随机隔离临时数据库，将 `db.sql` 导入该库，再由目标镜像中的兼容检查 helper 按 Drizzle 使用的同一 migration metadata 契约读取历史，并与目标镜像 journal 比较：
+  - 历史是目标 journal 的同序、同 hash 前缀：允许继续，并保留“v1 无完整性校验”警告；
+  - 历史包含目标不存在的更新 migration、顺序/hash 不同或明确分叉：在 drop 正式 DB 前拒绝，任何 override 都不得绕过；
+  - migration 历史表缺失、损坏或无法可靠读取：视为 unknown，默认在 drop 正式 DB 前拒绝。
+- 仅对上述 v1 `unknown` 情形提供显式 `--allow-legacy-v1-unknown-schema` 运维覆盖。该 flag 必须输出醒目警告、写入恢复简报/审计输出，并明确由操作者承担 schema 不兼容风险；它不得隐式启用，也不得放宽已确认的不兼容结果。
+- v1 临时数据库必须在所有退出路径删除；探测失败不得留下可被后续运行误用的状态。
 - 旧 app → 新 app 通过 one-off migrator 前滚；禁止自动 down migration。
 
 ## 8. 测试与恢复演练
 
-- checksum：篡改任一 payload 后 restore 在 drop DB 前失败；v1 旧档 warn 后可走兼容路径。
+- checksum：篡改任一 payload 后 restore 在 drop DB 前失败；v1 旧档必须警告无校验和并进入 §7 专用兼容检查，而不是无条件继续。
+- v1 schema：覆盖“历史为目标前缀可恢复”“备份更新于目标拒绝”“hash/顺序分叉拒绝”“历史缺失/损坏默认拒绝”“显式 unknown override 可继续且留下审计输出”；全部断言正式 DB 在兼容检查通过前未被 drop，临时 DB 在成功/失败/信号退出后均被清理。
 - 删除 task：非终态 `storage.delete_object` 行被删除，同 dedupeKey 可重新入队，已恢复引用对象未被删除。
 - provider event：覆盖 processing 且 lease 未过期、attempts 饱和、task 缺失、task/event 状态窄窗口；中和后每个非终态 event 恰有一个可领取 task，能够幂等处理。
 - email：renewal reminder 可重放；其他三类变 dead 且不会在“快照后已发送”场景重复投递。
@@ -121,7 +132,9 @@
 
 ## 9. 验收 checklist
 
-- [ ] archive v2 有完整 sha256；v1 兼容且明确警告
+- [ ] archive v2 有完整 sha256；v1 明确警告并通过隔离临时 DB 的 schema 兼容路径
+- [ ] v1 unknown 默认 fail-closed；显式 override 仅放宽 unknown，不得绕过已确认的新→旧/分叉
+- [ ] 兼容检查通过前不破坏正式 DB；v1 临时 DB 在全部退出路径清理
 - [ ] 正常 app 全程停止，迁移→中和→收敛完成后才启动
 - [ ] `storage.delete_object` 危险 task 被删除并释放 dedupeKey
 - [ ] 每个非终态 provider event 被复位且补齐唯一 dispatch task；不依赖 Stripe 重投
@@ -136,7 +149,8 @@
 ## 已锁定决策（owner 确认 2026-06-26）
 
 - S7 只硬化既有方案，不重写备份机制；热备默认、停 app 备份为可选强一致步骤。
-- 固定顺序为导入 → 还原存储 → one-off 迁移 → 事务中和 → one-off 收敛 → 启动正常 app。
+- 固定顺序为校验（v1 先隔离 schema 探测）→导入 → 还原存储 → one-off 迁移 → 事务中和 → one-off 收敛 → 启动正常 app。
+- v1 manifest 无 migration 标识；通过临时 DB 比较 Drizzle migration 历史，unknown 默认中止，显式 override 仅允许 unknown。
 - 删除恢复出的非终态 storage delete task；支付事件成对复位并按 event 行补齐 dispatch task，绝不批量 dead。
 - email 根据模板决定重放或 dead；其余任务清锁并重置 attempts，依赖幂等/stale no-op。
 - 缺失对象实际写 S1a quarantine，孤儿使用 S1b cleanup；收敛失败不启动 app。
