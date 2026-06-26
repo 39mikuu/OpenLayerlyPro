@@ -1,83 +1,74 @@
 # Upgrade
 
-This procedure covers upgrades within the current OpenLayerlyPro release line. Historical-version upgrade testing and downgrade migrations are not supported.
+> This procedure describes the current `main` upgrade path. It already requires pending-payment remediation, a one-off forward migrator, and the mandatory file-safety backfill before the app starts. S7 #87 will further harden the restore/rollback side with archive integrity, schema probing, task neutralization, and DB↔storage convergence. For a production `v1.0.0` release, also complete [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
+
+Historical-version upgrade testing and downgrade migrations are not supported.
 
 ## 1. Review the Release
 
 Before changing the running stack:
 
-- read `CHANGELOG.md` and release notes;
+- read `CHANGELOG.md`, release notes, and any version-specific remediation notice;
 - compare `.env.example` with the deployment's `.env`;
-- confirm sufficient disk space for an image build and a complete backup;
-- confirm `/api/ready` currently returns 200.
+- confirm sufficient disk space for image build, database work, temporary remediated objects, and a complete backup;
+- confirm `/api/ready` currently returns 200;
+- record the current commit/image digest and target commit/image digest.
 
-## 2. Create a Pre-Upgrade Backup
+## 2. Create a Pre-Upgrade Recovery Point
 
-Always create and retain a complete archive immediately before upgrading:
+Create and retain a complete archive immediately before upgrading:
 
 ```bash
 ./scripts/backup.sh /srv/backups/openlayerly
 ```
 
-Do not proceed unless the command exits successfully. The archive contains the PostgreSQL dump, config encryption key, and local uploads when `STORAGE_DRIVER=local`.
+Do not proceed unless the command exits successfully. For local storage, the archive contains PostgreSQL, the file-backed config encryption key, and uploads. `SESSION_SECRET` and externally managed secrets remain outside the archive and must be preserved separately.
 
-For `STORAGE_DRIVER=s3`, the archive contains the database and encryption key only. Confirm bucket versioning, provider snapshots, or another tested object-storage backup before upgrading.
+For S3/R2, record and verify a matching bucket version/snapshot/provider recovery point. The archive alone cannot restore object bytes.
 
-Record the exact archive path and the current Git commit or image tag:
+Record the archive, current commit/image, and object-storage recovery point:
 
 ```bash
 git rev-parse HEAD
 ```
 
-## 3. Stage the New Version Without Starting Migrations
+The current archive is a baseline v1 format without S7 checksums/convergence. Before #87 lands, use a stopped-app maintenance window where possible and keep the old deployment intact until verification completes.
 
-The S3 concurrency migration adds a partial unique index that permits at most one
-`pending_review` or `pending_payment` row for each `(user_id, tier_id)`. The migration first
-checks existing data and fails with the conflicting user, tier, and row count. It never deletes
-or silently rewrites financial records.
+## 3. Stage the New Version Without Starting It
 
-Obtain the new remediation tool before stopping the old application, but do not start the new
-application yet. Starting the normal app entrypoint would run migrations immediately.
-
-For a source checkout deployment, update the checkout and build only the new app image:
+For source deployments:
 
 ```bash
 git pull --ff-only
 docker compose build app
 ```
 
-`docker compose build app` creates the image containing
-`/app/scripts/dedupe-pending-payments.mjs`; it does not run the image or its entrypoint.
-
-For an image-based deployment, update the Compose image reference to the new immutable tag and
-pull it without starting a container:
+For image deployments, update to an immutable tag/digest and pull without starting:
 
 ```bash
 docker compose pull app
 ```
 
-Do not run `docker compose up` yet.
+Do not run `docker compose up` yet. The normal entrypoint runs migrations and starts the dispatcher, which is too early for the required pre-migration remediation/backfill sequence.
 
-## 4. Stop Payment Writes and Resolve Duplicate Pending Payments
+## 4. Stop Writes and Resolve Duplicate Pending Payments
 
-Stop every old application replica before remediation so no old process can create another
-pending payment between cleanup and index creation. A maintenance mode is acceptable only when
-it blocks all payment creation and resubmission writes.
+Stop every old app replica. A maintenance mode is acceptable only if it blocks all payment creation, resubmission, admin grant, upload and content writes relevant to the migration.
 
 ```bash
 docker compose stop app
 ```
 
-Keep PostgreSQL running. Use the staged new image with an overridden entrypoint, which avoids the
-normal automatic migration. Report conflicts first:
+Keep PostgreSQL running. Use the staged new image with an overridden entrypoint.
+
+Report duplicate pending payment identities:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint node app \
   /app/scripts/dedupe-pending-payments.mjs
 ```
 
-The report command exits with status `2` while conflicts exist. For each conflict, review the
-listed request IDs and explicitly choose the request that remains pending. Preview the change:
+The report exits non-zero while conflicts exist. For each conflict, an administrator must choose the request that remains pending. Preview:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint node app \
@@ -85,8 +76,7 @@ docker compose run --rm --no-deps --entrypoint node app \
   --keep <request-id> --resolve cancelled --dry-run
 ```
 
-Apply only after an existing administrator has reviewed the payment evidence and chosen the
-outcome:
+Apply only after reviewing payment evidence:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint node app \
@@ -95,118 +85,117 @@ docker compose run --rm --no-deps --entrypoint node app \
   --actor-id <admin-user-id> --reason "Resolve duplicate pending requests before upgrade"
 ```
 
-`--resolve rejected` is also supported. The tool verifies that `--actor-id` belongs to an
-existing administrator in the same transaction as the changes. It is idempotent, updates rather
-than deletes the other pending rows, writes an audit event for every changed request, and prints
-a modification summary.
+`--resolve rejected` is also supported. The tool validates the admin, updates rather than deletes financial rows, writes audit records, is idempotent, and prints a summary.
 
-Run the report again immediately before migrating. Do not proceed until it exits with status `0`
-and reports no conflicts:
+Run the report again immediately before migration. Do not proceed until it reports no conflicts.
 
-```bash
-docker compose run --rm --no-deps --entrypoint node app \
-  /app/scripts/dedupe-pending-payments.mjs
-```
+## 5. Run the One-Off Migrator
 
-## 5. Run the Migration and Start the New Version
-
-With all old application replicas still stopped, run the migration from the staged new image:
+With all old app replicas stopped:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint node app /app/dist/migrate.mjs
 ```
 
-After the migration succeeds, preview the mandatory file-safety remediation. The command is dry-run by default and does not modify database rows or objects:
+Do not rely on the normal app entrypoint for this step. The app must remain stopped while the next file-safety remediation runs.
+
+## 6. Run Mandatory File-Safety Remediation
+
+Preview first:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint node app /app/dist/files-backfill.mjs
 ```
 
-Review the reported remediations and quarantines, then apply them:
+Review the proposed remediations/quarantines, then apply:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint node app /app/dist/files-backfill.mjs --apply
 ```
 
-The backfill rewrites image-purpose files to deterministic `remediated/v1/` object keys, atomically switches each database row and queues deletion of the old object. Unsafe legacy SVG/HTML/non-raster bytes are quarantined without deletion. Re-running is safe and skips rows already at the target remediation version.
+The backfill:
 
-Start the new application after the migration and backfill complete:
+- selects image-purpose rows below the current remediation version;
+- server-detects and normalizes raster images into deterministic remediated object keys;
+- atomically switches the DB row and queues deletion of the old object;
+- quarantines unsafe SVG/HTML/non-raster bytes without serving them;
+- is idempotent for rows already at the target version.
+
+If the command fails, keep the app stopped. Investigate missing storage objects/configuration rather than bypassing the backfill.
+
+## 7. Start and Verify the New Version
+
+Only after remediation and migration succeed:
 
 ```bash
 docker compose up -d app
 ```
 
-The normal application entrypoint reruns the forward-only migration idempotently before starting
-the server. If migration fails, the application container exits instead of serving traffic.
-Keep the pre-upgrade backup until the migration and application checks are complete.
-
-## 6. Verify the Upgrade
-
-Inspect startup and migration logs:
+The normal entrypoint reruns the forward migration idempotently and then starts the server/dispatcher. Inspect logs:
 
 ```bash
 docker compose logs --tail=200 app
 ```
 
-Check liveness and readiness:
+Check:
 
 ```bash
 curl --fail --show-error http://localhost:3000/api/health
 curl --fail --show-error http://localhost:3000/api/ready
 ```
 
-`/api/ready` must return 200 with database, config, and encryption-key checks set to `true`.
+Sample at least:
 
-Also sample the operational paths relevant to the deployment:
+- admin login and encrypted settings;
+- fan request-code/verify-code;
+- published and member content;
+- membership and payment/subscribe actions relevant to the deployment;
+- one local or S3 file download and one video Range request;
+- quarantined-file admin metadata without byte access;
+- SMTP status and task/delivery views.
 
-- admin login and settings read;
-- published post access;
-- membership access;
-- one local-file download, or one S3/R2 signed download;
-- mail configuration visibility without exposing its password.
-- the admin quarantined-file metadata endpoint (`/api/admin/files?quarantined=true`) without any byte-access action.
+Keep the pre-upgrade archive, previous image/source, and S3 recovery point until these checks and the version-specific acceptance tests pass.
 
-For production file delivery, place the application or S3 file origin behind a CDN/reverse proxy and inject these headers on file paths:
+## 8. Security Headers and File Delivery
 
-```text
-Content-Security-Policy: default-src 'none'; script-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox
-X-Content-Type-Options: nosniff
-```
+Application-streamed protected files already use strict isolation headers. S3 direct signed responses may depend on object metadata/CDN behavior.
 
-Application-streamed responses already include both headers. S3-direct signed responses cannot carry CSP/nosniff, so the proxy/CDN is the recommended defense-in-depth layer; signed URLs still force the authoritative content type and disposition.
+S6 #86 will add document-level nonce CSP and global security headers. Do not pre-empt it by configuring a proxy-wide wildcard CSP or `unsafe-inline`; the application and proxy must not publish contradictory policies. After #86, validate DB-enabled Turnstile, actual signed S3 origin, inline video and migrated public integrations in a browser before enabling enforce mode.
 
-## 7. Failure and Rollback
+## 9. Failure and Rollback
 
-Do not attempt to reverse a database migration manually. Application code rollback alone is unsafe after a forward schema migration.
+Do not manually reverse migrations or run older application code against a newer schema.
 
-Rollback requires:
+A rollback requires:
 
-- the pre-upgrade archive created by `backup.sh`;
-- the previous application image or source tag;
-- the object-storage recovery point when using S3/R2.
+- the exact pre-upgrade DB/config/local archive;
+- previous application image/source;
+- matching S3/R2 recovery point;
+- matching externally managed secrets, including `SESSION_SECRET` where required.
 
-Procedure:
+Baseline procedure:
 
-1. stop the failed application;
-2. check out or configure the previous application version;
-3. build or pull that version's image;
-4. restore the pre-upgrade archive with `restore.sh`;
-5. restore the matching S3/R2 bucket state when required;
-6. verify `/api/ready` and sample application data.
+1. stop the failed new app;
+2. restore the previous application version;
+3. restore the pre-upgrade database/config/local archive;
+4. restore the matching S3/R2 state;
+5. verify readiness and sample data before exposure.
 
-Example:
+The current `restore.sh` is the issue #11 baseline. It does not yet perform S7 task/payment/file convergence before starting the dispatcher. Until #87 is implemented, perform rollback in an isolated or carefully controlled stopped-app environment and assess restored tasks/files before serving traffic. After #87, follow the hardened restore pipeline in `backup-restore.md`.
+
+Example baseline command:
 
 ```bash
-git checkout <previous-tag>
+git checkout <previous-tag-or-commit>
 docker compose build app
 ./scripts/restore.sh /srv/backups/openlayerly/<pre-upgrade-archive>.tar.gz
 ```
 
-The restore prompt explicitly warns that it replaces the target database, key, and local uploads. Use `--yes` only in a reviewed recovery command.
+Use `--yes` only in a reviewed recovery command.
 
 ## Operational Notes
 
-- Keep the pre-upgrade archive until the new version has passed readiness and application-level sampling.
-- Store archives outside the application host or copy them off-host after creation.
-- Encrypt backup storage and restrict access because archives contain database data, uploaded files, and the config encryption key.
-- Test restore regularly; a backup job that has never been restored is not a verified recovery plan.
+- Store archives off-host and encrypted; they may contain member files and payment proofs.
+- Monitor non-zero backup/upgrade exits and maintain adequate disk headroom for image builds and remediated objects.
+- A backup that has never been restored is not a verified recovery plan.
+- For v1.0 release, #87/#88 require new local and real/compatible S3 restore drills; the 2026-06-19 baseline drill alone is insufficient.
