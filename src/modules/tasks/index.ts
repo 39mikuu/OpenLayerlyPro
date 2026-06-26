@@ -4,8 +4,9 @@ import { and, asc, desc, eq, inArray, lt, lte, or, sql } from "drizzle-orm";
 import { type DbClient, getDb } from "@/db";
 import { type Task, tasks } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import { logger } from "@/lib/logger";
 
-import { PermanentTaskError } from "./errors";
+import { PermanentTaskError, type TaskFailureClassification } from "./errors";
 
 export { PermanentTaskError };
 
@@ -21,6 +22,48 @@ export type TaskAdminView = Pick<
   Task,
   "id" | "kind" | "status" | "attempts" | "maxAttempts" | "runAfter" | "lastError" | "createdAt"
 >;
+
+export type TaskFinalizationResult =
+  | { updated: false; status: null }
+  | { updated: true; status: "failed" | "dead" };
+
+export type MailTaskFailureCounts = {
+  businessEmail: { failed: number; dead: number };
+  loginCodeEmail: { failed: number; dead: number };
+};
+
+type DeadLetterTask = Pick<Task, "id" | "kind" | "attempts" | "payloadJson">;
+
+function isMailTaskKind(kind: string): boolean {
+  return kind === "email" || kind === "auth.login_code_email";
+}
+
+function loginCodeIdFromPayload(payload: unknown): string | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const codeId = (payload as { codeId?: unknown }).codeId;
+  return typeof codeId === "string" ? codeId : undefined;
+}
+
+function warnMailTaskDeadLettered(
+  task: DeadLetterTask,
+  classification: TaskFailureClassification,
+): void {
+  if (!isMailTaskKind(task.kind)) return;
+  const codeId =
+    task.kind === "auth.login_code_email" ? loginCodeIdFromPayload(task.payloadJson) : undefined;
+  logger.warn("email task dead-lettered", {
+    taskId: task.id,
+    kind: task.kind,
+    attempts: task.attempts,
+    classification,
+    ...(codeId ? { codeId } : {}),
+  });
+}
+
+function safeFailureMessage(kind: string, error: unknown): string {
+  if (isMailTaskKind(kind)) return "Email delivery failed";
+  return String(error);
+}
 
 export async function enqueueTask(
   tx: DbClient,
@@ -62,10 +105,10 @@ async function claimDueTasksInternal(
   const leaseExpired = clock ? lt(tasks.leaseUntil, clock) : sql`${tasks.leaseUntil} < now()`;
   const dueToRun = clock ? lte(tasks.runAfter, clock) : sql`${tasks.runAfter} <= now()`;
 
-  return getDb().transaction(async (tx) => {
+  const outcome = await getDb().transaction(async (tx) => {
     // A crashed worker consumed its attempt when it claimed the task. Once the
     // final lease expires, recovery must not create an execution over the limit.
-    await tx
+    const swept = await tx
       .update(tasks)
       .set({
         status: "dead",
@@ -81,7 +124,13 @@ async function claimDueTasksInternal(
           leaseExpired,
           sql`${tasks.attempts} >= ${tasks.maxAttempts}`,
         ),
-      );
+      )
+      .returning({
+        id: tasks.id,
+        kind: tasks.kind,
+        attempts: tasks.attempts,
+        payloadJson: tasks.payloadJson,
+      });
 
     const due = await tx
       .select({ id: tasks.id })
@@ -98,9 +147,9 @@ async function claimDueTasksInternal(
       .orderBy(asc(tasks.runAfter))
       .limit(limit)
       .for("update", { skipLocked: true });
-    if (due.length === 0) return [];
+    if (due.length === 0) return { claimed: [] as Task[], swept };
 
-    return tx
+    const claimed = await tx
       .update(tasks)
       .set({
         status: "processing",
@@ -117,7 +166,13 @@ async function claimDueTasksInternal(
         ),
       )
       .returning();
+    return { claimed, swept };
   });
+
+  for (const task of outcome.swept) {
+    warnMailTaskDeadLettered(task, "lease_expired");
+  }
+  return outcome.claimed;
 }
 
 /** Production claim path. All due, lease and lock timestamps come from PostgreSQL. */
@@ -179,15 +234,20 @@ async function markTaskFailedInternal(
   lockToken: string,
   error: unknown,
   now?: Date,
-): Promise<boolean> {
-  return getDb().transaction(async (tx) => {
+): Promise<TaskFinalizationResult> {
+  const outcome = await getDb().transaction(async (tx) => {
     const ownership = and(
       eq(tasks.id, id),
       eq(tasks.status, "processing"),
       eq(tasks.lockedBy, lockToken),
     );
     const [task] = await tx.select().from(tasks).where(ownership).limit(1).for("update");
-    if (!task) return false;
+    if (!task) {
+      return {
+        result: { updated: false, status: null } as TaskFinalizationResult,
+        deadLettered: null,
+      };
+    }
     const dead = task.attempts >= task.maxAttempts;
     const backoff = taskBackoffMs(task.attempts);
     const runAfter = dead
@@ -203,13 +263,27 @@ async function markTaskFailedInternal(
         lockedAt: null,
         lockedBy: null,
         leaseUntil: null,
-        lastError: String(error).slice(0, TASK_ERROR_MAX_LENGTH),
+        lastError: safeFailureMessage(task.kind, error).slice(0, TASK_ERROR_MAX_LENGTH),
         updatedAt: now ?? sql`now()`,
       })
       .where(ownership)
       .returning({ id: tasks.id });
-    return Boolean(updated);
+    if (!updated) {
+      return {
+        result: { updated: false, status: null } as TaskFinalizationResult,
+        deadLettered: null,
+      };
+    }
+    return {
+      result: { updated: true, status: dead ? "dead" : "failed" } as TaskFinalizationResult,
+      deadLettered: dead ? task : null,
+    };
   });
+
+  if (outcome.deadLettered) {
+    warnMailTaskDeadLettered(outcome.deadLettered, "transient");
+  }
+  return outcome.result;
 }
 
 /** Production failure path. Retry backoff is calculated by PostgreSQL. */
@@ -217,7 +291,7 @@ export async function markTaskFailed(
   id: string,
   lockToken: string,
   error: unknown,
-): Promise<boolean> {
+): Promise<TaskFinalizationResult> {
   return markTaskFailedInternal(id, lockToken, error);
 }
 
@@ -227,7 +301,7 @@ export async function markTaskFailedAt(
   lockToken: string,
   error: unknown,
   now: Date,
-): Promise<boolean> {
+): Promise<TaskFinalizationResult> {
   return markTaskFailedInternal(id, lockToken, error, now);
 }
 
@@ -253,7 +327,7 @@ export async function markTaskDead(
   id: string,
   lockToken: string,
   error: unknown,
-): Promise<boolean> {
+): Promise<TaskFinalizationResult> {
   const safeError = error instanceof PermanentTaskError ? error.message : "Task failed permanently";
   const [updated] = await getDb()
     .update(tasks)
@@ -266,8 +340,41 @@ export async function markTaskDead(
       updatedAt: sql`now()`,
     })
     .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
-    .returning({ id: tasks.id });
-  return Boolean(updated);
+    .returning({
+      id: tasks.id,
+      kind: tasks.kind,
+      attempts: tasks.attempts,
+      payloadJson: tasks.payloadJson,
+    });
+  if (!updated) return { updated: false, status: null };
+
+  warnMailTaskDeadLettered(
+    updated,
+    error instanceof PermanentTaskError ? (error.classification ?? "permanent") : "permanent",
+  );
+  return { updated: true, status: "dead" };
+}
+
+export async function countMailTaskFailures(): Promise<MailTaskFailureCounts> {
+  const [row] = await getDb()
+    .select({
+      businessFailed: sql<number>`count(*) filter (where ${tasks.kind} = ${"email"} and ${tasks.status} = ${"failed"})::int`,
+      businessDead: sql<number>`count(*) filter (where ${tasks.kind} = ${"email"} and ${tasks.status} = ${"dead"})::int`,
+      loginCodeFailed: sql<number>`count(*) filter (where ${tasks.kind} = ${"auth.login_code_email"} and ${tasks.status} = ${"failed"})::int`,
+      loginCodeDead: sql<number>`count(*) filter (where ${tasks.kind} = ${"auth.login_code_email"} and ${tasks.status} = ${"dead"})::int`,
+    })
+    .from(tasks);
+
+  return {
+    businessEmail: {
+      failed: Number(row?.businessFailed ?? 0),
+      dead: Number(row?.businessDead ?? 0),
+    },
+    loginCodeEmail: {
+      failed: Number(row?.loginCodeFailed ?? 0),
+      dead: Number(row?.loginCodeDead ?? 0),
+    },
+  };
 }
 
 export async function listTasks(options: {

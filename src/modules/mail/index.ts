@@ -7,6 +7,8 @@ import { logger } from "@/lib/logger";
 import { getSmtpConfig, type ResolvedSmtpConfig } from "@/modules/config";
 import { DEFAULT_LOCALE, type Locale, translate } from "@/modules/i18n";
 
+import { classifyMailError, MailDeliveryError } from "./delivery";
+
 // 按解析后配置缓存 transporter;配置变更(后台保存)后缓存键变化会自动重建,
 // 避免沿用旧连接配置。
 let cached: { key: string; transporter: Transporter } | null = null;
@@ -34,12 +36,11 @@ async function sendMail(to: string, subject: string, text: string): Promise<void
   }
   try {
     await getTransporter(cfg).sendMail({ from: cfg.from, to, subject, text });
-  } catch {
-    // Nodemailer/provider errors may embed recipients, envelope data, response
-    // text, or the rendered body (including login codes). Keep this error
-    // retryable, but never let the original transport object reach task
-    // lastError, logs, or the admin task surface.
-    throw new Error("SMTP delivery failed");
+  } catch (error) {
+    // Classify while the structured Nodemailer error is still available, then
+    // discard the original object because it may include recipients, response
+    // text, envelope data, or the rendered body (including login codes).
+    throw new MailDeliveryError(classifyMailError(error));
   }
   logger.info("邮件已发送", {
     recipientDigest: hmacSha256WithPurpose("mail-log-recipient", to.trim().toLowerCase()),

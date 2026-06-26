@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 import type { Task } from "@/db/schema";
+import { getEnv } from "@/lib/env";
 import { deliverLoginCodeEmailTask } from "@/modules/auth/login-code";
-import { getSmtpConfig } from "@/modules/config";
 import { executeScheduledPublish } from "@/modules/content/publishing";
 import {
   cleanupOrphanFile,
@@ -16,6 +16,7 @@ import {
   sendPaymentRejectedEmail,
   sendRenewalReminderEmail,
 } from "@/modules/mail";
+import { classifyMailError, MailDeliveryError } from "@/modules/mail/delivery";
 import {
   handleRenewalReminder,
   shouldSendRenewalReminderEmail,
@@ -102,25 +103,26 @@ export type TaskHandlerResult = { note?: string; deferUntil?: Date };
 
 async function runEmailTask(task: Task): Promise<TaskHandlerResult> {
   const payload = emailPayloadSchema.parse(task.payloadJson);
-  const smtp = await getSmtpConfig();
-  if (!smtp.configured) return { note: "SMTP not configured; delivery skipped" };
+  let deliver: () => Promise<void>;
 
   if (payload.template === "membership_activated") {
-    await sendMembershipActivatedEmail(
-      payload.to,
-      payload.params.tierName,
-      new Date(payload.params.endsAt),
-      payload.locale,
-    );
+    deliver = () =>
+      sendMembershipActivatedEmail(
+        payload.to,
+        payload.params.tierName,
+        new Date(payload.params.endsAt),
+        payload.locale,
+      );
   } else if (payload.template === "membership_revoked") {
-    await sendMembershipRevokedEmail(payload.to, payload.params.tierName, payload.locale);
+    deliver = () => sendMembershipRevokedEmail(payload.to, payload.params.tierName, payload.locale);
   } else if (payload.template === "payment_rejected") {
-    await sendPaymentRejectedEmail(
-      payload.to,
-      payload.params.tierName,
-      payload.params.reviewNote,
-      payload.locale,
-    );
+    deliver = () =>
+      sendPaymentRejectedEmail(
+        payload.to,
+        payload.params.tierName,
+        payload.params.reviewNote,
+        payload.locale,
+      );
   } else {
     const periodEndsAt = new Date(payload.periodEndsAt);
     const shouldSend = await shouldSendRenewalReminderEmail({
@@ -129,14 +131,44 @@ async function runEmailTask(task: Task): Promise<TaskHandlerResult> {
     });
     if (!shouldSend) return { note: "Renewal reminder became inactive or stale; delivery skipped" };
 
-    await sendRenewalReminderEmail(
-      payload.to,
-      payload.params.tierName,
-      new Date(payload.params.endsAt),
-      payload.locale,
-    );
+    deliver = () =>
+      sendRenewalReminderEmail(
+        payload.to,
+        payload.params.tierName,
+        new Date(payload.params.endsAt),
+        payload.locale,
+      );
   }
-  return {};
+
+  try {
+    await deliver();
+    return {};
+  } catch (error) {
+    const classification = classifyMailError(error);
+    if (classification === "permanent") {
+      throw new PermanentTaskError("Email delivery failed permanently", {
+        classification,
+      });
+    }
+    if (classification === "needs_operator") {
+      const env = getEnv();
+      const maxAgeMs = env.EMAIL_DELIVERY_MAX_AGE_HOURS * 60 * 60 * 1_000;
+      if (Date.now() - task.createdAt.getTime() >= maxAgeMs) {
+        throw new PermanentTaskError(
+          `SMTP unavailable; email expired after ${env.EMAIL_DELIVERY_MAX_AGE_HOURS} h`,
+          { classification },
+        );
+      }
+      return {
+        note: "SMTP unavailable; delivery deferred",
+        deferUntil: new Date(Date.now() + env.EMAIL_RETRY_RECHECK_MINUTES * 60 * 1_000),
+      };
+    }
+
+    // The transport already strips the provider error. Re-wrap here as well so
+    // mocked/custom senders can never persist a raw recipient or message body.
+    throw new MailDeliveryError("transient");
+  }
 }
 
 async function runPublishPostTask(task: Task): Promise<TaskHandlerResult> {

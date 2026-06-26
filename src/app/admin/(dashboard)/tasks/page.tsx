@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/table";
 import { formatDateTime } from "@/lib/dates";
 import { getT } from "@/modules/i18n/server";
-import { listTasks, type TaskStatus } from "@/modules/tasks";
+import { countMailTaskFailures, listTasks, type TaskStatus } from "@/modules/tasks";
 
 export const dynamic = "force-dynamic";
 
@@ -35,13 +35,42 @@ export default async function AdminTasksPage({
   const status = STATUSES.includes(params.status as TaskStatus)
     ? (params.status as TaskStatus)
     : undefined;
-  const [records, t] = await Promise.all([listTasks({ status }), getT()]);
+  const [records, mailFailures, t] = await Promise.all([
+    listTasks({ status }),
+    countMailTaskFailures(),
+    getT(),
+  ]);
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-bold">{t("admin.tasks.title")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">{t("admin.tasks.description")}</p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-lg border p-4">
+          <p className="text-sm font-medium">{t("admin.tasks.businessEmail")}</p>
+          <div className="mt-2 flex gap-2 text-sm">
+            <Badge variant="destructive">
+              {t("admin.tasks.statusfailed")}: {mailFailures.businessEmail.failed}
+            </Badge>
+            <Badge variant="destructive">
+              {t("admin.tasks.statusdead")}: {mailFailures.businessEmail.dead}
+            </Badge>
+          </div>
+        </div>
+        <div className="rounded-lg border p-4">
+          <p className="text-sm font-medium">{t("admin.tasks.loginCodeEmail")}</p>
+          <div className="mt-2 flex gap-2 text-sm">
+            <Badge variant="destructive">
+              {t("admin.tasks.statusfailed")}: {mailFailures.loginCodeEmail.failed}
+            </Badge>
+            <Badge variant="destructive">
+              {t("admin.tasks.statusdead")}: {mailFailures.loginCodeEmail.dead}
+            </Badge>
+          </div>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">

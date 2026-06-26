@@ -31,6 +31,8 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: z.string().optional(),
   SMTP_FROM: z.string().optional(),
+  EMAIL_RETRY_RECHECK_MINUTES: z.coerce.number().finite().int().min(1).max(1_440).default(15),
+  EMAIL_DELIVERY_MAX_AGE_HOURS: z.coerce.number().finite().int().min(1).max(168).default(24),
 
   STORAGE_DRIVER: z.enum(["local", "s3"]).default("local"),
   UPLOAD_DIR: z.string().default("./uploads"),

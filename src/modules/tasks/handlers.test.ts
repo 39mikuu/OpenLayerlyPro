@@ -1,9 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.hoisted(() => {
+  Object.assign(process.env, {
+    NODE_ENV: "test",
+    SESSION_SECRET: "task-handler-test-session-secret-long-enough",
+  });
+});
+
 const mocks = vi.hoisted(() => ({
   cleanupOrphanFile: vi.fn(),
   deleteStorageObject: vi.fn(),
-  getSmtpConfig: vi.fn(),
   sendMembershipActivatedEmail: vi.fn(),
   sendMembershipRevokedEmail: vi.fn(),
   sendPaymentRejectedEmail: vi.fn(),
@@ -17,7 +23,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/modules/auth/login-code", () => ({
   deliverLoginCodeEmailTask: mocks.deliverLoginCodeEmailTask,
 }));
-vi.mock("@/modules/config", () => ({ getSmtpConfig: mocks.getSmtpConfig }));
 vi.mock("@/modules/file/cleanup", () => ({
   cleanupOrphanFile: mocks.cleanupOrphanFile,
   deleteStorageObject: mocks.deleteStorageObject,
@@ -36,10 +41,13 @@ vi.mock("@/modules/payment/subscriptions", () => ({
 }));
 
 import type { Task } from "@/db/schema";
+import { ApiError } from "@/lib/api";
+import { MailDeliveryError } from "@/modules/mail/delivery";
 
+import { PermanentTaskError } from "./errors";
 import { runTaskHandler } from "./handlers";
 
-function task(payloadJson: Record<string, unknown>, kind = "email"): Task {
+function task(payloadJson: Record<string, unknown>, kind = "email", createdAt = new Date()): Task {
   const now = new Date();
   return {
     id: "11111111-1111-4111-8111-111111111111",
@@ -54,7 +62,7 @@ function task(payloadJson: Record<string, unknown>, kind = "email"): Task {
     lockedBy: "worker",
     leaseUntil: new Date(now.getTime() + 60_000),
     lastError: null,
-    createdAt: now,
+    createdAt,
     updatedAt: now,
   };
 }
@@ -62,7 +70,10 @@ function task(payloadJson: Record<string, unknown>, kind = "email"): Task {
 describe("task handlers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getSmtpConfig.mockResolvedValue({ configured: true });
+    mocks.sendMembershipActivatedEmail.mockResolvedValue(undefined);
+    mocks.sendMembershipRevokedEmail.mockResolvedValue(undefined);
+    mocks.sendPaymentRejectedEmail.mockResolvedValue(undefined);
+    mocks.sendRenewalReminderEmail.mockResolvedValue(undefined);
     mocks.cleanupOrphanFile.mockResolvedValue("deleted");
     mocks.deleteStorageObject.mockResolvedValue(undefined);
     mocks.dispatchPaymentProviderEvent.mockResolvedValue(undefined);
@@ -71,8 +82,9 @@ describe("task handlers", () => {
     mocks.nextSubscriptionReconcileAt.mockReturnValue(new Date("2026-06-25T08:00:00.000Z"));
   });
 
-  it("treats missing SMTP configuration as a successful no-op", async () => {
-    mocks.getSmtpConfig.mockResolvedValue({ configured: false });
+  it("defers missing SMTP configuration without marking the task succeeded", async () => {
+    mocks.sendPaymentRejectedEmail.mockRejectedValue(new ApiError(500, "mailNotConfigured"));
+    const before = Date.now();
 
     const result = await runTaskHandler(
       task({
@@ -83,8 +95,66 @@ describe("task handlers", () => {
       }),
     );
 
-    expect(result.note).toContain("SMTP not configured");
-    expect(mocks.sendPaymentRejectedEmail).not.toHaveBeenCalled();
+    expect(result.note).toContain("delivery deferred");
+    expect(result.deferUntil?.getTime()).toBeGreaterThanOrEqual(before + 15 * 60 * 1_000);
+    expect(mocks.sendPaymentRejectedEmail).toHaveBeenCalledOnce();
+  });
+
+  it("dead-letters an operator-blocked business email after the maximum age", async () => {
+    mocks.sendPaymentRejectedEmail.mockRejectedValue(new ApiError(500, "mailNotConfigured"));
+    const oldTask = task(
+      {
+        template: "payment_rejected",
+        to: "fan@example.com",
+        locale: "en",
+        params: { tierName: "Supporter", reviewNote: null },
+      },
+      "email",
+      new Date(Date.now() - 25 * 60 * 60 * 1_000),
+    );
+
+    await expect(runTaskHandler(oldTask)).rejects.toMatchObject({
+      message: "SMTP unavailable; email expired after 24 h",
+      classification: "needs_operator",
+    });
+  });
+
+  it("turns permanent SMTP failures into an immediate permanent task error", async () => {
+    mocks.sendPaymentRejectedEmail.mockRejectedValue(new MailDeliveryError("permanent"));
+
+    await expect(
+      runTaskHandler(
+        task({
+          template: "payment_rejected",
+          to: "fan@example.com",
+          locale: "en",
+          params: { tierName: "Supporter", reviewNote: null },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      message: "Email delivery failed permanently",
+      classification: "permanent",
+    } satisfies Partial<PermanentTaskError>);
+  });
+
+  it("keeps transient SMTP failures retryable while stripping raw transport details", async () => {
+    mocks.sendPaymentRejectedEmail.mockRejectedValue(
+      new Error("recipient fan@example.com rejected; body=private"),
+    );
+
+    await expect(
+      runTaskHandler(
+        task({
+          template: "payment_rejected",
+          to: "fan@example.com",
+          locale: "en",
+          params: { tierName: "Supporter", reviewNote: null },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      message: "SMTP delivery failed",
+      kind: "transient",
+    });
   });
 
   it("renders membership activation parameters at dispatch time", async () => {

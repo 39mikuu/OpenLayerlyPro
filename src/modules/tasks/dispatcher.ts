@@ -72,11 +72,11 @@ export async function dispatchClaimedTask(
       logger.warn("Task completion ignored because the lease was lost", { taskId: task.id });
     }
   } catch (error) {
-    const failed =
+    const failure =
       error instanceof PermanentTaskError
         ? await dependencies.dead(task.id, lockToken, error)
         : await dependencies.fail(task.id, lockToken, error);
-    if (!failed && !leaseLost) {
+    if (!failure.updated && !leaseLost) {
       logger.warn("Task failure ignored because the lease was lost", { taskId: task.id });
     }
   } finally {
