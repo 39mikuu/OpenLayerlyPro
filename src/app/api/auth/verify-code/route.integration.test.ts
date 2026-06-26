@@ -6,7 +6,7 @@ vi.hoisted(() => {
     NODE_ENV: "test",
     TRUSTED_PROXY_HEADER: "x-forwarded-for",
     TRUSTED_PROXY_HOPS: "1",
-    VERIFY_CODE_IP_RATE_MAX: "2",
+    VERIFY_CODE_IP_RATE_MAX: "3",
     VERIFY_CODE_EMAIL_IP_RATE_MAX: "2",
     VERIFY_CODE_UNRESOLVED_RATE_MAX: "30",
     VERIFY_CODE_RATE_WINDOW_MS: "600000",
@@ -64,7 +64,7 @@ describeWithDatabase("verify-code route comparison-budget integration", () => {
     await resetDatabase(db);
   });
 
-  it("requires an available source budget before successful verification", async () => {
+  it("blocks an exhausted email+IP pair before comparison without locking another IP", async () => {
     const email = "source-budget@example.com";
     const limitedIp = "198.51.100.44";
     const alternateIp = "198.51.100.45";
@@ -78,6 +78,9 @@ describeWithDatabase("verify-code route comparison-budget integration", () => {
     expect((await POST(request(email, OTHER_CODE, limitedIp))).status).toBe(400);
     expect((await POST(request(email, OTHER_CODE, limitedIp))).status).toBe(400);
 
+    // The source hard budget still has one comparison left (3 max), but the
+    // email+IP failure bucket is already full (2 max), so this must be rejected
+    // by the read-only target precheck before the correct code is consumed.
     expect((await POST(request(email, TEST_CODE, limitedIp))).status).toBe(429);
     expect(mocks.createSession).not.toHaveBeenCalled();
 
