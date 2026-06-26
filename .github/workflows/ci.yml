@@ -40,13 +40,21 @@ jobs:
       - run: pnpm check:request-bodies
       - run: pnpm exec tsc --noEmit
       - run: pnpm db:migrate
-      - run: pnpm test -- --reporter=json --outputFile=vitest-results.json
-      - name: Upload Vitest results
+      - name: Run tests and capture output
+        run: |
+          set +e
+          pnpm test > vitest-output.log 2>&1
+          status=$?
+          echo "$status" > vitest-exit-code.txt
+          exit "$status"
+      - name: Upload Vitest output
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vitest-results
-          path: vitest-results.json
+          name: vitest-output
+          path: |
+            vitest-output.log
+            vitest-exit-code.txt
           if-no-files-found: error
       - run: pnpm build:migrator
       - run: pnpm build
