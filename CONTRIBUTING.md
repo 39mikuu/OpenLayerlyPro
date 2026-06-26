@@ -20,7 +20,7 @@ Development mode can log email login codes when SMTP is not configured. Producti
 
 ## Validation
 
-Run the same baseline checks as CI before opening a PR:
+Run the baseline checks before opening a PR:
 
 ```bash
 pnpm lint
@@ -29,8 +29,12 @@ pnpm check:request-bodies
 pnpm exec tsc --noEmit
 pnpm test
 pnpm build:migrator
+pnpm build:files-backfill
+pnpm build:admin-reset
 pnpm build
 ```
+
+`pnpm build` only builds the Next application. It does not replace the explicit one-off artifact builds. Recovery/upgrade work must verify that `dist/migrate.mjs`, `dist/files-backfill.mjs`, and `dist/admin-reset.mjs` are produced and included in the target image.
 
 Security/payment/file/task changes that depend on PostgreSQL behavior must also run the real database suite:
 
@@ -44,6 +48,7 @@ Migration changes must include generation/drift review and an isolated upgrade t
 pnpm exec drizzle-kit generate
 pnpm db:migrate
 pnpm build:migrator
+pnpm build:files-backfill
 ```
 
 Shell/deployment changes must pass shellcheck and a clean Compose or isolated recovery drill appropriate to their scope. Browser-facing CSP/Range/authorization changes require a real browser or equivalent E2E check; unit tests alone are insufficient.
