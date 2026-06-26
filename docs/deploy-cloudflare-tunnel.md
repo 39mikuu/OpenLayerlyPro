@@ -1,37 +1,25 @@
 # Cloudflare Tunnel 部署
 
-适合无公网 IP、不想做路由器端口转发的家庭服务器 / NAS / PVE 虚拟机用户。
+适合无公网 IP、不想做路由器端口转发的家庭服务器、NAS 或 PVE 虚拟机用户。
 
 ## 架构
 
 ```txt
-浏览器
-  ↓
-Cloudflare DNS
-  ↓
-Cloudflare Tunnel
-  ↓
-家庭服务器（docker compose）
-  ↓
-Next.js App → PostgreSQL → 本地 / S3 存储
+浏览器 → Cloudflare DNS/TLS → Cloudflare Tunnel → app:3000 → PostgreSQL
+                                                   └──────→ local / S3 storage
 ```
 
 ## 前置条件
 
-- 一个托管在 Cloudflare 的域名
-- 已安装 Docker 和 Docker Compose 的服务器
+- 一个托管在 Cloudflare 的域名；
+- 已安装 Docker Engine 与 Docker Compose 的服务器；
+- 强随机 `SESSION_SECRET`、可用 SMTP 与持久化 config encryption key。
 
-## 步骤
+## 1. 创建 Tunnel
 
-### 1. 创建 Tunnel
+在 Cloudflare Zero Trust 中进入 **Networks → Tunnels → Create a tunnel**，选择 cloudflared，创建后复制 Tunnel token。把 token 当作 secret，不要提交仓库或粘贴到公开 issue。
 
-1. 打开 [Cloudflare Zero Trust 控制台](https://one.dash.cloudflare.com/)。
-2. 进入 Networks → Tunnels → Create a tunnel，选择 Cloudflared。
-3. 命名（如 `artist-site`），创建后复制 Token（`eyJ...` 开头的长字符串）。
-
-### 2. 配置 Public Hostname
-
-在 Tunnel 详情页添加 Public Hostname：
+## 2. 配置 Public Hostname
 
 | 项 | 值 |
 |---|---|
@@ -40,43 +28,57 @@ Next.js App → PostgreSQL → 本地 / S3 存储
 | Service Type | HTTP |
 | URL | `app:3000` |
 
-> `app` 是 docker-compose 中应用服务的名称，cloudflared 容器与它在同一网络中。
+`app` 是 Compose service 名；cloudflared 与 app 在同一 Docker network 中。
 
-### 3. 配置环境变量
-
-编辑 `.env`：
+## 3. 配置环境变量
 
 ```env
 APP_URL=https://artist.example.com
-CLOUDFLARE_TUNNEL_TOKEN=eyJ...
-SESSION_SECRET=请生成随机字符串
-# 让限流与审计日志记录真实访客 IP（Cloudflare 会写入 CF-Connecting-IP）
+CLOUDFLARE_TUNNEL_TOKEN=...
+SESSION_SECRET=replace-with-a-strong-random-value
 TRUSTED_PROXY_HEADER=cf-connecting-ip
 ```
 
-> Tunnel 路径下应用不对外暴露端口，`cf-connecting-ip` 单值头是可信的；裸机直连场景请改用 `TRUSTED_PROXY_HOPS`，详见 [公网 VPS 部署](deploy-vps.md)。
+在标准 Tunnel 拓扑中，源站不直接暴露公网且 Cloudflare 会覆盖 `CF-Connecting-IP`，因此该单值头可以作为可信客户端身份。若 app 仍通过其他入口暴露，必须关闭该入口或改用符合真实拓扑的 XFF/hops 配置。
 
-Turnstile 与登录验证码限流依赖真实访客 IP 才能做到精确 per-IP 保护。Cloudflare Tunnel 推荐保留上面的 `TRUSTED_PROXY_HEADER=cf-connecting-ip`；未配置可信代理头时，应用会失败即安全，不信任客户端伪造的 `X-Forwarded-For`，并退回较高阈值的全局 Turnstile 上游保护。
+无法解析可信 IP 时，当前运行时不会落入低阈值全局 `unknown` 桶，而会使用 admin/login/file 等各操作独立的高阈值 unresolved emergency bucket并记录告警。生产应修复代理配置，不应长期依赖降级路径。
 
-生成随机 SECRET：
+生成随机 secret：
 
 ```bash
 openssl rand -base64 32
 ```
 
-### 4. 启动
+## 4. 启动
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d
 ```
 
-### 5. 验证
+## 5. 验证
 
-访问 `https://artist.example.com`，应进入站点初始化页面。
+- HTTPS 域名可访问并进入初始化/站点页面；
+- `/api/health` 与 `/api/ready` 返回成功；
+- 应用日志能解析真实访客 IP；
+- request-code、verify-code 和 Turnstile 正常；
+- 上传上限按应用实际字节执行；
+- 视频 seek 的 Range 请求能返回 206/416；
+- private 文件/视频没有被 Cloudflare 缓存为 public。
 
-## 注意事项
+S6 #86 实现后，还必须验证 Cloudflare 下的 nonce CSP、DB-enabled Turnstile、S3 signed origin 与公开视频/integration；不要在 Cloudflare Transform Rules 中覆盖应用的 CSP 或文件隔离头。
 
-- 升级版本前建议备份数据库与 `secrets` volume。本版本包含 sessions、login_codes、memberships、post_files、payment_requests、posts 的性能索引 migration，启动时会自动执行。
+## 上传与存储
 
-- Cloudflare 免费版代理上传单请求上限约 100MB。大文件（素材包、PSD）建议在后台「系统配置」中启用 R2/S3（环境变量仍可作为回退），下载走签名直链不受影响；上传超大附件可临时通过局域网地址操作后台。
-- 使用 Tunnel 后无需在 compose 中暴露 `3000` 端口到公网，如需彻底关闭可删除 `ports` 配置，仅保留局域网调试用途。
+Cloudflare plan、代理和产品路径可能有各自请求上限，部署前应以当前 Cloudflare 控制台/文档为准。应用层仍会按实际传输字节 enforce 自己的上限。
+
+大附件可使用 S3/R2 流式 multipart；图片用途仍会有界缓冲并重编码。S3/R2 bucket 需要 abort-incomplete-multipart lifecycle，以及独立 versioning/snapshot 备份。
+
+## 备份与升级
+
+升级前保护 PostgreSQL、local uploads、配置加密根密钥、`SESSION_SECRET` 和匹配的 S3/R2 recovery point。
+
+不要只执行 `git pull && docker compose up`。按 [升级指南](deployment/upgrade.md)停止 app、处理 duplicate pending payment、运行 one-off migrator 与 mandatory file-safety backfill后再启动。恢复基线与 S7 #87 尚未落地的差异见 [备份与恢复](deployment/backup-restore.md)。
+
+## 端口暴露
+
+Tunnel 不要求把 app:3000 暴露公网。可移除 Compose 的公网端口映射，只保留 Docker network；需要局域网调试时，应使用防火墙限制来源。
