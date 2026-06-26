@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { Task } from "@/db/schema";
+import { deliverLoginCodeEmailTask } from "@/modules/auth/login-code";
 import { getSmtpConfig } from "@/modules/config";
 import { executeScheduledPublish } from "@/modules/content/publishing";
 import {
@@ -90,6 +91,12 @@ const renewalReminderPayloadSchema = z.object({
   subscriptionId: z.string().uuid(),
   periodEndsAt: z.string().datetime(),
 });
+const loginCodeEmailPayloadSchema = z.object({
+  version: z.literal(1),
+  codeId: z.string().uuid(),
+  encryptedCode: z.string().min(1),
+  locale: z.enum(SUPPORTED_LOCALES).optional(),
+});
 
 export type TaskHandlerResult = { note?: string; deferUntil?: Date };
 
@@ -168,6 +175,12 @@ async function runStorageDeleteTask(task: Task): Promise<TaskHandlerResult> {
 
 export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
   switch (task.kind) {
+    case "auth.login_code_email": {
+      const parsed = loginCodeEmailPayloadSchema.safeParse(task.payloadJson);
+      if (!parsed.success) throw new PermanentTaskError("Invalid auth.login_code_email payload");
+      const note = await deliverLoginCodeEmailTask(parsed.data);
+      return note ? { note } : {};
+    }
     case "email":
       return runEmailTask(task);
     case "publish_post":

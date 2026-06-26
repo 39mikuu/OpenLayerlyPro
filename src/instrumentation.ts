@@ -7,7 +7,12 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     try {
       const { getEnv } = await import("@/lib/env");
-      getEnv();
+      const env = getEnv();
+      if (env.APP_INSTANCE_COUNT > 1) {
+        console.warn(
+          "APP_INSTANCE_COUNT is greater than 1, but v1.0 rate limits are process-local and not globally consistent across replicas.",
+        );
+      }
       const { startTaskDispatcher } = await import("@/modules/tasks/dispatcher");
       startTaskDispatcher();
     } catch (err) {

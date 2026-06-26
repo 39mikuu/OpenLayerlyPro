@@ -36,7 +36,15 @@ function request(body: string, headers: HeadersInit = {}) {
 describe("admin login request ordering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getEnv.mockReturnValue({ REQUEST_JSON_MAX_BYTES: 65_536 });
+    mocks.getEnv.mockReturnValue({
+      NODE_ENV: "test",
+      REQUEST_JSON_MAX_BYTES: 65_536,
+      ADMIN_LOGIN_RATE_MAX: 10,
+      ADMIN_LOGIN_UNRESOLVED_RATE_MAX: 100,
+      ADMIN_LOGIN_RATE_WINDOW_MS: 600_000,
+      TRUSTED_PROXY_HEADER: "x-forwarded-for",
+      TRUSTED_PROXY_HOPS: 1,
+    });
     mocks.rateLimit.mockReturnValue(true);
     mocks.readJsonWithLimit.mockResolvedValue({
       email: "admin@example.test",
@@ -73,7 +81,11 @@ describe("admin login request ordering", () => {
   );
 
   it("checks declared length and IP rate limit before parsing a normal request", async () => {
-    const response = await POST(request('{"email":"admin@example.test","password":"secret"}'));
+    const response = await POST(
+      request('{"email":"admin@example.test","password":"secret"}', {
+        "x-forwarded-for": "198.51.100.40",
+      }),
+    );
 
     expect(response.status).toBe(200);
     expect(mocks.assertContentLengthWithinLimit.mock.invocationCallOrder[0]).toBeLessThan(
@@ -85,5 +97,15 @@ describe("admin login request ordering", () => {
     expect(mocks.readJsonWithLimit.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.adminLogin.mock.invocationCallOrder[0]!,
     );
+    expect(mocks.rateLimit).toHaveBeenCalledWith("admin-login:198.51.100.40", 10, 600_000);
+  });
+
+  it("uses admin-login-unresolved instead of an unknown pseudo-IP", async () => {
+    const response = await POST(request('{"email":" admin@example.test ","password":"secret"}'));
+
+    expect(response.status).toBe(200);
+    expect(mocks.rateLimit).toHaveBeenCalledWith("admin-login-unresolved", 100, 600_000);
+    expect(JSON.stringify(mocks.rateLimit.mock.calls)).not.toContain("unknown");
+    expect(mocks.adminLogin).toHaveBeenCalledWith("admin@example.test", "secret");
   });
 });

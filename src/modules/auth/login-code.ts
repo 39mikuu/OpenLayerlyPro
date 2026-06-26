@@ -1,127 +1,170 @@
-import { sql, type SQLWrapper } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, sql, type SQLWrapper } from "drizzle-orm";
 
-import { getDb } from "@/db";
+import { type DbClient, getDb } from "@/db";
 import { loginCodes, type User } from "@/db/schema";
 import { ApiError } from "@/lib/api";
-import { generateLoginCode, hmacSha256, safeEqualHex } from "@/lib/crypto";
+import type { ClientRateLimitIdentity } from "@/lib/client-rate-limit";
+import {
+  decryptAuthTaskSecret,
+  encryptAuthTaskSecret,
+  generateLoginCode,
+  hmacSha256WithPurpose,
+  safeEqualHex,
+} from "@/lib/crypto";
 import { addMinutes } from "@/lib/dates";
+import { getEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
-import { rateLimit, retryAfterSeconds } from "@/lib/rate-limit";
+import { rateLimit } from "@/lib/rate-limit";
+import {
+  getRequestCodeEmailIpRateLimit,
+  normalizeEmail,
+  normalizeLoginCode,
+} from "@/modules/auth/rate-limit-policy";
 import { getSmtpConfig } from "@/modules/config";
 import type { Locale } from "@/modules/i18n";
 import { sendLoginCodeEmail } from "@/modules/mail";
 import { recordEvent } from "@/modules/system/events";
+import { enqueueTask } from "@/modules/tasks";
+import { PermanentTaskError } from "@/modules/tasks/errors";
 import { findOrCreateUserByEmail, touchLastLogin } from "@/modules/user";
 
 const CODE_TTL_MINUTES = 10;
-const MAX_ATTEMPTS = 5;
-const SEND_COOLDOWN_MS = 60 * 1000;
-const HOURLY_WINDOW_MS = 60 * 60 * 1000;
-const HOURLY_LIMIT = 5;
+const LOGIN_CODE_HMAC_PURPOSE = "auth-login-code";
+
+export type RequestLoginCodeResult = { suppressed: boolean; codeId?: string };
+
+export type LoginCodeEmailTaskPayload = {
+  version: 1;
+  codeId: string;
+  encryptedCode: string;
+  locale?: Locale;
+};
 
 export async function requestLoginCode(
   email: string,
-  meta?: { ip?: string | null; userAgent?: string | null; locale?: Locale },
-): Promise<void> {
-  const normalized = email.trim().toLowerCase();
+  meta?: {
+    identity?: ClientRateLimitIdentity;
+    ip?: string | null;
+    userAgent?: string | null;
+    locale?: Locale;
+  },
+): Promise<RequestLoginCodeResult> {
+  const normalized = normalizeEmail(email);
+  const env = getEnv();
+  const identity = meta?.identity ?? { kind: "unresolved" };
 
-  if (!rateLimit(`code-hour:${normalized}`, HOURLY_LIMIT, HOURLY_WINDOW_MS)) {
-    throw new ApiError(429, "hourlyRateLimited");
-  }
-  if (!rateLimit(`code-cooldown:${normalized}`, 1, SEND_COOLDOWN_MS)) {
-    const wait = retryAfterSeconds(`code-cooldown:${normalized}`, SEND_COOLDOWN_MS);
-    throw new ApiError(429, "cooldownRateLimited", { seconds: wait });
-  }
-  if (meta?.ip && !rateLimit(`code-ip:${meta.ip}`, 20, HOURLY_WINDOW_MS)) {
-    throw new ApiError(429, "requestRateLimited");
-  }
+  const dedupeWindowMs = env.REQUEST_CODE_SEND_DEDUPE_SECONDS * 1000;
 
-  const code = generateLoginCode();
-  await getDb()
-    .insert(loginCodes)
-    .values({
-      email: normalized,
-      codeHash: hmacSha256(code),
-      expiresAt: addMinutes(new Date(), CODE_TTL_MINUTES),
-      ip: meta?.ip ?? null,
-      userAgent: meta?.userAgent ?? null,
-    });
+  return getDb().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${normalized}))`);
 
-  if ((await getSmtpConfig()).configured) {
-    await sendLoginCodeEmail(normalized, code, meta?.locale);
-  } else {
-    // 开发模式下未配置 SMTP，仅在服务端日志输出提示（不输出验证码原文到结构化日志）
-    if (process.env.NODE_ENV !== "production") {
-      console.log(`[dev-only] 登录验证码 ${normalized}: ${code}`);
-    } else {
+    const recent = await executeRows<{ id: string }>(
+      tx,
+      sql`
+        select ${loginCodes.id} as id
+        from ${loginCodes}
+        where ${loginCodes.email} = ${normalized}
+          and ${loginCodes.usedAt} is null
+          and ${loginCodes.expiresAt} > now()
+          and ${loginCodes.createdAt} > now() - (${dedupeWindowMs} * interval '1 millisecond')
+        order by ${loginCodes.createdAt} desc
+        limit 1
+        for update
+      `,
+    );
+    if (recent[0]) return { suppressed: true };
+
+    const smtp = await getSmtpConfig();
+    if (!smtp.configured) {
       throw new ApiError(500, "mailNotConfigured");
     }
-  }
-  logger.info("登录验证码已发送", { email: normalized });
+
+    const code = generateLoginCode();
+    const encryptedCode = encryptAuthTaskSecret(code);
+    const codeHash = hmacLoginCode(code);
+
+    if (identity.kind === "ip") {
+      const emailIpLimit = getRequestCodeEmailIpRateLimit({
+        normalizedEmail: normalized,
+        ip: identity.value,
+        env,
+      });
+      if (!rateLimit(emailIpLimit.key, emailIpLimit.max, emailIpLimit.windowMs)) {
+        throw new ApiError(429, "requestRateLimited");
+      }
+    }
+
+    const [inserted] = await tx
+      .insert(loginCodes)
+      .values({
+        email: normalized,
+        codeHash,
+        expiresAt: addMinutes(new Date(), CODE_TTL_MINUTES),
+        ip: meta?.ip ?? null,
+        userAgent: meta?.userAgent ?? null,
+      })
+      .returning({ id: loginCodes.id });
+
+    await enqueueTask(tx, {
+      kind: "auth.login_code_email",
+      dedupeKey: `auth-login-code-email:${inserted.id}`,
+      payload: {
+        version: 1,
+        codeId: inserted.id,
+        encryptedCode,
+        locale: meta?.locale,
+      } satisfies LoginCodeEmailTaskPayload,
+    });
+
+    logger.info("登录验证码投递任务已排队", {
+      emailDigest: hmacSha256WithPurpose("auth-log-email", normalized),
+    });
+    return { suppressed: false, codeId: inserted.id };
+  });
 }
 
 export async function verifyLoginCode(email: string, code: string, locale?: Locale): Promise<User> {
-  const normalized = email.trim().toLowerCase();
+  const normalized = normalizeEmail(email);
+  const normalizedCode = normalizeLoginCode(code);
   const db = getDb();
 
-  await db.transaction(async (tx) => {
-    const attempts = await executeRows<{
+  const outcome = await db.transaction(async (tx): Promise<"correct" | "incorrect"> => {
+    const [record] = await executeRows<{
       id: string;
       code_hash: string;
-      attempt_count: number;
     }>(
       tx,
       sql`
-        with candidate as (
-          select id
-          from ${loginCodes}
-          where ${loginCodes.email} = ${normalized}
-            and ${loginCodes.usedAt} is null
-            and ${loginCodes.expiresAt} > now()
-          order by ${loginCodes.createdAt} desc
-          limit 1
-          for update
-        )
-        update ${loginCodes}
-        set ${loginCodes.attemptCount} = ${loginCodes.attemptCount} + 1
-        where ${loginCodes.id} = (select id from candidate)
-          and ${loginCodes.attemptCount} < ${MAX_ATTEMPTS}
-        returning
+        select
           ${loginCodes.id} as id,
-          ${loginCodes.codeHash} as code_hash,
-          ${loginCodes.attemptCount} as attempt_count
+          ${loginCodes.codeHash} as code_hash
+        from ${loginCodes}
+        where ${loginCodes.email} = ${normalized}
+          and ${loginCodes.usedAt} is null
+          and ${loginCodes.expiresAt} > now()
+        order by ${loginCodes.createdAt} desc
+        limit 1
+        for update
       `,
     );
-    const record = attempts[0];
 
     if (!record) {
-      const active = await executeRows<{ attempt_count: number }>(
-        tx,
-        sql`
-          select ${loginCodes.attemptCount} as attempt_count
-          from ${loginCodes}
-          where ${loginCodes.email} = ${normalized}
-            and ${loginCodes.usedAt} is null
-            and ${loginCodes.expiresAt} > now()
-          order by ${loginCodes.createdAt} desc
-          limit 1
-        `,
-      );
-      if ((active[0]?.attempt_count ?? 0) >= MAX_ATTEMPTS) {
-        throw new ApiError(429, "codeAttemptsExceeded");
-      }
       throw new ApiError(400, "codeExpired");
     }
 
-    if (!safeEqualHex(hmacSha256(code.trim()), record.code_hash)) {
-      throw new ApiError(400, "codeIncorrect");
+    if (!safeEqualHex(hmacLoginCode(normalizedCode), record.code_hash)) {
+      await tx
+        .update(loginCodes)
+        .set({ attemptCount: sql`${loginCodes.attemptCount} + 1` })
+        .where(eq(loginCodes.id, record.id));
+      return "incorrect";
     }
 
     const used = await executeRows<{ id: string }>(
       tx,
       sql`
         update ${loginCodes}
-        set ${loginCodes.usedAt} = now()
+        set used_at = now()
         where ${loginCodes.id} = ${record.id}
           and ${loginCodes.usedAt} is null
         returning ${loginCodes.id} as id
@@ -130,7 +173,12 @@ export async function verifyLoginCode(email: string, code: string, locale?: Loca
     if (!used[0]) {
       throw new ApiError(400, "codeExpired");
     }
+    return "correct";
   });
+
+  if (outcome === "incorrect") {
+    throw new ApiError(400, "codeIncorrect");
+  }
 
   const user = await findOrCreateUserByEmail(normalized);
   await touchLastLogin(user.id, locale);
@@ -138,8 +186,72 @@ export async function verifyLoginCode(email: string, code: string, locale?: Loca
   return user;
 }
 
+export async function deliverLoginCodeEmailTask(
+  payload: LoginCodeEmailTaskPayload,
+): Promise<string | undefined> {
+  return getDb().transaction(async (tx) => {
+    const [initial] = await tx
+      .select({
+        email: loginCodes.email,
+      })
+      .from(loginCodes)
+      .where(eq(loginCodes.id, payload.codeId))
+      .limit(1);
+
+    if (!initial) return "Login code is no longer active; delivery skipped";
+
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${initial.email}))`);
+
+    const [record] = await tx
+      .select({
+        id: loginCodes.id,
+        email: loginCodes.email,
+        expiresAt: loginCodes.expiresAt,
+        usedAt: loginCodes.usedAt,
+      })
+      .from(loginCodes)
+      .where(eq(loginCodes.id, payload.codeId))
+      .limit(1);
+
+    if (!record || record.usedAt || record.expiresAt <= new Date()) {
+      return "Login code is no longer active; delivery skipped";
+    }
+
+    const [latest] = await tx
+      .select({ id: loginCodes.id })
+      .from(loginCodes)
+      .where(
+        and(
+          eq(loginCodes.email, record.email),
+          isNull(loginCodes.usedAt),
+          gt(loginCodes.expiresAt, sql<Date>`now()`),
+        ),
+      )
+      .orderBy(desc(loginCodes.createdAt))
+      .limit(1);
+
+    if (latest?.id !== payload.codeId) {
+      return "Login code was superseded; delivery skipped";
+    }
+
+    let code: string;
+    try {
+      code = decryptAuthTaskSecret(payload.encryptedCode);
+    } catch {
+      throw new PermanentTaskError("Login code task payload could not be decrypted");
+    }
+
+    await sendLoginCodeEmail(record.email, code, payload.locale);
+    return undefined;
+  });
+}
+
+function hmacLoginCode(code: string): string {
+  return hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, normalizeLoginCode(code));
+}
+
 async function executeRows<T>(
-  tx: { execute: (query: SQLWrapper | string) => unknown },
+  tx: Pick<DbClient, "execute">,
   query: SQLWrapper | string,
 ): Promise<T[]> {
   const result = await tx.execute(query);

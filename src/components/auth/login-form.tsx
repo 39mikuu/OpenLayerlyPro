@@ -14,9 +14,13 @@ import { api } from "@/lib/client";
 export function LoginForm({
   mode,
   turnstileSiteKey,
+  loginCodeLength,
+  loginCodePattern,
 }: {
   mode: "fan" | "admin";
   turnstileSiteKey?: string;
+  loginCodeLength: number;
+  loginCodePattern: string;
 }) {
   const t = useT();
   const router = useRouter();
@@ -30,6 +34,9 @@ export function LoginForm({
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const normalizedCode = code.trim().toUpperCase();
+  const codeComplete =
+    normalizedCode.length === loginCodeLength && new RegExp(loginCodePattern).test(normalizedCode);
 
   async function run(fn: () => Promise<void>) {
     setLoading(true);
@@ -115,12 +122,13 @@ export function LoginForm({
           <Label htmlFor="code">{t("login.code")}</Label>
           <Input
             id="code"
-            inputMode="numeric"
+            inputMode="text"
+            autoCapitalize="characters"
             autoComplete="one-time-code"
-            maxLength={6}
-            placeholder={t("login.codePlaceholder")}
+            maxLength={loginCodeLength}
+            placeholder={t("login.codePlaceholder", { length: loginCodeLength })}
             value={code}
-            onChange={(event) => setCode(event.target.value)}
+            onChange={(event) => setCode(event.target.value.toUpperCase())}
           />
           <p className="text-xs text-muted-foreground">{t("login.codeHint")}</p>
         </div>
@@ -163,10 +171,13 @@ export function LoginForm({
         {codeSent && (
           <Button
             className="w-full"
-            disabled={loading || code.length !== 6}
+            disabled={loading || !codeComplete}
             onClick={() =>
               run(async () => {
-                await api("/api/auth/verify-code", { method: "POST", body: { email, code } });
+                await api("/api/auth/verify-code", {
+                  method: "POST",
+                  body: { email, code: normalizedCode },
+                });
                 router.push("/me");
                 router.refresh();
               })

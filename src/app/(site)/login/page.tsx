@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
 
+import { getEnv } from "@/lib/env";
+import { getLoginCodePolicy } from "@/modules/auth/rate-limit-policy";
 import { getCurrentUser } from "@/modules/auth/session";
 import { getTurnstileConfig } from "@/modules/config";
 import { getT } from "@/modules/i18n/server";
@@ -15,6 +17,7 @@ export default async function LoginPage({
   const user = await getCurrentUser();
   if (user) redirect("/me");
   const { admin } = await searchParams;
+  const loginCodePolicy = getLoginCodePolicy(getEnv());
   // site key 在服务端运行时读取后下发，避免依赖构建期内联（Docker 镜像构建时无 .env）
   const [turnstile, theme, t] = await Promise.all([getTurnstileConfig(), getActiveTheme(), getT()]);
   const Login = theme.components.Login;
@@ -24,6 +27,8 @@ export default async function LoginPage({
       view={{
         mode: admin === "1" ? "admin" : "fan",
         turnstileSiteKey: turnstile.enabled ? (turnstile.siteKey ?? undefined) : undefined,
+        loginCodeLength: loginCodePolicy.length,
+        loginCodePattern: loginCodePolicy.pattern.source,
       }}
     />
   );

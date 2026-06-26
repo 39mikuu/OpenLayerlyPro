@@ -62,7 +62,7 @@ src/
 - Turnstile 开启后，会在调用 Cloudflare Siteverify 前执行保护逻辑。
 - 真实 IP 只来自已配置可信代理层。默认不信任 `X-Forwarded-For`；Cloudflare 推荐 `cf-connecting-ip`，常规反代使用 `x-forwarded-for` + 正确 hops。
 
-### S4 目标语义（尚未实现）🚧
+### S4 认证限流语义 ✅
 
 - **正确码优先**：任何失败计数或 wrong-attempt limiter 都不得在比较正确码前返回 429。
 - **错误后限流**：verify 的 IP、email+IP、unresolved 桶只在核心确认错误后记账；正确码不消费也不受这些桶影响。
@@ -72,7 +72,7 @@ src/
 - **投递一致性**：同一 email 并发只允许一码一个 encrypted durable task；任务每次执行/重试前确认 codeId 仍为该 email 最新有效 code，stale task 成功 no-op。
 - **任务敏感载荷**：验证码明文不得出现在 task JSON、日志或后台任务详情中，必须加密存储。
 
-权威实施规范见 [../handoff/harden-s4-auth-rate-limiting.md](../handoff/harden-s4-auth-rate-limiting.md)。在实现 PR 合并前，上述 S4 条目不得标记为已实现。
+权威实施规范见 [../handoff/harden-s4-auth-rate-limiting.md](../handoff/harden-s4-auth-rate-limiting.md)。多实例共享限流存储仍不纳入 v1.0；当前仅提供进程内 limiter 与多实例告警。
 
 ## 配置加密（Phase 1 铺垫）
 

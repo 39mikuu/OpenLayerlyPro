@@ -17,8 +17,8 @@
 - [ ] Inline-video signed URL TTL, normal per-IP limits, and unresolved-client emergency limits have been reviewed for this deployment.
 - [ ] Operators understand that only public S3 playback redirects; login/member S3 video remains application-proxied. See [Inline video playback](../admin/inline-video-playback.md).
 - [ ] Turnstile is configured if bot protection is needed.
-- [ ] After S4 is implemented, auth rate-limit env bounds, login-code alphabet/length, and request-code dedupe settings have been reviewed; do not configure handoff-only variables before the implementation exists.
-- [ ] After S4 is implemented, a correct login code succeeds even when wrong-attempt buckets are exhausted, and Turnstile/dedupe non-send exits do not consume the request-code send budget.
+- [ ] Auth rate-limit env bounds, login-code alphabet/length, and request-code dedupe settings have been reviewed.
+- [ ] A correct login code succeeds even when wrong-attempt buckets are exhausted, and Turnstile/dedupe non-send exits do not consume the request-code send budget.
 - [ ] AI translation provider is disabled unless intentionally configured.
 - [ ] Custom footer code is reviewed and trusted.
 - [ ] `/api/health` and `/api/ready` return 200.
@@ -30,7 +30,7 @@
 
 ## Authentication hardening status
 
-The current runtime still uses the pre-S4 login-code limits until the S4 implementation PR is merged. The authoritative target design is [S4 auth rate-limiting hardening](../handoff/harden-s4-auth-rate-limiting.md):
+The current runtime implements [S4 auth rate-limiting hardening](../handoff/harden-s4-auth-rate-limiting.md):
 
 - verify throttles are wrong-attempt limiters applied only after the code is confirmed incorrect;
 - correct codes bypass exhausted wrong-attempt buckets;

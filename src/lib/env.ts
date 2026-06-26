@@ -4,6 +4,7 @@ const envSchema = z.object({
   APP_URL: z.string().default("http://localhost:3000"),
   APP_NAME: z.string().default("Artist Member Site"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  APP_INSTANCE_COUNT: z.coerce.number().int().min(1).max(1_000).default(1),
 
   SESSION_SECRET: z.string().default("change-me"),
 
@@ -103,6 +104,26 @@ const envSchema = z.object({
     .max(86_400_000)
     .default(600_000),
   DOWNLOAD_UNRESOLVED_RATE_LIMIT_MAX: z.coerce.number().int().min(500).max(100_000).default(2_000),
+
+  ADMIN_LOGIN_RATE_MAX: z.coerce.number().int().min(1).max(1_000).default(10),
+  ADMIN_LOGIN_UNRESOLVED_RATE_MAX: z.coerce.number().int().min(10).max(100_000).default(100),
+  ADMIN_LOGIN_RATE_WINDOW_MS: z.coerce.number().int().min(10_000).max(86_400_000).default(600_000),
+  VERIFY_CODE_IP_RATE_MAX: z.coerce.number().int().min(1).max(10_000).default(30),
+  VERIFY_CODE_EMAIL_IP_RATE_MAX: z.coerce.number().int().min(1).max(10_000).default(10),
+  VERIFY_CODE_UNRESOLVED_RATE_MAX: z.coerce.number().int().min(30).max(1_000_000).default(300),
+  VERIFY_CODE_RATE_WINDOW_MS: z.coerce.number().int().min(10_000).max(86_400_000).default(600_000),
+  REQUEST_CODE_IP_RATE_MAX: z.coerce.number().int().min(1).max(10_000).default(20),
+  REQUEST_CODE_EMAIL_IP_RATE_MAX: z.coerce.number().int().min(1).max(10_000).default(5),
+  REQUEST_CODE_UNRESOLVED_RATE_MAX: z.coerce.number().int().min(20).max(1_000_000).default(100),
+  REQUEST_CODE_RATE_WINDOW_MS: z.coerce
+    .number()
+    .int()
+    .min(10_000)
+    .max(86_400_000)
+    .default(3_600_000),
+  REQUEST_CODE_SEND_DEDUPE_SECONDS: z.coerce.number().int().min(1).max(3_600).default(60),
+  LOGIN_CODE_LENGTH: z.coerce.number().int().min(16).max(64).default(16),
+  LOGIN_CODE_ALPHABET: z.enum(["crockford-base32"]).default("crockford-base32"),
 
   CLOUDFLARE_TUNNEL_TOKEN: z.string().optional(),
 
