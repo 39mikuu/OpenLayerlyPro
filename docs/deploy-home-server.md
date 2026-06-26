@@ -33,7 +33,7 @@ EMAIL_DELIVERY_MAX_AGE_HOURS=24
 
 - 当前 limiter 面向单 app 实例。多个副本会各自计数；v1.0 不提供共享 Redis/PG limiter。
 - Cloudflare Tunnel/CDN 推荐 `TRUSTED_PROXY_HEADER=cf-connecting-ip`；自建反代使用 XFF 并设置准确 `TRUSTED_PROXY_HOPS`。
-- 无法解析可信 IP 时，各公开入口使用各操作独立的高阈值 unresolved emergency bucket；生产应修复真实 IP，而不是长期依赖降级桶。
+- 无法解析可信客户端 IP 时，`admin-login`、`request-code`、`verify-code` 会退回各操作专用的 unresolved emergency 桶；这不会把所有认证流量压进同一个低阈值全局桶，但 unresolved 客户端仍共享各自操作桶。生产应修复可信 IP 解析，而不是长期依赖降级路径。
 - S4 使用高熵登录码、keyed email identity、正确码优先、错误后记账和 source-scoped pre-comparison budget。详见 [S4 handoff](handoff/harden-s4-auth-rate-limiting.md)。
 - 登录码使用持久投递 fence；已有 active code 对应 pending/processing/retryable failed task 时，不创建替换码。
 - claim/fence 在短事务内完成，SMTP 在事务/advisory lock 外执行；SMTP 接受后进程崩溃仍可能导致同一码 at-least-once 重发。
