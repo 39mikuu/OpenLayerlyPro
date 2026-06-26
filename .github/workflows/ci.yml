@@ -40,6 +40,13 @@ jobs:
       - run: pnpm check:request-bodies
       - run: pnpm exec tsc --noEmit
       - run: pnpm db:migrate
-      - run: pnpm test -- --reporter=dot
+      - run: pnpm test -- --reporter=json --outputFile=vitest-results.json
+      - name: Upload Vitest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-results
+          path: vitest-results.json
+          if-no-files-found: error
       - run: pnpm build:migrator
       - run: pnpm build
