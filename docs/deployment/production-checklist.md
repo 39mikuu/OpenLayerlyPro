@@ -1,64 +1,89 @@
 # Production Checklist
 
+> This checklist describes current `main`. A production `v1.0.0` release additionally requires S6 #86, S7 #87, and every item in [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
+
+## Base deployment
+
 - [ ] `APP_URL` is the public HTTPS URL.
-- [ ] `SESSION_SECRET` is strong and unique.
-- [ ] SMTP is configured and tested.
-- [ ] Config encryption key or key file is backed up.
-- [ ] `TRUSTED_PROXY_HEADER` and `TRUSTED_PROXY_HOPS` match the deployment edge.
-- [ ] File and auth requests resolve distinct trusted client IPs in production; otherwise the operation-specific unresolved-client emergency buckets and rate-limited warnings remain active.
-- [ ] Origin app port is not publicly exposed when trusting proxy headers.
-- [ ] The deployment uses a single app instance unless a shared limiter has been implemented; process-local rate limits are not globally consistent across replicas.
-- [ ] Application request-body limits fit expected traffic and available memory.
-- [ ] Proxy request-size limits are configured only as a second layer; application byte limits remain authoritative.
-- [ ] Upload limits fit available memory.
-- [ ] Storage driver is selected intentionally: `local` or `s3`.
-- [ ] S3/R2 credentials are stored through env or admin encrypted config.
-- [ ] Reverse proxy forwards video `Range` requests and preserves `206`/`416`, `Content-Range`, and `Accept-Ranges` responses.
-- [ ] Inline-video signed URL TTL, normal per-IP limits, and unresolved-client emergency limits have been reviewed for this deployment.
-- [ ] Operators understand that only public S3 playback redirects; login/member S3 video remains application-proxied. See [Inline video playback](../admin/inline-video-playback.md).
-- [ ] Turnstile is configured if bot protection is needed.
-- [ ] Auth rate-limit env bounds, login-code alphabet/length, and request-code dedupe settings have been reviewed.
-- [ ] A correct login code succeeds even when wrong/invalid-attempt buckets are exhausted; `codeIncorrect` and `codeExpired` are accounted only after core verification fails, and Turnstile/dedupe/fence non-send exits do not consume the request-code send budget.
-- [ ] Login-code SMTP runs outside database transactions and per-email advisory locks; pending/processing/failed tasks suppress replacement codes, stale claims no-op, and operators accept same-code at-least-once delivery after a post-SMTP worker crash.
-- [ ] Operators understand that rotating `SESSION_SECRET` makes in-flight auth login-code tasks undecryptable (`PermanentTaskError`); users request a new code within the 10-minute TTL window. Future S5 email reliability work must preserve this known behavior.
-- [ ] AI translation provider is disabled unless intentionally configured.
-- [ ] Custom footer code is reviewed and trusted.
-- [ ] `/api/health` and `/api/ready` return 200.
-- [ ] `scripts/backup.sh` runs on a schedule and copies archives off-host.
-- [ ] Backups include PostgreSQL, the config encryption key, and local uploads when used.
-- [ ] S3/R2 bucket versioning or provider backups are enabled when object storage is used.
-- [ ] A recent archive has been restored successfully in an isolated Compose project.
-- [ ] The restore drill verified `/api/ready`, sample data, uploads, and encrypted settings.
+- [ ] `SESSION_SECRET` is strong, unique, backed up separately, and not rotated unintentionally.
+- [ ] Config encryption key or key file is backed up and readable only by the deployment.
+- [ ] SMTP is configured and tested; failed/dead/deferred mail tasks and the delivery ledger are monitored.
+- [ ] `TRUSTED_PROXY_HEADER` and `TRUSTED_PROXY_HOPS` match the real edge topology.
+- [ ] File and auth requests resolve distinct trusted client IPs; operation-specific unresolved emergency buckets are not treated as a normal production identity source.
+- [ ] Origin app port is not publicly exposed when trusting proxy-provided single-value IP headers.
+- [ ] Only one app instance is running unless shared rate-limit/task coordination has been implemented.
+- [ ] `/api/health` and `/api/ready` return 200; optional integration summary is inspected without making it a Core readiness gate.
 
-## Authentication hardening status
+## Request and upload limits
 
-The current runtime implements [S4 auth rate-limiting hardening](../handoff/harden-s4-auth-rate-limiting.md):
+- [ ] Request-body, Stripe webhook, upload, and proxy limits fit expected traffic.
+- [ ] Proxy request-size limits are defense in depth; application actual-byte limits remain authoritative.
+- [ ] Content attachments stream to storage; memory is sized for bounded image buffers and sharp decode/re-encode work.
+- [ ] S3/R2 bucket has abort-incomplete-multipart lifecycle rules.
+- [ ] Storage driver is intentional; switching active driver does not migrate historical files.
 
-- verify throttles account both `codeIncorrect` and `codeExpired` only after the core verification path returns failure;
-- correct codes bypass exhausted wrong/invalid-attempt buckets, while the legacy `attempt_count` column is no longer read or written;
-- request-code has no pure-email blocking 429 gate and returns only `{ "accepted": true }` for both normal and suppressed requests;
-- email-derived limiter/dedupe identity and mail logs use purpose-separated keyed HMAC-SHA-256 rather than raw recipients;
-- request dedupe plus the persistent delivery fence creates at most one active code/delivery while a task is pending, processing, or retryable failed;
-- task claim and latest-active-code fences run in a short transaction, then SMTP runs after the transaction/advisory lock is released;
-- a post-SMTP crash may repeat the same code at least once, and external mailbox arrival order is not guaranteed;
-- process-local limits remain single-instance only.
+## Authentication
+
+- [ ] Turnstile is intentionally configured and uses the same effective DB/env config as the login page and request guard.
+- [ ] Auth bounds, login-code alphabet/length, keyed email identity, request dedupe, and delivery-fence settings have been reviewed.
+- [ ] A correct code succeeds even when wrong/invalid-attempt buckets are exhausted.
+- [ ] Wrong/expired results are accounted only after core verification fails.
+- [ ] Source-scoped pre-comparison budgets throttle expensive comparisons without blocking another trusted IP.
+- [ ] Login-code SMTP runs outside DB transactions/advisory locks; stale claims no-op and a post-SMTP crash may repeat the same code.
+- [ ] Rotating `SESSION_SECRET` invalidates sessions and makes old encrypted login-code tasks undecryptable.
+
+## Payments, subscriptions, and mail
+
+- [ ] Manual payment proof review and Stripe paths match the site's intended configuration.
+- [ ] Stripe webhook endpoint uses HTTPS and subscribes to events required by one-time payments and subscriptions.
+- [ ] Browser redirects never grant membership without a valid persisted provider event.
+- [ ] Refund/dispute and subscription reconciliation have been exercised in Stripe Test Mode.
+- [ ] SMTP operator-defer and max-age settings are reviewed; unconfigured/auth-failed business mail does not silently succeed.
+- [ ] Stable Message-ID and delivery ledger/admin retry views are usable without exposing provider secrets or raw recipient data.
+
+## Video and downloads
+
+- [ ] Reverse proxy forwards `Range` and preserves 200/206/416, `Content-Range`, `Content-Length`, and `Accept-Ranges`.
+- [ ] Inline-video signed URL TTL and rate limits have been reviewed.
+- [ ] Only truly public S3 video redirects; login/member/private video remains application-proxied and reauthorized per request.
+- [ ] Private/no-store responses are not rewritten into public CDN cache entries.
+- [ ] Payment proofs remain attachment-only private files with strict response isolation.
+
+## Config, integrations, and custom code
+
+- [ ] S3/R2, SMTP, Stripe, Turnstile and Translation secrets are stored in encrypted admin config or protected server-side env.
+- [ ] AI translation is disabled unless intentionally configured; visitors cannot trigger provider calls.
+- [ ] Custom footer code is reviewed and trusted in the current runtime.
+- [ ] Before enforcing S6 CSP, legacy footer code is migrated, explicitly disabled, or kept in the documented safe rollout state.
+- [ ] S6 browser verification covers DB-enabled Turnstile, actual signed storage origin, video and public integrations.
+
+## Backup and recovery
+
+- [ ] `scripts/backup.sh` runs on a schedule, failures are monitored, and archives are copied off-host.
+- [ ] Backups include PostgreSQL, config encryption key, and local uploads when used.
+- [ ] `SESSION_SECRET` is preserved separately when seamless recovery is required.
+- [ ] S3/R2 versioning, snapshot, or provider backup is enabled and tested.
+- [ ] A recent archive has been restored in an isolated Compose project.
+- [ ] Current baseline restore verified `/api/ready`, sample data, uploads and encrypted settings.
+- [ ] Before v1.0 release, S7 #87 additionally verifies checksums, legacy schema probing, file-safety backfill, task/payment-event neutralization and DB↔storage convergence.
+
+## Current hardening status
+
+The runtime implements S4 authentication hardening and S5 mail reliability. The remaining release blockers are S6 #86 and S7 #87; neither is complete merely because its handoff document exists.
 
 ## Application request-body limits
 
-The application reads request bodies through byte-bounded helpers before JSON parsing, multipart parsing, Stripe signature verification, database access, storage, mail, or other business services.
+- `REQUEST_JSON_MAX_BYTES` defaults to 65,536 bytes and accepts 1,024–1,048,576.
+- `STRIPE_WEBHOOK_MAX_BYTES` defaults to 262,144 bytes and accepts 1,024–1,048,576.
+- `PAYMENT_PROOF_MAX_SIZE_MB` defaults to 10 MiB and accepts 1–100; multipart transport adds 256 KiB envelope allowance.
+- The application measures streamed bytes when `Content-Length` is absent or inaccurate.
 
-- `REQUEST_JSON_MAX_BYTES` defaults to 65,536 bytes and accepts integers from 1,024 through 1,048,576.
-- `STRIPE_WEBHOOK_MAX_BYTES` defaults to 262,144 bytes and accepts integers from 1,024 through 1,048,576.
-- `PAYMENT_PROOF_MAX_SIZE_MB` defaults to 10 MiB and accepts integers from 1 through 100. It is the deployment hard ceiling; the admin upload setting may lower but cannot raise it. Multipart transfer buffering adds 256 KiB for boundaries, part headers, and text fields while preserving the existing per-file validation.
+## Backup schedule example
 
-A reverse proxy may enforce equal or lower limits as defense in depth, but it is not a substitute for these application checks. The application also measures actual streamed bytes when `Content-Length` is absent or inaccurate.
-
-## Backup Schedule Example
-
-Run from the repository directory so Compose can find `.env` and `docker-compose.yml`:
+Run from the repository directory:
 
 ```cron
 15 3 * * * cd /opt/openlayerlypro && ./scripts/backup.sh /srv/backups/openlayerly >> /var/log/openlayerly-backup.log 2>&1
 ```
 
-Cron only creates archives. Add a separate retention policy and off-host copy, monitor non-zero exits, and run periodic restore drills using [Backup and Restore](backup-restore.md).
+Cron only creates archives. Add retention, off-host copy, non-zero-exit monitoring and periodic isolated restore drills using [Backup and Restore](backup-restore.md).
