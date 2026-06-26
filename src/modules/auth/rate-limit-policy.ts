@@ -79,27 +79,47 @@ export function getRequestCodeEmailIpRateLimit(input: {
   };
 }
 
+/**
+ * Hard, target-independent budget for real login-code comparisons.
+ *
+ * This gate runs before verifyLoginCode. Because its key contains no email,
+ * attempts from a remote attacker cannot lock a particular victim account;
+ * they only exhaust the attacker's own trusted-IP budget. The unresolved
+ * fallback remains a deliberately higher shared emergency bucket.
+ */
+export function getVerifyCodeCompareRateLimit(input: {
+  identity: ClientRateLimitIdentity;
+  env: Env;
+}): RateLimitPolicy {
+  if (input.identity.kind === "unresolved") {
+    return {
+      key: "verify-code-unresolved",
+      max: input.env.VERIFY_CODE_UNRESOLVED_RATE_MAX,
+      windowMs: input.env.VERIFY_CODE_RATE_WINDOW_MS,
+    };
+  }
+
+  return {
+    key: `verify-code-ip:${input.identity.value}`,
+    max: input.env.VERIFY_CODE_IP_RATE_MAX,
+    windowMs: input.env.VERIFY_CODE_RATE_WINDOW_MS,
+  };
+}
+
+/**
+ * Target-scoped failure accounting performed only after an incorrect/expired
+ * result. It is intentionally not a pre-comparison authorization gate: doing
+ * that would let a remote attacker lock a victim email. Unlimited comparison
+ * attempts are prevented by getVerifyCodeCompareRateLimit instead.
+ */
 export function getVerifyCodeWrongAttemptRateLimits(input: {
   identity: ClientRateLimitIdentity;
   normalizedEmail: string;
   env: Env;
 }): RateLimitPolicy[] {
-  if (input.identity.kind === "unresolved") {
-    return [
-      {
-        key: "verify-code-unresolved",
-        max: input.env.VERIFY_CODE_UNRESOLVED_RATE_MAX,
-        windowMs: input.env.VERIFY_CODE_RATE_WINDOW_MS,
-      },
-    ];
-  }
+  if (input.identity.kind === "unresolved") return [];
 
   return [
-    {
-      key: `verify-code-ip:${input.identity.value}`,
-      max: input.env.VERIFY_CODE_IP_RATE_MAX,
-      windowMs: input.env.VERIFY_CODE_RATE_WINDOW_MS,
-    },
     {
       key: `verify-code-email-ip:${authEmailRateLimitDigest(input.normalizedEmail)}:${input.identity.value}`,
       max: input.env.VERIFY_CODE_EMAIL_IP_RATE_MAX,
