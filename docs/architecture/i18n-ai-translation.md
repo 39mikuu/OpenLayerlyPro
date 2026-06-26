@@ -1,6 +1,6 @@
 # i18n 与 AI Translation 架构
 
-> Phase 6 UI i18n 与 Phase 7 Content i18n + AI Translation（7·0–7·4）均已实现。后续范围只包括 SEO/hreflang、posts 之外的内容翻译和 archived 历史策略。
+> Phase 6 UI i18n 与 Phase 7 Content i18n + AI Translation（7·0–7·4）均已实现。后续范围包括 SEO/hreflang、posts 之外的内容翻译、archived 历史策略，以及真正可强制执行的 provider 用量/预算控制。
 
 ## Phase 6：UI i18n v1 ✅
 
@@ -76,7 +76,8 @@ UI i18n 不会自动翻译创作者录入的作品、等级或付款说明；内
 ### 7·3 AI 译文草稿 ✅
 
 - `translation` 配置组通过 `app_settings` 加密保存，默认关闭。
-- 当前 provider 为 OpenAI-compatible chat completions，配置 endpoint、model、API key 与可选月度字符上限。
+- 当前 provider 为 OpenAI-compatible chat completions，配置 endpoint、model、API key，以及一个可选的 `monthlyCharLimit` 字段。
+- **`monthlyCharLimit` 当前只被保存/展示，运行时没有用量账本、月份窗口或调用前 quota 检查；它不是可依赖的成本上限。** 管理员必须使用 provider 侧预算/告警，或在真正的本地用量 enforcement 实现前把该字段视为预留设置。
 - 只有 requireAdmin 的后台动作能调用 provider；访客与公开页面永远不能触发翻译费用。
 - 管理员显式执行“AI 生成 {locale} 草稿”后，服务端调用 provider，写入/更新 `draft(source='machine')` 并记录 `source_updated_at`。
 - provider key 不返回前端、不进入日志；请求失败不发布半成品。
@@ -95,6 +96,7 @@ UI i18n 不会自动翻译创作者录入的作品、等级或付款说明；内
 - **默认关闭**：没有管理员配置与操作时不调用外部服务。
 - **不让访客触发成本**：公开请求只读取已发布译文。
 - **默认不自动发布**：machine 结果默认是 draft。
+- **当前没有本地强制预算**：provider 侧 hard limit/alert 才是现阶段的实际成本保护；UI 中的月度字符值不能替代它。
 - **Core 决定版本**：locale 选择、权限、回退和发布状态属于 Core；Theme 只渲染 view-model。
 - **密钥加密**：API key 只存在于加密配置与服务端内存。
 
@@ -103,3 +105,4 @@ UI i18n 不会自动翻译创作者录入的作品、等级或付款说明；内
 - SEO / hreflang / 路径式 locale：当前 locale 通过 cookie/协商，不在 URL 中。
 - tier 名/描述、付款方式说明等 posts 之外的数据多语言。
 - archived 译文的历史查看/恢复与长期 retention；低优先级 #58 需在增加历史恢复前处理。
+- 可审计的 AI 用量账本、月份边界、并发安全预留/扣减和调用前 hard quota enforcement；实现前不得把 `monthlyCharLimit` 宣传为预算保证。
