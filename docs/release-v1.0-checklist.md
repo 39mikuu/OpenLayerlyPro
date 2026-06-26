@@ -70,6 +70,8 @@
 - [ ] `pnpm exec tsc --noEmit`
 - [ ] `RUN_DB_INTEGRATION_TESTS=true pnpm test`
 - [ ] `pnpm build:migrator`
+- [ ] `pnpm build:files-backfill`，并确认生成的 `dist/files-backfill.mjs` 能在目标发布镜像/one-off 容器中启动。
+- [ ] S7 合并前，CI 已把 `build:files-backfill` 纳入必跑步骤；不能只依赖 `pnpm build`，因为 Next build 不生成该 one-off artifact。
 - [ ] `pnpm build`
 - [ ] shellcheck、浏览器 E2E 和恢复 E2E 全绿。
 - [ ] 没有未处理的 high/critical Dependabot、CodeQL 或其他发布阻塞安全告警。
