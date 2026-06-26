@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __rateLimitStoreSizeForTests,
   __resetRateLimitForTests,
+  isRateLimited,
   rateLimit,
   retryAfterSeconds,
 } from "./rate-limit";
@@ -32,6 +33,21 @@ describe("rateLimit", () => {
     rateLimit(key, 2, 1000);
     rateLimit(key, 2, 1000);
     expect(rateLimit(key, 2, 1000)).toBe(false);
+  });
+
+  it("只读检查不会消费容量并会随窗口恢复", () => {
+    const key = "test-peek";
+
+    expect(isRateLimited(key, 2, 1000)).toBe(false);
+    expect(rateLimit(key, 2, 1000)).toBe(true);
+    expect(isRateLimited(key, 2, 1000)).toBe(false);
+    expect(rateLimit(key, 2, 1000)).toBe(true);
+    expect(isRateLimited(key, 2, 1000)).toBe(true);
+    expect(rateLimit(key, 2, 1000)).toBe(false);
+
+    vi.setSystemTime(1001);
+    expect(isRateLimited(key, 2, 1000)).toBe(false);
+    expect(__rateLimitStoreSizeForTests()).toBe(0);
   });
 
   it("窗口滑过后恢复放行", () => {

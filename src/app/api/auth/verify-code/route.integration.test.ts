@@ -6,7 +6,7 @@ vi.hoisted(() => {
     NODE_ENV: "test",
     TRUSTED_PROXY_HEADER: "x-forwarded-for",
     TRUSTED_PROXY_HOPS: "1",
-    VERIFY_CODE_IP_RATE_MAX: "2",
+    VERIFY_CODE_IP_RATE_MAX: "3",
     VERIFY_CODE_EMAIL_IP_RATE_MAX: "2",
     VERIFY_CODE_UNRESOLVED_RATE_MAX: "30",
     VERIFY_CODE_RATE_WINDOW_MS: "600000",
@@ -36,6 +36,7 @@ import { POST } from "./route";
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
 const TEST_CODE = "ABCD1234EFGH5678";
+const OTHER_CODE = "ZZZZZZZZZZZZZZZZ";
 
 function request(email: string, code = TEST_CODE, ip?: string) {
   return new NextRequest("http://localhost/api/auth/verify-code", {
@@ -48,7 +49,7 @@ function request(email: string, code = TEST_CODE, ip?: string) {
   });
 }
 
-describeWithDatabase("verify-code route invalid-attempt integration", () => {
+describeWithDatabase("verify-code route comparison-budget integration", () => {
   const db = getDb();
 
   beforeEach(async () => {
@@ -63,13 +64,10 @@ describeWithDatabase("verify-code route invalid-attempt integration", () => {
     await resetDatabase(db);
   });
 
-  it("accounts resolved codeExpired failures, returns 429, and still permits a later correct code", async () => {
-    const email = "resolved-expired@example.com";
-    const ip = "198.51.100.44";
-
-    expect((await POST(request(email, TEST_CODE, ip))).status).toBe(400);
-    expect((await POST(request(email, TEST_CODE, ip))).status).toBe(400);
-    expect((await POST(request(email, TEST_CODE, ip))).status).toBe(429);
+  it("blocks an exhausted email+IP pair before comparison without locking another IP", async () => {
+    const email = "source-budget@example.com";
+    const limitedIp = "198.51.100.44";
+    const alternateIp = "198.51.100.45";
 
     await db.insert(loginCodes).values({
       email,
@@ -77,12 +75,20 @@ describeWithDatabase("verify-code route invalid-attempt integration", () => {
       expiresAt: new Date(Date.now() + 10 * 60_000),
     });
 
-    const success = await POST(request(email, TEST_CODE, ip));
-    expect(success.status).toBe(200);
+    expect((await POST(request(email, OTHER_CODE, limitedIp))).status).toBe(400);
+    expect((await POST(request(email, OTHER_CODE, limitedIp))).status).toBe(400);
+
+    // The source hard budget still has one comparison left (3 max), but the
+    // email+IP failure bucket is already full (2 max), so this must be rejected
+    // by the read-only target precheck before the correct code is consumed.
+    expect((await POST(request(email, TEST_CODE, limitedIp))).status).toBe(429);
+    expect(mocks.createSession).not.toHaveBeenCalled();
+
+    expect((await POST(request(email, TEST_CODE, alternateIp))).status).toBe(200);
     expect(mocks.createSession).toHaveBeenCalledOnce();
   });
 
-  it("accounts unresolved codeExpired failures and eventually returns 429", async () => {
+  it("bounds unresolved comparisons before the core lookup", async () => {
     const email = "unresolved-expired@example.com";
 
     for (let attempt = 0; attempt < 30; attempt += 1) {

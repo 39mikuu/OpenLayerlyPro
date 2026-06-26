@@ -7,10 +7,11 @@ import {
   warnUnresolvedClientRateLimitIdentity,
 } from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
-import { rateLimit } from "@/lib/rate-limit";
+import { isRateLimited, rateLimit } from "@/lib/rate-limit";
 import { assertContentLengthWithinLimit, readJsonWithLimit } from "@/lib/request-body";
 import { verifyLoginCode } from "@/modules/auth/login-code";
 import {
+  getVerifyCodeCompareRateLimit,
   getVerifyCodeWrongAttemptRateLimits,
   normalizeEmail,
   normalizeLoginCode,
@@ -36,8 +37,34 @@ export async function POST(req: NextRequest) {
     const { email, code } = await readJsonWithLimit(req, env.REQUEST_JSON_MAX_BYTES, bodySchema);
     const normalizedEmail = validateNormalizedEmail(normalizeEmail(email));
     const normalizedCode = validateLoginCode(normalizeLoginCode(code), env);
-    const locale = await resolveLocale();
 
+    const clientIp = getClientIp(req);
+    const identity = resolveClientRateLimitIdentity(clientIp);
+    if (identity.kind === "unresolved" && env.NODE_ENV === "production") {
+      warnUnresolvedClientRateLimitIdentity({
+        message:
+          "Trusted client IP is unavailable for verify-code. Using verify-code-unresolved emergency rate-limit bucket.",
+      });
+    }
+
+    const failureLimits = getVerifyCodeWrongAttemptRateLimits({
+      identity,
+      normalizedEmail,
+      env,
+    });
+    if (failureLimits.some((limit) => isRateLimited(limit.key, limit.max, limit.windowMs))) {
+      return jsonError(429, "codeAttemptsExceeded");
+    }
+
+    // Hard source budget: no target email is present in this key, so a remote
+    // source cannot lock a victim account while still being prevented from
+    // triggering unlimited real code comparisons from one client identity.
+    const compareLimit = getVerifyCodeCompareRateLimit({ identity, env });
+    if (!rateLimit(compareLimit.key, compareLimit.max, compareLimit.windowMs)) {
+      return jsonError(429, "codeAttemptsExceeded");
+    }
+
+    const locale = await resolveLocale();
     let user: Awaited<ReturnType<typeof verifyLoginCode>>;
     try {
       user = await verifyLoginCode(normalizedEmail, normalizedCode, locale);
@@ -46,19 +73,11 @@ export async function POST(req: NextRequest) {
         error instanceof ApiError &&
         (error.code === "codeIncorrect" || error.code === "codeExpired")
       ) {
-        const identity = resolveClientRateLimitIdentity(getClientIp(req));
-        if (identity.kind === "unresolved" && env.NODE_ENV === "production") {
-          warnUnresolvedClientRateLimitIdentity({
-            message:
-              "Trusted client IP is unavailable for verify-code. Using verify-code-unresolved emergency rate-limit bucket.",
-          });
-        }
-        const limits = getVerifyCodeWrongAttemptRateLimits({
-          identity,
-          normalizedEmail,
-          env,
-        });
-        const allowed = limits.map((limit) => rateLimit(limit.key, limit.max, limit.windowMs));
+        // Target-scoped accounting remains post-comparison so another source
+        // cannot pre-fill an email-only bucket and block the account owner.
+        const allowed = failureLimits.map((limit) =>
+          rateLimit(limit.key, limit.max, limit.windowMs),
+        );
         if (allowed.some((value) => !value)) {
           return jsonError(429, "codeAttemptsExceeded");
         }
@@ -67,7 +86,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { token, expiresAt } = await createSession(user.id, {
-      ip: getClientIp(req),
+      ip: clientIp,
       userAgent: getUserAgent(req),
     });
     await setSessionCookie(token, expiresAt);
