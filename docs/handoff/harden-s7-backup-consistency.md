@@ -68,7 +68,7 @@ v1 临时数据库必须使用不可预测/进程唯一名称，只接收本次 
 
 ### 3.3 分类中和
 
-1. **`storage.delete_object` 非终态 task：删除 task 行，不删除对象。** 这同时取消快照里的危险删除意图并释放对象级 dedupeKey。恢复收敛若确认对象仍是孤儿，会重新走 S1b 原语入队。
+1. **`storage.delete_object` task：删除全部行（含终态 dead/succeeded），不删除对象。** 这取消快照里的危险删除意图并释放对象级 dedupeKey `storage:delete_object:<hash>`。**必须连终态行一起删**：§4 收敛对真正的孤儿走 S1b `enqueueFileStorageDeletion()` 时派生的是同一个对象级 dedupeKey，若快照里残留一条 dead/succeeded 删除行占着该 key，`enqueueTask` 的 `onConflictDoNothing` 会让收敛入队静默 no-op，孤儿永远删不掉，违背 §4 收敛保证。删除后 §4 成为恢复后该对象是否删除的唯一裁决者。
 2. **支付 provider event：以非终态 event 行为事实来源，成对复位并补齐 task。**
    - 对 `payment_provider_events.status in ('received','processing','failed')`：设回 `received`，清 `locked_by/lease_until/error`，`attempts=0`。
    - 对每一行按 `payment-provider-event:<eventRowId>` **upsert/重建恰好一条** `payment_provider_event.dispatch` task；不能只更新现存 task，因为缺失 task 会让已 2xx 的事件永久无人处理。
@@ -120,7 +120,7 @@ v1 临时数据库必须使用不可预测/进程唯一名称，只接收本次 
 
 - checksum：篡改任一 payload 后 restore 在 drop DB 前失败；v1 旧档必须警告无校验和并进入 §7 专用兼容检查，而不是无条件继续。
 - v1 schema：覆盖“历史为目标前缀可恢复”“备份更新于目标拒绝”“hash/顺序分叉拒绝”“历史缺失/损坏默认拒绝”“显式 unknown override 可继续且留下审计输出”；全部断言正式 DB 在兼容检查通过前未被 drop，临时 DB 在成功/失败/信号退出后均被清理。
-- 删除 task：非终态 `storage.delete_object` 行被删除，同 dedupeKey 可重新入队，已恢复引用对象未被删除。
+- 删除 task：`storage.delete_object` 行被删除（**含终态 dead/succeeded**），同 dedupeKey 可重新入队，已恢复引用对象未被删除；并断言快照含一条终态删除行 + 对应孤儿对象时，§4 收敛能成功入队删除该孤儿（不被终态行的 dedupeKey 卡成 no-op）。
 - provider event：覆盖 processing 且 lease 未过期、attempts 饱和、task 缺失、task/event 状态窄窗口；中和后每个非终态 event 恰有一个可领取 task，能够幂等处理。
 - email：renewal reminder 可重放；其他三类变 dead 且不会在“快照后已发送”场景重复投递。
 - 其他 task：原 processing/failed 均变可领取 pending，attempts=0；stale handler 成功 no-op。
@@ -136,7 +136,7 @@ v1 临时数据库必须使用不可预测/进程唯一名称，只接收本次 
 - [ ] v1 unknown 默认 fail-closed；显式 override 仅放宽 unknown，不得绕过已确认的新→旧/分叉
 - [ ] 兼容检查通过前不破坏正式 DB；v1 临时 DB 在全部退出路径清理
 - [ ] 正常 app 全程停止，迁移→中和→收敛完成后才启动
-- [ ] `storage.delete_object` 危险 task 被删除并释放 dedupeKey
+- [ ] `storage.delete_object` 全部行（含终态）被删除并释放对象级 dedupeKey，§4 孤儿收敛不被残留终态行卡死
 - [ ] 每个非终态 provider event 被复位且补齐唯一 dispatch task；不依赖 Stripe 重投
 - [ ] email 按模板中和；未知投递结果不自动重复发送
 - [ ] 其余非终态 task 可领取、attempts=0、锁字段完整清理
@@ -151,7 +151,7 @@ v1 临时数据库必须使用不可预测/进程唯一名称，只接收本次 
 - S7 只硬化既有方案，不重写备份机制；热备默认、停 app 备份为可选强一致步骤。
 - 固定顺序为校验（v1 先隔离 schema 探测）→导入 → 还原存储 → one-off 迁移 → 事务中和 → one-off 收敛 → 启动正常 app。
 - v1 manifest 无 migration 标识；通过临时 DB 比较 Drizzle migration 历史，unknown 默认中止，显式 override 仅允许 unknown。
-- 删除恢复出的非终态 storage delete task；支付事件成对复位并按 event 行补齐 dispatch task，绝不批量 dead。
+- 删除恢复出的全部 storage delete task（含终态，释放对象级 dedupeKey 以免卡死 §4 孤儿收敛）；支付事件成对复位并按 event 行补齐 dispatch task，绝不批量 dead。
 - email 根据模板决定重放或 dead；其余任务清锁并重置 attempts，依赖幂等/stale no-op。
 - 缺失对象实际写 S1a quarantine，孤儿使用 S1b cleanup；收敛失败不启动 app。
 - SESSION_SECRET 外部备份；丢失意味着强制重新登录。
