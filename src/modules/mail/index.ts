@@ -32,7 +32,15 @@ async function sendMail(to: string, subject: string, text: string): Promise<void
   if (!cfg.configured) {
     throw new ApiError(500, "mailNotConfigured");
   }
-  await getTransporter(cfg).sendMail({ from: cfg.from, to, subject, text });
+  try {
+    await getTransporter(cfg).sendMail({ from: cfg.from, to, subject, text });
+  } catch {
+    // Nodemailer/provider errors may embed recipients, envelope data, response
+    // text, or the rendered body (including login codes). Keep this error
+    // retryable, but never let the original transport object reach task
+    // lastError, logs, or the admin task surface.
+    throw new Error("SMTP delivery failed");
+  }
   logger.info("邮件已发送", {
     recipientDigest: hmacSha256WithPurpose("mail-log-recipient", to.trim().toLowerCase()),
     subject,

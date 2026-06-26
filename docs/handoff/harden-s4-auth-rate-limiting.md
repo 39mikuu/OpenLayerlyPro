@@ -171,6 +171,7 @@ CL 预拒
 
 - task 表 JSON 中不得存储明文验证码或完整渲染邮件正文。
 - 日志、dead-task 管理页、错误序列化不得显示解密后的验证码。
+- SMTP/Nodemailer/provider 原始异常可能包含收件人、envelope、响应文本或渲染正文；mail 边界必须将其收敛为不含敏感数据的通用可重试错误，禁止原始 `message`、`response`、`rejected`、`envelope` 或序列化错误对象进入日志、`tasks.lastError` 或后台任务详情。
 - 解密失败视为不可重试配置/数据错误，抛 `PermanentTaskError`，但不得泄露载荷。
 - 应用保证：旧 code 的 task 仍可能执行/重试时不会创建更新 code；stale claim 在 SMTP 前成功 no-op；SMTP 调用开始时该 code 仍为最新有效 code。
 - worker 在 SMTP 成功后、标记 succeeded 前崩溃，最多造成**同一码 at-least-once 重复投递**；这是可接受残余。
