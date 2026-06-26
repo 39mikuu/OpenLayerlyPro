@@ -107,10 +107,11 @@ export function getVerifyCodeCompareRateLimit(input: {
 }
 
 /**
- * Target-scoped failure accounting performed only after an incorrect/expired
- * result. It is intentionally not a pre-comparison authorization gate: doing
- * that would let a remote attacker lock a victim email. Unlimited comparison
- * attempts are prevented by getVerifyCodeCompareRateLimit instead.
+ * Target-scoped failure accounting consumed only after an incorrect/expired
+ * result. Before comparison, callers may only read-check whether this bucket
+ * is already exhausted; they must never consume it there. The trusted IP in
+ * the key prevents failures from one source from locking the target elsewhere.
+ * The source hard budget independently bounds all real comparisons.
  */
 export function getVerifyCodeWrongAttemptRateLimits(input: {
   identity: ClientRateLimitIdentity;
