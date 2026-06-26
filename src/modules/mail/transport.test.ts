@@ -1,9 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.hoisted(() => {
+  Object.assign(process.env, {
+    NODE_ENV: "test",
+    SESSION_SECRET: "mail-log-test-secret-that-is-long-enough",
+  });
+});
+
 const mocks = vi.hoisted(() => ({
   createTransport: vi.fn(),
   sendMail: vi.fn(),
   getSmtpConfig: vi.fn(),
+  loggerInfo: vi.fn(),
 }));
 
 vi.mock("nodemailer", () => ({
@@ -12,8 +20,11 @@ vi.mock("nodemailer", () => ({
 vi.mock("@/modules/config", () => ({
   getSmtpConfig: mocks.getSmtpConfig,
 }));
+vi.mock("@/lib/logger", () => ({
+  logger: { info: mocks.loggerInfo, warn: vi.fn(), error: vi.fn() },
+}));
 
-import { sendTestEmail } from "./index";
+import { sendLoginCodeEmail, sendTestEmail } from "./index";
 
 describe("SMTP transport", () => {
   beforeEach(() => {
@@ -41,5 +52,29 @@ describe("SMTP transport", () => {
         socketTimeout: 45_000,
       }),
     );
+  });
+
+  it("logs stable recipient digests without raw recipients or login codes", async () => {
+    const rawRecipient = "fan@example.com";
+    const otherRecipient = "other@example.com";
+    const loginCode = "ABCD1234EFGH5678";
+
+    await sendTestEmail(" Fan@Example.com ", "en");
+    await sendTestEmail(rawRecipient, "en");
+    await sendLoginCodeEmail(otherRecipient, loginCode, "en");
+
+    const firstDigest = mocks.loggerInfo.mock.calls[0]?.[1]?.recipientDigest as string;
+    const secondDigest = mocks.loggerInfo.mock.calls[1]?.[1]?.recipientDigest as string;
+    const otherDigest = mocks.loggerInfo.mock.calls[2]?.[1]?.recipientDigest as string;
+    expect(firstDigest).toBe(secondDigest);
+    expect(firstDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(firstDigest).not.toBe(rawRecipient);
+    expect(otherDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(otherDigest).not.toBe(firstDigest);
+
+    const fullLoggerArguments = JSON.stringify(mocks.loggerInfo.mock.calls);
+    expect(fullLoggerArguments).not.toContain(rawRecipient);
+    expect(fullLoggerArguments).not.toContain(otherRecipient);
+    expect(fullLoggerArguments).not.toContain(loginCode);
   });
 });

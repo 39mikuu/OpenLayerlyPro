@@ -68,6 +68,15 @@ describe("getReadiness", () => {
     expect(mockedGetIntegrationStatuses).not.toHaveBeenCalled();
   });
 
+  it("warns about process-local rate limits without gating readiness", async () => {
+    mockedGetEnv.mockReturnValue({ APP_INSTANCE_COUNT: 2 } as ReturnType<typeof getEnv>);
+
+    const result = await getReadiness();
+
+    expect(result.ready).toBe(true);
+    expect(result.warnings?.[0]).toContain("process-local");
+  });
+
   it("includes coarse integration probes only when requested", async () => {
     const result = await getReadiness({ includeIntegrations: true });
     expect(result.integrations).toEqual([

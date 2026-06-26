@@ -17,8 +17,10 @@
 - [ ] Inline-video signed URL TTL, normal per-IP limits, and unresolved-client emergency limits have been reviewed for this deployment.
 - [ ] Operators understand that only public S3 playback redirects; login/member S3 video remains application-proxied. See [Inline video playback](../admin/inline-video-playback.md).
 - [ ] Turnstile is configured if bot protection is needed.
-- [ ] After S4 is implemented, auth rate-limit env bounds, login-code alphabet/length, and request-code dedupe settings have been reviewed; do not configure handoff-only variables before the implementation exists.
-- [ ] After S4 is implemented, a correct login code succeeds even when wrong-attempt buckets are exhausted, and Turnstile/dedupe non-send exits do not consume the request-code send budget.
+- [ ] Auth rate-limit env bounds, login-code alphabet/length, and request-code dedupe settings have been reviewed.
+- [ ] A correct login code succeeds even when wrong/invalid-attempt buckets are exhausted; `codeIncorrect` and `codeExpired` are accounted only after core verification fails, and Turnstile/dedupe/fence non-send exits do not consume the request-code send budget.
+- [ ] Login-code SMTP runs outside database transactions and per-email advisory locks; pending/processing/failed tasks suppress replacement codes, stale claims no-op, and operators accept same-code at-least-once delivery after a post-SMTP worker crash.
+- [ ] Operators understand that rotating `SESSION_SECRET` makes in-flight auth login-code tasks undecryptable (`PermanentTaskError`); users request a new code within the 10-minute TTL window. Future S5 email reliability work must preserve this known behavior.
 - [ ] AI translation provider is disabled unless intentionally configured.
 - [ ] Custom footer code is reviewed and trusted.
 - [ ] `/api/health` and `/api/ready` return 200.
@@ -30,13 +32,15 @@
 
 ## Authentication hardening status
 
-The current runtime still uses the pre-S4 login-code limits until the S4 implementation PR is merged. The authoritative target design is [S4 auth rate-limiting hardening](../handoff/harden-s4-auth-rate-limiting.md):
+The current runtime implements [S4 auth rate-limiting hardening](../handoff/harden-s4-auth-rate-limiting.md):
 
-- verify throttles are wrong-attempt limiters applied only after the code is confirmed incorrect;
-- correct codes bypass exhausted wrong-attempt buckets;
-- request-code has no pure-email blocking 429 gate;
-- email-derived limiter/dedupe identity uses normalized email plus keyed HMAC-SHA-256;
-- request dedupe is non-blocking and concurrent requests create at most one code/delivery;
+- verify throttles account both `codeIncorrect` and `codeExpired` only after the core verification path returns failure;
+- correct codes bypass exhausted wrong/invalid-attempt buckets, while the legacy `attempt_count` column is no longer read or written;
+- request-code has no pure-email blocking 429 gate and returns only `{ "accepted": true }` for both normal and suppressed requests;
+- email-derived limiter/dedupe identity and mail logs use purpose-separated keyed HMAC-SHA-256 rather than raw recipients;
+- request dedupe plus the persistent delivery fence creates at most one active code/delivery while a task is pending, processing, or retryable failed;
+- task claim and latest-active-code fences run in a short transaction, then SMTP runs after the transaction/advisory lock is released;
+- a post-SMTP crash may repeat the same code at least once, and external mailbox arrival order is not guaranteed;
 - process-local limits remain single-instance only.
 
 ## Application request-body limits

@@ -11,12 +11,13 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest) {
   const includeIntegrations = new URL(req.url).searchParams.get("integrations") === "true";
-  const { ready, checks, integrations } = await getReadiness({ includeIntegrations });
+  const { ready, checks, integrations, warnings } = await getReadiness({ includeIntegrations });
   return NextResponse.json(
     {
       ok: ready,
       status: ready ? "ready" : "not_ready",
       checks,
+      ...(warnings ? { warnings } : {}),
       ...(integrations ? { integrations } : {}),
     },
     { status: ready ? 200 : 503 },

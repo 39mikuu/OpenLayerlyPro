@@ -15,7 +15,12 @@ export function Login({ view, t }: { view: LoginView; t: Translate }) {
       </header>
 
       <div className="mt-6 rounded-xl border bg-card p-5 text-card-foreground shadow-[0_1px_3px_rgba(15,23,42,0.04)] sm:p-6">
-        <LoginForm mode={view.mode} turnstileSiteKey={view.turnstileSiteKey} />
+        <LoginForm
+          mode={view.mode}
+          turnstileSiteKey={view.turnstileSiteKey}
+          loginCodeLength={view.loginCodeLength}
+          loginCodePattern={view.loginCodePattern}
+        />
       </div>
 
       {view.mode === "fan" && (

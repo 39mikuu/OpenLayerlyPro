@@ -9,8 +9,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/db", () => ({ getDb: mocks.getDb }));
 vi.mock("@/lib/crypto", () => ({
+  CROCKFORD_BASE32_ALPHABET: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
   generateLoginCode: () => "123456",
   hmacSha256: (input: string) => `hash:${input}`,
+  hmacSha256WithPurpose: (_purpose: string, input: string) => `hash:${input}`,
   safeEqualHex: (a: string, b: string) => a === b,
 }));
 vi.mock("@/modules/user", () => ({
@@ -22,16 +24,24 @@ vi.mock("@/modules/system/events", () => ({
 }));
 
 function dbWithExecuteQueues(queues: unknown[][]) {
+  const updateWhere = vi.fn(async () => []);
+  const updateSet = vi.fn(() => ({ where: updateWhere }));
+  const update = vi.fn(() => ({ set: updateSet }));
   const transaction = vi.fn(
-    async (callback: (tx: { execute: ReturnType<typeof vi.fn> }) => Promise<unknown>) => {
+    async (
+      callback: (tx: {
+        execute: ReturnType<typeof vi.fn>;
+        update: ReturnType<typeof vi.fn>;
+      }) => Promise<unknown>,
+    ) => {
       const queue = queues.shift();
       if (!queue) throw new Error("missing execute queue");
       const execute = vi.fn(async () => queue.shift() ?? []);
-      return callback({ execute });
+      return callback({ execute, update });
     },
   );
   mocks.getDb.mockReturnValue({ transaction });
-  return { transaction };
+  return { transaction, update, updateSet, updateWhere };
 }
 
 describe("verifyLoginCode", () => {
@@ -42,18 +52,19 @@ describe("verifyLoginCode", () => {
     mocks.recordEvent.mockResolvedValue(undefined);
   });
 
-  it("attemptCount 已达到上限时返回 429", async () => {
-    dbWithExecuteQueues([[[], [{ attempt_count: 5 }]]]);
+  it("attemptCount 已很高时正确验证码仍可登录", async () => {
+    dbWithExecuteQueues([
+      [[{ id: "code-1", code_hash: "hash:123456", attempt_count: 99 }], [{ id: "code-1" }]],
+    ]);
     const { verifyLoginCode } = await import("./login-code");
 
-    await expect(verifyLoginCode("fan@example.com", "123456")).rejects.toMatchObject({
-      status: 429,
-      code: "codeAttemptsExceeded",
+    await expect(verifyLoginCode("fan@example.com", "123456")).resolves.toMatchObject({
+      id: "user-1",
     });
-    expect(mocks.findOrCreateUserByEmail).not.toHaveBeenCalled();
+    expect(mocks.findOrCreateUserByEmail).toHaveBeenCalledWith("fan@example.com");
   });
 
-  it("错误验证码会消耗一次尝试并返回 codeIncorrect", async () => {
+  it("错误验证码返回 codeIncorrect 且不写 attempt_count", async () => {
     const { transaction } = dbWithExecuteQueues([
       [[{ id: "code-1", code_hash: "hash:123456", attempt_count: 1 }]],
     ]);
@@ -132,26 +143,35 @@ describe("verifyLoginCode", () => {
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
   });
 
-  it("并发错误尝试不能绕过 MAX_ATTEMPTS", async () => {
-    let attemptCount = 4;
+  it("并发错误尝试只返回错误且不写 attempt_count", async () => {
+    let attemptUpdates = 0;
     const transaction = vi.fn(
       (() => {
         let chain: Promise<unknown> = Promise.resolve();
         return async (
-          callback: (tx: { execute: ReturnType<typeof vi.fn> }) => Promise<unknown>,
+          callback: (tx: {
+            execute: ReturnType<typeof vi.fn>;
+            update: ReturnType<typeof vi.fn>;
+          }) => Promise<unknown>,
         ) => {
           const run = chain.then(async () => {
             let call = 0;
             const execute = vi.fn(async () => {
               call += 1;
               if (call === 1) {
-                if (attemptCount >= 5) return [];
-                attemptCount += 1;
-                return [{ id: "code-1", code_hash: "hash:123456", attempt_count: attemptCount }];
+                return [{ id: "code-1", code_hash: "hash:123456" }];
               }
-              return [{ attempt_count: attemptCount }];
+              return [];
             });
-            return callback({ execute });
+            const update = vi.fn(() => ({
+              set: vi.fn(() => ({
+                where: vi.fn(async () => {
+                  attemptUpdates += 1;
+                  return [];
+                }),
+              })),
+            }));
+            return callback({ execute, update });
           });
           chain = run.catch(() => {});
           return run;
@@ -168,12 +188,12 @@ describe("verifyLoginCode", () => {
 
     expect(results).toHaveLength(2);
     expect(
-      results.some(
+      results.every(
         (result) =>
           result.status === "rejected" &&
-          (result.reason as { code?: string }).code === "codeAttemptsExceeded",
+          (result.reason as { code?: string }).code === "codeIncorrect",
       ),
     ).toBe(true);
-    expect(attemptCount).toBe(5);
+    expect(attemptUpdates).toBe(0);
   });
 });

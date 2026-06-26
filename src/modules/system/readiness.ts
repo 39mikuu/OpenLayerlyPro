@@ -23,9 +23,13 @@ export type Readiness = {
     config: boolean;
     encryptionKey: boolean;
   };
+  warnings?: string[];
   /** 仅在显式请求（includeIntegrations）时出现；不影响 ready。 */
   integrations?: IntegrationProbe[];
 };
+
+const PROCESS_LOCAL_LIMITER_WARNING =
+  "APP_INSTANCE_COUNT is greater than 1, but v1.0 rate limits are process-local and not globally consistent across replicas.";
 
 /**
  * 就绪检查，供 /api/ready 使用（反向代理 / 负载均衡探活）。
@@ -36,9 +40,13 @@ export async function getReadiness(options?: {
   includeIntegrations?: boolean;
 }): Promise<Readiness> {
   let config = false;
+  const warnings: string[] = [];
   try {
-    getEnv();
+    const env = getEnv();
     config = true;
+    if (env.APP_INSTANCE_COUNT > 1) {
+      warnings.push(PROCESS_LOCAL_LIMITER_WARNING);
+    }
   } catch {
     config = false;
   }
@@ -67,6 +75,7 @@ export async function getReadiness(options?: {
   const readiness: Readiness = {
     ready: database && config && encryptionKey,
     checks: { database, config, encryptionKey },
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 
   // 可选集成探测：仅在显式请求且基础配置可读时执行；探测失败不影响 ready，省略字段即可。

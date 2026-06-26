@@ -104,6 +104,8 @@ export type TiersView = {
 export type LoginView = {
   mode: "fan" | "admin";
   turnstileSiteKey?: string;
+  loginCodeLength: number;
+  loginCodePattern: string;
 };
 
 export type MeView = {

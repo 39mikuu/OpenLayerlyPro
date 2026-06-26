@@ -9,10 +9,14 @@ const mocks = vi.hoisted(() => ({
   sendPaymentRejectedEmail: vi.fn(),
   sendRenewalReminderEmail: vi.fn(),
   dispatchPaymentProviderEvent: vi.fn(),
+  deliverLoginCodeEmailTask: vi.fn(),
   reconcileSubscriptions: vi.fn(),
   nextSubscriptionReconcileAt: vi.fn(),
 }));
 
+vi.mock("@/modules/auth/login-code", () => ({
+  deliverLoginCodeEmailTask: mocks.deliverLoginCodeEmailTask,
+}));
 vi.mock("@/modules/config", () => ({ getSmtpConfig: mocks.getSmtpConfig }));
 vi.mock("@/modules/file/cleanup", () => ({
   cleanupOrphanFile: mocks.cleanupOrphanFile,
@@ -62,6 +66,7 @@ describe("task handlers", () => {
     mocks.cleanupOrphanFile.mockResolvedValue("deleted");
     mocks.deleteStorageObject.mockResolvedValue(undefined);
     mocks.dispatchPaymentProviderEvent.mockResolvedValue(undefined);
+    mocks.deliverLoginCodeEmailTask.mockResolvedValue(undefined);
     mocks.reconcileSubscriptions.mockResolvedValue(0);
     mocks.nextSubscriptionReconcileAt.mockReturnValue(new Date("2026-06-25T08:00:00.000Z"));
   });
@@ -154,6 +159,43 @@ describe("task handlers", () => {
     } as const;
     await runTaskHandler(task(payload, "storage.delete_object"));
     expect(mocks.deleteStorageObject).toHaveBeenCalledWith(payload);
+  });
+
+  it("dispatches auth login-code email tasks without recipient or code in the payload", async () => {
+    mocks.deliverLoginCodeEmailTask.mockResolvedValue(
+      "Login code was superseded; delivery skipped",
+    );
+    const payload = {
+      version: 1,
+      codeId: "550e8400-e29b-41d4-a716-446655440000",
+      encryptedCode: "encrypted",
+      locale: "zh",
+    } as const;
+
+    const result = await runTaskHandler(task(payload, "auth.login_code_email"));
+
+    expect(mocks.deliverLoginCodeEmailTask).toHaveBeenCalledWith(payload, {
+      taskId: "11111111-1111-4111-8111-111111111111",
+      lockToken: "worker",
+    });
+    expect(JSON.stringify(payload)).not.toContain("@");
+    expect(result.note).toContain("superseded");
+  });
+
+  it("rejects malformed auth login-code email task payloads permanently", async () => {
+    await expect(
+      runTaskHandler(
+        task(
+          {
+            version: 1,
+            codeId: "not-a-uuid",
+            encryptedCode: "encrypted",
+          },
+          "auth.login_code_email",
+        ),
+      ),
+    ).rejects.toThrow("Invalid auth.login_code_email payload");
+    expect(mocks.deliverLoginCodeEmailTask).not.toHaveBeenCalled();
   });
 
   it("dispatches provider inbox tasks by row UUID", async () => {

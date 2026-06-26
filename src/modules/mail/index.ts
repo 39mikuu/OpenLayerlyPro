@@ -1,6 +1,7 @@
 import nodemailer, { type Transporter } from "nodemailer";
 
 import { ApiError } from "@/lib/api";
+import { hmacSha256WithPurpose } from "@/lib/crypto";
 import { formatDate } from "@/lib/dates";
 import { logger } from "@/lib/logger";
 import { getSmtpConfig, type ResolvedSmtpConfig } from "@/modules/config";
@@ -31,8 +32,19 @@ async function sendMail(to: string, subject: string, text: string): Promise<void
   if (!cfg.configured) {
     throw new ApiError(500, "mailNotConfigured");
   }
-  await getTransporter(cfg).sendMail({ from: cfg.from, to, subject, text });
-  logger.info("邮件已发送", { to, subject });
+  try {
+    await getTransporter(cfg).sendMail({ from: cfg.from, to, subject, text });
+  } catch {
+    // Nodemailer/provider errors may embed recipients, envelope data, response
+    // text, or the rendered body (including login codes). Keep this error
+    // retryable, but never let the original transport object reach task
+    // lastError, logs, or the admin task surface.
+    throw new Error("SMTP delivery failed");
+  }
+  logger.info("邮件已发送", {
+    recipientDigest: hmacSha256WithPurpose("mail-log-recipient", to.trim().toLowerCase()),
+    subject,
+  });
 }
 
 function mailT(locale: Locale | undefined) {
