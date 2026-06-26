@@ -7,7 +7,7 @@ import {
   warnUnresolvedClientRateLimitIdentity,
 } from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
-import { rateLimit } from "@/lib/rate-limit";
+import { isRateLimited, rateLimit } from "@/lib/rate-limit";
 import { assertContentLengthWithinLimit, readJsonWithLimit } from "@/lib/request-body";
 import { verifyLoginCode } from "@/modules/auth/login-code";
 import {
@@ -47,8 +47,19 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    const failureLimits = getVerifyCodeWrongAttemptRateLimits({
+      identity,
+      normalizedEmail,
+      env,
+    });
+    if (
+      failureLimits.some((limit) => isRateLimited(limit.key, limit.max, limit.windowMs))
+    ) {
+      return jsonError(429, "codeAttemptsExceeded");
+    }
+
     // Hard source budget: no target email is present in this key, so a remote
-    // attacker cannot lock a victim account while still being prevented from
+    // source cannot lock a victim account while still being prevented from
     // triggering unlimited real code comparisons from one client identity.
     const compareLimit = getVerifyCodeCompareRateLimit({ identity, env });
     if (!rateLimit(compareLimit.key, compareLimit.max, compareLimit.windowMs)) {
@@ -64,14 +75,11 @@ export async function POST(req: NextRequest) {
         error instanceof ApiError &&
         (error.code === "codeIncorrect" || error.code === "codeExpired")
       ) {
-        // Additional target-scoped accounting remains post-comparison so a
-        // third party cannot pre-fill an email bucket and lock out the owner.
-        const limits = getVerifyCodeWrongAttemptRateLimits({
-          identity,
-          normalizedEmail,
-          env,
-        });
-        const allowed = limits.map((limit) => rateLimit(limit.key, limit.max, limit.windowMs));
+        // Target-scoped accounting remains post-comparison so another source
+        // cannot pre-fill an email-only bucket and block the account owner.
+        const allowed = failureLimits.map((limit) =>
+          rateLimit(limit.key, limit.max, limit.windowMs),
+        );
         if (allowed.some((value) => !value)) {
           return jsonError(429, "codeAttemptsExceeded");
         }
