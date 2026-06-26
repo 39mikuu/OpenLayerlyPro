@@ -52,9 +52,7 @@ export async function POST(req: NextRequest) {
       normalizedEmail,
       env,
     });
-    if (
-      failureLimits.some((limit) => isRateLimited(limit.key, limit.max, limit.windowMs))
-    ) {
+    if (failureLimits.some((limit) => isRateLimited(limit.key, limit.max, limit.windowMs))) {
       return jsonError(429, "codeAttemptsExceeded");
     }
 
