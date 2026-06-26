@@ -39,9 +39,9 @@ Integration 状态是信息性的，**不进入 `/api/ready` 的 200/503 门禁*
 
 - 描述符实现 `test(ctx)` 才表示可测试；失败抛统一错误，不实现则返回“该集成不支持连接测试”。
 - 统一端点：`POST /api/admin/integrations/[id]/test`，要求管理员身份。
-- SMTP 发送测试邮件；S3/R2 执行随机对象 Put/Get/Delete；Stripe 校验当前服务端配置/连接；Translation 的可用性按其配置和 provider 行为暴露。
-- `testableIntegrationIds` 只表示 adapter 具备测试能力；UI 仍按 `configured`、driver 和 enabled 决定按钮状态。
-- local storage、Turnstile 和 Tunnel 不伪造无意义的网络测试。
+- 当前可测试 adapter 只有：SMTP（发送测试邮件）、S3/R2 Storage（随机对象 Put/Get/Delete）和 Stripe（服务端连接检查）。
+- Translation 目前只提供配置/状态与由管理员显式触发的真实生成调用，没有独立连接测试；Turnstile、Tunnel 与 local storage 也不伪造无意义的网络测试。
+- `testableIntegrationIds` 由描述符是否实现 `test()` 静态派生；UI 仍结合 `configured`、driver 和 enabled 决定按钮状态。
 
 ### 可选 readiness 探测 ✅
 
