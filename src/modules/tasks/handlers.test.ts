@@ -174,7 +174,10 @@ describe("task handlers", () => {
 
     const result = await runTaskHandler(task(payload, "auth.login_code_email"));
 
-    expect(mocks.deliverLoginCodeEmailTask).toHaveBeenCalledWith(payload);
+    expect(mocks.deliverLoginCodeEmailTask).toHaveBeenCalledWith(payload, {
+      taskId: "11111111-1111-4111-8111-111111111111",
+      lockToken: "worker",
+    });
     expect(JSON.stringify(payload)).not.toContain("@");
     expect(result.note).toContain("superseded");
   });

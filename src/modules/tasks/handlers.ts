@@ -178,7 +178,10 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
     case "auth.login_code_email": {
       const parsed = loginCodeEmailPayloadSchema.safeParse(task.payloadJson);
       if (!parsed.success) throw new PermanentTaskError("Invalid auth.login_code_email payload");
-      const note = await deliverLoginCodeEmailTask(parsed.data);
+      const note = await deliverLoginCodeEmailTask(parsed.data, {
+        taskId: task.id,
+        lockToken: task.lockedBy,
+      });
       return note ? { note } : {};
     }
     case "email":

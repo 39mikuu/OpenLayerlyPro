@@ -18,6 +18,7 @@ import { loginCodes, tasks } from "@/db/schema";
 import { hmacSha256WithPurpose } from "@/lib/crypto";
 import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
+import { claimDueTasks } from "@/modules/tasks";
 import { runTaskHandler } from "@/modules/tasks/handlers";
 
 import { requestLoginCode, verifyLoginCode } from "./login-code";
@@ -67,7 +68,7 @@ describeWithDatabase("S4 login-code integration", () => {
     });
 
     const [stored] = await db.select().from(loginCodes);
-    expect(stored?.attemptCount).toBe(52);
+    expect(stored?.attemptCount).toBe(50);
     expect(stored?.usedAt).toBeInstanceOf(Date);
   });
 
@@ -106,29 +107,72 @@ describeWithDatabase("S4 login-code integration", () => {
     expect(codeRows[0]?.createdAt).toEqual(before?.createdAt);
   });
 
-  it("skips stale queued codes and sends only the latest active code", async () => {
+  it("keeps suppressing replacement codes after the dedupe window while delivery is retryable", async () => {
+    const identity = { kind: "ip", value: "198.51.100.25" } as const;
+
+    await requestLoginCode("retrying@example.com", { identity, ip: identity.value });
+    const [code] = await db.select().from(loginCodes);
+    const [task] = await db.select().from(tasks);
+    await db
+      .update(loginCodes)
+      .set({ createdAt: new Date(Date.now() - 61_000) })
+      .where(eq(loginCodes.id, code!.id));
+    await db.update(tasks).set({ status: "failed" }).where(eq(tasks.id, task!.id));
+
+    await expect(
+      requestLoginCode("retrying@example.com", { identity, ip: identity.value }),
+    ).resolves.toEqual({ suppressed: true });
+    await expect(db.select().from(loginCodes)).resolves.toHaveLength(1);
+    await expect(db.select().from(tasks)).resolves.toHaveLength(1);
+  });
+
+  it("conservatively suppresses an active code whose durable task is missing", async () => {
+    const identity = { kind: "ip", value: "198.51.100.26" } as const;
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await requestLoginCode("missing-task@example.com", { identity, ip: identity.value });
+    const [code] = await db.select().from(loginCodes);
+    await db.delete(tasks);
+    await db
+      .update(loginCodes)
+      .set({ createdAt: new Date(Date.now() - 61_000) })
+      .where(eq(loginCodes.id, code!.id));
+
+    await expect(
+      requestLoginCode("missing-task@example.com", { identity, ip: identity.value }),
+    ).resolves.toEqual({ suppressed: true });
+    await expect(db.select().from(loginCodes)).resolves.toHaveLength(1);
+    await expect(db.select().from(tasks)).resolves.toHaveLength(0);
+    expect(JSON.stringify(warning.mock.calls)).not.toContain("missing-task@example.com");
+    warning.mockRestore();
+  });
+
+  it("allows a replacement only after terminal delivery and the dedupe window", async () => {
     const identity = { kind: "ip", value: "198.51.100.30" } as const;
 
     await requestLoginCode("fan@example.com", { identity, ip: identity.value, locale: "zh" });
     const [firstCode] = await db.select().from(loginCodes);
+    const [firstTask] = await db.select().from(tasks);
     await db
       .update(loginCodes)
       .set({ createdAt: new Date(Date.now() - 61_000) })
       .where(eq(loginCodes.id, firstCode!.id));
+    await db.update(tasks).set({ status: "succeeded" }).where(eq(tasks.id, firstTask!.id));
 
-    await requestLoginCode("fan@example.com", { identity, ip: identity.value, locale: "zh" });
+    const replacement = await requestLoginCode("fan@example.com", {
+      identity,
+      ip: identity.value,
+      locale: "zh",
+    });
+    expect(replacement.suppressed).toBe(false);
+
     const taskRows = await db.select().from(tasks).orderBy(asc(tasks.createdAt));
     expect(taskRows).toHaveLength(2);
-
-    await expect(runTaskHandler(taskRows[0]!)).resolves.toMatchObject({
-      note: expect.stringContaining("superseded"),
-    });
-    expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();
-
-    await expect(runTaskHandler(taskRows[1]!)).resolves.toEqual({});
+    const [claimed] = await claimDueTasks(1, { lockToken: "latest-worker" });
+    await expect(runTaskHandler(claimed!)).resolves.toEqual({});
     expect(mocks.sendLoginCodeEmail).toHaveBeenCalledOnce();
     const sentCode = mocks.sendLoginCodeEmail.mock.calls[0][1] as string;
     expect(sentCode).toMatch(/^[0-9A-HJKMNP-TV-Z]{16}$/);
-    expect(JSON.stringify(taskRows[1]!.payloadJson)).not.toContain(sentCode);
+    expect(JSON.stringify(claimed!.payloadJson)).not.toContain(sentCode);
   });
 });

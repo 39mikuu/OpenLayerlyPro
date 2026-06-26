@@ -2,14 +2,23 @@
 
 import { Mail, ShieldCheck } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
+import {
+  acceptFanLoginCodeRequest,
+  canSubmitFanLoginCode,
+  changeFanLoginCode,
+  changeFanLoginEmail,
+  INITIAL_FAN_LOGIN_FLOW,
+  resetFanLoginRequestedEmail,
+} from "@/components/auth/login-form-model";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/auth/turnstile-widget";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/client";
+import { normalizeEmail, RAW_LOGIN_CODE_MAX_LENGTH } from "@/modules/auth/input-policy";
 
 export function LoginForm({
   mode,
@@ -25,18 +34,16 @@ export function LoginForm({
   const t = useT();
   const router = useRouter();
 
-  const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
-  const [codeSent, setCodeSent] = useState(false);
+  const [fanFlow, setFanFlow] = useState(INITIAL_FAN_LOGIN_FLOW);
+  const { email, requestedEmail, code, codeSent } = fanFlow;
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
   const [adminEmail, setAdminEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const normalizedCode = code.trim().toUpperCase();
-  const codeComplete =
-    normalizedCode.length === loginCodeLength && new RegExp(loginCodePattern).test(normalizedCode);
+  const codeRegex = useMemo(() => new RegExp(loginCodePattern), [loginCodePattern]);
+  const codeComplete = canSubmitFanLoginCode(fanFlow, loginCodeLength, codeRegex);
 
   async function run(fn: () => Promise<void>) {
     setLoading(true);
@@ -113,8 +120,27 @@ export function LoginForm({
           autoComplete="email"
           placeholder="you@example.com"
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          disabled={requestedEmail !== null}
+          onChange={(event) =>
+            setFanFlow((current) => changeFanLoginEmail(current, event.target.value))
+          }
         />
+        {requestedEmail && (
+          <Button
+            variant="link"
+            size="sm"
+            className="px-0"
+            disabled={loading}
+            onClick={() => {
+              setFanFlow((current) => resetFanLoginRequestedEmail(current));
+              setMessage(null);
+              setTurnstileToken(null);
+              turnstileRef.current?.reset();
+            }}
+          >
+            {t("login.changeEmail")}
+          </Button>
+        )}
       </div>
 
       {codeSent && (
@@ -125,10 +151,12 @@ export function LoginForm({
             inputMode="text"
             autoCapitalize="characters"
             autoComplete="one-time-code"
-            maxLength={loginCodeLength}
+            maxLength={RAW_LOGIN_CODE_MAX_LENGTH}
             placeholder={t("login.codePlaceholder", { length: loginCodeLength })}
             value={code}
-            onChange={(event) => setCode(event.target.value.toUpperCase())}
+            onChange={(event) =>
+              setFanFlow((current) => changeFanLoginCode(current, event.target.value))
+            }
           />
           <p className="text-xs text-muted-foreground">{t("login.codeHint")}</p>
         </div>
@@ -150,11 +178,12 @@ export function LoginForm({
           onClick={() =>
             run(async () => {
               try {
+                const targetEmail = requestedEmail ?? normalizeEmail(email);
                 await api("/api/auth/request-code", {
                   method: "POST",
-                  body: { email, turnstileToken: turnstileToken ?? undefined },
+                  body: { email: targetEmail, turnstileToken: turnstileToken ?? undefined },
                 });
-                setCodeSent(true);
+                setFanFlow((current) => acceptFanLoginCodeRequest(current, targetEmail));
                 setMessage(t("login.codeSent"));
               } finally {
                 // Token is single-use, so reset it after every request attempt.
@@ -176,7 +205,7 @@ export function LoginForm({
               run(async () => {
                 await api("/api/auth/verify-code", {
                   method: "POST",
-                  body: { email, code: normalizedCode },
+                  body: { email: requestedEmail, code },
                 });
                 router.push("/me");
                 router.refresh();

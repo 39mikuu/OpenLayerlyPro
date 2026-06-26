@@ -1,54 +1,25 @@
-import { z } from "zod";
-
 import type { ClientRateLimitIdentity } from "@/lib/client-rate-limit";
-import { CROCKFORD_BASE32_ALPHABET, hmacSha256WithPurpose } from "@/lib/crypto";
+import { hmacSha256WithPurpose } from "@/lib/crypto";
 import type { Env } from "@/lib/env";
 
-export const LOGIN_CODE_ALPHABETS = {
-  "crockford-base32": CROCKFORD_BASE32_ALPHABET,
-} as const;
-
-export type LoginCodeAlphabet = keyof typeof LOGIN_CODE_ALPHABETS;
-
-export const RAW_EMAIL_MAX_LENGTH = 512;
-export const NORMALIZED_EMAIL_MAX_LENGTH = 254;
-export const RAW_LOGIN_CODE_MAX_LENGTH = 128;
-
-export const rawEmailSchema = z.string().min(1).max(RAW_EMAIL_MAX_LENGTH);
-export const normalizedEmailSchema = z.string().email().max(NORMALIZED_EMAIL_MAX_LENGTH);
-
-export function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
-}
-
-export function normalizeLoginCode(code: string): string {
-  return code.trim().toUpperCase();
-}
-
-export function getLoginCodeAlphabet(alphabet: LoginCodeAlphabet): string {
-  return LOGIN_CODE_ALPHABETS[alphabet];
-}
-
-export function getLoginCodePolicy(env: Env) {
-  const alphabet = getLoginCodeAlphabet(env.LOGIN_CODE_ALPHABET);
-  return {
-    alphabet,
-    alphabetName: env.LOGIN_CODE_ALPHABET,
-    length: env.LOGIN_CODE_LENGTH,
-    pattern: new RegExp(
-      `^[${alphabet.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}]{${env.LOGIN_CODE_LENGTH}}$`,
-    ),
-  };
-}
-
-export function validateNormalizedEmail(email: string): string {
-  return normalizedEmailSchema.parse(email);
-}
-
-export function validateLoginCode(code: string, env: Env): string {
-  const policy = getLoginCodePolicy(env);
-  return z.string().regex(policy.pattern, "Invalid login code").parse(code);
-}
+export type { LoginCodeAlphabet } from "@/modules/auth/input-policy";
+export {
+  CROCKFORD_BASE32_ALPHABET,
+  getLoginCodeAlphabet,
+  getLoginCodePolicy,
+  isLoginCodeComplete,
+  LOGIN_CODE_ALPHABETS,
+  NORMALIZED_EMAIL_MAX_LENGTH,
+  normalizedEmailSchema,
+  normalizeEmail,
+  normalizeLoginCode,
+  RAW_EMAIL_MAX_LENGTH,
+  RAW_LOGIN_CODE_MAX_LENGTH,
+  rawEmailSchema,
+  sanitizeLoginCodeInput,
+  validateLoginCode,
+  validateNormalizedEmail,
+} from "@/modules/auth/input-policy";
 
 export function authEmailRateLimitDigest(normalizedEmail: string): string {
   return hmacSha256WithPurpose("auth-rate-limit-email", normalizedEmail);

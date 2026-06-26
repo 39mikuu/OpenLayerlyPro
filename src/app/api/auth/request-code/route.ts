@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
       userAgent: getUserAgent(req),
       locale: await resolveLocale(),
     });
-    return jsonOk({ sent: true });
+    return jsonOk({ accepted: true });
   } catch (err) {
     return handleApiError(err);
   }

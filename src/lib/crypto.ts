@@ -10,9 +10,10 @@ import {
 } from "crypto";
 
 import { getEnv } from "@/lib/env";
+import { CROCKFORD_BASE32_ALPHABET, getLoginCodeAlphabet } from "@/modules/auth/input-policy";
 import { getConfigEncryptionKey } from "@/modules/security/config-key";
 
-export const CROCKFORD_BASE32_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+export { CROCKFORD_BASE32_ALPHABET };
 
 export function generateSessionToken(): string {
   return randomBytes(32).toString("base64url");
@@ -47,7 +48,7 @@ export function safeEqualHex(a: string, b: string): boolean {
 
 export function generateLoginCode(): string {
   const env = getEnv();
-  const alphabet = CROCKFORD_BASE32_ALPHABET;
+  const alphabet = getLoginCodeAlphabet(env.LOGIN_CODE_ALPHABET);
   return Array.from(
     { length: env.LOGIN_CODE_LENGTH },
     () => alphabet[randomInt(0, alphabet.length)],

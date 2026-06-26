@@ -42,7 +42,10 @@ export async function POST(req: NextRequest) {
     try {
       user = await verifyLoginCode(normalizedEmail, normalizedCode, locale);
     } catch (error) {
-      if (error instanceof ApiError && error.code === "codeIncorrect") {
+      if (
+        error instanceof ApiError &&
+        (error.code === "codeIncorrect" || error.code === "codeExpired")
+      ) {
         const identity = resolveClientRateLimitIdentity(getClientIp(req));
         if (identity.kind === "unresolved" && env.NODE_ENV === "production") {
           warnUnresolvedClientRateLimitIdentity({

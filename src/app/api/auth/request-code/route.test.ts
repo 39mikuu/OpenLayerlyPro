@@ -69,6 +69,7 @@ describe("request-code route S4 ordering", () => {
     );
 
     expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, data: { accepted: true } });
     expect(mocks.assertTurnstile).toHaveBeenCalledWith("token", "198.51.100.10");
     expect(mocks.requestLoginCode).toHaveBeenCalledWith(
       "fan@example.com",

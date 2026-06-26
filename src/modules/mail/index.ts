@@ -1,6 +1,7 @@
 import nodemailer, { type Transporter } from "nodemailer";
 
 import { ApiError } from "@/lib/api";
+import { hmacSha256WithPurpose } from "@/lib/crypto";
 import { formatDate } from "@/lib/dates";
 import { logger } from "@/lib/logger";
 import { getSmtpConfig, type ResolvedSmtpConfig } from "@/modules/config";
@@ -32,7 +33,10 @@ async function sendMail(to: string, subject: string, text: string): Promise<void
     throw new ApiError(500, "mailNotConfigured");
   }
   await getTransporter(cfg).sendMail({ from: cfg.from, to, subject, text });
-  logger.info("邮件已发送", { to, subject });
+  logger.info("邮件已发送", {
+    recipientDigest: hmacSha256WithPurpose("mail-log-recipient", to.trim().toLowerCase()),
+    subject,
+  });
 }
 
 function mailT(locale: Locale | undefined) {

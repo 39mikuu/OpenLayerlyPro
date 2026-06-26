@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, isNull, sql, type SQLWrapper } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
-import { loginCodes, type User } from "@/db/schema";
+import { loginCodes, tasks, type User } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import type { ClientRateLimitIdentity } from "@/lib/client-rate-limit";
 import {
@@ -40,6 +40,11 @@ export type LoginCodeEmailTaskPayload = {
   locale?: Locale;
 };
 
+export type LoginCodeEmailTaskFence = {
+  taskId: string;
+  lockToken: string | null;
+};
+
 export async function requestLoginCode(
   email: string,
   meta?: {
@@ -54,29 +59,53 @@ export async function requestLoginCode(
   const identity = meta?.identity ?? { kind: "unresolved" };
 
   const dedupeWindowMs = env.REQUEST_CODE_SEND_DEDUPE_SECONDS * 1000;
+  const smtp = await getSmtpConfig();
+  if (!smtp.configured) {
+    throw new ApiError(500, "mailNotConfigured");
+  }
 
   return getDb().transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${normalized}))`);
 
-    const recent = await executeRows<{ id: string }>(
+    const [active] = await executeRows<{ id: string; is_recent: boolean }>(
       tx,
       sql`
-        select ${loginCodes.id} as id
+        select
+          ${loginCodes.id} as id,
+          (${loginCodes.createdAt} > now() - (${dedupeWindowMs} * interval '1 millisecond')) as is_recent
         from ${loginCodes}
         where ${loginCodes.email} = ${normalized}
           and ${loginCodes.usedAt} is null
           and ${loginCodes.expiresAt} > now()
-          and ${loginCodes.createdAt} > now() - (${dedupeWindowMs} * interval '1 millisecond')
         order by ${loginCodes.createdAt} desc
         limit 1
         for update
       `,
     );
-    if (recent[0]) return { suppressed: true };
 
-    const smtp = await getSmtpConfig();
-    if (!smtp.configured) {
-      throw new ApiError(500, "mailNotConfigured");
+    if (active) {
+      const [deliveryTask] = await tx
+        .select({ status: tasks.status })
+        .from(tasks)
+        .where(eq(tasks.dedupeKey, `auth-login-code-email:${active.id}`))
+        .limit(1);
+
+      if (!deliveryTask) {
+        logger.warn("活跃登录验证码缺少持久投递任务；保守抑制重发", {
+          emailDigest: hmacSha256WithPurpose("auth-log-email", normalized),
+          codeId: active.id,
+        });
+        return { suppressed: true };
+      }
+
+      // Persistent delivery fence: while an existing task can still send or retry,
+      // suppress replacement codes for at most the code's 10-minute TTL. This
+      // preserves the invariant that an older code is never dispatched after a
+      // newer code has been minted by the application.
+      if (["pending", "processing", "failed"].includes(deliveryTask.status)) {
+        return { suppressed: true };
+      }
+      if (active.is_recent) return { suppressed: true };
     }
 
     const code = generateLoginCode();
@@ -153,10 +182,6 @@ export async function verifyLoginCode(email: string, code: string, locale?: Loca
     }
 
     if (!safeEqualHex(hmacLoginCode(normalizedCode), record.code_hash)) {
-      await tx
-        .update(loginCodes)
-        .set({ attemptCount: sql`${loginCodes.attemptCount} + 1` })
-        .where(eq(loginCodes.id, record.id));
       return "incorrect";
     }
 
@@ -188,19 +213,62 @@ export async function verifyLoginCode(email: string, code: string, locale?: Loca
 
 export async function deliverLoginCodeEmailTask(
   payload: LoginCodeEmailTaskPayload,
+  fence: LoginCodeEmailTaskFence,
 ): Promise<string | undefined> {
-  return getDb().transaction(async (tx) => {
+  const lockToken = fence.lockToken;
+  if (!lockToken) {
+    throw new PermanentTaskError("Login code task claim is missing its lock token");
+  }
+
+  const delivery = await getDb().transaction(async (tx) => {
+    const [claimedTask] = await tx
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.id, fence.taskId),
+          eq(tasks.kind, "auth.login_code_email"),
+          eq(tasks.status, "processing"),
+          eq(tasks.lockedBy, lockToken),
+          gt(tasks.leaseUntil, sql<Date>`now()`),
+        ),
+      )
+      .limit(1);
+
+    if (!claimedTask) {
+      return { note: "Login code task claim is stale; delivery skipped" } as const;
+    }
+
     const [initial] = await tx
-      .select({
-        email: loginCodes.email,
-      })
+      .select({ email: loginCodes.email })
       .from(loginCodes)
       .where(eq(loginCodes.id, payload.codeId))
       .limit(1);
 
-    if (!initial) return "Login code is no longer active; delivery skipped";
+    if (!initial) {
+      return { note: "Login code is no longer active; delivery skipped" } as const;
+    }
 
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${initial.email}))`);
+
+    // Re-check the claim after waiting for the per-email lock. A reclaimed or
+    // expired lease must become a successful no-op before decrypting or sending.
+    const [stillClaimed] = await tx
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.id, fence.taskId),
+          eq(tasks.kind, "auth.login_code_email"),
+          eq(tasks.status, "processing"),
+          eq(tasks.lockedBy, lockToken),
+          gt(tasks.leaseUntil, sql<Date>`now()`),
+        ),
+      )
+      .limit(1);
+    if (!stillClaimed) {
+      return { note: "Login code task claim is stale; delivery skipped" } as const;
+    }
 
     const [record] = await tx
       .select({
@@ -214,7 +282,7 @@ export async function deliverLoginCodeEmailTask(
       .limit(1);
 
     if (!record || record.usedAt || record.expiresAt <= new Date()) {
-      return "Login code is no longer active; delivery skipped";
+      return { note: "Login code is no longer active; delivery skipped" } as const;
     }
 
     const [latest] = await tx
@@ -231,7 +299,7 @@ export async function deliverLoginCodeEmailTask(
       .limit(1);
 
     if (latest?.id !== payload.codeId) {
-      return "Login code was superseded; delivery skipped";
+      return { note: "Login code was superseded; delivery skipped" } as const;
     }
 
     let code: string;
@@ -241,9 +309,15 @@ export async function deliverLoginCodeEmailTask(
       throw new PermanentTaskError("Login code task payload could not be decrypted");
     }
 
-    await sendLoginCodeEmail(record.email, code, payload.locale);
-    return undefined;
+    return { email: record.email, code } as const;
   });
+
+  if ("note" in delivery) return delivery.note;
+
+  // SMTP and config lookup intentionally happen after Tx1 commits, so neither a
+  // database connection nor the per-email advisory lock is held during network I/O.
+  await sendLoginCodeEmail(delivery.email, delivery.code, payload.locale);
+  return undefined;
 }
 
 function hmacLoginCode(code: string): string {

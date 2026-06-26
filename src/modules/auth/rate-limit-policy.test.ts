@@ -1,4 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.hoisted(() => {
+  Object.assign(process.env, {
+    NODE_ENV: "test",
+    SESSION_SECRET: "auth-rate-policy-test-secret-that-is-long-enough",
+  });
+});
 
 import type { Env } from "@/lib/env";
 

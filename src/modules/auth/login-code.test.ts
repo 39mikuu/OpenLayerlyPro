@@ -64,7 +64,7 @@ describe("verifyLoginCode", () => {
     expect(mocks.findOrCreateUserByEmail).toHaveBeenCalledWith("fan@example.com");
   });
 
-  it("错误验证码会消耗一次尝试并返回 codeIncorrect", async () => {
+  it("错误验证码返回 codeIncorrect 且不写 attempt_count", async () => {
     const { transaction } = dbWithExecuteQueues([
       [[{ id: "code-1", code_hash: "hash:123456", attempt_count: 1 }]],
     ]);
@@ -143,7 +143,7 @@ describe("verifyLoginCode", () => {
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
   });
 
-  it("并发错误尝试只返回错误并各自推进错误计数", async () => {
+  it("并发错误尝试只返回错误且不写 attempt_count", async () => {
     let attemptUpdates = 0;
     const transaction = vi.fn(
       (() => {
@@ -194,6 +194,6 @@ describe("verifyLoginCode", () => {
           (result.reason as { code?: string }).code === "codeIncorrect",
       ),
     ).toBe(true);
-    expect(attemptUpdates).toBe(2);
+    expect(attemptUpdates).toBe(0);
   });
 });

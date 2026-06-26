@@ -131,6 +131,23 @@ describe("verify-code route S4 ordering", () => {
     );
   });
 
+  it("charges the same failure buckets for codeExpired after the core lookup fails", async () => {
+    mocks.verifyLoginCode.mockRejectedValue(new ApiError(400, "codeExpired"));
+
+    const response = await POST(
+      request(
+        { email: "fan@example.com", code: "ABCD1234EFGH5678" },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(2);
+    expect(mocks.verifyLoginCode.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.rateLimit.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it("uses only the unresolved emergency bucket for wrong codes without a trusted IP", async () => {
     mocks.verifyLoginCode.mockRejectedValue(new ApiError(400, "codeIncorrect"));
 
