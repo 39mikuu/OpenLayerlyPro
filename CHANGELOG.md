@@ -1,8 +1,50 @@
 # Changelog
 
-## v0.2.0
+## Unreleased — v1.0.0
 
-Release candidate for automatic one-time payments and production-scale content delivery. The release remains pending final external smoke tests listed in `docs/release-v0.2-checklist.md`.
+OpenLayerlyPro is in pre-release v1.0 security hardening. Payment, subscription, content, file, theme, and translation implementation is present on `main`; the remaining release gates are S6 security response headers (#86), S7 backup/restore consistency (#87), and the real-environment acceptance checklist (#88 / `docs/release-v1.0-checklist.md`).
+
+Do not create a production `v1.0.0` tag until all three gates are complete.
+
+### Payments and Memberships
+
+- Added Stripe one-time hosted Checkout alongside the existing manual proof-review flow.
+- Added full-refund and dispute reversal, charge-to-invoice resolution, reversal-first tombstones, duplicate/late event handling, and reconciliation paths.
+- Added Stripe recurring subscriptions with provider-event inbox/dispatcher processing, invoice-level financial idempotency, exact Stripe billing periods, cancellation, and subscription reconciliation.
+- Added manual renewal reminders for non-card deployments, with period-scoped durable tasks, user controls, stale/cancel no-op checks, and localized mail.
+- Serialized all membership grants per user and deduplicated pending manual/automatic payment entry paths.
+
+### Files, Content, and Delivery
+
+- Added bounded request-body readers for all production Route Handlers, including exact raw Stripe webhook bytes and bounded multipart image uploads.
+- Added server-authoritative image MIME detection, mandatory raster normalization, metadata stripping, frame/pixel/size limits, quarantine, attachment-only payment proofs, and the historical file-safety backfill.
+- Added atomic file deletion with complete reference checks, durable object deletion, payment-proof retention/cleanup/resubmit behavior, and quota enforcement.
+- Added raw-body streaming attachment uploads, local atomic `.part` writes, bounded S3 multipart uploads, streamed SHA-256, and failure compensation.
+- Added inline video playback with local/S3 single-range 200/206/416 behavior, public signed playback redirects, private application proxying, and separate playback/download authorization.
+- Added Markdown editing, inline images, public video embeds, scheduled publishing, categories/tags, keyset pagination, and cross-cutting authorization regression coverage.
+
+### Authentication, Mail, and Operations
+
+- Added S4 authentication hardening: trusted resolved/unresolved identities, high-entropy login codes, keyed email identities, persistent delivery fences, correct-code-first semantics, and source-scoped pre-comparison budgets.
+- Added S5 mail reliability: failure classification, operator defer/dead behavior, stable Message-ID, delivery ledger, retry/admin visibility, and stale/cancel send guards.
+- Added encrypted configuration groups and admin UI for SMTP, Turnstile, storage, upload limits, Stripe, and AI translation.
+- Added backup/restore and upgrade tooling; v1.0 S7 will harden archive integrity, legacy schema probing, restored-task neutralization, mandatory file-safety remediation, and DB↔storage convergence before release.
+- v1.0 S6 will add nonce-based CSP, global security response headers, dynamic Turnstile/storage/video/integration sources, and safe migration of legacy custom footer code.
+
+### i18n, Translation, and Theme
+
+- Added zh/en/ja UI, localized API errors and transactional email, and persistent user locale preferences.
+- Added versioned post translations, locale fallback, manual translation management, OpenAI-compatible AI draft generation, creator-controlled review/direct-publish policy, machine-translation labeling, and stale-source detection.
+- Added a Core/Theme view-model boundary, a complete built-in theme, dark mode, font variables, and server-generated color presets/custom hue.
+
+### Release Gate
+
+- Follow `docs/release-v1.0-checklist.md` for security, Stripe, local/S3, upgrade, backup/restore, browser, and full-CI acceptance.
+- Plugin runtime, Hub, multi-instance high availability, and video transcoding/thumbnail/HLS work remain post-v1.0.
+
+## v0.2.0 (unreleased historical candidate; superseded)
+
+This section records the earlier candidate scope for automatic one-time payments and production-scale content delivery. It was superseded by the broader v1.0 line and is not the current release gate. The old `docs/release-v0.2-checklist.md` is retained only as a historical pointer; use `docs/release-v1.0-checklist.md` instead.
 
 ### Stripe One-Time Checkout
 
@@ -11,7 +53,7 @@ Release candidate for automatic one-time payments and production-scale content d
 - Added authenticated Checkout Session creation with server-owned success/cancel URLs; OpenLayerlyPro never receives card details.
 - Added raw-body Stripe webhook signature verification, provider-event idempotency, amount/currency validation, and transactional membership activation.
 - Kept the existing manual screenshot payment flow available alongside automatic checkout.
-- Restricted v0.2 Checkout to synchronous card payments; unpaid completion events do not grant membership.
+- Restricted the original v0.2 candidate Checkout path to synchronous card payments; unpaid completion events did not grant membership.
 - Added signed `checkout.session.expired` handling for stale `pending_payment` requests.
 - Added stable `checkout:<requestId>` Stripe idempotency keys so network retries cannot create duplicate sessions.
 - Added a two-minute PostgreSQL-time lease for temporary `creating:*` claims, with advisory-lock recovery and fencing so crashed or delayed processes cannot overwrite a newer checkout.
@@ -33,20 +75,9 @@ Release candidate for automatic one-time payments and production-scale content d
 - Added bounded S3/R2 multipart uploads using 8 MiB parts, queue size 2, and incomplete-part abort behavior.
 - Added cleanup compensation for aborts, oversize uploads, empty bodies, storage failures, and database insert failures.
 
-### Upgrade and Compatibility
+### Historical Candidate Boundaries
 
-- Existing manual payments, image uploads, payment-proof uploads, authorization, and historical local/S3 file access remain supported.
-- Existing deployments must back up PostgreSQL, local uploads, and the configuration encryption key before upgrading.
-- Docker startup continues to apply database migrations before serving traffic.
-- Final release acceptance is documented in `docs/release-v0.2-checklist.md`.
-
-### Known Limitations
-
-- Refund, chargeback, and automatic payment reconciliation workflows are not included in v0.2.0.
-- Automatic renewals and subscriptions are not included.
-- Local downloads do not yet implement HTTP Range/206 seeking; authenticated video upload and download are supported, while inline seeking/player polish remains B2.
-- S3/R2 operators should configure an abort-incomplete-multipart lifecycle rule as crash-recovery defense in depth.
-- Process-local rate limiting is still not sufficient for multi-instance production.
+At the time of this candidate, subscriptions, automatic refund/dispute handling, reconciliation, and local Range playback had not yet landed. They are now included in the v1.0 pre-release line described above. S3/R2 operators must still configure an abort-incomplete-multipart lifecycle rule as defense in depth, and process-local rate limiting remains unsuitable for multi-instance production.
 
 ## v0.1.0
 
@@ -133,7 +164,7 @@ Initial open-source preview/alpha release for a self-hosted single-creator membe
 - v0.1 does not include automatic payment providers or webhooks.
 - v0.1 does not include comments, likes, follows, favorites, or discovery feeds.
 - v0.1 is intended for one creator per deployment.
-- Uploads are read into memory before storage; tune upload limits for small servers.
+- Uploads were read into memory before storage in that historical release; current `main` streams content attachments and buffers image purposes for validation/re-encoding.
 - Process-local rate limiting is not sufficient for multi-instance production.
 - Content i18n supports manual/AI drafts but AI is off by default and never visitor-triggered.
 
