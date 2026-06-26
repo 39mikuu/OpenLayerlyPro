@@ -36,7 +36,7 @@ import { POST } from "./route";
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
 const TEST_CODE = "ABCD1234EFGH5678";
-const WRONG_CODE = "ZZZZZZZZZZZZZZZZ";
+const OTHER_CODE = "ZZZZZZZZZZZZZZZZ";
 
 function request(email: string, code = TEST_CODE, ip?: string) {
   return new NextRequest("http://localhost/api/auth/verify-code", {
@@ -44,7 +44,7 @@ function request(email: string, code = TEST_CODE, ip?: string) {
     body: JSON.stringify({ email, code }),
     headers: {
       "content-type": "application/json",
-      ...ip ? { "x-forwarded-for": ip } : {},
+      ...(ip ? { "x-forwarded-for": ip } : {}),
     },
   });
 }
@@ -64,10 +64,10 @@ describeWithDatabase("verify-code route comparison-budget integration", () => {
     await resetDatabase(db);
   });
 
-  it("blocks a correct guess after the source budget is exhausted without locking another IP", async () => {
+  it("requires an available source budget before successful verification", async () => {
     const email = "source-budget@example.com";
-    const attackerIp = "198.51.100.44";
-    const ownerIp = "198.51.100.45";
+    const limitedIp = "198.51.100.44";
+    const alternateIp = "198.51.100.45";
 
     await db.insert(loginCodes).values({
       email,
@@ -75,15 +75,13 @@ describeWithDatabase("verify-code route comparison-budget integration", () => {
       expiresAt: new Date(Date.now() + 10 * 60_000),
     });
 
-    expect((await POST(request(email, WRONG_CODE, attackerIp))).status).toBe(400);
-    expect((await POST request(email, WRONG_CODE, attackerIp)).status).toBe(400);
+    expect((await POST(request(email, OTHER_CODE, limitedIp))).status).toBe(400);
+    expect((await POST(request(email, OTHER_CODE, limitedIp))).status).toBe(400);
 
-    const blockedCorrectGuess = await POST(request(email, TEST_CODE, attackerIp));
-    expect(blockedCorrectGuess.status).toBe(429);
+    expect((await POST(request(email, TEST_CODE, limitedIp))).status).toBe(429);
     expect(mocks.createSession).not.toHaveBeenCalled();
 
-    const ownerSuccess = await POST(request(email, TEST_CODE, ownerIp));
-    expect(ownerSuccess.status).toBe(200);
+    expect((await POST(request(email, TEST_CODE, alternateIp))).status).toBe(200);
     expect(mocks.createSession).toHaveBeenCalledOnce();
   });
 
