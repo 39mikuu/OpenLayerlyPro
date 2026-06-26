@@ -92,7 +92,7 @@ describe("task dispatcher", () => {
       .mockResolvedValueOnce([second])
       .mockResolvedValueOnce([]);
     deps.run.mockRejectedValueOnce(error).mockResolvedValueOnce({});
-    deps.fail.mockResolvedValue(true);
+    deps.fail.mockResolvedValue({ updated: true, status: "failed" });
     deps.succeed.mockResolvedValue(true);
 
     await expect(dispatchTaskBatch(deps)).resolves.toBe(2);
@@ -119,7 +119,7 @@ describe("task dispatcher", () => {
     const error = new PermanentTaskError("Invalid publish_post payload");
     const deps = dependencies();
     deps.run.mockRejectedValue(error);
-    deps.dead.mockResolvedValue(true);
+    deps.dead.mockResolvedValue({ updated: true, status: "dead" });
 
     await dispatchClaimedTask(claimed, deps);
 

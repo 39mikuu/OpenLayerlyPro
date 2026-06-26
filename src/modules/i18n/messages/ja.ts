@@ -413,6 +413,8 @@ export const ja: Messages = {
     tasks: {
       title: "バックグラウンドタスク",
       description: "通知配信タスク、再試行状態、最近の失敗を確認します。",
+      businessEmail: "業務メール配信",
+      loginCodeEmail: "ログインコードメール配信",
       all: "すべて",
       kind: "種類",
       attempts: "試行回数",

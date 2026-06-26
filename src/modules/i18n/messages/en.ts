@@ -419,6 +419,8 @@ export const en: Messages = {
     tasks: {
       title: "Background tasks",
       description: "Delivery tasks, retry state, and recent failures.",
+      businessEmail: "Business email delivery",
+      loginCodeEmail: "Login code email delivery",
       all: "All",
       kind: "Kind",
       attempts: "Attempts",

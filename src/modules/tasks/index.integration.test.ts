@@ -1,16 +1,19 @@
 import { randomUUID } from "crypto";
 import { eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getDb } from "@/db";
 import { tasks } from "@/db/schema";
+import { logger } from "@/lib/logger";
 
 import { dispatchClaimedTask } from "./dispatcher";
 import {
   claimDueTasks,
   claimDueTasksAt,
+  countMailTaskFailures,
   deferTask,
   enqueueTask,
+  listTasks,
   markTaskDead,
   markTaskFailed,
   markTaskFailedAt,
@@ -29,6 +32,10 @@ describeWithDatabase("durable tasks integration", () => {
 
   beforeEach(async () => {
     await db.delete(tasks);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("commits and rolls back task enqueue with its surrounding transaction", async () => {
@@ -210,7 +217,7 @@ describeWithDatabase("durable tasks integration", () => {
         new Error("late failure"),
         new Date(now.getTime() + 3_000),
       ),
-    ).resolves.toBe(false);
+    ).resolves.toEqual({ updated: false, status: null });
     const [completed] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
     expect(completed).toMatchObject({
       status: "succeeded",
@@ -258,7 +265,7 @@ describeWithDatabase("durable tasks integration", () => {
       const failedAt = new Date(claimTime.getTime() + 1_000);
       await expect(
         markTaskFailedAt(created!.id, lockToken, `failure-${attempt}`, failedAt),
-      ).resolves.toBe(true);
+      ).resolves.toEqual({ updated: true, status: attempt === 5 ? "dead" : "failed" });
       const [stored] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
 
       if (attempt === 5) {
@@ -308,7 +315,7 @@ describeWithDatabase("durable tasks integration", () => {
 
     await expect(
       markTaskFailed(due!.id, "database-clock", new Error("temporary database error")),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ updated: true, status: "failed" });
     const [failed] = await db.select().from(tasks).where(eq(tasks.id, due!.id));
     expect(failed).toMatchObject({ status: "failed", attempts: 1 });
     expect(failed!.runAfter.getTime() - failed!.updatedAt.getTime()).toBe(60_000);
@@ -364,8 +371,14 @@ describeWithDatabase("durable tasks integration", () => {
       .returning();
     const error = new PermanentTaskError("Invalid publish_post payload");
 
-    await expect(markTaskDead(created!.id, "stale-claim", error)).resolves.toBe(false);
-    await expect(markTaskDead(created!.id, "current-claim", error)).resolves.toBe(true);
+    await expect(markTaskDead(created!.id, "stale-claim", error)).resolves.toEqual({
+      updated: false,
+      status: null,
+    });
+    await expect(markTaskDead(created!.id, "current-claim", error)).resolves.toEqual({
+      updated: true,
+      status: "dead",
+    });
     const [dead] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
     expect(dead).toMatchObject({
       status: "dead",
@@ -398,6 +411,168 @@ describeWithDatabase("durable tasks integration", () => {
       lastError: "Invalid publish_post payload",
     });
     expect(dead!.lastError).not.toContain("must-not-leak");
+  });
+
+  it("logs a safe WARN after an explicit mail dead transition", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const codeId = randomUUID();
+    const [created] = await db
+      .insert(tasks)
+      .values({
+        kind: "auth.login_code_email",
+        payloadJson: { version: 1, codeId, encryptedCode: "must-not-leak" },
+        status: "processing",
+        attempts: 1,
+        lockedBy: "current-claim",
+      })
+      .returning();
+
+    await expect(
+      markTaskDead(
+        created!.id,
+        "current-claim",
+        new PermanentTaskError("SMTP unavailable for login code", {
+          classification: "needs_operator",
+        }),
+      ),
+    ).resolves.toEqual({ updated: true, status: "dead" });
+
+    expect(warn).toHaveBeenCalledWith("email task dead-lettered", {
+      taskId: created!.id,
+      kind: "auth.login_code_email",
+      attempts: 1,
+      classification: "needs_operator",
+      codeId,
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("must-not-leak");
+    warn.mockRestore();
+  });
+
+  it("WARNs only when transient mail retries actually cross into dead", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const [retryable, exhausted] = await db
+      .insert(tasks)
+      .values([
+        {
+          kind: "email",
+          payloadJson: { to: "fan@example.com", body: "private" },
+          status: "processing",
+          attempts: 1,
+          maxAttempts: 5,
+          lockedBy: "retryable-claim",
+        },
+        {
+          kind: "email",
+          payloadJson: { to: "other@example.com", body: "private" },
+          status: "processing",
+          attempts: 5,
+          maxAttempts: 5,
+          lockedBy: "exhausted-claim",
+        },
+      ])
+      .returning();
+
+    await expect(
+      markTaskFailedAt(
+        retryable!.id,
+        "retryable-claim",
+        new Error("fan@example.com body=private"),
+        new Date(),
+      ),
+    ).resolves.toEqual({ updated: true, status: "failed" });
+    expect(warn).not.toHaveBeenCalled();
+
+    await expect(
+      markTaskFailedAt(
+        exhausted!.id,
+        "exhausted-claim",
+        new Error("other@example.com body=private"),
+        new Date(),
+      ),
+    ).resolves.toEqual({ updated: true, status: "dead" });
+    expect(warn).toHaveBeenCalledWith("email task dead-lettered", {
+      taskId: exhausted!.id,
+      kind: "email",
+      attempts: 5,
+      classification: "transient",
+    });
+
+    const [stored] = await db.select().from(tasks).where(eq(tasks.id, exhausted!.id));
+    expect(stored?.lastError).toBe("Email delivery failed");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("other@example.com");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("body=private");
+    warn.mockRestore();
+  });
+
+  it("logs lease-expiry dead letters for mail tasks after the sweep commits", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const now = new Date("2026-06-26T12:00:00.000Z");
+    const codeId = randomUUID();
+    const [created] = await db
+      .insert(tasks)
+      .values({
+        kind: "auth.login_code_email",
+        payloadJson: { version: 1, codeId, encryptedCode: "must-not-leak" },
+        status: "processing",
+        attempts: 5,
+        maxAttempts: 5,
+        lockedBy: "crashed-worker",
+        lockedAt: new Date(now.getTime() - 120_000),
+        leaseUntil: new Date(now.getTime() - 1_000),
+      })
+      .returning();
+
+    await expect(claimDueTasksAt(1, now, { lockToken: "recovery-worker" })).resolves.toEqual([]);
+    expect(warn).toHaveBeenCalledWith("email task dead-lettered", {
+      taskId: created!.id,
+      kind: "auth.login_code_email",
+      attempts: 5,
+      classification: "lease_expired",
+      codeId,
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("must-not-leak");
+    warn.mockRestore();
+  });
+
+  it("counts mail failures exactly beyond the 200-row admin list limit", async () => {
+    await db.insert(tasks).values([
+      ...Array.from({ length: 205 }, (_, index) => ({
+        kind: "email",
+        payloadJson: { index },
+        status: "failed" as const,
+        lastError: "temporary",
+      })),
+      ...Array.from({ length: 3 }, (_, index) => ({
+        kind: "email",
+        payloadJson: { index },
+        status: "dead" as const,
+        lastError: "permanent",
+      })),
+      ...Array.from({ length: 4 }, (_, index) => ({
+        kind: "auth.login_code_email",
+        payloadJson: { version: 1, codeId: randomUUID(), encryptedCode: `encrypted-${index}` },
+        status: "failed" as const,
+        lastError: "temporary",
+      })),
+      ...Array.from({ length: 5 }, (_, index) => ({
+        kind: "auth.login_code_email",
+        payloadJson: { version: 1, codeId: randomUUID(), encryptedCode: `encrypted-${index}` },
+        status: "dead" as const,
+        lastError: "permanent",
+      })),
+      {
+        kind: "publish_post",
+        payloadJson: {},
+        status: "failed" as const,
+        lastError: "not mail",
+      },
+    ]);
+
+    await expect(listTasks({ status: "failed", limit: 200 })).resolves.toHaveLength(200);
+    await expect(countMailTaskFailures()).resolves.toEqual({
+      businessEmail: { failed: 205, dead: 3 },
+      loginCodeEmail: { failed: 4, dead: 5 },
+    });
   });
 
   it("allows manual retry for failed and dead tasks and returns only the admin view", async () => {

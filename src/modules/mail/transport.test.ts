@@ -54,6 +54,23 @@ describe("SMTP transport", () => {
     );
   });
 
+  it("classifies the raw provider error before discarding sensitive transport details", async () => {
+    mocks.sendMail.mockRejectedValue({
+      code: "EAUTH",
+      responseCode: 535,
+      response: "credentials rejected for fan@example.com; body=private",
+    });
+
+    const error = await sendTestEmail("fan@example.com", "en").catch((caught) => caught);
+    expect(error).toMatchObject({
+      name: "MailDeliveryError",
+      message: "SMTP delivery failed",
+      kind: "needs_operator",
+    });
+    expect(JSON.stringify(error)).not.toContain("fan@example.com");
+    expect(JSON.stringify(error)).not.toContain("body=private");
+  });
+
   it("logs stable recipient digests without raw recipients or login codes", async () => {
     const rawRecipient = "fan@example.com";
     const otherRecipient = "other@example.com";

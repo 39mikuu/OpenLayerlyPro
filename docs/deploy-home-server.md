@@ -23,9 +23,11 @@ SMTP_PORT=587
 SMTP_USER=your_smtp_user
 SMTP_PASSWORD=your_smtp_password
 SMTP_FROM="Artist Site <no-reply@example.com>"
+EMAIL_RETRY_RECHECK_MINUTES=15
+EMAIL_DELIVERY_MAX_AGE_HOURS=24
 ```
 
-> SMTP 是粉丝验证码登录的必要条件。建议同时修改 `docker-compose.yml` 中 PostgreSQL 的默认密码，并同步更新 `DATABASE_URL`。
+> SMTP 是粉丝验证码登录的必要条件。业务邮件遇到未配置或鉴权失败时会按 `EMAIL_RETRY_RECHECK_MINUTES` 延迟重投且不消耗 attempts，超过 `EMAIL_DELIVERY_MAX_AGE_HOURS` 后进入 dead；登录码因 TTL 很短会直接进入 dead。建议同时修改 `docker-compose.yml` 中 PostgreSQL 的默认密码，并同步更新 `DATABASE_URL`。
 
 ### 认证限流与可信 IP
 
@@ -35,7 +37,8 @@ SMTP_FROM="Artist Site <no-reply@example.com>"
 - 请检查 auth rate-limit、验证码长度/字母表与 dedupe env；所有值都有边界，越界会启动失败。S4 认证限流语义见 [S4 handoff](handoff/harden-s4-auth-rate-limiting.md)。
 - 登录码采用持久投递 fence：已有 active code 的任务处于 `pending` / `processing` / `failed` 时，同邮箱的新请求仍统一返回受理但不会创建新 code，最长抑制到 10 分钟 TTL；任务为 `succeeded` / `dead` 后才按 60 秒 dedupe 决定是否创建更新 code。
 - 登录码 SMTP 调用发生在数据库短事务和 per-email advisory lock 释放后。应用保证 stale claim 在发信前 no-op、SMTP 开始时 code 仍为最新有效 code；worker 在 SMTP 成功后、任务标记 succeeded 前崩溃，可能造成同一码 at-least-once 重复投递。外部邮箱最终到达/展示顺序不受应用控制。
-- `SESSION_SECRET` 也用于派生在途登录码 task 的加密密钥。轮换后，尚未投递的旧任务会解密失败并进入永久失败，用户需重新请求；code TTL 仅 10 分钟。未来 S5 email reliability 设计必须继承该轮换语义。
+- 所有邮件均保留相同的 at-least-once 残余：SMTP 已接受邮件后、任务标记 `succeeded` 前进程崩溃，lease 回收会重发。业务侧 `dedupeKey` 只防重复入队，不能使 SMTP 投递幂等；请在后台“后台任务”页面关注邮件 failed/dead 聚合徽标并按需手动重试。
+- `SESSION_SECRET` 也用于派生在途登录码 task 的加密密钥。轮换后，尚未投递的旧任务会解密失败并进入永久失败，用户需重新请求；code TTL 仅 10 分钟。
 
 ## 3. 启动
 

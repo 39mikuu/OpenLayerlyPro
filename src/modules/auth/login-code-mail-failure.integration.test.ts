@@ -75,7 +75,7 @@ describeWithDatabase("auth login-code SMTP failure redaction", () => {
 
     const [stored] = await db.select().from(tasks).where(eq(tasks.id, claimed!.id));
     expect(stored?.status).toBe("failed");
-    expect(stored?.lastError).toBe("Error: SMTP delivery failed");
+    expect(stored?.lastError).toBe("Email delivery failed");
     expect(leakedCode).toMatch(/^[0-9A-HJKMNP-TV-Z]{16}$/);
 
     const loggerArguments = JSON.stringify([
@@ -87,5 +87,91 @@ describeWithDatabase("auth login-code SMTP failure redaction", () => {
     expect(loggerArguments).not.toContain(leakedCode);
     expect(stored?.lastError).not.toContain(rawRecipient);
     expect(stored?.lastError).not.toContain(leakedCode);
+  });
+
+  it("moves SMTP authentication failures directly to dead with a safe operator warning", async () => {
+    const rawRecipient = "fan-auth-failure@example.com";
+    mocks.sendMail.mockRejectedValue({
+      code: "EAUTH",
+      responseCode: 535,
+      response: `credentials rejected for ${rawRecipient}; body=private`,
+    });
+
+    const requested = await requestLoginCode(rawRecipient, { locale: "en" });
+    const [claimed] = await claimDueTasks(1, { lockToken: "mail-auth-worker" });
+    await dispatchClaimedTask(claimed!);
+
+    const [stored] = await db.select().from(tasks).where(eq(tasks.id, claimed!.id));
+    expect(stored).toMatchObject({
+      status: "dead",
+      attempts: 1,
+      lastError: "SMTP unavailable for login code",
+    });
+    expect(mocks.loggerWarn).toHaveBeenCalledWith("email task dead-lettered", {
+      taskId: claimed!.id,
+      kind: "auth.login_code_email",
+      attempts: 1,
+      classification: "needs_operator",
+      codeId: requested.codeId,
+    });
+
+    const persistedAndLogged = JSON.stringify([
+      stored?.lastError,
+      mocks.loggerInfo.mock.calls,
+      mocks.loggerWarn.mock.calls,
+      mocks.loggerError.mock.calls,
+    ]);
+    expect(persistedAndLogged).not.toContain(rawRecipient);
+    expect(persistedAndLogged).not.toContain("body=private");
+  });
+
+  it("moves a queued login code directly to dead when SMTP becomes unconfigured", async () => {
+    const requested = await requestLoginCode("fan-unconfigured@example.com", { locale: "en" });
+    await setStoredGroup("smtp", { host: "", from: "" });
+    const [claimed] = await claimDueTasks(1, { lockToken: "mail-unconfigured-worker" });
+
+    await dispatchClaimedTask(claimed!);
+
+    const [stored] = await db.select().from(tasks).where(eq(tasks.id, claimed!.id));
+    expect(stored).toMatchObject({
+      status: "dead",
+      attempts: 1,
+      lastError: "SMTP unavailable for login code",
+    });
+    expect(mocks.loggerWarn).toHaveBeenCalledWith("email task dead-lettered", {
+      taskId: claimed!.id,
+      kind: "auth.login_code_email",
+      attempts: 1,
+      classification: "needs_operator",
+      codeId: requested.codeId,
+    });
+  });
+
+  it("moves permanent 5xx recipient failures directly to dead", async () => {
+    mocks.sendMail.mockRejectedValue({
+      code: "EENVELOPE",
+      responseCode: 550,
+      response: "recipient rejected",
+    });
+
+    await requestLoginCode("fan-permanent@example.com", { locale: "en" });
+    const [claimed] = await claimDueTasks(1, { lockToken: "mail-permanent-worker" });
+    await dispatchClaimedTask(claimed!);
+
+    const [stored] = await db.select().from(tasks).where(eq(tasks.id, claimed!.id));
+    expect(stored).toMatchObject({
+      status: "dead",
+      attempts: 1,
+      lastError: "Login code email delivery failed permanently",
+    });
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      "email task dead-lettered",
+      expect.objectContaining({
+        taskId: claimed!.id,
+        kind: "auth.login_code_email",
+        attempts: 1,
+        classification: "permanent",
+      }),
+    );
   });
 });

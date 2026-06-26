@@ -23,6 +23,7 @@ import {
 import { getSmtpConfig } from "@/modules/config";
 import type { Locale } from "@/modules/i18n";
 import { sendLoginCodeEmail } from "@/modules/mail";
+import { classifyMailError, MailDeliveryError } from "@/modules/mail/delivery";
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask } from "@/modules/tasks";
 import { PermanentTaskError } from "@/modules/tasks/errors";
@@ -316,7 +317,20 @@ export async function deliverLoginCodeEmailTask(
 
   // SMTP and config lookup intentionally happen after Tx1 commits, so neither a
   // database connection nor the per-email advisory lock is held during network I/O.
-  await sendLoginCodeEmail(delivery.email, delivery.code, payload.locale);
+  try {
+    await sendLoginCodeEmail(delivery.email, delivery.code, payload.locale);
+  } catch (error) {
+    const classification = classifyMailError(error);
+    if (classification === "transient") {
+      throw new MailDeliveryError("transient");
+    }
+    throw new PermanentTaskError(
+      classification === "needs_operator"
+        ? "SMTP unavailable for login code"
+        : "Login code email delivery failed permanently",
+      { classification },
+    );
+  }
   return undefined;
 }
 

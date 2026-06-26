@@ -134,6 +134,7 @@ docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 | `SESSION_SECRET` | 生产必须设置为强随机值，否则应用拒绝启动 |
 | `DATABASE_URL` | PostgreSQL 连接串 |
 | `SMTP_HOST` / `SMTP_FROM` 等 | SMTP 邮件配置，粉丝验证码登录必需 |
+| `EMAIL_RETRY_RECHECK_MINUTES` / `EMAIL_DELIVERY_MAX_AGE_HOURS` | 业务邮件待运维修复时的重投间隔与最长待命时间（默认 15 分钟 / 24 小时） |
 | `STORAGE_DRIVER` | `local`（默认）或 `s3` |
 | `REQUEST_JSON_MAX_BYTES` | JSON 请求体传输上限（默认 64 KiB） |
 | `STRIPE_WEBHOOK_MAX_BYTES` | Stripe webhook 原始请求体上限（默认 256 KiB） |

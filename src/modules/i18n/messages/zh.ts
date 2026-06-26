@@ -407,6 +407,8 @@ export const zh = {
     tasks: {
       title: "后台任务",
       description: "查看通知投递任务、重试状态和最近失败。",
+      businessEmail: "业务邮件投递",
+      loginCodeEmail: "登录码邮件投递",
       all: "全部",
       kind: "类型",
       attempts: "尝试次数",
