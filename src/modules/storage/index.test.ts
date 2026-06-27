@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getStorageConfig } from "@/modules/config";
+import { getStorageConfig } from "@/modules/config/storageResolve";
 
-vi.mock("@/modules/config", () => ({
+vi.mock("@/modules/config/storageResolve", () => ({
   getStorageConfig: vi.fn(),
 }));
 
