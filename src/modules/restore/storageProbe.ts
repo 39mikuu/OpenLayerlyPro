@@ -142,8 +142,12 @@ async function enumerateS3Objects(input: {
   const bucket = input.storageConfig.bucket;
   if (!bucket) throw new Error("S3 enumeration requires a configured bucket");
 
+  const prefix = input.prefix?.trim();
+  if (!prefix) {
+    throw new Error("S3 enumeration requires an explicit prefix");
+  }
+
   const client = createS3Client(input.storageConfig);
-  const prefix = input.prefix ?? "";
   const objectKeys: string[] = [];
   let continuationToken: string | undefined;
   let truncated = false;

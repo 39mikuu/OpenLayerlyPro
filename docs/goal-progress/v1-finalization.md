@@ -4,11 +4,10 @@ Last updated: 2026-06-27 (Asia/Singapore)
 
 ## Current stage
 
-S7 implementation and local verification are in progress on branch
-`codex/s7-backup-consistency`. Core restore modules, hardened
-`backup.sh`/`restore.sh`, Dockerfile/CI artifact gates, and restore integration
-tests are complete. Remaining work: isolated Compose restore E2E drill,
-independent S7 review, and Draft PR publication.
+S7 implementation is complete on branch `codex/s7-backup-consistency`.
+Restore modules, hardened backup/restore scripts, one-off bundle fixes, and
+isolated Compose E2E drill evidence are in place. Remaining work: independent
+S7 review sign-off and Draft PR publication (human merge gate unchanged).
 
 ## Authoritative inputs read
 
@@ -113,10 +112,9 @@ Operational notes:
 
 ## Next permitted action
 
-1. Run isolated Compose restore E2E drill (backup → drift → restore → `/api/ready`).
-2. Start fresh independent S7 reviewers and address blocking findings.
-3. Run `/review` on the complete branch diff.
-4. Open Draft PR closing #87 (do not mark Ready or merge).
+1. Address any blocking S7 review findings.
+2. Open Draft PR closing #87 (do not mark Ready or merge).
+3. Wait for human merge before #88 acceptance.
 
 ## S7 work completed so far
 
@@ -130,8 +128,15 @@ Operational notes:
 - Dockerfile copies restore artifacts; CI builds/verifies all one-off artifacts and
   runs shellcheck on backup scripts.
 - Docs: `docs/deployment/backup-restore.md` updated for S7 behavior.
-- Tests: 1060 passing (`RUN_DB_INTEGRATION_TESTS=true` on isolated DB
+- Tests: 1064 passing (`RUN_DB_INTEGRATION_TESTS=true` on isolated DB
   `openlayerlypro_s7_87_test`), including restore integration tests.
+- E2E drill (2026-06-28): `scripts/test-restore-e2e.sh` scaffolding +
+  manual restore verification with `RESTORE_E2E_INJECT_MISSING=1`:
+  pre-scan → backfill → neutralize → converge → `/api/ready` on port 3004;
+  post count=1, `storage.delete_object` tasks=0, quarantine=1.
+- Bundle fix: esbuild one-offs use `createRequire` banner; `sharp` external;
+  slim imports (`storageResolve`, `storage/runtime`, `tasks/enqueue`) avoid
+  bundling Next.js into restore tools.
 
 ## Human gates still required
 

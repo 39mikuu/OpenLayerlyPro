@@ -3,13 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { getDb } from "@/db";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 
 import { getTargetMigrationIdentity } from "./journal";
 import { isSchemaCheckPassing, runRestoreSchemaCheck } from "./schemaCheck";
+import * as schemaCompatibility from "./schemaCompatibility";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -75,15 +76,25 @@ describeWithDatabase("restore schema check integration", () => {
   });
 
   it("allows v1 unknown override only when explicitly requested", async () => {
-    const report = await runRestoreSchemaCheck({
-      formatVersion: 1,
-      databaseUrl: process.env.DATABASE_URL,
-      allowLegacyV1UnknownSchema: true,
-    });
+    const readHistory = vi
+      .spyOn(schemaCompatibility, "readDatabaseMigrationHistory")
+      .mockRejectedValueOnce(
+        new schemaCompatibility.MigrationHistoryReadError("probe database unreadable"),
+      );
 
-    expect(report.compatibility.result).toBe("unknown");
-    expect(isSchemaCheckPassing(report)).toBe(true);
-    expect(report.warnings.some((line) => line.includes("LEGACY OVERRIDE"))).toBe(true);
+    try {
+      const report = await runRestoreSchemaCheck({
+        formatVersion: 1,
+        databaseUrl: process.env.DATABASE_URL,
+        allowLegacyV1UnknownSchema: true,
+      });
+
+      expect(report.compatibility.result).toBe("unknown");
+      expect(isSchemaCheckPassing(report)).toBe(true);
+      expect(report.warnings.some((line) => line.includes("LEGACY OVERRIDE"))).toBe(true);
+    } finally {
+      readHistory.mockRestore();
+    }
   });
 
   it("reports newer_than_target when archive history exceeds target journal", async () => {
