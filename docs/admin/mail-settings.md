@@ -19,6 +19,12 @@ SMTP is required for production fan email-code login and for transactional notif
 - Do not commit SMTP credentials to `.env` or expose them through `NEXT_PUBLIC_*` variables.
 - Development mode may log verification codes only when SMTP is not configured. Production does not use this fallback.
 
+## Recipient Data Boundary
+
+Durable email tasks currently store the recipient address in `tasks.payload_json.to` so the worker can send after the business transaction commits. The task table is therefore sensitive operational data and must be protected by the same database access controls, backup controls, and retention discipline as user records.
+
+The admin task API/UI, application logs, delivery ledger, and normalized provider errors must not expose raw recipient addresses, verification codes, SMTP secrets, or raw provider responses. This is a presentation/logging redaction boundary; it does not mean the underlying task payload is de-identified.
+
 ## Reliable Delivery Semantics
 
 Business email is delivered through durable tasks rather than best-effort inline sends:
