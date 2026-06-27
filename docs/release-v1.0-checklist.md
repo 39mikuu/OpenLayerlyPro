@@ -34,7 +34,7 @@
 - [ ] 全额退款、拒付、charge→invoice 解析、reversal-first 墓碑和重复 webhook 正常；部分退款按既定策略处理。
 - [ ] 同用户并发 grant、人工/自动 pending 冲突、升级和顺排不会丢失已付时长。
 - [ ] SMTP 正常、临时失败、永久失败、未配置/需运维介入、最长等待超时与后台重发均符合 S5。
-- [ ] 稳定 Message-ID 与 delivery ledger 可追踪投递；邮件任务和日志不暴露验证码、原始 provider 错误或敏感收件人数据。
+- [ ] 稳定 Message-ID 与 delivery ledger 可追踪投递；日志、admin task response、delivery ledger 和归一化 provider error 不暴露验证码、SMTP secret、原始 provider 错误或原始收件人地址。`tasks.payload_json.to` 当前仍保存收件人地址，数据库与备份必须按敏感用户数据保护。
 
 ## 4. 文件、内容与存储
 
@@ -69,9 +69,10 @@
 - [ ] `pnpm check:request-bodies`
 - [ ] `pnpm exec tsc --noEmit`
 - [ ] `RUN_DB_INTEGRATION_TESTS=true pnpm test`
-- [ ] `pnpm build:migrator`
-- [ ] `pnpm build:files-backfill`，并确认生成的 `dist/files-backfill.mjs` 能在目标发布镜像/one-off 容器中启动。
-- [ ] S7 合并前，CI 已把 `build:files-backfill` 纳入必跑步骤；不能只依赖 `pnpm build`，因为 Next build 不生成该 one-off artifact。
+- [ ] `pnpm build:migrator`，并确认 `dist/migrate.mjs` 可在目标 one-off 容器中启动。
+- [ ] `pnpm build:files-backfill`，并确认 `dist/files-backfill.mjs` 可在目标 one-off 容器中启动。
+- [ ] `pnpm build:admin-reset`，并确认 `dist/admin-reset.mjs` 可在目标发布镜像中执行受支持的恢复流程。
+- [ ] CI 已独立构建并检查上述三个 one-off artifact；不能只依赖 `pnpm build`。
 - [ ] `pnpm build`
 - [ ] shellcheck、浏览器 E2E 和恢复 E2E 全绿。
 - [ ] 没有未处理的 high/critical Dependabot、CodeQL 或其他发布阻塞安全告警。
