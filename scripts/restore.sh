@@ -104,7 +104,7 @@ fi
 
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-restore.XXXXXX")
 PROBE_DB=""
-cleanup() {
+cleanup_workdir() {
   if [ -n "$PROBE_DB" ]; then
     compose exec -T postgres sh -c "
       set -eu
@@ -113,9 +113,22 @@ cleanup() {
   fi
   rm -rf "$WORK_DIR"
 }
-trap cleanup 0 HUP INT TERM
+on_signal() {
+  cleanup_workdir
+  exit "${RESTORE_SIGNAL_EXIT_CODE:-1}"
+}
+trap cleanup_workdir EXIT
+trap 'RESTORE_SIGNAL_EXIT_CODE=130; on_signal' INT
+trap 'RESTORE_SIGNAL_EXIT_CODE=143; on_signal' TERM
+trap 'RESTORE_SIGNAL_EXIT_CODE=1; on_signal' HUP
 
 tar -xzf "$ARCHIVE_PATH" -C "$WORK_DIR"
+if [ -n "$(find "$WORK_DIR" -type l -print -quit 2>/dev/null || true)" ]; then
+  fail "archive contains symlinks; only regular payload files are supported"
+fi
+if [ -n "$(find "$WORK_DIR" \( -type b -o -type c -o -type p -o -type s \) -print -quit 2>/dev/null || true)" ]; then
+  fail "archive contains special files; only regular payload files are supported"
+fi
 [ -s "$WORK_DIR/db.sql" ] || fail "archive is missing db.sql"
 [ -s "$WORK_DIR/secrets/config-encryption-key" ] || fail "archive is missing the config encryption key"
 [ -f "$WORK_DIR/manifest.env" ] || fail "archive is missing manifest.env"
@@ -139,7 +152,7 @@ if [ "$FORMAT_VERSION" = "2" ]; then
   CHECKSUM_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-restore-checksum.XXXXXX")
   (
     cd "$WORK_DIR" || exit 1
-    find . -type f ! -name 'checksums.sha256' -print \
+    find . -type f ! -path './checksums.sha256' -print \
       | LC_ALL=C sort \
       | sed 's|^\./||' \
       > "$PAYLOAD_FILE_LIST"
@@ -233,8 +246,8 @@ TARGET_CONFIG_KEY_FILE=$(
     'printf %s "${CONFIG_ENCRYPTION_KEY_FILE:-/app/secrets/config-encryption-key}"'
 )
 case "$TARGET_CONFIG_KEY_FILE" in
-  /*) ;;
-  *) fail "CONFIG_ENCRYPTION_KEY_FILE must be an absolute container path" ;;
+  /app/secrets/*) ;;
+  *) fail "CONFIG_ENCRYPTION_KEY_FILE must be an absolute path under /app/secrets for persistent restore" ;;
 esac
 TARGET_CONFIG_KEY_DIR=${TARGET_CONFIG_KEY_FILE%/*}
 compose run --rm -T --no-deps --entrypoint sh app -c "
@@ -242,6 +255,10 @@ compose run --rm -T --no-deps --entrypoint sh app -c "
   mkdir -p \"$TARGET_CONFIG_KEY_DIR\"
 "
 compose cp "$WORK_DIR/secrets/config-encryption-key" "app:$TARGET_CONFIG_KEY_FILE"
+compose run --rm -T --no-deps --entrypoint sh app -c "
+  set -eu
+  test -s \"$TARGET_CONFIG_KEY_FILE\"
+"
 
 if [ -d "$WORK_DIR/uploads" ]; then
   echo "Replacing local uploads..."

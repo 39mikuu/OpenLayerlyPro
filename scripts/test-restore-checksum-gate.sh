@@ -49,7 +49,7 @@ assert_bijection_mismatch() {
   CHECKSUM_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-checksum-gate-checksum.XXXXXX")
   (
     cd "$WORK_DIR" || exit 1
-    find . -type f ! -name 'checksums.sha256' -print \
+    find . -type f ! -path './checksums.sha256' -print \
       | LC_ALL=C sort \
       | sed 's|^\./||' \
       > "$PAYLOAD_FILE_LIST"

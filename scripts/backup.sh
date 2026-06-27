@@ -162,7 +162,7 @@ esac
 echo "Generating archive checksums..."
 (
   cd "$WORK_DIR" || exit 1
-  find . -type f ! -name 'checksums.sha256' -print \
+  find . -type f ! -path './checksums.sha256' -print \
     | LC_ALL=C sort \
     | while IFS= read -r path; do
         rel=${path#./}

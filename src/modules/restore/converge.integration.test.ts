@@ -27,6 +27,7 @@ vi.mock("@/modules/restore/storageProbe", async () => {
 import { getDb } from "@/db";
 import { files, postFiles, posts, tasks } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
+import * as storageResolve from "@/modules/config/storageResolve";
 import { authorizeFileAccess } from "@/modules/download";
 import { FILE_SAFETY_REMEDIATION_VERSION } from "@/modules/file/backfillSafety";
 import { createStorageDeleteDedupeKeyForTests } from "@/modules/file/cleanup";
@@ -151,6 +152,44 @@ describeWithDatabase("restore converge integration", () => {
         ),
       );
     expect(deleteTask).toBeDefined();
+  });
+
+  it("does not treat null-bucket S3 references as orphans when enumerated in the configured bucket", async () => {
+    const objectKey = `content/${randomUUID()}.png`;
+    await db.insert(files).values({
+      storageDriver: "s3",
+      bucket: null,
+      objectKey,
+      originalName: "file.png",
+      mimeType: "image/png",
+      sizeBytes: 128,
+      purpose: "content_image",
+    });
+    storageState.existing.set(objectKey, "referenced");
+    storageState.enumerated = [objectKey];
+    vi.mocked(storageProbe.enumerateStorageObjects).mockResolvedValueOnce({
+      objectKeys: [objectKey],
+      bucket: "prod-bucket",
+      truncated: false,
+    });
+    const configSpy = vi.spyOn(storageResolve, "getStorageConfig").mockResolvedValue({
+      driver: "s3",
+      endpoint: "https://s3.example.com",
+      region: "auto",
+      bucket: "prod-bucket",
+      accessKeyId: "access",
+      secretAccessKey: "secret",
+      forcePathStyle: true,
+      s3Configured: true,
+    });
+
+    try {
+      const report = await runRestoreConverge(db);
+      expect(report.totalOrphanObjects).toBe(0);
+      expect(report.totalOrphanDeletesEnqueued).toBe(0);
+    } finally {
+      configSpy.mockRestore();
+    }
   });
 
   it("returns 410 for authorized access after missing-after-restore quarantine", async () => {

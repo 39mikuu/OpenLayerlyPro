@@ -83,7 +83,12 @@ async function convergeDriver(input: {
 
   const referencedByIdentity = new Map<string, ReferencedObject[]>();
   for (const object of input.referenced) {
-    const identity = storageObjectIdentity(object.storageDriver, object.bucket, object.objectKey);
+    const identity = storageObjectIdentity(
+      object.storageDriver,
+      object.bucket,
+      object.objectKey,
+      input.storageConfig,
+    );
     const bucket = referencedByIdentity.get(identity) ?? [];
     bucket.push(object);
     referencedByIdentity.set(identity, bucket);
@@ -141,13 +146,18 @@ async function convergeDriver(input: {
     report.truncated = enumerated.truncated;
 
     for (const objectKey of enumerated.objectKeys) {
-      const identity = storageObjectIdentity(input.driver, report.bucket, objectKey);
+      const identity = storageObjectIdentity(
+        input.driver,
+        report.bucket,
+        objectKey,
+        input.storageConfig,
+      );
       if (referencedByIdentity.has(identity)) continue;
       report.orphanObjects += 1;
       try {
         const enqueued = await enqueueOrphanDeletion(input.db, {
           storageDriver: input.driver,
-          bucket: report.bucket,
+          bucket: null,
           objectKey,
         });
         if (enqueued) report.orphanDeletesEnqueued += 1;

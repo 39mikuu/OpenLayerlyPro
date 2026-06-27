@@ -13,12 +13,26 @@ import { parseS3EnumerationPrefixes, validateS3EnumerationPrefix } from "./s3Enu
 export const DEFAULT_ENUMERATION_PAGE_SIZE = 1_000;
 export const DEFAULT_MAX_ENUMERATED_OBJECTS = 100_000;
 
+export function normalizeStorageBucket(input: {
+  driver: StorageDriver;
+  bucket: string | null;
+  storageConfig: ResolvedStorageConfig;
+}): string | null {
+  if (input.driver === "local") return null;
+  return input.bucket ?? input.storageConfig.bucket ?? null;
+}
+
 export function storageObjectIdentity(
   driver: StorageDriver,
   bucket: string | null,
   objectKey: string,
+  storageConfig?: ResolvedStorageConfig,
 ): string {
-  return `${driver}\0${bucket ?? ""}\0${objectKey}`;
+  const normalizedBucket =
+    storageConfig !== undefined
+      ? normalizeStorageBucket({ driver, bucket, storageConfig })
+      : bucket;
+  return `${driver}\0${normalizedBucket ?? ""}\0${objectKey}`;
 }
 
 function localUploadRoot(): string {

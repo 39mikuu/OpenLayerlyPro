@@ -55,7 +55,7 @@ UPLOADS_SKIPPED_S3               # written only when container env STORAGE_DRIVE
 
 `manifest.env` records `APP_VERSION`, `STORAGE_DRIVER`, `UPLOADS_INCLUDED`, migration identity (`LATEST_MIGRATION_HASH`, `MIGRATION_IDENTITIES_JSON`), the source container `CONFIG_ENCRYPTION_KEY_FILE` path at backup time, and a hot-backup window note (`pg_dump(T1)` then uploads `T2)`).
 
-`checksums.sha256` covers every payload member except itself. On v2 archives, `restore.sh` verifies checksums and then enforces a strict bijection: every extracted payload file must appear exactly once in the manifest, and every manifest entry must have a matching payload file. Either mismatch aborts restore before any destructive step.
+`checksums.sha256` covers every regular-file payload member except the root `./checksums.sha256` manifest itself (nested upload files named `checksums.sha256` remain covered). On v2 archives, `restore.sh` rejects symlinks and special files, verifies checksums, and then enforces a strict bijection: every extracted regular-file payload must appear exactly once in the manifest, and every manifest entry must have a matching payload file. Either mismatch aborts restore before any destructive step.
 
 Legacy `FORMAT_VERSION=1` archives remain restorable through the compatibility path below, but they have no checksum protection and emit an explicit warning.
 
@@ -136,7 +136,9 @@ Key invariants:
 - only convergence may re-enqueue deletion for confirmed orphans;
 - any migrator/backfill/neutralization/convergence error prevents normal app startup;
 - S3 convergence enumerates only controlled application key namespaces (`avatars/`, `payment-qr/`, `payment-proof/`, `content/`, `legacy/`, `remediated/`). Override with comma-separated `RESTORE_S3_ENUM_PREFIXES` when needed;
-- incomplete storage enumeration (truncated listing or converge errors) exits non-zero and prevents app startup.
+- incomplete storage enumeration (truncated listing or converge errors) exits non-zero and prevents app startup;
+- `CONFIG_ENCRYPTION_KEY_FILE` must live under `/app/secrets` so restored keys survive one-off containers and `compose up --force-recreate`;
+- S3 `files.bucket = NULL` rows are matched against the configured bucket during convergence so referenced objects are not misclassified as orphans.
 
 The target image must contain and be able to execute:
 
