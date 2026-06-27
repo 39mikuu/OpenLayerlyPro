@@ -1,5 +1,5 @@
+/* eslint-disable @next/next/no-html-link-for-pages -- full navigation is required when CSP scopes can change */
 import { ExternalLink } from "lucide-react";
-import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { LogoutButton } from "@/components/auth/logout-button";
@@ -66,28 +66,28 @@ export function Chrome({
     <div className="site-theme flex min-h-screen flex-col bg-slate-50/50 text-foreground dark:bg-background">
       <header className="border-b bg-background/95">
         <div className="mx-auto flex min-h-14 max-w-4xl items-center justify-between gap-3 px-4 py-2">
-          <Link href="/" className="flex min-w-0 items-center gap-2.5 font-semibold">
+          <a href="/" className="flex min-w-0 items-center gap-2.5 font-semibold">
             <BrandMark view={view} creatorName={creatorName} />
             <span className="truncate">{creatorName}</span>
-          </Link>
+          </a>
 
           <nav className="hidden shrink-0 items-center gap-0.5 text-sm sm:flex">
             <Button variant="ghost" size="sm" className="hidden sm:inline-flex" asChild>
-              <Link href="/posts">{t("nav.posts")}</Link>
+              <a href="/posts">{t("nav.posts")}</a>
             </Button>
             <Button variant="ghost" size="sm" className="hidden sm:inline-flex" asChild>
-              <Link href="/tiers">{t("nav.tiers")}</Link>
+              <a href="/tiers">{t("nav.tiers")}</a>
             </Button>
             {view.isLoggedIn ? (
               <>
                 <Button variant="ghost" size="sm" asChild>
-                  <Link href="/me">{t("nav.me")}</Link>
+                  <a href="/me">{t("nav.me")}</a>
                 </Button>
                 <LogoutButton />
               </>
             ) : (
               <Button variant="outline" size="sm" asChild>
-                <Link href="/login">{t("nav.login")}</Link>
+                <a href="/login">{t("nav.login")}</a>
               </Button>
             )}
             <ThemeToggle />
@@ -118,11 +118,9 @@ export function Chrome({
             © {new Date().getFullYear()} {creatorName}
           </p>
         </div>
-        {view.customFooterHtml ? (
+        {view.customFooterMarkup ? (
           <div className="mx-auto mt-4 max-w-4xl px-4 text-center text-xs text-muted-foreground">
-            {/* Admin-managed trusted self-hosting customization. */}
-            {/* Do not pass user-generated content into this field. */}
-            <div dangerouslySetInnerHTML={{ __html: view.customFooterHtml }} />
+            <div dangerouslySetInnerHTML={{ __html: view.customFooterMarkup }} />
           </div>
         ) : null}
       </footer>

@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { ApiError, handleApiError } from "./api";
+import { ApiError, handleApiError, jsonOk } from "./api";
 import { RequestBodyTooLargeError } from "./request-body";
 
 function makeReq(headers: Record<string, string>): NextRequest {
@@ -15,6 +15,13 @@ async function loadGetClientIp() {
 }
 
 describe("handleApiError", () => {
+  it("adds nosniff to successful and error JSON responses", () => {
+    expect(jsonOk({ value: true }).headers.get("x-content-type-options")).toBe("nosniff");
+    expect(
+      handleApiError(new ApiError(400, "invalidRequest")).headers.get("x-content-type-options"),
+    ).toBe("nosniff");
+  });
+
   it("ApiError 映射为稳定 code、params 与兼容消息", async () => {
     const res = handleApiError(new ApiError(429, "cooldownRateLimited", { seconds: 30 }));
     expect(res.status).toBe(429);

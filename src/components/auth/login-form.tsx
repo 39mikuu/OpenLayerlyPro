@@ -1,7 +1,6 @@
 "use client";
 
 import { Mail, ShieldCheck } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 
 import {
@@ -32,7 +31,6 @@ export function LoginForm({
   loginCodePattern: string;
 }) {
   const t = useT();
-  const router = useRouter();
 
   const [fanFlow, setFanFlow] = useState(INITIAL_FAN_LOGIN_FLOW);
   const { email, requestedEmail, code, codeSent } = fanFlow;
@@ -93,8 +91,7 @@ export function LoginForm({
                 method: "POST",
                 body: { email: adminEmail, password },
               });
-              router.push("/admin");
-              router.refresh();
+              window.location.assign("/admin");
             })
           }
         >
@@ -207,8 +204,7 @@ export function LoginForm({
                   method: "POST",
                   body: { email: requestedEmail, code },
                 });
-                router.push("/me");
-                router.refresh();
+                window.location.assign("/me");
               })
             }
           >

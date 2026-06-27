@@ -1,11 +1,16 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 
-import { handleApiError, jsonOk } from "@/lib/api";
+import { ApiError, handleApiError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
-import { deleteSetting, readAdminSiteInfo, setSetting } from "@/modules/site";
+import { readAdminSiteInfo } from "@/modules/site";
+import {
+  publicIntegrationsSchema,
+  siteVerificationSchema,
+  updatePublicSecuritySettings,
+} from "@/modules/site/public-security";
 
 export const runtime = "nodejs";
 
@@ -19,13 +24,18 @@ export async function GET() {
 }
 
 const bodySchema = z.object({
+  cspRevision: z.string().min(1).max(100),
   siteName: z.string().min(1).max(100).optional(),
   artistName: z.string().min(1).max(100).optional(),
   artistBio: z.string().max(2000).optional(),
   artistAvatarFileId: z.string().uuid().nullable().optional(),
   siteLogoFileId: z.string().uuid().nullable().optional(),
   siteIconFileId: z.string().uuid().nullable().optional(),
-  customFooterHtml: z.string().max(20000).optional(),
+  customFooterHtml: z.unknown().optional(),
+  customFooterMarkup: z.string().max(20000).optional(),
+  siteVerification: siteVerificationSchema.optional(),
+  publicIntegrations: publicIntegrationsSchema.optional(),
+  legacyFooterAction: z.enum(["migrate-safe", "clear"]).optional(),
   paymentProofApprovedRetentionDays: z.number().int().min(0).max(3650).optional(),
   socialLinks: z
     .array(
@@ -43,33 +53,62 @@ export async function PUT(req: NextRequest) {
   try {
     const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     await requireAdmin();
-    if (input.siteName !== undefined) await setSetting("site_name", input.siteName);
-    if (input.artistName !== undefined) await setSetting("artist_name", input.artistName);
-    if (input.artistBio !== undefined) await setSetting("artist_bio", input.artistBio);
-    if (input.artistAvatarFileId !== undefined)
-      await writeOptionalFileSetting("artist_avatar_file_id", input.artistAvatarFileId);
-    if (input.siteLogoFileId !== undefined)
-      await writeOptionalFileSetting("site_logo_file_id", input.siteLogoFileId);
-    if (input.siteIconFileId !== undefined)
-      await writeOptionalFileSetting("site_icon_file_id", input.siteIconFileId);
-    if (input.customFooterHtml !== undefined)
-      await setSetting("custom_footer_html", input.customFooterHtml);
-    if (input.paymentProofApprovedRetentionDays !== undefined)
-      await setSetting(
-        "payment_proof_approved_retention_days",
-        input.paymentProofApprovedRetentionDays,
-      );
-    if (input.socialLinks !== undefined) await setSetting("social_links", input.socialLinks);
+    if (input.customFooterHtml !== undefined) {
+      throw new ApiError(409, "legacyFooterClientRefreshRequired");
+    }
+    const additionalSettings: Record<string, unknown> = {};
+    const deleteSettingKeys: string[] = [];
+    if (input.siteName !== undefined) additionalSettings.site_name = input.siteName;
+    if (input.artistName !== undefined) additionalSettings.artist_name = input.artistName;
+    if (input.artistBio !== undefined) additionalSettings.artist_bio = input.artistBio;
+    collectOptionalFileSetting(
+      additionalSettings,
+      deleteSettingKeys,
+      "artist_avatar_file_id",
+      input.artistAvatarFileId,
+    );
+    collectOptionalFileSetting(
+      additionalSettings,
+      deleteSettingKeys,
+      "site_logo_file_id",
+      input.siteLogoFileId,
+    );
+    collectOptionalFileSetting(
+      additionalSettings,
+      deleteSettingKeys,
+      "site_icon_file_id",
+      input.siteIconFileId,
+    );
+    if (input.paymentProofApprovedRetentionDays !== undefined) {
+      additionalSettings.payment_proof_approved_retention_days =
+        input.paymentProofApprovedRetentionDays;
+    }
+    if (input.socialLinks !== undefined) additionalSettings.social_links = input.socialLinks;
+    await updatePublicSecuritySettings({
+      expectedRevision: input.cspRevision,
+      customFooterMarkup: input.customFooterMarkup,
+      siteVerification: input.siteVerification,
+      publicIntegrations: input.publicIntegrations,
+      legacyAction: input.legacyFooterAction,
+      additionalSettings,
+      deleteSettingKeys,
+    });
     return jsonOk(await readAdminSiteInfo());
   } catch (err) {
     return handleApiError(err);
   }
 }
 
-async function writeOptionalFileSetting(key: string, fileId: string | null) {
+function collectOptionalFileSetting(
+  additionalSettings: Record<string, unknown>,
+  deleteSettingKeys: string[],
+  key: string,
+  fileId: string | null | undefined,
+) {
+  if (fileId === undefined) return;
   if (fileId === null) {
-    await deleteSetting(key);
+    deleteSettingKeys.push(key);
     return;
   }
-  await setSetting(key, fileId);
+  additionalSettings[key] = fileId;
 }

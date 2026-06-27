@@ -20,6 +20,9 @@ export async function GET(req: NextRequest) {
       ...(warnings ? { warnings } : {}),
       ...(integrations ? { integrations } : {}),
     },
-    { status: ready ? 200 : 503 },
+    {
+      status: ready ? 200 : 503,
+      headers: { "X-Content-Type-Options": "nosniff" },
+    },
   );
 }

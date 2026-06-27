@@ -48,7 +48,7 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button asChild>
-                <Link href="/tiers">{t("me.renew")}</Link>
+                <a href="/tiers">{t("me.renew")}</a>
               </Button>
               <RenewalReminderToggle
                 tierId={view.membership.tierId}
@@ -63,7 +63,7 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
           <h2 className="mt-3 font-semibold">{t("me.noMemberTitle")}</h2>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">{t("me.noMember")}</p>
           <Button className="mt-4" asChild>
-            <Link href="/tiers">{t("me.open")}</Link>
+            <a href="/tiers">{t("me.open")}</a>
           </Button>
         </section>
       )}
@@ -112,16 +112,25 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
             { href: "/tiers", label: t("nav.tiers"), icon: Sparkles },
             { href: "/posts", label: t("nav.posts"), icon: Newspaper },
             { href: "/", label: t("nav.home"), icon: Home },
-          ].map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="flex items-center gap-3 rounded-xl border bg-card px-4 py-3 text-sm font-medium transition hover:border-primary/30 hover:text-primary"
-            >
-              <item.icon className="size-4" />
-              {item.label}
-            </Link>
-          ))}
+          ].map((item) => {
+            const content = (
+              <>
+                <item.icon className="size-4" />
+                {item.label}
+              </>
+            );
+            const className =
+              "flex items-center gap-3 rounded-xl border bg-card px-4 py-3 text-sm font-medium transition hover:border-primary/30 hover:text-primary";
+            return item.href === "/me/orders" ? (
+              <Link key={item.href} href={item.href} className={className}>
+                {content}
+              </Link>
+            ) : (
+              <a key={item.href} href={item.href} className={className}>
+                {content}
+              </a>
+            );
+          })}
         </div>
       </section>
     </div>

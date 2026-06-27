@@ -21,7 +21,9 @@ CDN 到源站应使用 HTTPS 且校验证书；源站必须限制只接受可信
 - 不要按 URL 外观假定 `/api/files/*/download` 都是公开 signed redirect：local、private video 和其他受保护路径可能由应用直接代理；
 - public S3 signed redirect 的最终对象缓存行为由签名 TTL、对象响应头和部署策略共同决定，不得扩大授权时间或移除 disposition/content-type 约束。
 
-S6 #86 实现后，CDN/代理应透传应用的 CSP 和安全头。不要添加第二套宽泛 CSP、`unsafe-inline`、wildcard script origin，或覆盖文件路由更严格的隔离头。
+CDN/代理必须透传应用的 CSP 和安全头。不要添加第二套宽泛 CSP、
+`unsafe-inline`、wildcard script origin，或覆盖文件路由更严格的隔离头。
+Report-Only 观察和 enforce 切换由 `SECURITY_CSP_MODE` 控制。
 
 ## HTTP Range 与视频
 

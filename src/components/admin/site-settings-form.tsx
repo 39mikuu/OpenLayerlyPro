@@ -9,6 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { api, uploadFile } from "@/lib/client";
+import type {
+  LegacyFooterStatus,
+  PublicIntegration,
+  SiteVerification,
+} from "@/modules/site/public-security";
 
 type SocialLink = { name: string; url: string; enabled?: boolean };
 
@@ -22,7 +27,15 @@ export function SiteSettingsForm({
     artistAvatarFileId: string | null;
     siteLogoFileId: string | null;
     siteIconFileId: string | null;
-    customFooterHtml: string;
+    customFooterMarkup: string;
+    legacyFooterHtml: string;
+    legacyFooterStatus: LegacyFooterStatus;
+    siteVerification: SiteVerification;
+    publicIntegrations: PublicIntegration[];
+    cspRevision: string;
+    cspMode: "auto" | "report-only" | "enforce";
+    effectiveCspMode: "report-only" | "enforce";
+    publicSecurityConfigurationErrors: string[];
     paymentProofApprovedRetentionDays: number;
     socialLinks: SocialLink[];
   };
@@ -35,7 +48,15 @@ export function SiteSettingsForm({
   const [avatarFileId, setAvatarFileId] = useState(initial.artistAvatarFileId);
   const [logoFileId, setLogoFileId] = useState(initial.siteLogoFileId);
   const [iconFileId, setIconFileId] = useState(initial.siteIconFileId);
-  const [customFooterHtml, setCustomFooterHtml] = useState(initial.customFooterHtml);
+  const [customFooterMarkup, setCustomFooterMarkup] = useState(initial.customFooterMarkup);
+  const [legacyFooterHtml, setLegacyFooterHtml] = useState(initial.legacyFooterHtml);
+  const [siteVerificationJson, setSiteVerificationJson] = useState(
+    JSON.stringify(initial.siteVerification, null, 2),
+  );
+  const [publicIntegrationsJson, setPublicIntegrationsJson] = useState(
+    JSON.stringify(initial.publicIntegrations, null, 2),
+  );
+  const [cspRevision, setCspRevision] = useState(initial.cspRevision);
   const [paymentProofApprovedRetentionDays, setPaymentProofApprovedRetentionDays] = useState(
     initial.paymentProofApprovedRetentionDays,
   );
@@ -47,20 +68,24 @@ export function SiteSettingsForm({
     setLoading(true);
     setMessage(null);
     try {
-      await api("/api/admin/site", {
+      const updated = await api<{ cspRevision: string }>("/api/admin/site", {
         method: "PUT",
         body: {
+          cspRevision,
           siteName,
           artistName,
           artistBio,
           artistAvatarFileId: avatarFileId,
           siteLogoFileId: logoFileId,
           siteIconFileId: iconFileId,
-          customFooterHtml,
+          customFooterMarkup,
+          siteVerification: JSON.parse(siteVerificationJson) as unknown,
+          publicIntegrations: JSON.parse(publicIntegrationsJson) as unknown,
           paymentProofApprovedRetentionDays,
           socialLinks: links.filter((l) => l.name && l.url),
         },
       });
+      setCspRevision(updated.cspRevision);
       setMessage(t("admin.common.saved"));
       router.refresh();
     } catch (err) {
@@ -68,6 +93,46 @@ export function SiteSettingsForm({
     } finally {
       setLoading(false);
     }
+  }
+
+  async function updateLegacyFooter(action: "migrate-safe" | "clear") {
+    setLoading(true);
+    setMessage(null);
+    try {
+      const updated = await api<{
+        customFooterMarkup: string;
+        legacyFooterHtml: string;
+        cspRevision: string;
+      }>("/api/admin/site", {
+        method: "PUT",
+        body: { cspRevision, legacyFooterAction: action },
+      });
+      setCustomFooterMarkup(updated.customFooterMarkup);
+      setLegacyFooterHtml(updated.legacyFooterHtml);
+      setCspRevision(updated.cspRevision);
+      setMessage(t("admin.common.saved"));
+      router.refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : t("admin.common.saveFailed"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function copyLegacyFooter() {
+    await navigator.clipboard.writeText(legacyFooterHtml);
+    setMessage(t("admin.site.legacyFooterCopied"));
+  }
+
+  function downloadLegacyFooter() {
+    const url = URL.createObjectURL(
+      new Blob([legacyFooterHtml], { type: "text/html;charset=utf-8" }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "legacy-custom-footer.html";
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   async function onAvatarChange(file: File | null) {
@@ -222,26 +287,99 @@ export function SiteSettingsForm({
 
       <section className="space-y-4 rounded-lg border p-4">
         <div>
-          <h2 className="text-base font-semibold">{t("admin.site.customCode")}</h2>
-          <p className="text-sm text-muted-foreground">{t("admin.site.customCodeDescription")}</p>
+          <h2 className="text-base font-semibold">{t("admin.site.publicSecurity")}</h2>
+          <p className="text-sm text-muted-foreground">
+            {t("admin.site.publicSecurityDescription")}
+          </p>
         </div>
         <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-          {t("admin.site.customFooterWarning")}
+          {t("admin.site.cspStatus", {
+            configured: initial.cspMode,
+            effective: initial.effectiveCspMode,
+          })}
         </div>
+        {initial.legacyFooterStatus === "needs_migration" ? (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+            {t(
+              initial.effectiveCspMode === "report-only"
+                ? "admin.site.legacyFooterReportOnlyWarning"
+                : "admin.site.legacyFooterEnforceWarning",
+            )}
+          </div>
+        ) : null}
+        {initial.publicSecurityConfigurationErrors.map((error) => (
+          <div
+            key={error}
+            className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm"
+          >
+            {error}
+          </div>
+        ))}
         <div className="space-y-2">
-          <Label>{t("admin.site.customFooterHtml")}</Label>
+          <Label>{t("admin.site.customFooterMarkup")}</Label>
           <Textarea
             rows={8}
-            value={customFooterHtml}
-            onChange={(e) => setCustomFooterHtml(e.target.value)}
-            placeholder="<script>...</script>"
+            value={customFooterMarkup}
+            onChange={(e) => setCustomFooterMarkup(e.target.value)}
+            placeholder="<p>...</p>"
           />
-          <div className="flex justify-end">
-            <Button variant="outline" size="sm" onClick={() => setCustomFooterHtml("")}>
-              {t("admin.site.clearCustomFooter")}
-            </Button>
-          </div>
+          <p className="text-xs text-muted-foreground">{t("admin.site.safeMarkupHelp")}</p>
         </div>
+        <div className="space-y-2">
+          <Label>{t("admin.site.siteVerification")}</Label>
+          <Textarea
+            rows={6}
+            value={siteVerificationJson}
+            onChange={(e) => setSiteVerificationJson(e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">{t("admin.site.siteVerificationHelp")}</p>
+        </div>
+        <div className="space-y-2">
+          <Label>{t("admin.site.publicIntegrations")}</Label>
+          <Textarea
+            rows={10}
+            value={publicIntegrationsJson}
+            onChange={(e) => setPublicIntegrationsJson(e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">{t("admin.site.publicIntegrationsHelp")}</p>
+        </div>
+        {legacyFooterHtml ? (
+          <div className="space-y-2 rounded-md border border-amber-300 p-3">
+            <Label>{t("admin.site.legacyFooter")}</Label>
+            <p className="text-xs text-muted-foreground">
+              {t("admin.site.legacyFooterStatus", { status: initial.legacyFooterStatus })}
+            </p>
+            <Textarea rows={8} value={legacyFooterHtml} readOnly />
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={copyLegacyFooter}>
+                {t("admin.site.copyLegacyFooter")}
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={downloadLegacyFooter}>
+                {t("admin.site.downloadLegacyFooter")}
+              </Button>
+              {initial.legacyFooterStatus === "safe_markup" ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={loading}
+                  onClick={() => updateLegacyFooter("migrate-safe")}
+                >
+                  {t("admin.site.migrateLegacyFooter")}
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                disabled={loading}
+                onClick={() => updateLegacyFooter("clear")}
+              >
+                {t("admin.site.clearLegacyFooter")}
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </section>
 
       <section className="space-y-4">

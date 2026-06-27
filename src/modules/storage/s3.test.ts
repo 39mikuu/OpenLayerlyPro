@@ -7,7 +7,12 @@ import {
 import { Readable } from "stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { S3_UPLOAD_PART_SIZE, S3_UPLOAD_QUEUE_SIZE, S3StorageAdapter } from "./s3";
+import {
+  resolveS3SignedDownloadOrigin,
+  S3_UPLOAD_PART_SIZE,
+  S3_UPLOAD_QUEUE_SIZE,
+  S3StorageAdapter,
+} from "./s3";
 import { StorageObjectTooLargeError } from "./stream";
 
 const state = vi.hoisted(() => ({
@@ -189,6 +194,29 @@ describe("S3StorageAdapter", () => {
       "attachment; filename*=UTF-8''archive.zip",
     );
     expect(attachmentCommand.input.ResponseContentType).toBeUndefined();
+  });
+
+  it("derives the final browser origin from the same presigner used for downloads", async () => {
+    state.signedUrlMock.mockResolvedValueOnce(
+      "https://test-bucket.storage.example/content/image.webp?X-Amz-Signature=secret",
+    );
+
+    await expect(resolveS3SignedDownloadOrigin(config)).resolves.toBe(
+      "https://test-bucket.storage.example",
+    );
+    const command = state.signedUrlMock.mock.calls[0][1] as GetObjectCommand;
+    expect(command.input).toMatchObject({
+      Bucket: "test-bucket",
+      Key: ".openlayerlypro/csp-origin",
+    });
+  });
+
+  it("refuses non-HTTPS signed resource origins", async () => {
+    state.signedUrlMock.mockResolvedValueOnce(
+      "http://minio.internal/test-bucket/object?signature=x",
+    );
+
+    await expect(resolveS3SignedDownloadOrigin(config)).resolves.toBeNull();
   });
 
   it("persists authoritative content type and disposition on object PUT", async () => {

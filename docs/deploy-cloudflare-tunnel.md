@@ -69,7 +69,10 @@ docker compose -f docker-compose.yml -f docker-compose.tunnel.yml config
 - 视频 seek 的 Range 请求能返回 206/416；
 - private 文件/视频没有被 Cloudflare 缓存为 public。
 
-S6 #86 实现后，还必须验证 Cloudflare 下的 nonce CSP、DB-enabled Turnstile、S3 signed origin 与公开视频/integration；不要在 Cloudflare Transform Rules 中覆盖应用的 CSP 或文件隔离头。
+应用负责设置 nonce CSP 与全局安全响应头。先用 `SECURITY_CSP_MODE=auto`
+或 `report-only` 验证 Cloudflare 下的 DB-enabled Turnstile、S3 signed origin
+与公开视频/integration，再强制执行。不要在 Cloudflare Transform Rules 中覆盖
+应用的 CSP 或文件隔离头。仅在 HTTPS 和所有子域边界确认后启用 HSTS。
 
 ## 上传与存储
 

@@ -87,9 +87,9 @@ export function PostDetail({ view, t }: { view: PostDetailView; t: Translate }) 
                 })}
           </p>
           <Button asChild className="mt-5">
-            <Link href={view.isLoggedIn ? "/tiers" : "/login"}>
+            <a href={view.isLoggedIn ? "/tiers" : "/login"}>
               {view.isLoggedIn ? t("post.openMembership") : t("post.goLogin")}
-            </Link>
+            </a>
           </Button>
         </section>
       ) : (

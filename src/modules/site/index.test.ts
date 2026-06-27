@@ -126,7 +126,7 @@ describe("site settings reads", () => {
     });
   });
 
-  it("keeps custom footer HTML out of public site info but returns it for admin settings", async () => {
+  it("keeps legacy footer source out of public site info but exposes migration state to admins", async () => {
     mockSettingsRows([
       { key: "site_name", valueJson: "Studio" },
       { key: "custom_footer_html", valueJson: "<script>window.x=1</script>" },
@@ -136,7 +136,10 @@ describe("site settings reads", () => {
     await expect(readPublicSiteInfo()).resolves.not.toHaveProperty("customFooterHtml");
     await expect(readAdminSiteInfo()).resolves.toMatchObject({
       siteName: "Studio",
-      customFooterHtml: "<script>window.x=1</script>",
+      legacyFooterHtml: "<script>window.x=1</script>",
+      legacyFooterStatus: "needs_migration",
+      customFooterMarkup: "",
+      effectiveCspMode: "report-only",
     });
   });
 });

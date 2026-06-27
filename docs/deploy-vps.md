@@ -46,7 +46,11 @@ docker compose -f docker-compose.yml -f docker-compose.caddy.yml config
 - private 下载不被代理/CDN公开缓存；
 - DB 配置的 Turnstile、Storage、Stripe 和 SMTP 状态与后台一致。
 
-S6 #86 实现后，还必须在真实浏览器验证 nonce CSP、DB-enabled Turnstile、实际 signed storage origin、视频与 public integration；不得在代理层加入宽泛或与应用冲突的 CSP。
+应用负责设置 nonce CSP 与全局安全响应头。先用 `SECURITY_CSP_MODE=auto`
+或 `report-only` 在真实浏览器验证 DB-enabled Turnstile、实际 signed storage
+origin、视频与 public integration，再强制执行。代理只透传这些响应头，不得加入
+宽泛或冲突的第二套 CSP。仅在所有相关域名都确认由 HTTPS 提供时启用
+`SECURITY_HSTS_ENABLED=true`。
 
 ## 备份与升级
 

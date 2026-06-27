@@ -1,7 +1,6 @@
 "use client";
 
 import { Home, Menu, Newspaper, Sparkles, UserRound } from "lucide-react";
-import Link from "next/link";
 
 import { LogoutButton } from "@/components/auth/logout-button";
 import { useT } from "@/components/i18n-provider";
@@ -33,14 +32,14 @@ export function MobileNav({ view }: { view: MobileNavView }) {
       <div className="absolute right-0 top-10 z-50 w-64 rounded-xl border bg-background p-2 shadow-lg">
         <nav className="space-y-1">
           {links.map((item) => (
-            <Link
+            <a
               key={item.href}
               href={item.href}
               className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium hover:bg-accent"
             >
               <item.icon className="size-4 text-muted-foreground" />
               {item.label}
-            </Link>
+            </a>
           ))}
         </nav>
         <div className="mt-2 flex items-center justify-between gap-2 border-t px-2 pt-2">

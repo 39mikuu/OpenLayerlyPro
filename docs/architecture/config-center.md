@@ -54,7 +54,9 @@
 - Secret Key 只返回 `secretKeySet`；配置组整体加密。
 - `enabled=false` 是有效 DB override；删除配置组才回落 env。
 - 最终 enabled 时要求 Site Key + Secret Key。
-- 登录页 widget、request-code 守卫、Integration status 与未来 S6 CSP 必须读取同一 effective config。
+- 登录页 widget、request-code 守卫、Integration status 与 S6 CSP 使用同一
+  effective config；CSP 固定包含可信 Turnstile origin，避免 DB override 启用后
+  页面仍使用旧 env-only 策略。
 
 ## Storage ✅
 
@@ -96,4 +98,7 @@
 
 ## 缓存与多实例边界
 
-配置读取当前按需查库，修改后无需进程重启。如果未来加入短 TTL 缓存，必须以 revision/失效机制保证多实例不会出现“新渲染计划 + 旧安全配置”的竞态；S6 CSP 尤其要求页面与响应头使用同一配置 revision。
+配置读取当前按需查库，修改后无需进程重启。公开 integration 保存时生成不可预测
+revision；middleware 将 revision 传给布局，布局只在两次读取一致时渲染脚本。若未来
+加入短 TTL 缓存，仍必须以 revision/失效机制保证多实例不会出现“新渲染计划 +
+旧安全配置”的竞态。

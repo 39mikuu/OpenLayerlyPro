@@ -1,5 +1,4 @@
 import { CircleCheck, Clock3, CreditCard, FileText, RotateCcw, XCircle } from "lucide-react";
-import Link from "next/link";
 
 import { OrderActions } from "@/components/payment/order-actions";
 import { Badge } from "@/components/ui/badge";
@@ -73,7 +72,7 @@ export function MeOrders({ view, t }: { view: MeOrdersView; t: Translate }) {
           <h2 className="mt-3 font-semibold">{t("order.noneTitle")}</h2>
           <p className="mt-2 text-sm text-muted-foreground">{t("order.none")}</p>
           <Button className="mt-5" asChild>
-            <Link href="/tiers">{t("order.browseTiers")}</Link>
+            <a href="/tiers">{t("order.browseTiers")}</a>
           </Button>
         </section>
       ) : (

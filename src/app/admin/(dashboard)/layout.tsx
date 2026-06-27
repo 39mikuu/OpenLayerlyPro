@@ -1,3 +1,4 @@
+/* eslint-disable @next/next/no-html-link-for-pages -- leaving admin must establish a new public CSP document */
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
@@ -55,9 +56,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <p className="truncate">{user.email}</p>
           <LocaleSwitcher />
           <div className="flex gap-1">
-            <Link href="/" className="underline">
+            <a href="/" className="underline">
               {t("admin.viewSite")}
-            </Link>
+            </a>
           </div>
           <LogoutButton />
         </div>

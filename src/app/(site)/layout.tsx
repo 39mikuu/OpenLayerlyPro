@@ -2,7 +2,8 @@ import { redirect } from "next/navigation";
 
 import { getCurrentUser } from "@/modules/auth/session";
 import { getT } from "@/modules/i18n/server";
-import { getCustomFooterHtml, getPublicSiteInfo, isInitialized } from "@/modules/site";
+import { getPublicSiteInfo, isInitialized } from "@/modules/site";
+import { getPublicRenderConfig } from "@/modules/site/public-security";
 import { getActiveTheme } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
@@ -11,9 +12,9 @@ export default async function SiteLayout({ children }: { children: React.ReactNo
   if (!(await isInitialized())) {
     redirect("/admin/setup");
   }
-  const [site, customFooterHtml, user, theme, t] = await Promise.all([
+  const [site, publicSecurity, user, theme, t] = await Promise.all([
     getPublicSiteInfo(),
-    getCustomFooterHtml(),
+    getPublicRenderConfig(),
     getCurrentUser(),
     getActiveTheme(),
     getT(),
@@ -33,7 +34,7 @@ export default async function SiteLayout({ children }: { children: React.ReactNo
           .filter((link) => link.enabled !== false)
           .map((link) => ({ name: link.name, url: link.url })),
         isLoggedIn: !!user,
-        customFooterHtml,
+        customFooterMarkup: publicSecurity.footerHtml,
       }}
       t={t}
     >

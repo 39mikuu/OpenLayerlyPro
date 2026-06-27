@@ -612,13 +612,30 @@ export const ja: Messages = {
       iconUploaded: "アイコンをアップロードしました。保存してください",
       iconHelp: "512×512 PNG/WebP を推奨します。",
       clearIcon: "アイコンをクリア",
-      customCode: "カスタムコード",
-      customCodeDescription:
-        "公開ページのフッターに挿入するアクセス解析、届出表示、サイト認証コードです。",
-      customFooterHtml: "フッター HTML / コード",
-      customFooterWarning:
-        "カスタムコードは公開ページへ直接挿入されます。信頼できるコードだけを貼り付けてください。不正なスクリプトは訪問者ページに影響します。",
-      clearCustomFooter: "フッターコードをクリア",
+      publicSecurity: "公開ページのセキュリティと連携",
+      publicSecurityDescription:
+        "安全なフッター、サイト確認メタデータ、nonce で許可する連携を個別に設定します。",
+      cspStatus: "設定 CSP モード：{configured}、ブラウザー適用モード：{effective}。",
+      customFooterMarkup: "安全なフッターマークアップ",
+      safeMarkupHelp:
+        "基本表示タグと安全なリンクだけを保持します。script、style、iframe、イベント属性、nonce 属性は削除されます。",
+      siteVerification: "サイト確認レコード（JSON）",
+      siteVerificationHelp:
+        '例：[{"provider":"google","content":"token"}]。カスタムは provider、name、content を使い、http-equiv は禁止です。',
+      publicIntegrations: "公開連携（JSON）",
+      publicIntegrationsHelp:
+        '構造化された "plausible" または "custom" レコードを使用し、リソース元は正確な HTTPS origin に限定します。',
+      legacyFooter: "旧フッターの原文（読み取り専用）",
+      legacyFooterStatus: "分類：{status}。移行または削除まで原文を保持します。",
+      legacyFooterReportOnlyWarning:
+        "旧フッターの実行可能コードはまだ動作中で、ブラウザー CSP を Report-Only に保っています。強制前に移行または削除してください。",
+      legacyFooterEnforceWarning:
+        "強制 CSP は旧フッターの実行可能コードをブロックしていますが、手動移行または明示的削除のため原文を保持しています。",
+      legacyFooterCopied: "旧フッターをコピーしました",
+      copyLegacyFooter: "原文をコピー",
+      downloadLegacyFooter: "原文をダウンロード",
+      migrateLegacyFooter: "安全なマークアップを移行",
+      clearLegacyFooter: "旧内容を削除",
       paymentProofRetention: "支払い証明の保持",
       paymentProofRetentionDescription:
         "承認済み・取消済みの支払い証明を監査目的で保持する期間を設定します。",
@@ -909,6 +926,14 @@ export const ja: Messages = {
     s3ConfigIncomplete: "S3/R2 の設定が不完全です",
     s3TestFailed: "S3/R2 接続テストに失敗しました：{detail}",
     turnstileKeysRequired: "認証を有効にする前に Site Key と Secret Key を入力してください",
+    legacyFooterRequiresManualMigration:
+      "旧フッターに実行可能またはポリシー関連の内容が含まれるため、手動移行が必要です。",
+    legacyFooterMigrationTargetNotEmpty:
+      "安全なフッターには異なる内容があります。ワンクリック移行前に明示的にクリアまたは統合してください。",
+    legacyFooterClientRefreshRequired:
+      "このブラウザータブは廃止された旧フッターフィールドを使用しています。管理画面を再読み込みし、旧値を明示的に移行してください。",
+    publicSecurityRevisionConflict:
+      "別のタブでサイトのセキュリティ設定が変更されました。再度保存する前にこのページを再読み込みしてください。",
     unknownColorPreset: "不明なカラープリセットです",
     customColorUnsupported: "現在のテーマはカスタムカラーに対応していません",
     customHueRequired: "カスタムカラーには有効な色相が必要です",

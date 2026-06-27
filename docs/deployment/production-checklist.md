@@ -1,6 +1,6 @@
 # Production Checklist
 
-> This checklist describes current `main`. A production `v1.0.0` release additionally requires S6 #86, S7 #87, and every item in [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
+> This checklist describes current `main`. A production `v1.0.0` release additionally requires S7 #87 and every item in [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
 
 ## Base deployment
 
@@ -47,8 +47,19 @@
 
 - [ ] S3/R2, SMTP, Stripe, Turnstile and Translation secrets are encrypted or protected server-side.
 - [ ] AI translation is disabled unless intentionally configured; visitors cannot trigger provider calls.
-- [ ] Before enforcing S6 CSP, legacy footer code is migrated, explicitly disabled, or kept in the documented safe rollout state.
-- [ ] S6 browser verification covers DB-enabled Turnstile, the actual signed storage origin, video and public integrations.
+- [ ] `SECURITY_CSP_MODE` is intentionally `auto`, `report-only`, or `enforce`;
+  legacy footer code is migrated, explicitly disabled, or kept in the
+  documented safe rollout state.
+- [ ] Report-Only browser observation covers admin, public pages, login,
+  DB-enabled Turnstile, the actual signed storage origin, video and every
+  public integration before enforcement.
+- [ ] Production `script-src` contains neither `'unsafe-inline'` nor
+  `'unsafe-eval'`; framework, theme, and integration scripts carry the response
+  nonce and separate requests use separate nonces.
+- [ ] `SECURITY_HSTS_ENABLED=true` only when every relevant hostname and
+  subdomain is served exclusively through HTTPS.
+- [ ] The proxy/CDN passes application CSP and security headers unchanged and
+  does not replace the stricter file-response isolation policy.
 
 ## Backup and recovery
 
@@ -62,7 +73,9 @@
 
 ## Current hardening status
 
-S4 authentication hardening and S5 mail reliability are implemented. The remaining release blockers are S6 #86 and S7 #87; a completed handoff document alone does not complete either implementation.
+S4 authentication hardening, S5 mail reliability, and S6 security response
+headers are implemented. The remaining implementation blocker is S7 #87,
+followed by the complete #88 acceptance gate.
 
 ## Application request-body limits
 

@@ -160,7 +160,14 @@ Keep the pre-upgrade archive, previous image/source, and S3 recovery point until
 
 Application-streamed protected files already use strict isolation headers. S3 direct signed responses may depend on object metadata/CDN behavior.
 
-S6 #86 will add document-level nonce CSP and global security headers. Do not pre-empt it by configuring a proxy-wide wildcard CSP or `unsafe-inline`; the application and proxy must not publish contradictory policies. After #86, validate DB-enabled Turnstile, actual signed S3 origin, inline video and migrated public integrations in a browser before enabling enforce mode.
+The application sets document-level per-request nonce CSP and global security
+headers. Upgrade with `SECURITY_CSP_MODE=auto` (or explicit `report-only`),
+review/export any detected legacy footer, migrate it into safe markup,
+verification records, and structured integrations, then validate DB-enabled
+Turnstile, the actual signed S3 origin, inline video, and every integration in a
+real browser before enabling enforce mode. Do not configure a second
+proxy-wide CSP, wildcard sources, or `unsafe-inline`. Enable HSTS only after the
+HTTPS topology is confirmed.
 
 ## 9. Failure and Rollback
 

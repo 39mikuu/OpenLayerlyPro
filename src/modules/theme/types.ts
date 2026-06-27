@@ -28,7 +28,7 @@ export type SiteChromeView = {
   logoUrl: string | null;
   socialLinks: { name: string; url: string }[];
   isLoggedIn: boolean;
-  customFooterHtml: string;
+  customFooterMarkup: string;
 };
 
 export type HomePostView = PostCardView;
