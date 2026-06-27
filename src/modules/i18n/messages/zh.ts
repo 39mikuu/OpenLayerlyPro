@@ -604,12 +604,29 @@ export const zh = {
       iconUploaded: "Icon 已上传，记得保存",
       iconHelp: "建议使用 512×512 PNG/WebP。",
       clearIcon: "清除 Icon",
-      customCode: "自定义代码",
-      customCodeDescription: "用于公开页页脚的统计代码、备案代码或站点验证代码。",
-      customFooterHtml: "页脚 HTML / 代码",
-      customFooterWarning:
-        "自定义代码会直接插入公开页面。请只粘贴可信代码，错误脚本可能影响访客页面。",
-      clearCustomFooter: "清空页脚代码",
+      publicSecurity: "公开页安全与集成",
+      publicSecurityDescription: "安全页脚标记、站点验证元数据与 nonce 授权集成分别配置。",
+      cspStatus: "配置的 CSP 模式：{configured}；浏览器实际模式：{effective}。",
+      customFooterMarkup: "安全页脚标记",
+      safeMarkupHelp:
+        "仅保留基础展示标签与安全链接；脚本、样式、iframe、事件属性与 nonce 属性会被移除。",
+      siteVerification: "站点验证记录（JSON）",
+      siteVerificationHelp:
+        '示例：[{"provider":"google","content":"token"}]。自定义记录使用 provider、name、content，禁止 http-equiv。',
+      publicIntegrations: "公开集成（JSON）",
+      publicIntegrationsHelp:
+        '使用结构化的 "plausible" 或 "custom" 记录；脚本及资源来源必须为精确 HTTPS origin。',
+      legacyFooter: "旧页脚原始内容（只读）",
+      legacyFooterStatus: "分类：{status}。迁移或清除前会保留原值。",
+      legacyFooterReportOnlyWarning:
+        "旧页脚可执行代码仍在运行，并使浏览器 CSP 保持 Report-Only；强制前必须迁移或清除。",
+      legacyFooterEnforceWarning:
+        "强制 CSP 已阻止旧页脚可执行代码，但原值仍保留在此，供手动迁移或显式清除。",
+      legacyFooterCopied: "已复制旧页脚",
+      copyLegacyFooter: "复制原值",
+      downloadLegacyFooter: "下载原值",
+      migrateLegacyFooter: "迁移安全标记",
+      clearLegacyFooter: "清除旧内容",
       paymentProofRetention: "付款凭证保留",
       paymentProofRetentionDescription: "设置已批准和已撤销付款凭证的审计保留周期。",
       paymentProofApprovedRetentionDays: "已批准凭证保留天数",
@@ -884,6 +901,11 @@ export const zh = {
     s3ConfigIncomplete: "S3/R2 配置不完整，无法测试连接",
     s3TestFailed: "S3/R2 连接测试失败：{detail}",
     turnstileKeysRequired: "开启人机验证前必须填写 Site Key 与 Secret Key",
+    legacyFooterRequiresManualMigration: "旧页脚包含可执行或策略相关内容，必须手动迁移。",
+    legacyFooterMigrationTargetNotEmpty: "安全页脚标记已有不同内容；一键迁移前请显式清空或合并。",
+    legacyFooterClientRefreshRequired:
+      "当前浏览器标签页仍使用已停用的旧页脚字段；请刷新后台并显式迁移旧值。",
+    publicSecurityRevisionConflict: "站点安全设置已在其他标签页变更；请刷新本页后再保存。",
     unknownColorPreset: "未知的颜色预设",
     customColorUnsupported: "当前主题不支持自由取色",
     customHueRequired: "自定义颜色需要有效的色相值",

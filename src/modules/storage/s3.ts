@@ -33,6 +33,41 @@ export type S3StorageConfig = {
   forcePathStyle: boolean;
 };
 
+function exactHttpsResourceOrigin(value: string): string | null {
+  try {
+    if (!value || /[\s\u0000-\u001f\u007f]/u.test(value)) return null;
+    const parsed = new URL(value);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.hostname.includes("*")
+    ) {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveS3SignedDownloadOrigin(
+  config: S3StorageConfig,
+): Promise<string | null> {
+  if (!exactHttpsResourceOrigin(config.endpoint)) return null;
+  const adapter = new S3StorageAdapter(config);
+  const signedUrl = await adapter.createSignedDownloadUrl({
+    objectKey: ".openlayerlypro/csp-origin",
+    expiresInSeconds: 60,
+    disposition: "inline",
+  });
+  try {
+    return exactHttpsResourceOrigin(signedUrl);
+  } catch {
+    return null;
+  }
+}
+
 async function streamToBuffer(body: unknown): Promise<Buffer> {
   if (!body) throw new Error("S3 测试对象响应为空");
 

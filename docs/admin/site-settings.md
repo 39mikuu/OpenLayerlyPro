@@ -15,11 +15,15 @@ Use site settings to configure the public identity and public-site customization
 
 The public API exposes only public site information. Secret integration configuration and legacy custom footer code are not returned by `/api/site`.
 
-## Custom Footer Code
+## Public Security and Integrations
 
-The current runtime manages the legacy trusted `customFooterHtml` field on the site settings page and inserts it only on public pages. It can contain executable administrator code, so it must never be populated from user-generated content or an untrusted import.
+The site settings page manages display-only sanitized footer markup, structured
+site verification, and structured nonce-authorized public integrations.
 
-S6 #86 will migrate this mixed-purpose capability into safe footer markup, structured site verification, and nonce-authorized public integrations. Before production CSP enforcement, existing executable footer values must be detected, preserved for review/export, and either migrated or explicitly disabled. See [Branding and Custom Footer Code](./branding-and-custom-code.md).
+Legacy `custom_footer_html` remains read-only and is classified for migration.
+The original can be copied or downloaded and is not silently deleted. Complete
+the migration and browser observation before enforcing CSP. See
+[Branding and Custom Footer Code](./branding-and-custom-code.md).
 
 ## Theme Configuration
 

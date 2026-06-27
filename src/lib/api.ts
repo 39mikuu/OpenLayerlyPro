@@ -13,7 +13,7 @@ import {
 import { DEFAULT_LOCALE, translate } from "@/modules/i18n";
 
 export function jsonOk<T>(data: T, init?: ResponseInit): NextResponse {
-  return NextResponse.json({ ok: true, data }, init);
+  return NextResponse.json({ ok: true, data }, withJsonSecurityHeaders(init));
 }
 
 export type ApiErrorParams = Record<string, string | number>;
@@ -27,8 +27,14 @@ export function jsonError(status: number, code: string, params?: ApiErrorParams)
       // Compatibility fallback for clients that do not understand stable error codes yet.
       error: translate(DEFAULT_LOCALE, `errors.${code}`, params),
     },
-    { status },
+    withJsonSecurityHeaders({ status }),
   );
+}
+
+function withJsonSecurityHeaders(init?: ResponseInit): ResponseInit {
+  const headers = new Headers(init?.headers);
+  headers.set("X-Content-Type-Options", "nosniff");
+  return { ...init, headers };
 }
 
 /**

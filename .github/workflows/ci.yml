@@ -43,3 +43,21 @@ jobs:
       - run: pnpm test
       - run: pnpm build:migrator
       - run: pnpm build
+      - name: Install browser
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Prepare browser test database
+        env:
+          PGPASSWORD: artist_password
+        run: |
+          createdb --host localhost --username artist artist_member_s6_e2e
+          DATABASE_URL=postgresql://artist:artist_password@localhost:5432/artist_member_s6_e2e pnpm db:migrate
+      - name: Test browser security policy
+        env:
+          DATABASE_URL: postgresql://artist:artist_password@localhost:5432/artist_member_s6_e2e
+          SESSION_SECRET: ci-s6-browser-session-secret-0123456789
+          APP_URL: http://127.0.0.1:3001
+          CONFIG_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+          SECURITY_CSP_MODE: auto
+          UPLOAD_DIR: /tmp/openlayerlypro-s6-e2e-uploads
+          E2E_BASE_URL: http://127.0.0.1:3001
+        run: pnpm test:e2e

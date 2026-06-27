@@ -618,13 +618,31 @@ export const en: Messages = {
       iconUploaded: "Icon uploaded; remember to save",
       iconHelp: "512×512 PNG/WebP is recommended.",
       clearIcon: "Clear icon",
-      customCode: "Custom code",
-      customCodeDescription:
-        "Footer code for public analytics, ICP/filing text, or site verification snippets.",
-      customFooterHtml: "Footer HTML / code",
-      customFooterWarning:
-        "Custom code is inserted directly into public pages. Only paste trusted code; broken scripts can affect visitor pages.",
-      clearCustomFooter: "Clear footer code",
+      publicSecurity: "Public page security and integrations",
+      publicSecurityDescription:
+        "Safe footer markup, verification metadata, and nonce-authorized integrations are configured separately.",
+      cspStatus: "Configured CSP mode: {configured}; effective browser mode: {effective}.",
+      customFooterMarkup: "Safe footer markup",
+      safeMarkupHelp:
+        "Only basic display tags and safe links are retained. Scripts, styles, frames, event handlers, and nonce attributes are removed.",
+      siteVerification: "Site verification records (JSON)",
+      siteVerificationHelp:
+        'Example: [{"provider":"google","content":"token"}]. Custom records use provider, name, and content; http-equiv is forbidden.',
+      publicIntegrations: "Public integrations (JSON)",
+      publicIntegrationsHelp:
+        'Use a structured "plausible" or "custom" record. Script and resource origins must be exact HTTPS values.',
+      legacyFooter: "Legacy footer source (read only)",
+      legacyFooterStatus:
+        "Classification: {status}. The original remains available until migrated or cleared.",
+      legacyFooterReportOnlyWarning:
+        "Executable legacy code is still active and is keeping the browser CSP in Report-Only. Migrate or clear it before enforcement.",
+      legacyFooterEnforceWarning:
+        "Executable legacy code is blocked by enforced CSP, but its original value is retained here for manual migration or explicit clearing.",
+      legacyFooterCopied: "Legacy footer copied",
+      copyLegacyFooter: "Copy original",
+      downloadLegacyFooter: "Download original",
+      migrateLegacyFooter: "Migrate safe markup",
+      clearLegacyFooter: "Clear legacy source",
       paymentProofRetention: "Payment proof retention",
       paymentProofRetentionDescription:
         "Control how long approved and reversed payment proofs are retained for audit purposes.",
@@ -917,6 +935,14 @@ export const en: Messages = {
     s3ConfigIncomplete: "S3/R2 configuration is incomplete",
     s3TestFailed: "S3/R2 connection test failed: {detail}",
     turnstileKeysRequired: "Site Key and Secret Key are required before enabling verification",
+    legacyFooterRequiresManualMigration:
+      "This legacy footer contains executable or policy-sensitive content and must be migrated manually.",
+    legacyFooterMigrationTargetNotEmpty:
+      "Safe footer markup already contains different content. Clear or merge it explicitly before one-click migration.",
+    legacyFooterClientRefreshRequired:
+      "This browser tab uses the retired custom-footer field. Reload the admin page and migrate the legacy value explicitly.",
+    publicSecurityRevisionConflict:
+      "These site security settings changed in another tab. Reload this page before saving again.",
     unknownColorPreset: "Unknown color preset",
     customColorUnsupported: "The current theme does not support custom colors",
     customHueRequired: "A valid hue is required for custom colors",

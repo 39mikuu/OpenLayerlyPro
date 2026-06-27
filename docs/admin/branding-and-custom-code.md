@@ -16,9 +16,25 @@ Recommended formats:
 
 Image-purpose uploads are server-detected and raster-normalized. SVG/HTML/non-raster data is not accepted as a branding image. When no logo is configured, the built-in theme falls back to the creator/site initial or creator avatar.
 
-## Current Legacy Custom Footer
+## Safe Public Customization
 
-The current runtime still exposes **Admin → Site settings → Custom code** and stores trusted administrator HTML in `customFooterHtml`. It is inserted only on public pages and is not returned by `/api/site`, rendered in admin pages, or used in email.
+**Admin → Site settings → Public page security and integrations** separates:
+
+- `custom_footer_markup`: sanitized display-only footer markup;
+- `site_verification`: structured verification metadata rendered into `<head>`;
+- `public_integrations`: validated Plausible or advanced custom records whose
+  render plan and exact CSP origins come from one server registry.
+
+Footer markup is sanitized on write and read. Scripts, styles, frames, metadata
+tags, event attributes, `javascript:` URLs, inline styles, and administrator
+supplied nonce attributes are removed. Integration scripts are rendered by the
+server with the current request nonce; raw script tags are never accepted as
+footer markup.
+
+Advanced custom integrations are trusted owner code. They allow either one
+exact HTTPS script URL or one inline body, constrained data attributes, and
+explicit exact HTTPS resource origins. They do not accept raw attributes,
+wildcards, bare schemes, credentials in URLs, or a caller-supplied nonce.
 
 Historically this field has been used for three different needs:
 
@@ -26,24 +42,39 @@ Historically this field has been used for three different needs:
 - site ownership verification;
 - analytics or other executable scripts.
 
-Because raw administrator HTML may contain scripts, event attributes, remote resources, or broken markup, it is a high-trust self-hosting escape hatch rather than a normal content field. Never populate it from fan input, post content, comments, imports, or an untrusted third party.
+The original `custom_footer_html` value remains a high-trust self-hosting escape
+hatch rather than a normal content field. Never populate it from fan input,
+post content, comments, imports, or an untrusted third party.
 
-## S6 Migration Status
+## Legacy Migration
 
-S6 #86 will replace the mixed-purpose legacy field with separate safe capabilities:
+Existing values are classified as `empty`, `safe_markup`, or
+`needs_migration`. The admin page preserves the original as read-only text and
+provides copy, download, clear, and safe-markup migration actions.
 
-- sanitized/restricted footer markup for ordinary display;
-- structured site-verification records rendered by the server;
-- structured public integrations whose render plan and exact CSP origins are owned by the application;
-- an explicitly high-risk custom integration record only where unavoidable.
+- `SECURITY_CSP_MODE=auto` enforces CSP when no executable legacy value exists
+  and otherwise uses Report-Only on all HTML documents while the original
+  public behavior remains visible.
+- `SECURITY_CSP_MODE=report-only` explicitly keeps all HTML documents in
+  browser observation mode.
+- `SECURITY_CSP_MODE=enforce` never renders executable legacy content, but the
+  original remains available to the administrator until explicitly cleared.
 
-The S6 implementation must preserve the original legacy value for review/export and detect executable content before enforcing CSP. It must not silently delete or disable code, and it must not preserve compatibility by adding `script-src 'unsafe-inline'`, wildcard hosts, bare `https:`, or trusting administrator-supplied nonce attributes.
+Admin saves carry the public-security revision read with the page. If another
+tab changes trusted markup, verification, or integration sources first, the
+stale save is rejected before any site setting is written; reload the page,
+review the newer trusted-source configuration, and apply the intended change
+again.
 
-Until #86 is implemented and migrated:
+For executable legacy code, copy/download the original, recreate supported
+verification and analytics behavior as structured records, validate it in
+Report-Only, then clear the legacy value and switch to enforce (or let `auto`
+enforce). Production CSP never adds `script-src 'unsafe-inline'`,
+`'unsafe-eval'`, wildcard hosts, or a bare `https:` compatibility escape.
 
-- only paste code you fully trust;
-- review analytics/privacy implications and remote hosts;
-- keep a copy outside the application before upgrades;
-- expect v1.0 rollout to require migration, explicit disablement, or report-only observation before CSP enforcement.
+The style policy uses the documented `style-src 'self' 'unsafe-inline'`
+compatibility fallback because Next.js client navigation applies framework
+style attributes that cannot carry a nonce. This exception applies only to
+styles; scripts remain nonce-authorized.
 
 The current field is not a Plugin system and must not be used to bypass Core authorization, payment, file, or audit rules.

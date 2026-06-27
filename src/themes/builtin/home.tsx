@@ -96,9 +96,9 @@ export function Home({ view, t }: { view: HomeView; t: Translate }) {
                       <SubscriptionCheckoutButton tierId={tier.id} />
                     )}
                     <Button className="w-full" asChild>
-                      <Link href={view.isLoggedIn ? `/checkout/${tier.id}` : "/login"}>
+                      <a href={view.isLoggedIn ? `/checkout/${tier.id}` : "/login"}>
                         {view.isLoggedIn ? t("tiers.open") : t("tiers.loginToOpen")}
-                      </Link>
+                      </a>
                     </Button>
                   </div>
                 ) : (

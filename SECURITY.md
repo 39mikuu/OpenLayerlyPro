@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-OpenLayerlyPro is currently on the **pre-release v1.0 line**. Security fixes land on `main`; a production `v1.0.0` release will not be declared until S6 (#86), S7 (#87), and the final acceptance gate (#88) are complete. The older v0.1/v0.2 preview documentation is historical and is not the current release or security-support gate.
+OpenLayerlyPro is currently on the **pre-release v1.0 line**. Security fixes land on `main`; a production `v1.0.0` release will not be declared until S7 (#87) and the final acceptance gate (#88) are complete. The older v0.1/v0.2 preview documentation is historical and is not the current release or security-support gate.
 
 Self-hosters running an older commit should reproduce against the latest `main` or upgrade through the documented migration/remediation flow before assuming a fix can be backported safely.
 
@@ -39,17 +39,26 @@ If private vulnerability reporting is temporarily unavailable, contact the maint
 - Keep payment proof files private. They are only accessible to the submitting user and admins through the download API.
 - Keep Stripe secret keys and webhook secrets encrypted, use HTTPS for webhook delivery, and never grant membership from browser redirects alone.
 - Enable only trusted AI translation providers; visitors cannot trigger paid translation calls.
-- Review custom footer code before saving it. Until S6 #86 migrates legacy code to the nonce-CSP model, it remains a trusted administrator escape hatch with public-page script risk.
+- Use safe footer markup and structured verification/integration records. Review
+  custom integration code and exact CSP origins before saving them; custom
+  scripts remain trusted administrator code.
 - Follow `docs/deployment/upgrade.md`; do not replace the documented remediation/backfill flow with a plain `git pull && docker compose up`.
 - Run periodic isolated restore drills. The v1.0 release additionally requires S7 #87 archive integrity, schema probing, restored-task neutralization, file-safety remediation, and DB↔storage convergence.
 
-## Custom Footer Code Risk
+## Public Integration Code Risk
 
-Custom footer code is an administrator-managed self-hosting escape hatch in the current runtime. It is inserted directly into public pages and may include script or HTML.
+The legacy mixed-purpose custom footer has been replaced by sanitized footer
+markup, structured verification records, and nonce-authorized public
+integrations. Existing legacy values remain available in the admin page for
+explicit copy, download, safe migration, or clearing.
 
-Only paste trusted snippets. A bad or hostile script can affect visitors, leak analytics data, break pages, or degrade performance. The setting is not rendered in the admin dashboard, emails, or public API responses, and it must never be populated from fan content or post content.
+Only add trusted custom integration code. A bad or hostile script can affect
+visitors, leak analytics data, break pages, or degrade performance. Custom code
+and its precise HTTPS origins must never be populated from fan or post content.
 
-S6 #86 will replace this mixed-purpose field with safe footer markup, structured site verification, and nonce-authorized public integrations. The implementation must preserve legacy values for migration and must not weaken production CSP with `unsafe-inline`, wildcard script sources, or administrator-supplied nonce attributes.
+Production `script-src` uses per-request nonces and does not allow
+`unsafe-inline`, `unsafe-eval`, wildcard script sources, bare schemes, or
+administrator-supplied nonce attributes.
 
 ## Secrets
 

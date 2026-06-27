@@ -20,7 +20,7 @@ Core 负责且仅 Core 负责：
 | Session / Auth | 管理员会话、粉丝验证码、Turnstile、可信 IP、S4 rate-limit/fence | ✅ |
 | 配置中心 | 加密 `app_settings` 与 SMTP/Turnstile/Storage/Upload/Stripe/Translation 管理 | ✅ |
 | 审计与任务 | `audit_events` 因果链、`app_events`、durable task/outbox、lease/fencing/retry | ✅ |
-| 全局安全响应头 | per-request nonce CSP、动态来源与 legacy footer 迁移 | ▶ #86 |
+| 全局安全响应头 | per-request nonce CSP、动态来源与 legacy footer 迁移 | ✅ #86 |
 | 恢复一致性 | archive integrity、schema probe、任务中和、文件 backfill 与 DB↔存储收敛 | ▶ #87 |
 
 不属于 Core 的：主题布局与视觉实现（Theme）、第三方扩展机制（Plugin）、跨站聚合发现（Hub）和多实例编排。Integration 是官方内置 adapter；其调用必须经过 Core 的事务、权限、审计和幂等边界。
@@ -93,6 +93,5 @@ src/
 
 ## v1.0 剩余边界
 
-- #86：HTML 文档全局安全头、per-request nonce CSP、Turnstile/S3/video/integration 精确来源和 legacy footer rollout。
 - #87：archive v2/checksum、v1 schema probe、mandatory file-safety remediation、任务/支付事件中和、DB↔local/S3 收敛。
 - #88：真实 Stripe、local/S3、升级/恢复、安全攻击回归与完整发布验收。

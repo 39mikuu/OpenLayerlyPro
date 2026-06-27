@@ -79,16 +79,19 @@ S4 已由当前运行时实现，权威语义见 [../handoff/harden-s4-auth-rate
 - v1.0 不实现 Redis/PG 共享 limiter；部署与 readiness 应提示多实例风险；
 - key/阈值集中定义，保留未来 adapter 接缝。
 
-## v1.0 当前网络安全工作 ▶
+## v1.0 网络安全状态
 
-### S6 #86
+### S6 #86 ✅
 
 - HTML 文档 per-request nonce CSP 与全局安全响应头；
 - Turnstile、实际 S3 signed URL origin、视频和 public integration 来源单一派生；
 - HSTS 仅显式 HTTPS 部署开启；
 - legacy custom footer 迁移，不能通过 `unsafe-inline` 或 wildcard 保活。
+- Next.js 客户端导航存在无法携带 nonce 的 style 属性，因此仅
+  `style-src` 使用 `'self' 'unsafe-inline'` 兼容退路；`script-src`
+  仍强制 per-request nonce，生产环境无 `unsafe-inline` / `unsafe-eval`。
 
-### S7 #87
+### S7 #87 ▶
 
 - 恢复前兼容检查、one-off migrator/file-safety backfill/neutralization/convergence；
 - 正常 app/dispatcher 在恢复一致性完成前保持停止；

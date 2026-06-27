@@ -5,6 +5,11 @@ const envSchema = z.object({
   APP_NAME: z.string().default("Artist Member Site"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   APP_INSTANCE_COUNT: z.coerce.number().int().min(1).max(1_000).default(1),
+  SECURITY_CSP_MODE: z.enum(["auto", "report-only", "enforce"]).default("auto"),
+  SECURITY_HSTS_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
 
   SESSION_SECRET: z.string().default("change-me"),
 
@@ -157,6 +162,10 @@ function assertRuntimeSecurity(env: Env) {
           "Generate one with: openssl rand -base64 32",
       );
     }
+  }
+
+  if (env.SECURITY_HSTS_ENABLED && new URL(env.APP_URL).protocol !== "https:") {
+    throw new Error("SECURITY_HSTS_ENABLED=true requires an HTTPS APP_URL");
   }
 
   if (env.TURNSTILE_ENABLED && (!env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || !env.TURNSTILE_SECRET_KEY)) {

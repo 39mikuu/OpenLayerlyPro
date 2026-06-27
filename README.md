@@ -4,7 +4,7 @@
 
 OpenLayerlyPro helps independent illustrators and creators run their own membership site: publish posts, offer membership tiers through manual review, Stripe hosted one-time checkout, or recurring Stripe subscriptions, and deliver member-only files from a self-hosted deployment.
 
-Current status: **v1.0 pre-release security hardening**. The application already includes the payment, subscription, content, file, theme, and translation feature set; the remaining release path is S6 security response headers (#86), S7 backup/restore consistency (#87), and the real-environment acceptance gate (#88). Do not create a production `v1.0.0` tag until [the v1.0 acceptance checklist](docs/release-v1.0-checklist.md) is complete. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, payments, and backups.
+Current status: **v1.0 pre-release security hardening**. The application already includes the payment, subscription, content, file, theme, translation, and S6 security-response-header feature set; the remaining release path is S7 backup/restore consistency (#87) and the real-environment acceptance gate (#88). Do not create a production `v1.0.0` tag until [the v1.0 acceptance checklist](docs/release-v1.0-checklist.md) is complete. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, payments, and backups.
 
 ## 核心特性
 
@@ -31,7 +31,7 @@ Current status: **v1.0 pre-release security hardening**. The application already
 - zh / en / ja UI i18n
 - 内容多语言与 AI 辅助翻译草稿（默认关闭，管理员手动触发）
 - 自定义站点 logo / icon
-- 管理员可信自定义页脚代码（v1.0 S6 将迁移到 nonce CSP 安全模型）
+- per-request nonce CSP、全局安全响应头、结构化站点验证/公开集成与 legacy 页脚迁移
 - Docker Compose 部署
 - Cloudflare Tunnel 支持，无公网 IP 家庭服务器友好
 

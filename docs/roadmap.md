@@ -7,7 +7,7 @@
 固定顺序：
 
 ```text
-S6 #86 全局安全响应头
+S6 #86 全局安全响应头 ✅
 → S7 #87 备份与恢复一致性
 → #88 v1.0 最终验收与发布
 ```
@@ -91,12 +91,12 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 
 ## v1.0 安全硬化 ▶
 
-已完成：S2、S3、订阅、S1a、S1b、S4、S5。
+已完成：S2、S3、订阅、S1a、S1b、S4、S5、S6。
 
 剩余：
 
-- **S6 ▶**：#86；nonce CSP、动态来源、legacy footer 迁移和浏览器验证。
-- **S7 🚧**：#87；archive v2、旧 archive 探测、DB-aware storage inventory、文件安全修复、任务/支付事件中和和 DB↔存储收敛。
+- **S6 ✅**：#86；nonce CSP、动态来源、legacy footer 迁移和浏览器验证。
+- **S7 ▶**：#87；archive v2、旧 archive 探测、DB-aware storage inventory、文件安全修复、任务/支付事件中和和 DB↔存储收敛。
 - **最终验收 🚧**：#88；真实环境验证、三个 one-off artifact、tag 与 GitHub Release。
 
 ## Phase 8：Plugin v0 🚧

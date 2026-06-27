@@ -35,6 +35,8 @@ function loadTurnstileScript(): Promise<void> {
     const script = document.createElement("script");
     script.src = SCRIPT_SRC;
     script.async = true;
+    const nonce = document.querySelector<HTMLScriptElement>("script[nonce]")?.nonce;
+    if (nonce) script.nonce = nonce;
     script.onload = () => resolve();
     script.onerror = () => {
       // 失败后移除残留 script 并清空缓存，允许重试重新注入

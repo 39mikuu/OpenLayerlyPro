@@ -5,6 +5,13 @@ import { getDb } from "@/db";
 import { membershipTiers, siteSettings, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { hashPassword } from "@/lib/crypto";
+import {
+  type LegacyFooterStatus,
+  parsePublicSecuritySettings,
+  PUBLIC_SECURITY_SETTING_KEYS,
+  type PublicIntegration,
+  type SiteVerification,
+} from "@/modules/site/public-security";
 import { recordEvent } from "@/modules/system/events";
 
 export type SocialLink = {
@@ -26,7 +33,15 @@ export type PublicSiteInfo = {
 };
 
 export type AdminSiteInfo = PublicSiteInfo & {
-  customFooterHtml: string;
+  customFooterMarkup: string;
+  legacyFooterHtml: string;
+  legacyFooterStatus: LegacyFooterStatus;
+  siteVerification: SiteVerification;
+  publicIntegrations: PublicIntegration[];
+  cspRevision: string;
+  cspMode: "auto" | "report-only" | "enforce";
+  effectiveCspMode: "report-only" | "enforce";
+  publicSecurityConfigurationErrors: string[];
   paymentProofApprovedRetentionDays: number;
 };
 
@@ -80,7 +95,7 @@ const PUBLIC_SITE_SETTING_KEYS = [
 
 const ADMIN_SITE_SETTING_KEYS = [
   ...PUBLIC_SITE_SETTING_KEYS,
-  "custom_footer_html",
+  ...PUBLIC_SECURITY_SETTING_KEYS,
   "payment_proof_approved_retention_days",
 ] as const;
 
@@ -101,16 +116,10 @@ export async function readPublicSiteInfo(): Promise<PublicSiteInfo> {
 
 export const getPublicSiteInfo = cache(readPublicSiteInfo);
 
-export async function readCustomFooterHtml(): Promise<string> {
-  const value = await getSetting<unknown>("custom_footer_html");
-  return typeof value === "string" ? value : "";
-}
-
-export const getCustomFooterHtml = cache(readCustomFooterHtml);
-
 export async function readAdminSiteInfo(): Promise<AdminSiteInfo> {
   const settings = await getSettings([...ADMIN_SITE_SETTING_KEYS]);
   const socialLinks = settings.social_links;
+  const publicSecurity = parsePublicSecuritySettings(settings);
   return {
     initialized: settings.initialized === true,
     siteName: stringSetting(settings.site_name, "Artist Member Site"),
@@ -120,8 +129,15 @@ export async function readAdminSiteInfo(): Promise<AdminSiteInfo> {
     siteLogoFileId: nullableStringSetting(settings.site_logo_file_id),
     siteIconFileId: nullableStringSetting(settings.site_icon_file_id),
     socialLinks: Array.isArray(socialLinks) ? (socialLinks as SocialLink[]) : [],
-    customFooterHtml:
-      typeof settings.custom_footer_html === "string" ? settings.custom_footer_html : "",
+    customFooterMarkup: publicSecurity.customFooterMarkup,
+    legacyFooterHtml: publicSecurity.legacyFooterHtml,
+    legacyFooterStatus: publicSecurity.legacyFooterStatus,
+    siteVerification: publicSecurity.siteVerification,
+    publicIntegrations: publicSecurity.publicIntegrations,
+    cspRevision: publicSecurity.revision,
+    cspMode: publicSecurity.configuredMode,
+    effectiveCspMode: publicSecurity.effectiveMode,
+    publicSecurityConfigurationErrors: publicSecurity.configurationErrors,
     paymentProofApprovedRetentionDays:
       typeof settings.payment_proof_approved_retention_days === "number"
         ? settings.payment_proof_approved_retention_days
