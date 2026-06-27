@@ -97,6 +97,49 @@ describeWithDatabase("restore schema check integration", () => {
     }
   });
 
+  it("rejects v1 unknown schema by default", async () => {
+    const readHistory = vi
+      .spyOn(schemaCompatibility, "readDatabaseMigrationHistory")
+      .mockRejectedValueOnce(
+        new schemaCompatibility.MigrationHistoryReadError("probe database unreadable"),
+      );
+
+    try {
+      const report = await runRestoreSchemaCheck({
+        formatVersion: 1,
+        databaseUrl: process.env.DATABASE_URL,
+      });
+
+      expect(report.compatibility.result).toBe("unknown");
+      expect(isSchemaCheckPassing(report)).toBe(false);
+    } finally {
+      readHistory.mockRestore();
+    }
+  });
+
+  it("rejects v1 diverged histories before destructive restore", async () => {
+    const target = getTargetMigrationIdentity();
+    const diverged = [
+      { hash: target[0]!.hash, createdAt: target[0]!.createdAt },
+      { hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", createdAt: 2 },
+    ];
+    const readHistory = vi
+      .spyOn(schemaCompatibility, "readDatabaseMigrationHistory")
+      .mockResolvedValueOnce(diverged);
+
+    try {
+      const report = await runRestoreSchemaCheck({
+        formatVersion: 1,
+        databaseUrl: process.env.DATABASE_URL,
+      });
+
+      expect(report.compatibility.result).toBe("diverged");
+      expect(isSchemaCheckPassing(report)).toBe(false);
+    } finally {
+      readHistory.mockRestore();
+    }
+  });
+
   it("reports newer_than_target when archive history exceeds target journal", async () => {
     const target = getTargetMigrationIdentity();
     const manifestPath = join(tempDir, "newer-manifest.env");

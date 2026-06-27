@@ -134,6 +134,24 @@ if [ "$FORMAT_VERSION" = "2" ]; then
     cd "$WORK_DIR" || exit 1
     sha256sum -c checksums.sha256
   ) || fail "archive checksum verification failed"
+  echo "Verifying checksum manifest matches archive payload file set..."
+  PAYLOAD_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-restore-payload.XXXXXX")
+  CHECKSUM_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-restore-checksum.XXXXXX")
+  (
+    cd "$WORK_DIR" || exit 1
+    find . -type f ! -name 'checksums.sha256' -print \
+      | LC_ALL=C sort \
+      | sed 's|^\./||' \
+      > "$PAYLOAD_FILE_LIST"
+    awk '{print $2}' checksums.sha256 | LC_ALL=C sort > "$CHECKSUM_FILE_LIST"
+    if ! diff -q "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST" >/dev/null; then
+      echo "restore: checksum manifest does not match archive payload file set" >&2
+      comm -23 "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST" | sed 's/^/  missing from manifest: /' >&2
+      comm -13 "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST" | sed 's/^/  extra in manifest: /' >&2
+      exit 1
+    fi
+  ) || fail "archive checksum manifest bijection check failed"
+  rm -f "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST"
 else
   echo "WARNING: FORMAT_VERSION=1 archive has no checksum protection" >&2
 fi
@@ -210,7 +228,20 @@ compose exec -T postgres sh -c '
 ' < "$WORK_DIR/db.sql"
 
 echo "Restoring config encryption key file..."
-compose cp "$WORK_DIR/secrets/config-encryption-key" app:/app/secrets/config-encryption-key
+TARGET_CONFIG_KEY_FILE=$(
+  compose run --rm -T --no-deps --entrypoint sh app -c \
+    'printf %s "${CONFIG_ENCRYPTION_KEY_FILE:-/app/secrets/config-encryption-key}"'
+)
+case "$TARGET_CONFIG_KEY_FILE" in
+  /*) ;;
+  *) fail "CONFIG_ENCRYPTION_KEY_FILE must be an absolute container path" ;;
+esac
+TARGET_CONFIG_KEY_DIR=${TARGET_CONFIG_KEY_FILE%/*}
+compose run --rm -T --no-deps --entrypoint sh app -c "
+  set -eu
+  mkdir -p \"$TARGET_CONFIG_KEY_DIR\"
+"
+compose cp "$WORK_DIR/secrets/config-encryption-key" "app:$TARGET_CONFIG_KEY_FILE"
 
 if [ -d "$WORK_DIR/uploads" ]; then
   echo "Replacing local uploads..."
@@ -250,7 +281,16 @@ echo "Neutralizing restored tasks and payment-provider events..."
 run_one_off /app/dist/restore-neutralize.mjs || fail "restore neutralization failed"
 
 echo "Converging database and storage references..."
-run_one_off /app/dist/restore-converge.mjs || fail "restore convergence failed"
+STORAGE_DRIVER=$(
+  compose run --rm -T --no-deps --entrypoint sh app -c 'printf %s "${STORAGE_DRIVER:-local}"'
+)
+CONVERGE_ARGS=""
+if [ "$STORAGE_DRIVER" = "s3" ]; then
+  RESTORE_S3_ENUM_PREFIXES=${RESTORE_S3_ENUM_PREFIXES:-avatars/,payment-qr/,payment-proof/,content/,legacy/,remediated/}
+  CONVERGE_ARGS="--prefixes=$RESTORE_S3_ENUM_PREFIXES"
+fi
+# shellcheck disable=SC2086
+run_one_off /app/dist/restore-converge.mjs $CONVERGE_ARGS || fail "restore convergence failed"
 
 echo "Starting application..."
 compose up -d --force-recreate app

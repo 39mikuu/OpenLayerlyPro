@@ -155,6 +155,7 @@ esac
   echo "UPLOADS_INCLUDED=$UPLOADS_INCLUDED"
   echo "LATEST_MIGRATION_HASH=$LATEST_MIGRATION_HASH"
   echo "MIGRATION_IDENTITIES_JSON=$MIGRATION_IDENTITIES_JSON"
+  echo "CONFIG_ENCRYPTION_KEY_FILE=$CONFIG_KEY_FILE"
   echo "BACKUP_WINDOW_NOTE=hot-backup order pg_dump(T1) then uploads(T2); expect T1-T2 drift unless app was stopped"
 } > "$WORK_DIR/manifest.env"
 

@@ -8,6 +8,8 @@ import { getEnv } from "@/lib/env";
 import type { ResolvedStorageConfig } from "@/modules/config/storageResolve";
 import { getStorageForDriver, type StorageDriver } from "@/modules/storage/runtime";
 
+import { parseS3EnumerationPrefixes, validateS3EnumerationPrefix } from "./s3EnumerationPrefixes";
+
 export const DEFAULT_ENUMERATION_PAGE_SIZE = 1_000;
 export const DEFAULT_MAX_ENUMERATED_OBJECTS = 100_000;
 
@@ -135,17 +137,15 @@ async function enumerateLocalObjects(input: {
 
 async function enumerateS3Objects(input: {
   storageConfig: ResolvedStorageConfig;
-  prefix?: string;
+  prefix: string;
   pageSize: number;
   maxObjects: number;
 }): Promise<{ objectKeys: string[]; bucket: string; truncated: boolean }> {
   const bucket = input.storageConfig.bucket;
   if (!bucket) throw new Error("S3 enumeration requires a configured bucket");
 
-  const prefix = input.prefix?.trim();
-  if (!prefix) {
-    throw new Error("S3 enumeration requires an explicit prefix");
-  }
+  const prefix = input.prefix.trim();
+  validateS3EnumerationPrefix(prefix);
 
   const client = createS3Client(input.storageConfig);
   const objectKeys: string[] = [];
@@ -179,12 +179,63 @@ async function enumerateS3Objects(input: {
   return { objectKeys, bucket, truncated };
 }
 
+export async function enumerateS3ObjectsUnderPrefixes(input: {
+  storageConfig: ResolvedStorageConfig;
+  prefixes?: string | readonly string[];
+  pageSize: number;
+  maxObjects: number;
+}): Promise<{ objectKeys: string[]; bucket: string; truncated: boolean }> {
+  const prefixes = parseS3EnumerationPrefixes(input.prefixes);
+  const objectKeys: string[] = [];
+  const seen = new Set<string>();
+  let truncated = false;
+  let bucket = "";
+
+  for (const prefix of prefixes) {
+    if (objectKeys.length >= input.maxObjects) {
+      truncated = true;
+      break;
+    }
+
+    const remaining = input.maxObjects - objectKeys.length;
+    const result = await enumerateS3Objects({
+      storageConfig: input.storageConfig,
+      prefix,
+      pageSize: input.pageSize,
+      maxObjects: remaining,
+    });
+    bucket = result.bucket;
+
+    for (const objectKey of result.objectKeys) {
+      if (seen.has(objectKey)) continue;
+      seen.add(objectKey);
+      objectKeys.push(objectKey);
+      if (objectKeys.length >= input.maxObjects) {
+        truncated = true;
+        break;
+      }
+    }
+
+    if (result.truncated || truncated) {
+      truncated = true;
+      break;
+    }
+  }
+
+  if (!bucket) {
+    throw new Error("S3 enumeration requires a configured bucket");
+  }
+
+  return { objectKeys, bucket, truncated };
+}
+
 export async function enumerateStorageObjects(input: {
   driver: StorageDriver;
   storageConfig: ResolvedStorageConfig;
   pageSize?: number;
   maxObjects?: number;
   prefix?: string;
+  prefixes?: string | readonly string[];
 }): Promise<{ objectKeys: string[]; bucket: string | null; truncated: boolean }> {
   const pageSize = input.pageSize ?? DEFAULT_ENUMERATION_PAGE_SIZE;
   const maxObjects = input.maxObjects ?? DEFAULT_MAX_ENUMERATED_OBJECTS;
@@ -194,11 +245,39 @@ export async function enumerateStorageObjects(input: {
     return { ...result, bucket: null };
   }
 
-  const result = await enumerateS3Objects({
+  const prefixes = input.prefixes ?? input.prefix;
+  if (typeof prefixes === "string" && prefixes.includes(",")) {
+    return enumerateS3ObjectsUnderPrefixes({
+      storageConfig: input.storageConfig,
+      prefixes,
+      pageSize,
+      maxObjects,
+    });
+  }
+
+  if (Array.isArray(prefixes) && prefixes.length > 1) {
+    return enumerateS3ObjectsUnderPrefixes({
+      storageConfig: input.storageConfig,
+      prefixes,
+      pageSize,
+      maxObjects,
+    });
+  }
+
+  const singlePrefix =
+    typeof prefixes === "string" ? prefixes : Array.isArray(prefixes) ? prefixes[0] : undefined;
+  if (!singlePrefix?.trim()) {
+    return enumerateS3ObjectsUnderPrefixes({
+      storageConfig: input.storageConfig,
+      pageSize,
+      maxObjects,
+    });
+  }
+
+  return enumerateS3Objects({
     storageConfig: input.storageConfig,
-    prefix: input.prefix,
+    prefix: singlePrefix,
     pageSize,
     maxObjects,
   });
-  return result;
 }

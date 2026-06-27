@@ -14,11 +14,13 @@ function readArg(name) {
 const pageSize = Number(readArg("page-size"));
 const maxObjects = Number(readArg("max-objects"));
 const prefix = readArg("prefix");
+const prefixes = readArg("prefixes") ?? process.env.RESTORE_S3_ENUM_PREFIXES;
 
 try {
   const report = await runRestoreConverge(undefined, {
     ...(Number.isInteger(pageSize) && pageSize > 0 ? { pageSize } : {}),
     ...(Number.isInteger(maxObjects) && maxObjects > 0 ? { maxObjects } : {}),
+    ...(prefixes !== undefined ? { prefixes } : {}),
     ...(prefix !== undefined ? { prefix } : {}),
   });
   console.log(formatConvergeReport(report));

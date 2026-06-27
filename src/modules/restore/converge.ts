@@ -66,6 +66,7 @@ async function convergeDriver(input: {
   pageSize?: number;
   maxObjects?: number;
   prefix?: string;
+  prefixes?: string | readonly string[];
 }): Promise<ConvergeDriverReport> {
   const report: ConvergeDriverReport = {
     driver: input.driver,
@@ -134,6 +135,7 @@ async function convergeDriver(input: {
       pageSize: input.pageSize,
       maxObjects: input.maxObjects,
       prefix: input.prefix,
+      prefixes: input.prefixes,
     });
     report.storageObjectsEnumerated = enumerated.objectKeys.length;
     report.truncated = enumerated.truncated;
@@ -171,6 +173,7 @@ export async function runRestoreConverge(
     pageSize?: number;
     maxObjects?: number;
     prefix?: string;
+    prefixes?: string | readonly string[];
   } = {},
 ): Promise<ConvergeReport> {
   const storageConfig = await getStorageConfig();
@@ -206,6 +209,7 @@ export async function runRestoreConverge(
         pageSize: options.pageSize,
         maxObjects: options.maxObjects,
         prefix: options.prefix,
+        prefixes: options.prefixes,
       }),
     );
   }
@@ -232,7 +236,7 @@ export async function runRestoreConverge(
     truncated: driverReports.some((driverReport) => driverReport.truncated),
   };
 
-  if (report.totalErrors > 0) {
+  if (report.totalErrors > 0 || report.truncated) {
     throw new RestoreConvergeError(report);
   }
 
@@ -241,7 +245,14 @@ export async function runRestoreConverge(
 
 export class RestoreConvergeError extends Error {
   constructor(readonly report: ConvergeReport) {
-    super(`restore converge failed with ${report.totalErrors} error(s)`);
+    const reasons: string[] = [];
+    if (report.totalErrors > 0) {
+      reasons.push(`${report.totalErrors} error(s)`);
+    }
+    if (report.truncated) {
+      reasons.push("enumeration truncated before completion");
+    }
+    super(`restore converge failed: ${reasons.join("; ")}`);
     this.name = "RestoreConvergeError";
   }
 }

@@ -30,7 +30,9 @@ import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { FILE_SAFETY_REMEDIATION_VERSION } from "@/modules/file/backfillSafety";
 import { createStorageDeleteDedupeKeyForTests } from "@/modules/file/cleanup";
 
-import { runRestoreConverge } from "./converge";
+import { RestoreConvergeError, runRestoreConverge } from "./converge";
+import { neutralizeRestoredTasks } from "./neutralize";
+import * as storageProbe from "./storageProbe";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -102,5 +104,51 @@ describeWithDatabase("restore converge integration", () => {
       );
     expect(deleteTask).toBeDefined();
     expect(deleteTask?.payloadJson).toEqual(deletePayload);
+  });
+
+  it("fails when storage enumeration is truncated before completion", async () => {
+    await seedFile(`referenced/${randomUUID()}.png`);
+    storageState.enumerated = [];
+    vi.mocked(storageProbe.enumerateStorageObjects).mockResolvedValueOnce({
+      objectKeys: [],
+      bucket: null,
+      truncated: true,
+    });
+
+    await expect(runRestoreConverge(db)).rejects.toBeInstanceOf(RestoreConvergeError);
+  });
+
+  it("enqueues orphan cleanup after terminal storage.delete_object rows were neutralized", async () => {
+    const deletePayload = {
+      storageDriver: "local" as const,
+      bucket: null,
+      objectKey: `orphan/${randomUUID()}.png`,
+    };
+    const dedupeKey = createStorageDeleteDedupeKeyForTests(deletePayload);
+
+    await db.insert(tasks).values({
+      kind: "storage.delete_object",
+      dedupeKey,
+      payloadJson: deletePayload,
+      status: "succeeded",
+    });
+    await neutralizeRestoredTasks(db);
+    storageState.enumerated = [deletePayload.objectKey];
+
+    const report = await runRestoreConverge(db);
+
+    expect(report.totalOrphanObjects).toBe(1);
+    expect(report.totalOrphanDeletesEnqueued).toBe(1);
+    const [deleteTask] = await db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.kind, "storage.delete_object"),
+          eq(tasks.dedupeKey, dedupeKey),
+          eq(tasks.status, "pending"),
+        ),
+      );
+    expect(deleteTask).toBeDefined();
   });
 });
