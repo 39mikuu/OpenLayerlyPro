@@ -6,12 +6,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 type ComposeConfig = {
-  services?: Record<
-    string,
-    {
-      ports?: unknown[] | null;
-    }
-  >;
+  services?: Record<string, { ports?: unknown[] | null }>;
 };
 
 function hasDockerCompose(): boolean {
