@@ -12,7 +12,7 @@ RUN corepack enable pnpm
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm build && pnpm build:migrator && pnpm build:files-backfill && pnpm build:admin-reset && pnpm build:restore-tools
+RUN pnpm build && pnpm build:migrator && pnpm build:files-backfill && pnpm build:admin-reset && pnpm build:restore-tools && pnpm build:seed-restore-e2e
 
 # ---- 运行 ----
 FROM node:22-bookworm-slim AS runner
@@ -37,6 +37,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-pre-scan.mjs ./dist/
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-neutralize.mjs ./dist/restore-neutralize.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-converge.mjs ./dist/restore-converge.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-schema-check.mjs ./dist/restore-schema-check.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/dist/seed-restore-e2e.mjs ./dist/seed-restore-e2e.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/dedupe-pending-payments.mjs ./scripts/dedupe-pending-payments.mjs
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \

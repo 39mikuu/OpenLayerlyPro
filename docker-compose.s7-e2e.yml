@@ -1,0 +1,6 @@
+services:
+  app:
+    env_file:
+      - .env.s7-e2e
+    ports:
+      - "${S7_E2E_APP_PORT:-3003}:3000"

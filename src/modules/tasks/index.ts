@@ -1,17 +1,17 @@
 import { randomUUID } from "crypto";
 import { and, asc, desc, eq, inArray, lt, lte, or, sql } from "drizzle-orm";
 
-import { type DbClient, getDb } from "@/db";
+import { getDb } from "@/db";
 import { type Task, tasks } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
+import { DEFAULT_MAX_ATTEMPTS, enqueueTask } from "./enqueue";
 import { PermanentTaskError, type TaskFailureClassification } from "./errors";
 
-export { PermanentTaskError };
+export { DEFAULT_MAX_ATTEMPTS, enqueueTask, PermanentTaskError };
 
 // Total execution limit: failures 1-4 retry after 1m/2m/4m/8m; failure 5 is dead.
-export const DEFAULT_MAX_ATTEMPTS = 5;
 export const TASK_LEASE_MS = 60_000;
 export const TASK_BATCH_SIZE = 20;
 export const TASK_POLL_INTERVAL_MS = 10_000;
@@ -63,28 +63,6 @@ function warnMailTaskDeadLettered(
 function safeFailureMessage(kind: string, error: unknown): string {
   if (isMailTaskKind(kind)) return "Email delivery failed";
   return String(error);
-}
-
-export async function enqueueTask(
-  tx: DbClient,
-  input: {
-    kind: string;
-    dedupeKey?: string | null;
-    payload: Record<string, unknown>;
-    runAfter?: Date;
-    maxAttempts?: number;
-  },
-): Promise<void> {
-  await tx
-    .insert(tasks)
-    .values({
-      kind: input.kind,
-      dedupeKey: input.dedupeKey ?? null,
-      payloadJson: input.payload,
-      runAfter: input.runAfter ?? sql`now()`,
-      maxAttempts: input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
-    })
-    .onConflictDoNothing({ target: tasks.dedupeKey });
 }
 
 type ClaimOptions = { lockToken?: string; leaseMs?: number };

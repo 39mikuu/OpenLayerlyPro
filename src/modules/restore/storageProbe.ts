@@ -5,8 +5,8 @@ import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import type { Readable } from "stream";
 
 import { getEnv } from "@/lib/env";
-import type { ResolvedStorageConfig } from "@/modules/config";
-import { getStorageForDriver, type StorageDriver } from "@/modules/storage";
+import type { ResolvedStorageConfig } from "@/modules/config/storageResolve";
+import { getStorageForDriver, type StorageDriver } from "@/modules/storage/runtime";
 
 export const DEFAULT_ENUMERATION_PAGE_SIZE = 1_000;
 export const DEFAULT_MAX_ENUMERATED_OBJECTS = 100_000;

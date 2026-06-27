@@ -24,7 +24,9 @@ export async function readDatabaseMigrationHistory(db: DbClient): Promise<Migrat
     const rows = await db.execute<{
       hash: string;
       created_at: string;
-    }>(sql`select hash, created_at::text as created_at from __drizzle_migrations order by id asc`);
+    }>(
+      sql`select hash, created_at::text as created_at from drizzle.__drizzle_migrations order by id asc`,
+    );
 
     return rows.map((row) => ({
       hash: row.hash,

@@ -13,8 +13,36 @@ fail() {
   exit 1
 }
 
+docker_cmd() {
+  if docker info >/dev/null 2>&1; then
+    docker "$@"
+  else
+    sudo -n env \
+      ${S7_E2E_APP_PORT:+S7_E2E_APP_PORT=$S7_E2E_APP_PORT} \
+      docker "$@"
+  fi
+}
+
 compose() {
-  docker compose "$@"
+  project_args=""
+  env_args=""
+  file_args=""
+  if [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then
+    project_args="-p $COMPOSE_PROJECT_NAME"
+  fi
+  if [ -n "${COMPOSE_ENV_FILE:-}" ]; then
+    env_args="--env-file $COMPOSE_ENV_FILE"
+  fi
+  if [ -n "${COMPOSE_FILE:-}" ]; then
+    OLDIFS=$IFS
+    IFS=:
+    for file in $COMPOSE_FILE; do
+      file_args="$file_args -f $file"
+    done
+    IFS=$OLDIFS
+  fi
+  # shellcheck disable=SC2086
+  docker_cmd compose $project_args $env_args $file_args "$@"
 }
 
 run_one_off() {
@@ -60,7 +88,7 @@ command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v mktemp >/dev/null 2>&1 || fail "mktemp is required"
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
-docker compose version >/dev/null 2>&1 || fail "docker compose is required"
+compose version >/dev/null 2>&1 || fail "docker compose is required"
 
 if tar -tzf "$ARCHIVE_PATH" | grep -E '(^/|(^|/)\.\.(/|$))' >/dev/null 2>&1; then
   fail "archive contains an unsafe path"
@@ -84,9 +112,7 @@ tar -xzf "$ARCHIVE_PATH" -C "$WORK_DIR"
 [ -s "$WORK_DIR/secrets/config-encryption-key" ] || fail "archive is missing the config encryption key"
 [ -f "$WORK_DIR/manifest.env" ] || fail "archive is missing manifest.env"
 
-# shellcheck disable=SC1091
-. "$WORK_DIR/manifest.env"
-
+FORMAT_VERSION=$(grep '^FORMAT_VERSION=' "$WORK_DIR/manifest.env" | cut -d= -f2- | tr -d '\r')
 FORMAT_VERSION=${FORMAT_VERSION:-1}
 case "$FORMAT_VERSION" in
   1|2) ;;
@@ -196,6 +222,16 @@ if [ -d "$WORK_DIR/uploads" ]; then
     rm -rf "$upload_dir"/* "$upload_dir"/.[!.]* "$upload_dir"/..?*
   '
   compose cp "$WORK_DIR/uploads/." app:/app/uploads
+  if [ "${RESTORE_E2E_INJECT_MISSING:-}" = "1" ]; then
+    echo "Injecting post-restore storage drift for E2E drill..."
+    compose run --rm -T --no-deps --entrypoint sh app -c '
+      set -eu
+      upload_dir=${UPLOAD_DIR:-/app/uploads}
+      referenced=$(find "$upload_dir" -type f -name "*.txt" | head -n 1)
+      [ -n "$referenced" ] || exit 1
+      rm -f "$referenced"
+    ' || fail "failed to inject missing-object drift for E2E drill"
+  fi
 elif [ -f "$WORK_DIR/UPLOADS_SKIPPED_S3" ]; then
   echo "Archive was created for S3/R2; local uploads were not included."
 else
@@ -218,7 +254,7 @@ echo "Converging database and storage references..."
 run_one_off /app/dist/restore-converge.mjs || fail "restore convergence failed"
 
 echo "Starting application..."
-compose up -d app
+compose up -d --force-recreate app
 
 READY_URL=${READY_URL:-http://localhost:3000/api/ready}
 attempt=0

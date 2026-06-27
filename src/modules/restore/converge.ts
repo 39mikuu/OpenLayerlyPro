@@ -2,11 +2,14 @@ import { and, asc, eq, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import { files, tasks } from "@/db/schema";
-import { getStorageConfig, type ResolvedStorageConfig } from "@/modules/config";
-import { FILE_SAFETY_REMEDIATION_VERSION } from "@/modules/file/backfillSafety";
-import { storageDeleteDedupeKey, type StorageDeletePayload } from "@/modules/file/cleanup";
-import type { StorageDriver } from "@/modules/storage";
-import { enqueueTask } from "@/modules/tasks";
+import { getStorageConfig, type ResolvedStorageConfig } from "@/modules/config/storageResolve";
+import { FILE_SAFETY_REMEDIATION_VERSION } from "@/modules/file/safetyConstants";
+import {
+  storageDeleteDedupeKey,
+  type StorageDeletePayload,
+} from "@/modules/file/storageDeleteTask";
+import type { StorageDriver } from "@/modules/storage/runtime";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 
 import { enumerateStorageObjects, objectExists, storageObjectIdentity } from "./storageProbe";
 import type { ConvergeDriverReport, ConvergeReport, RestoreScanError } from "./types";

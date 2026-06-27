@@ -2,7 +2,7 @@ import { asc, eq, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import { files } from "@/db/schema";
-import { FILE_SAFETY_REMEDIATION_VERSION } from "@/modules/file/backfillSafety";
+import { FILE_SAFETY_REMEDIATION_VERSION } from "@/modules/file/safetyConstants";
 
 import { objectExists } from "./storageProbe";
 import type { PreScanReport, RestoreScanError } from "./types";

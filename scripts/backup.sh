@@ -13,8 +13,44 @@ fail() {
   exit 1
 }
 
+docker_cmd() {
+  if docker info >/dev/null 2>&1; then
+    docker "$@"
+  else
+    sudo -n env \
+      ${S7_E2E_APP_PORT:+S7_E2E_APP_PORT=$S7_E2E_APP_PORT} \
+      docker "$@"
+  fi
+}
+
+fix_workspace_permissions() {
+  if ! chmod -R u+rwX "$WORK_DIR" 2>/dev/null; then
+    sudo -n chown -R "$(id -u)":"$(id -g)" "$WORK_DIR" \
+      || fail "unable to fix backup workspace permissions"
+    chmod -R u+rwX "$WORK_DIR" || fail "unable to secure backup workspace permissions"
+  fi
+}
+
 compose() {
-  docker compose "$@"
+  project_args=""
+  env_args=""
+  file_args=""
+  if [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then
+    project_args="-p $COMPOSE_PROJECT_NAME"
+  fi
+  if [ -n "${COMPOSE_ENV_FILE:-}" ]; then
+    env_args="--env-file $COMPOSE_ENV_FILE"
+  fi
+  if [ -n "${COMPOSE_FILE:-}" ]; then
+    OLDIFS=$IFS
+    IFS=:
+    for file in $COMPOSE_FILE; do
+      file_args="$file_args -f $file"
+    done
+    IFS=$OLDIFS
+  fi
+  # shellcheck disable=SC2086
+  docker_cmd compose $project_args $env_args $file_args "$@"
 }
 
 [ "$#" -le 1 ] || {
@@ -26,7 +62,7 @@ command -v docker >/dev/null 2>&1 || fail "docker is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v mktemp >/dev/null 2>&1 || fail "mktemp is required"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
-docker compose version >/dev/null 2>&1 || fail "docker compose is required"
+compose version >/dev/null 2>&1 || fail "docker compose is required"
 
 OUTPUT_DIR=${1:-./backups}
 mkdir -p "$OUTPUT_DIR"
@@ -72,7 +108,7 @@ MIGRATION_IDENTITIES_JSON=$(
         ),
         '"'"'[]'"'"'::json
       )
-      from __drizzle_migrations;
+      from drizzle.__drizzle_migrations;
     "
   '
 ) || fail "unable to read migration identity from database"
@@ -89,7 +125,8 @@ echo "Backing up config encryption key file..."
 mkdir -p "$WORK_DIR/secrets"
 compose cp "app:$CONFIG_KEY_FILE" "$WORK_DIR/secrets/config-encryption-key"
 [ -s "$WORK_DIR/secrets/config-encryption-key" ] || fail "config encryption key file is missing or empty"
-chmod 600 "$WORK_DIR/secrets/config-encryption-key"
+fix_workspace_permissions
+chmod 600 "$WORK_DIR/secrets/config-encryption-key" || fail "unable to secure config encryption key in backup workspace"
 
 STORAGE_DRIVER=$(compose exec -T app sh -c 'printf %s "${STORAGE_DRIVER:-local}"')
 case "$STORAGE_DRIVER" in
@@ -97,6 +134,7 @@ case "$STORAGE_DRIVER" in
     echo "Backing up local uploads..."
     mkdir -p "$WORK_DIR/uploads"
     compose cp app:/app/uploads/. "$WORK_DIR/uploads"
+    fix_workspace_permissions
     UPLOADS_INCLUDED=true
     ;;
   s3)
