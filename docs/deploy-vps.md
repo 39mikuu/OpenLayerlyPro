@@ -28,15 +28,19 @@ cp .env.example .env
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.caddy.yml config
 ```
 
-设置 `APP_DOMAIN`、正确可信 hop，并用防火墙限制 app 端口。Caddy 负责 TLS，应用仍只监听 HTTP。
+`docker-compose.caddy.yml` 使用 Compose `!reset` 清除基础文件中的 app 端口映射。合并后的配置应只发布 Caddy 的 80/443，不应出现 app 的 `3000:3000`。若本机 Compose 版本不能解析 `!reset`，请先升级 Docker Compose，不要移除该覆盖后继续生产部署。
+
+设置 `APP_DOMAIN` 与正确可信 hop。Caddy 负责 TLS，应用只通过 Compose 内部网络接收转发。主机防火墙仍应只开放必要入口。
 
 ## 验证
 
 - 站点可通过 HTTPS 访问；
 - `/api/health` 与 `/api/ready` 返回成功；
-- app 端口无法从公网直接访问；
+- 合并配置和容器状态均确认 app 没有 host-published 3000 端口；
+- 从公网连接主机 `:3000` 失败；
 - 登录、上传、下载日志能解析正确客户端 IP；
 - local/S3 视频 seek 返回正确 Range 响应；
 - private 下载不被代理/CDN公开缓存；
@@ -46,9 +50,9 @@ S6 #86 实现后，还必须在真实浏览器验证 nonce CSP、DB-enabled Turn
 
 ## 备份与升级
 
-升级或迁移前必须保护：数据库、local uploads、配置加密根密钥、`SESSION_SECRET`，以及 S3/R2 的匹配恢复点。
+升级或迁移前必须保护：数据库、全部仍被引用的 local uploads、配置加密根密钥、`SESSION_SECRET`，以及 S3/R2 的匹配恢复点。
 
-不要用简单的 `git pull && docker compose up` 代替升级流程。当前升级需要停 app、报告/处理 duplicate pending payments、运行 one-off migrator 和 mandatory file-safety backfill。完整步骤：
+不要用简单的 `git pull && docker compose up` 代替升级流程。当前升级需要停 app、报告/处理 duplicate pending payments、运行 one-off migrator 和 mandatory file-safety backfill。当前 `backup.sh` 只依据容器环境变量 fallback 判断 active storage，不能识别后台 DB override；混合 local/S3 历史文件必须按[备份与恢复](deployment/backup-restore.md)额外核对。完整步骤：
 
 - [备份与恢复](deployment/backup-restore.md)
 - [升级指南](deployment/upgrade.md)
