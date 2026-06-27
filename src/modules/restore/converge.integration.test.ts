@@ -25,7 +25,7 @@ vi.mock("@/modules/restore/storageProbe", async () => {
 });
 
 import { getDb } from "@/db";
-import { files, postFiles, posts, tasks, users } from "@/db/schema";
+import { files, postFiles, posts, tasks } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { authorizeFileAccess } from "@/modules/download";
 import { FILE_SAFETY_REMEDIATION_VERSION } from "@/modules/file/backfillSafety";
@@ -154,24 +154,22 @@ describeWithDatabase("restore converge integration", () => {
   });
 
   it("returns 410 for authorized access after missing-after-restore quarantine", async () => {
-    const [owner] = await db
-      .insert(users)
-      .values({
-        email: `restore-converge-${randomUUID()}@example.com`,
-        role: "artist",
-      })
-      .returning();
     const [post] = await db
       .insert(posts)
       .values({
+        title: "restore converge quarantine",
         slug: `restore-converge-${randomUUID()}`,
         status: "published",
         visibility: "public",
-        createdBy: owner!.id,
+        publishedAt: new Date(),
       })
       .returning();
     const missing = await seedFile(`missing/${randomUUID()}.png`);
-    await db.insert(postFiles).values({ postId: post!.id, fileId: missing.id });
+    await db.insert(postFiles).values({
+      postId: post!.id,
+      fileId: missing.id,
+      kind: "image",
+    });
     storageState.existing.delete(missing.objectKey);
     storageState.enumerated = [];
 
