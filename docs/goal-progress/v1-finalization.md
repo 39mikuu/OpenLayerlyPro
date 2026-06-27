@@ -130,10 +130,11 @@ Operational notes:
 - Docs: `docs/deployment/backup-restore.md` updated for S7 behavior.
 - Tests: 1064 passing (`RUN_DB_INTEGRATION_TESTS=true` on isolated DB
   `openlayerlypro_s7_87_test`), including restore integration tests.
-- E2E drill (2026-06-28): `scripts/test-restore-e2e.sh` scaffolding +
-  manual restore verification with `RESTORE_E2E_INJECT_MISSING=1`:
-  pre-scan → backfill → neutralize → converge → `/api/ready` on port 3004;
-  post count=1, `storage.delete_object` tasks=0, quarantine=1.
+- E2E drill (2026-06-28): `./scripts/test-restore-e2e.sh` **passed end-to-end**
+  (exit 0, ~4.8 min after image cache warm). Archive:
+  `/tmp/openlayerlypro-s7-e2e-backups/openlayerly-backup-20260627-162824.tar.gz`.
+  Source `openlayerlypro_s7_source` :3003 → restore `openlayerlypro_s7_restore` :3004;
+  pre-scan quarantined=1, neutralize cleared `storage.delete_object`, `/api/ready` ok.
 - Bundle fix: esbuild one-offs use `createRequire` banner; `sharp` external;
   slim imports (`storageResolve`, `storage/runtime`, `tasks/enqueue`) avoid
   bundling Next.js into restore tools.
