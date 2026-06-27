@@ -1,4 +1,9 @@
 services:
+  app:
+    # Tunnel traffic reaches app over the Compose network. Remove the base
+    # 0.0.0.0:3000 mapping so CF-Connecting-IP cannot be bypassed.
+    ports: !reset []
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
