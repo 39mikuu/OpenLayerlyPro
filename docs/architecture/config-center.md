@@ -1,82 +1,99 @@
 # 配置中心（Config Center）
 
-把运行时配置（SMTP、S3/R2、Turnstile、上传限制等）从环境变量迁到后台、加密落库，让运维不必编辑 `.env` 或重启容器即可改配置。配置中心基座、SMTP、Turnstile、S3/R2 与上传限制分组均已落地。
+配置中心把运行时设置放入后台并加密落库，让运维不必编辑 `.env` 或重启容器即可修改常用集成。当前已实现 SMTP、Turnstile、Storage、Upload、Stripe 与 Translation 配置组。
 
 ## 数据模型
 
-- **`app_settings` 表**(`src/db/schema/index.ts`):`key`(配置组名,如 `smtp`)主键 + `value_encrypted`(整组配置 JSON 的密文)+ `updated_at`。
-- 与明文公开的 `site_settings` **分表**,避免密钥与公开站点设置混存。
-- 整组配置一次性加密(而非逐字段),at-rest 全密;掩码是后台 UI 层职责。
+- `app_settings`：`key`（配置组名）主键、`value_encrypted`（整组 JSON 密文）、`updated_at`。
+- 与公开的 `site_settings` 分表，避免 secret 与可公开站点资料混存。
+- 整组 AES-256-GCM 加密；掩码与“是否已设置”属于 admin view，不改变密文存储。
 
 ## 加密
 
-`src/lib/crypto.ts`:
+`src/lib/crypto.ts` 提供：
 
-- `encryptSecret(plaintext)` / `decryptSecret(payload)`:AES-256-GCM。
-- 密钥取自 Phase 1 的 `getConfigEncryptionKey()`(env `CONFIG_ENCRYPTION_KEY` 优先,否则读 `CONFIG_ENCRYPTION_KEY_FILE`),用 `sha256` 归一化为 32 字节以兼容任意格式的根密钥。
-- 密文格式 `v1:<ivBase64>:<authTagBase64>:<密文Base64>`,版本前缀便于将来轮换。
-- 密钥缺失、格式非法、密文/authTag 被篡改、密钥不匹配 → **抛错,不静默返回错值**。日志不输出密钥与密文。
+- `encryptSecret(plaintext)` / `decryptSecret(payload)`：AES-256-GCM。
+- 根密钥来自 `getConfigEncryptionKey()`：`CONFIG_ENCRYPTION_KEY` 优先，否则读取 `CONFIG_ENCRYPTION_KEY_FILE`。
+- 密文带版本前缀、IV 和 auth tag，便于检测篡改并为未来轮换留接缝。
+- 密钥缺失、格式错误、密文损坏或认证失败都抛错；不静默返回空配置，也不记录密钥/密文。
 
 ## 配置收口与优先级
 
-`src/modules/config/`:
+`src/modules/config/` 是唯一最终配置入口：
 
-- `store.ts`:`getStoredGroup<T>(group)`(查 `app_settings` → 解密 → `JSON.parse`,无记录返回 `null`)、`setStoredGroup(group, value)`(加密 upsert)。
-- `smtp.ts`:`getSmtpConfig()` 解析最终生效配置,**优先级 DB ＞ 环境变量 ＞ 默认值**,并给出 `configured` 标志(`host && from`)。
-- `turnstile.ts`:`getTurnstileConfig()` 逐字段解析 DB ＞ env；`enabled=false` 是有效后台值，可覆盖 env 的 `true`。
-- `storage.ts`:`getStorageConfig()` 解析 local / S3 最终驱动与 S3/R2 参数；后台 local 可覆盖 env s3，反之亦然。
-- `upload.ts`:`getUploadConfig()` 解析内容附件与付款截图的单文件上限，逐字段 DB ＞ env ＞ 默认。
-- 消费方(如 `src/modules/mail`)只调 `getSmtpConfig()`,不再直接读 `getEnv()`。`app_settings` 无记录时全程回落环境变量,与配置中心落地前行为完全一致。
+- `store.ts`：读取、加密 upsert、删除配置组。
+- `smtp.ts`：DB ＞ env ＞ default；配置完整性由 host/from 判断。
+- `turnstile.ts`：逐字段 DB ＞ env；DB `enabled=false` 可覆盖 env `true`。
+- `storage.ts`：DB ＞ env ＞ default，支持 local / S3；历史文件仍按行内 driver/bucket。
+- `upload.ts`：内容附件上限直接按 DB ＞ env；付款凭证/二维码上限按 DB 请求值与 env hard ceiling 取较小值。
+- `stripe.ts`：后台加密配置，默认 disabled；secret key/webhook secret 必须完整后才能启用。
+- `translation.ts`：后台加密配置，默认 disabled；provider/model/endpoint/API key 完整后才 configured。
+
+消费者只调用 config 模块，不能在 mail、storage、payment、login page、Integration status 或 admin UI 中复制配置优先级。
 
 ## 密钥依赖与备份
 
-- 读写加密配置需要配置加密根密钥;**纯环境变量回落路径不需要密钥**,故配置中心落地不影响现有 `.env` 部署。
-- 生产 readiness(`/api/ready`)已要求密钥存在。
-- **迁移服务器务必备份 secrets volume**:根密钥丢失 → 已加密配置无法解密(需用环境变量重新配置)。
+- 读写 `app_settings` 需要配置加密根密钥；env-only fallback 组在没有 DB override 时仍可读取环境变量。
+- `/api/ready` 要求配置读取和根密钥可用。
+- 迁移/恢复必须备份 secrets volume 或外部 `CONFIG_ENCRYPTION_KEY`；丢失后已加密设置无法恢复。
+- `SESSION_SECRET` 不是配置加密根密钥，必须独立备份；它影响会话和在途登录码任务。
 
-## 后台 UI(SMTP,已实现)
+## SMTP ✅
 
-- **页面**:`/admin/settings`(系统配置),SSR `getSmtpAdminView()` 传入表单。
-- **接口**:`/api/admin/config/smtp` —— `GET`(掩码视图)、`PUT`(保存)、`DELETE`(清除回落环境变量),均 `requireAdmin()`。
-- **掩码**:仅 `password` 敏感,GET 从不返回明文,只给 `passwordSet`;保存时密码留空表示不修改(保留原值)。
-- **三态回退**:「从环境变量导入」用 `envDefaults` 填表(不立即保存);「恢复为环境变量」DELETE 整行清除,干净回落,避免空串歧义。
-- **测试连接**:统一走 Integration 连接测试契约 `POST /api/admin/integrations/smtp/test`(发送测试邮件到管理员邮箱),测试当前生效配置。
-- **守卫收敛**:`login-code`、`payment`(审核通过/驳回)、`status`、`test-email` 均已改走 `getSmtpConfig()`,后台配置在所有发信/状态路径生效;`isSmtpConfigured()` 已移除。
+- 页面：`/admin/settings`。
+- API：`/api/admin/config/smtp` GET/PUT/DELETE，均 requireAdmin。
+- password 永不返回；空 password 表示保留已有 DB 值。
+- 可从 env 填表、保存 DB override，或删除整组回落 env。
+- 连接测试统一走 `POST /api/admin/integrations/smtp/test`。
+- login code、会员/付款/续费等业务邮件和状态页读取同一最终配置。
+- S5 未配置/鉴权失败不再被当作成功跳过；业务邮件进入 defer/dead/retry 流程。
 
-## 后台 UI（Turnstile，已实现）
+## Turnstile ✅
 
-- **页面**：`/admin/settings` 的 Turnstile 卡片，可保存 enabled、公开 Site Key 与敏感 Secret Key。
-- **接口**：`/api/admin/config/turnstile` 提供 GET / PUT / DELETE，均要求管理员身份。
-- **掩码**：Secret Key 永不返回前端，仅给 `secretKeySet`；整个配置组仍由 `app_settings` 加密保存。
-- **三态覆盖**：后台 `enabled=false` 可覆盖 env `TURNSTILE_ENABLED=true`；删除配置组才整体回落 env。
-- **空字符串语义**：Site Key 保存前 trim，空串不落库并回退 env；Secret Key 保存前 trim，空串保留旧 DB 值。
-- **开启校验**：仅最终生效的 `enabled=true` 时要求 Site Key 与 Secret Key 都存在；关闭时允许两者为空。
-- **消费收敛**：登录页 widget 与发码接口守卫都读取 `getTurnstileConfig()`，后台修改无需重启。
+- API：`/api/admin/config/turnstile` GET/PUT/DELETE。
+- Secret Key 只返回 `secretKeySet`；配置组整体加密。
+- `enabled=false` 是有效 DB override；删除配置组才回落 env。
+- 最终 enabled 时要求 Site Key + Secret Key。
+- 登录页 widget、request-code 守卫、Integration status 与未来 S6 CSP 必须读取同一 effective config。
 
-## 后台 UI（S3/R2，已实现）
+## Storage ✅
 
-- **页面**：`/admin/settings` 的文件存储卡片，可切换 local / S3，并配置兼容 AWS S3、Cloudflare R2、MinIO 的参数。
-- **接口**：`/api/admin/config/storage` 提供 GET / PUT / DELETE；连接测试统一走 Integration 契约 `POST /api/admin/integrations/storage/test`（S3/R2 Put/Get/Delete 闭环），均要求管理员身份。
-- **凭据保护**：Access Key ID 与 Secret Access Key 都视为敏感字段；随配置组加密存储，GET 只返回 `accessKeyIdSet` / `secretAccessKeySet`。
-- **空字符串语义**：endpoint、region、bucket 保存前 trim，空串不落库并回退 env；两个凭据空串保留旧 DB 值。region 留空表示回退环境变量，显式使用 `auto` 需填写 `auto`。
-- **开启校验**：仅最终驱动为 s3 时要求 endpoint、bucket、Access Key ID、Secret Access Key 完整；local 模式允许 S3 字段为空。
-- **热更新**：S3 adapter 不按 driver 永久缓存，每次操作读取最终配置并创建 adapter；后台修改后下一次上传、下载或删除立即生效。
-- **连接测试**：使用独立随机前缀创建临时对象，依次执行 PutObject、GetObject 并校验内容、DeleteObject；失败路径也尽力删除对象。
-- **历史文件**：新上传记录的 `files.storage_driver` 必须等于上传时最终驱动；历史 local / S3 文件按记录驱动处理，S3 操作优先使用记录中的 bucket。
+- API：`/api/admin/config/storage` GET/PUT/DELETE。
+- 支持 local、AWS S3、Cloudflare R2、MinIO 兼容参数。
+- Access Key ID 与 Secret Access Key 均按 secret 处理，GET 只返回 set flags。
+- S3 连接测试通过 Integration 端点执行随机对象 Put/Get/Delete，并在失败路径尽力清理。
+- adapter 不按 driver 永久缓存；后台修改后下一次操作读取新配置。
+- 每个文件记录上传时的 `storage_driver` 和 bucket；切换 active driver 不迁移历史文件。
 
 ### 单 S3 profile 限制
 
-本轮只维护一个当前 S3 profile。`files` 表尚未记录 endpoint 与凭据版本，因此切换到完全不同的 S3 服务或账号后，旧 S3 文件不保证可访问。未来支持多个对象存储配置时，需要新增 `storageProfileId` 并让每个文件绑定其上传时使用的 profile。
+当前只维护一个 active S3 profile。`files` 未绑定 endpoint/credential version；切换到完全不同的账号或服务后，历史 S3 对象不保证仍可访问。多 profile 需要未来新增稳定 storage profile identity。
 
-## 后台 UI（上传限制，已实现）
+## Upload ✅
 
-- **页面**：`/admin/settings` 的「上传限制」卡片，可配置内容附件上限（`maxUploadSizeMb`）与付款截图/收款码上限（`paymentProofMaxSizeMb`）。
-- **接口**：`/api/admin/config/upload` 提供 GET / PUT / DELETE，均要求管理员身份。
-- **非敏感字段**：两个上限都是正整数 MB，不涉及密钥，admin view 无掩码；整组仍按统一模式加密落 `app_settings`。
-- **回退语义**：未传字段保留旧 DB 值；DELETE 整组清除后逐字段回落环境变量（`MAX_UPLOAD_SIZE_MB` / `PAYMENT_PROOF_MAX_SIZE_MB`）。
-- **热更新**：消费方 `src/modules/file` 的 `saveUploadedFile` 每次校验都读 `getUploadConfig()`，后台修改后下一次上传立即生效，无需重启。
-- **内存提示**：上传仍整文件读入内存，上限应与部署机器可用内存匹配。
+- API：`/api/admin/config/upload` GET/PUT/DELETE。
+- **内容附件 `maxUploadSizeMb`**：最终值直接按 DB ＞ `MAX_UPLOAD_SIZE_MB` env ＞ default 解析。后台 DB 值可以高于 env fallback；运维必须同步检查反向代理、磁盘、对象存储和业务容量，不能把 env 值误当成不可突破的 hard ceiling。
+- **付款凭证/二维码 `paymentProofMaxSizeMb`**：后台值只能降低或等于 `PAYMENT_PROOF_MAX_SIZE_MB` env ceiling，解析时使用 `Math.min(DB-or-env, env)`；DB 不能提高这一图片传输上限。
+- **内容附件**通过 raw-body 流式写入 local/S3，并在流中计算字节数与 SHA-256，不随整文件线性占用应用内存。
+- **图片用途**（avatar、QR、proof、content image、cover、thumbnail）会有界缓冲并交给 sharp 做权威格式检测、像素/帧限制、重编码和 metadata stripping。
+- 反向代理 body limit 只是第二层；应用实际字节累计仍是权威限制。代理上限应覆盖计划允许的应用上限，但不应被当作应用校验替代品。
 
-## 尚未实现
+## Stripe ✅
 
-配置读取当前每次查库，后续如增加短 TTL 缓存，需要设计跨进程失效策略。
+- API/UI 位于 `/admin/settings` 对应 Stripe 配置卡片。
+- 存储 `enabled`、secret key、webhook secret、可选 publishable key 和 currency。
+- secret key/webhook secret 不返回前端；enabled 且配置不完整时拒绝保存/启用。
+- Integration registry 提供结构化状态和 Stripe 连接测试。
+- 一次性 Checkout、订阅 Checkout、webhook 与 reconcile 只读取 `getStripeConfig()`。
+
+## Translation ✅
+
+- API/UI 位于 `/admin/settings` Translation 配置卡片。
+- 支持 OpenAI-compatible provider、endpoint、model、API key、`monthlyCharLimit`、direct publish 与 machine label policy。
+- 默认 disabled；API key 不返回前端。
+- **`monthlyCharLimit` 当前仅被持久化/展示，调用路径没有用量账本或 quota 检查，因此不是强制预算。** 运维必须使用 provider 侧 hard limit/alert；本地 enforcement 属于后续工作。
+- Integration registry 提供状态；当前不伪造独立“连接测试”按钮，真实 provider 调用只由 requireAdmin 的生成动作触发。
+
+## 缓存与多实例边界
+
+配置读取当前按需查库，修改后无需进程重启。如果未来加入短 TTL 缓存，必须以 revision/失效机制保证多实例不会出现“新渲染计划 + 旧安全配置”的竞态；S6 CSP 尤其要求页面与响应头使用同一配置 revision。

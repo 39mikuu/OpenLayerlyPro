@@ -1,34 +1,49 @@
 # Branding and Custom Footer Code
 
-OpenLayerlyPro lets self-hosted administrators customize public-site branding without adding a plugin or changing the default theme code.
+OpenLayerlyPro lets self-hosted administrators customize public-site branding without adding a plugin or changing the built-in theme.
 
-## Brand assets
+## Brand Assets
 
-Go to **Admin -> Site settings -> Branding** to upload:
+Go to **Admin → Site settings → Branding** to upload:
 
 - **Site logo**: used by the public header and footer when configured.
 - **Site icon / favicon**: used as the browser/app icon when configured.
 
 Recommended formats:
 
-- Logo: transparent PNG or WebP. Square and horizontal images are both supported.
-- Icon: 512x512 PNG or WebP.
+- Logo: PNG, JPEG, or WebP accepted by the file-safety pipeline; transparent PNG/WebP is recommended.
+- Icon: square PNG or WebP, such as 512×512.
 
-When no logo is configured, the public theme falls back to the creator/site initial or the creator avatar. The open-source default theme does not include third-party brand marks, payment logos, social-platform logos, or trademark-like geometric marks as the default identity.
+Image-purpose uploads are server-detected and raster-normalized. SVG/HTML/non-raster data is not accepted as a branding image. When no logo is configured, the built-in theme falls back to the creator/site initial or creator avatar.
 
-## Custom footer code
+## Current Legacy Custom Footer
 
-Go to **Admin -> Site settings -> Custom code** to paste optional footer HTML. Typical uses include:
+The current runtime still exposes **Admin → Site settings → Custom code** and stores trusted administrator HTML in `customFooterHtml`. It is inserted only on public pages and is not returned by `/api/site`, rendered in admin pages, or used in email.
 
-- analytics snippets
-- ICP/filing or compliance text
-- site verification tags
-- small self-hosting HTML snippets
+Historically this field has been used for three different needs:
 
-The code is inserted only on public pages. It is not rendered in the admin dashboard, emails, or API responses.
+- ordinary footer/filing/compliance markup;
+- site ownership verification;
+- analytics or other executable scripts.
 
-## Security notes
+Because raw administrator HTML may contain scripts, event attributes, remote resources, or broken markup, it is a high-trust self-hosting escape hatch rather than a normal content field. Never populate it from fan input, post content, comments, imports, or an untrusted third party.
 
-Custom footer code is an administrator-managed trusted customization. It is inserted directly into public pages, so only paste code from sources you trust.
+## S6 Migration Status
 
-Avoid unknown snippets. Broken or hostile scripts can affect visitor pages, page performance, and privacy. This setting is not a plugin system, and it should not be used with content submitted by fans, posts, comments, or any other user-generated input.
+S6 #86 will replace the mixed-purpose legacy field with separate safe capabilities:
+
+- sanitized/restricted footer markup for ordinary display;
+- structured site-verification records rendered by the server;
+- structured public integrations whose render plan and exact CSP origins are owned by the application;
+- an explicitly high-risk custom integration record only where unavoidable.
+
+The S6 implementation must preserve the original legacy value for review/export and detect executable content before enforcing CSP. It must not silently delete or disable code, and it must not preserve compatibility by adding `script-src 'unsafe-inline'`, wildcard hosts, bare `https:`, or trusting administrator-supplied nonce attributes.
+
+Until #86 is implemented and migrated:
+
+- only paste code you fully trust;
+- review analytics/privacy implications and remote hosts;
+- keep a copy outside the application before upgrades;
+- expect v1.0 rollout to require migration, explicit disablement, or report-only observation before CSP enforcement.
+
+The current field is not a Plugin system and must not be used to bypass Core authorization, payment, file, or audit rules.

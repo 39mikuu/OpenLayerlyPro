@@ -12,36 +12,49 @@ cp .env.example .env
 
 ## 部署要点
 
-1. 按 `.env.example` 配置站点地址、数据库、邮件与安全参数。
-2. 使用强随机会话密钥。
-3. 只向公网开放 HTTPS 入口，不要直接暴露应用端口。
-4. 单层反向代理通常使用 `TRUSTED_PROXY_HOPS=1`。
-5. 只有在源站无法被绕过时，才信任单值真实 IP 头。
-6. 将反向代理上传限制与应用上传限制保持一致。
+1. 按 `.env.example` 配置站点地址、数据库、SMTP 与安全参数。
+2. 使用强随机 `SESSION_SECRET`，并单独备份它与配置加密根密钥。
+3. 只向公网开放 HTTPS 入口，不直接暴露 app:3000。
+4. 单层反向代理通常使用 `TRUSTED_PROXY_HEADER=x-forwarded-for` 与 `TRUSTED_PROXY_HOPS=1`。
+5. 只有源站不能被绕过时才信任 `x-real-ip`、`cf-connecting-ip` 等单值头。
+6. 代理请求体上限是第二层保护；应用的实际字节上限仍是权威边界。
+7. 代理必须转发视频 `Range` 请求，并保留应用返回的 200/206/416、`Content-Range` 与 `Accept-Ranges`。
+8. 不要缓存 `/api/*`、`/admin/*`、登录、private/no-store 文件或私有视频代理响应。
+9. 当前 v1.0 运行边界是单 app 实例；多副本没有共享 limiter。
 
-## Caddy overlay
+## Caddy Overlay
 
 仓库提供 Caddy 部署文件：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.caddy.yml config
 ```
+
+`docker-compose.caddy.yml` 使用 Compose `!reset` 清除基础文件中的 app 端口映射。合并后的配置应只发布 Caddy 的 80/443，不应出现 app 的 `3000:3000`。若本机 Compose 版本不能解析 `!reset`，请先升级 Docker Compose，不要移除该覆盖后继续生产部署。
+
+设置 `APP_DOMAIN` 与正确可信 hop。Caddy 负责 TLS，应用只通过 Compose 内部网络接收转发。主机防火墙仍应只开放必要入口。
 
 ## 验证
 
-- 站点可通过 HTTPS 访问
-- `/api/health` 返回成功
-- `/api/ready` 返回成功
-- 应用端口无法从公网直接访问
-- 登录限流能够读取正确的客户端 IP
+- 站点可通过 HTTPS 访问；
+- `/api/health` 与 `/api/ready` 返回成功；
+- 合并配置和容器状态均确认 app 没有 host-published 3000 端口；
+- 从公网连接主机 `:3000` 失败；
+- 登录、上传、下载日志能解析正确客户端 IP；
+- local/S3 视频 seek 返回正确 Range 响应；
+- private 下载不被代理/CDN公开缓存；
+- DB 配置的 Turnstile、Storage、Stripe 和 SMTP 状态与后台一致。
+
+S6 #86 实现后，还必须在真实浏览器验证 nonce CSP、DB-enabled Turnstile、实际 signed storage origin、视频与 public integration；不得在代理层加入宽泛或与应用冲突的 CSP。
 
 ## 备份与升级
 
-升级或迁移前，请备份数据库、上传文件和配置加密密钥。
+升级或迁移前必须保护：数据库、全部仍被引用的 local uploads、配置加密根密钥、`SESSION_SECRET`，以及 S3/R2 的匹配恢复点。
 
-更多说明：
+不要用简单的 `git pull && docker compose up` 代替升级流程。当前升级需要停 app、报告/处理 duplicate pending payments、运行 one-off migrator 和 mandatory file-safety backfill。当前 `backup.sh` 只依据容器环境变量 fallback 判断 active storage，不能识别后台 DB override；混合 local/S3 历史文件必须按[备份与恢复](deployment/backup-restore.md)额外核对。完整步骤：
 
-- [家庭服务器部署](deploy-home-server.md)
 - [备份与恢复](deployment/backup-restore.md)
 - [升级指南](deployment/upgrade.md)
 - [生产检查清单](deployment/production-checklist.md)
+- [v1.0 最终验收](release-v1.0-checklist.md)

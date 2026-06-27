@@ -6,12 +6,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. Do not include secrets, session tokens, SMTP passwords, S3 keys, Stripe secrets, webhook signatures, or private payment screenshots.
+        Thanks for reporting a bug. Do not include secrets, session tokens, SMTP passwords, S3 keys, Stripe secrets, webhook signatures, private payment screenshots, or raw login codes.
+        For security vulnerabilities, use GitHub Private Vulnerability Reporting instead of a public issue.
   - type: input
     id: version
     attributes:
       label: Version or commit
-      description: "Example: v0.2.0 or a commit SHA."
+      description: "Example: v1.0.0-rc, an image digest, or a full commit SHA. While v1.0 is unreleased, prefer the exact main commit."
     validations:
       required: true
   - type: dropdown
@@ -49,4 +50,4 @@ body:
     id: logs
     attributes:
       label: Logs or screenshots
-      description: Remove secrets before posting.
+      description: Remove secrets, tokens, raw email addresses, payment screenshots, provider payloads, and login codes before posting.

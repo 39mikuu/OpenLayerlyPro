@@ -27,18 +27,18 @@ EMAIL_RETRY_RECHECK_MINUTES=15
 EMAIL_DELIVERY_MAX_AGE_HOURS=24
 ```
 
-> SMTP 是粉丝验证码登录的必要条件。业务邮件遇到未配置或鉴权失败时会按 `EMAIL_RETRY_RECHECK_MINUTES` 延迟重投且不消耗 attempts，超过 `EMAIL_DELIVERY_MAX_AGE_HOURS` 后进入 dead；登录码因 TTL 很短会直接进入 dead。建议同时修改 `docker-compose.yml` 中 PostgreSQL 的默认密码，并同步更新 `DATABASE_URL`。
+> SMTP 是粉丝验证码登录的必要条件。业务邮件遇到未配置或需运维修复的错误时，会按 `EMAIL_RETRY_RECHECK_MINUTES` 延迟重投且不消耗 attempts；超过 `EMAIL_DELIVERY_MAX_AGE_HOURS` 后进入 dead。登录码因 TTL 很短会直接进入 dead。建议同时修改 Compose 中 PostgreSQL 默认密码并同步 `DATABASE_URL`。
 
 ### 认证限流与可信 IP
 
-- 应用默认只适合**单实例**运行进程内限流。多个 app 副本会各自计数，v1.0 尚未提供共享 Redis/PG limiter。
-- 使用 Cloudflare Tunnel/CDN 时，推荐 `TRUSTED_PROXY_HEADER=cf-connecting-ip`；自建反代使用 `x-forwarded-for` 并设置准确的 `TRUSTED_PROXY_HOPS`。
-- 若应用无法解析可信客户端 IP，`admin-login`、`request-code`、`verify-code` 会退回各操作专用的 unresolved emergency 桶；这不会影响 resolved-IP 用户，但 unresolved 用户之间仍共享计数。生产环境应优先修复可信 IP 解析。
-- 请检查 auth rate-limit、验证码长度/字母表与 dedupe env；所有值都有边界，越界会启动失败。S4 认证限流语义见 [S4 handoff](handoff/harden-s4-auth-rate-limiting.md)。
-- 登录码采用持久投递 fence：已有 active code 的任务处于 `pending` / `processing` / `failed` 时，同邮箱的新请求仍统一返回受理但不会创建新 code，最长抑制到 10 分钟 TTL；任务为 `succeeded` / `dead` 后才按 60 秒 dedupe 决定是否创建更新 code。
-- 登录码 SMTP 调用发生在数据库短事务和 per-email advisory lock 释放后。应用保证 stale claim 在发信前 no-op、SMTP 开始时 code 仍为最新有效 code；worker 在 SMTP 成功后、任务标记 succeeded 前崩溃，可能造成同一码 at-least-once 重复投递。外部邮箱最终到达/展示顺序不受应用控制。
-- 所有邮件均保留相同的 at-least-once 残余：SMTP 已接受邮件后、任务标记 `succeeded` 前进程崩溃，lease 回收会重发。业务侧 `dedupeKey` 只防重复入队，不能使 SMTP 投递幂等；请在后台“后台任务”页面关注邮件 failed/dead 聚合徽标并按需手动重试。
-- `SESSION_SECRET` 也用于派生在途登录码 task 的加密密钥。轮换后，尚未投递的旧任务会解密失败并进入永久失败，用户需重新请求；code TTL 仅 10 分钟。
+- 当前 limiter 面向单 app 实例。多个副本会各自计数；v1.0 不提供共享 Redis/PG limiter。
+- Cloudflare Tunnel/CDN 推荐 `TRUSTED_PROXY_HEADER=cf-connecting-ip`；自建反代使用 XFF 并设置准确 `TRUSTED_PROXY_HOPS`。
+- 无法解析可信客户端 IP 时，`admin-login`、`request-code`、`verify-code` 会退回各操作专用的 unresolved emergency 桶；这不会把所有认证流量压进同一个低阈值全局桶，但 unresolved 客户端仍共享各自操作桶。生产应修复可信 IP 解析，而不是长期依赖降级路径。
+- S4 使用高熵登录码、keyed email identity、正确码优先、错误后记账和 source-scoped pre-comparison budget。详见 [S4 handoff](handoff/harden-s4-auth-rate-limiting.md)。
+- 登录码使用持久投递 fence；已有 active code 对应 pending/processing/retryable failed task 时，不创建替换码。
+- claim/fence 在短事务内完成，SMTP 在事务/advisory lock 外执行；SMTP 接受后进程崩溃仍可能导致同一码 at-least-once 重发。
+- S5 业务邮件使用失败分类、operator defer/dead、稳定 Message-ID、delivery ledger 与后台重试；业务 dedupeKey 只防重复入队，不能让 SMTP 本身 exactly-once。
+- `SESSION_SECRET` 也影响在途登录码 task 解密。轮换后旧任务会 permanent fail，用户需重新申请。
 
 ## 3. 启动
 
@@ -47,32 +47,41 @@ docker compose up -d
 docker compose logs -f app
 ```
 
-容器启动时由 entrypoint 执行数据库迁移。迁移失败时应用不会启动，日志会显示原因。访问 `http://服务器IP:3000` 完成站点初始化。
+entrypoint 会准备目录与配置加密密钥、运行 forward migration，然后启动应用。迁移失败时应用不会服务。基础 Compose 会发布主机 3000 端口，访问 `http://服务器IP:3000` 完成初始化；只应在受信任局域网或有防火墙限制的环境使用该入口。
 
-> 内容附件通过 raw-body 接口流式写入 local 或 S3/R2；图片与付款截图仍会缓冲以校验尺寸。`MAX_UPLOAD_SIZE_MB` 是流式实测上限。S3 multipart 每次上传采用 8 MiB × 2 路并发，并应在 bucket 上配置中止未完成 multipart upload 的生命周期规则。S3/R2 可在后台系统配置中设置，环境变量继续作为回退来源。
+> 内容附件通过 raw-body 流式写入 local 或 S3/R2；图片用途有界缓冲并由 sharp 做格式检测、重编码和 metadata stripping。`MAX_UPLOAD_SIZE_MB` 是内容附件 env fallback；后台 DB 值可直接覆盖它。付款凭证/二维码上限则不能高于 `PAYMENT_PROOF_MAX_SIZE_MB` env ceiling。S3 multipart 使用 8 MiB × 2 路并发，并应配置中止未完成 multipart upload 的 bucket 生命周期规则。
 
 ## 4. 公网访问
 
-无公网 IP 推荐使用 [Cloudflare Tunnel](deploy-cloudflare-tunnel.md)；有公网 IP 见 [公网 VPS + 反向代理部署](deploy-vps.md)。
+无公网 IP 推荐 [Cloudflare Tunnel](deploy-cloudflare-tunnel.md)；有公网 IP 见 [公网 VPS + 反向代理部署](deploy-vps.md)。这两个生产 overlay 会用 `ports: !reset []` 移除基础 Compose 的 app host port；不要在其他 override 中重新发布 `3000:3000`。
 
-使用自建反向代理时，应设置正确的 `TRUSTED_PROXY_HOPS`，并确保应用端口不直接暴露到公网。
+使用自建反向代理时，应设置正确可信 hop，保留视频 Range 请求/响应，并确保应用端口不直接暴露公网。
 
 ## 5. 数据备份
 
 至少备份：
 
-- PostgreSQL 数据库
-- local 存储模式下的 uploads volume
-- `/app/secrets/config-encryption-key` 或对应 secrets volume
+- PostgreSQL 数据库；
+- 所有仍被数据库引用的 local uploads；
+- `/app/secrets/config-encryption-key` 或外部配置加密根密钥；
+- `SESSION_SECRET`（需要无缝保留会话时）；
+- 所有仍被数据库引用的 S3/R2 对象的 version/snapshot。
 
-使用 S3/R2 存储时，文件位于对象存储中，但数据库和配置加密密钥仍需备份。
+当前 `scripts/backup.sh` 只读取 app 容器环境中的 `STORAGE_DRIVER` fallback，不读取后台 DB override，也不会为混合 local/S3 历史文件做完整 inventory。运行前必须对比后台有效 Storage 配置、env fallback 和 `files.storage_driver` 分布；env 选中之外的 local volume 或 S3/R2 recovery point 需要单独保护。详见[备份与恢复](deployment/backup-restore.md)。
 
-## 6. 升级版本
+## 6. 安全升级
 
-```bash
-git pull
-docker compose build app
-docker compose up -d
-```
+**不要使用简单的 `git pull && docker compose up -d` 代替升级流程。** 当前迁移链包含需要在 app 停止时完成的 pending-payment 冲突报告/修复、one-off migrator 与 mandatory file-safety backfill；直接启动新 app 可能让迁移失败，或在历史文件 remediation 完成前恢复流量。
 
-升级前应先备份数据库、上传文件和配置加密密钥。升级后重新检查 `/api/ready`、可信 IP 解析、Turnstile、验证码发送和登录流程。
+升级前：
+
+1. 阅读 `CHANGELOG.md` 与目标版本 release notes；
+2. 生成并验证完整备份，确认磁盘空间；
+3. 按[升级指南](deployment/upgrade.md) stage 新镜像；
+4. 停止全部旧 app replica；
+5. 运行 duplicate pending payment report/remediation；
+6. 运行 one-off migrator；
+7. 预览并执行 `files-backfill.mjs --apply`；
+8. 只有所有步骤成功后才启动新 app，并验证 `/api/ready`、登录、付款和样本文件。
+
+v1.0 的 S7 #87 还会把 archive 校验、旧 schema probe、恢复任务中和、DB-aware storage inventory 和 DB↔存储收敛加入正式恢复流程；发布验收以 [v1.0 清单](release-v1.0-checklist.md)为准。

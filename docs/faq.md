@@ -11,15 +11,18 @@
 3. 同一邮箱 60 秒内只能发送一次，每小时最多 5 次。
 
 **Q: 管理员密码忘了怎么办？**
-进入数据库手动重置：
+不要把 `site_settings.initialized` 改回 `false`，也不要重新开放 `/admin/setup`。这样会重新暴露未认证初始化入口，并可能与已有默认数据冲突。
+
+生产镜像包含受支持的锁死恢复工具：
 
 ```bash
-docker compose exec postgres psql -U artist artist_member
--- 生成新密码哈希需要 bcrypt，简单做法是重置 initialized 后重新初始化：
-UPDATE site_settings SET value_json='false' WHERE key='initialized';
+docker compose exec \
+  -e ADMIN_EMAIL=you@example.com \
+  -e ADMIN_PASSWORD='replace-with-a-strong-password' \
+  app node dist/admin-reset.mjs
 ```
 
-然后访问 `/admin/setup` 重新设置管理员账号（会保留原有数据，管理员账号按邮箱覆盖更新）。
+它会创建或更新指定管理员、撤销该账号的全部现有会话，并写入恢复审计事件。完整说明和源码环境命令见[管理员账号、会话与恢复](admin/admin-account-and-recovery.md)。
 
 ## 文件与下载
 
@@ -61,8 +64,8 @@ UPDATE site_settings SET value_json='false' WHERE key='initialized';
 
 ## 收银台
 
-**Q: 为什么不接微信/支付宝/Stripe 自动支付？**
-第一版刻意选择人工审核收银台，避免支付资质、回调、退款等复杂度，让个人画师零门槛部署。自动支付在后续路线图中。
+**Q: 支持哪些付款方式？**
+人工付款截图审核仍是无需支付资质的默认路径。当前也已支持可选的 Stripe 一次性 Checkout 和自动订阅；只有管理员在后台完整配置并启用 Stripe 后才会开放对应入口。微信/支付宝直连适配器尚未实现。
 
 **Q: 粉丝重复提交了申请怎么办？**
 同一等级同时只允许一笔待审核申请；驳回后粉丝可重新提交截图，原驳回原因会保留记录。

@@ -13,54 +13,76 @@ pnpm dev
 
 - 开发模式未配置 SMTP 时，验证码输出在服务端控制台。
 - `SESSION_SECRET` 强校验只在 `NODE_ENV=production` 运行时生效，不影响开发。
-- Turnstile 默认关闭（`TURNSTILE_ENABLED=false`），开发无需配置。
+- Turnstile 默认关闭，开发无需配置。
 
 ## 校验与构建
 
 ```bash
-pnpm lint           # ESLint（含 import 排序、no-explicit-any 告警）
-pnpm format         # Prettier 写入；pnpm format:check 只检查不改
-pnpm check:request-bodies # 检查生产 Route Handler 的请求体读取
-pnpm test           # vitest 运行单元测试；pnpm test:watch 监听模式
-pnpm exec tsc --noEmit   # 类型检查
-pnpm build          # next build
+pnpm lint
+pnpm format:check
+pnpm check:request-bodies
+pnpm exec tsc --noEmit
+pnpm test
+pnpm build:migrator
+pnpm build:files-backfill
+pnpm build:admin-reset
+pnpm build
 ```
 
-CI（.github/workflows/ci.yml）执行 lint → format:check → check:request-bodies → tsc → test → build:migrator → build。
+`pnpm build` 只负责 Next 应用；它不会生成恢复/升级需要的 one-off artifact。发布镜像还必须包含：
 
-若请求体检查失败，请按输出的文件和行号改用 `src/lib/request-body.ts` 中的 bounded helper。检查仅扫描生产 `route.*` 文件，不扫描测试 fixture。
+- `dist/migrate.mjs`；
+- `dist/files-backfill.mjs`；
+- `dist/admin-reset.mjs`。
 
-提交前 husky 的 `pre-commit` 会对暂存的 `.ts/.tsx` 自动跑 `eslint --fix` + `prettier --write`，`commit-msg` 用 commitlint 校验提交信息格式。代码风格与工具链细节见 [code-style.md](./code-style.md)。
+当前 Dockerfile 会显式构建并复制三者。当前 CI 已运行 lint、format、request-body、tsc、migration、tests、migrator build 与 Next build；S7 #87 合并前必须把 `build:files-backfill` 纳入 CI 硬门槛，发布验收不能只依赖 Dockerfile 间接覆盖。
+
+涉及 PostgreSQL 并发、约束、任务或支付行为时运行：
+
+```bash
+RUN_DB_INTEGRATION_TESTS=true pnpm test
+```
+
+若请求体检查失败，请按输出位置改用 `src/lib/request-body.ts` 中的 bounded helper。检查扫描生产 `route.*`，不扫描测试 fixture。
+
+提交前 husky 会对暂存的 `.ts/.tsx` 执行 ESLint/Prettier，commit-msg 使用 commitlint。代码风格与工具链见 [code-style.md](./code-style.md)。
 
 ## 数据库迁移约定
 
 开发与生产共用 `scripts/migrate.mjs`：
 
-- 开发：修改 `src/db/schema` → `pnpm drizzle-kit generate` → `pnpm db:migrate`
-- 生产：构建时打包为 `dist/migrate.mjs`，由 `docker/entrypoint.sh` 在启动应用前显式执行，失败则容器不启动。应用运行时不做迁移。
+- 开发：修改 `src/db/schema` → `pnpm drizzle-kit generate` → `pnpm db:migrate`；
+- 生产：构建为 `dist/migrate.mjs`，由 entrypoint 在启动应用前执行；失败则 app 不启动。
+
+需要历史数据 remediation 的迁移不能只靠 DDL：必须提供 report/dry-run/apply 流程、停止旧写入的顺序、审计与升级文档。文件安全历史修复由独立 `files-backfill.mjs` 执行，不能假设 migration 或 Next build 会自动完成。
 
 ## 环境变量变更约定
 
-新增或修改环境变量时**必须同步**：
+新增或修改环境变量时必须同步：
 
-1. `src/lib/env.ts` 的 zod schema（含默认值与校验规则）
-2. `.env.example`（含注释说明）
-3. README 环境变量表（关键项）与相关文档
+1. `src/lib/env.ts` zod schema（默认值、边界、fail-loud）；
+2. `.env.example`；
+3. README 关键变量表；
+4. 相关 admin/architecture/deployment/release 文档；
+5. Docker Compose、CI 和 one-off container 使用点。
 
-涉及 Docker 行为的变更（entrypoint / compose / Dockerfile）必须保证现有迁移流程与 `docker compose up -d` 启动方式不被破坏。
+涉及 Docker 行为的变更必须保持显式 migration、one-off remediation、失败不启动和可验证 artifact 语义。
 
-## 代码约定
+## 代码与文档约定
 
-- API route 只做解析与响应，业务逻辑放 `src/modules/*`；错误用 `ApiError` + `handleApiError`。
-- 敏感信息（secret、token、验证码、密钥）不输出日志。
-- 文档区分「已实现 ✅ / 计划中 🚧」，不把计划写成已完成。
-- commit message 使用 Conventional Commits 前缀 + 中文描述（如 `feat(config): 新增 SMTP 后台配置项`），小步提交。
+- Route Handler 只做有界读取、认证/授权顺序、解析和响应；业务逻辑放 `src/modules/*`。
+- 敏感信息（secret、token、验证码、密钥、原始 provider 错误）不输出日志。
+- 活文档区分已实现 / 当前主线 / 后续计划；历史 ADR/handoff 保留当时决策语境。
+- 运行时、配置、发布或恢复行为变化时，同一 PR 必须更新对应活文档，避免路线图、README 与运维指南互相矛盾。
+- commit message 使用 Conventional Commits 前缀，小步提交。
 
 ## Docker 验证
 
 ```bash
 docker compose up -d --build
-docker compose logs app          # 应看到迁移成功 +「已生成/已加载配置加密密钥文件」
-curl http://localhost:3000/api/health   # 200
-curl http://localhost:3000/api/ready    # 200（数据库正常时）
+docker compose logs app
+curl http://localhost:3000/api/health
+curl http://localhost:3000/api/ready
 ```
+
+升级/恢复相关 PR 还必须用独立 Compose project 验证 one-off migrator/backfill、失败路径和正式 app 启动门禁。
