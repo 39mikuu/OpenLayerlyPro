@@ -51,6 +51,14 @@ run_one_off() {
     --entrypoint node app "$@"
 }
 
+run_schema_check() {
+  if [ "$ALLOW_LEGACY_V1_UNKNOWN" = true ]; then
+    run_one_off /app/dist/restore-schema-check.mjs "$@" --allow-legacy-v1-unknown-schema
+  else
+    run_one_off /app/dist/restore-schema-check.mjs "$@"
+  fi
+}
+
 ARCHIVE_PATH=""
 ASSUME_YES=false
 ALLOW_LEGACY_V1_UNKNOWN=false
@@ -160,11 +168,6 @@ if ! compose run --rm -T --no-deps --entrypoint sh app -c 'test -z "${CONFIG_ENC
   fail "target defines CONFIG_ENCRYPTION_KEY; unset it or restore the matching externally managed value before continuing"
 fi
 
-SCHEMA_ARGS="--format-version=$FORMAT_VERSION"
-if [ "$ALLOW_LEGACY_V1_UNKNOWN" = true ]; then
-  SCHEMA_ARGS="$SCHEMA_ARGS --allow-legacy-v1-unknown-schema"
-fi
-
 if [ "$FORMAT_VERSION" = "1" ]; then
   PROBE_DB="openlayerly_restore_probe_${TIMESTAMP:-$(date +%s)}_$$"
   echo "Probing legacy archive schema compatibility in isolated database $PROBE_DB..."
@@ -178,9 +181,7 @@ if [ "$FORMAT_VERSION" = "1" ]; then
   " < "$WORK_DIR/db.sql"
 
   PROBE_DATABASE_URL="postgresql://${POSTGRES_USER:-artist}:${POSTGRES_PASSWORD:-artist_password}@postgres:5432/$PROBE_DB"
-  if ! run_one_off /app/dist/restore-schema-check.mjs \
-    --database-url="$PROBE_DATABASE_URL" \
-    $SCHEMA_ARGS; then
+  if ! run_schema_check --database-url="$PROBE_DATABASE_URL" --format-version="$FORMAT_VERSION"; then
     fail "legacy archive schema compatibility check failed"
   fi
   compose exec -T postgres sh -c "
@@ -190,9 +191,7 @@ if [ "$FORMAT_VERSION" = "1" ]; then
   PROBE_DB=""
 else
   echo "Checking archive migration compatibility from manifest..."
-  if ! run_one_off /app/dist/restore-schema-check.mjs \
-    --manifest-path=/restore-work/manifest.env \
-    $SCHEMA_ARGS; then
+  if ! run_schema_check --manifest-path=/restore-work/manifest.env --format-version="$FORMAT_VERSION"; then
     fail "archive schema compatibility check failed"
   fi
 fi
