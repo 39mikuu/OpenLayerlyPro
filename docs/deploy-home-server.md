@@ -47,13 +47,13 @@ docker compose up -d
 docker compose logs -f app
 ```
 
-entrypoint 会准备目录与配置加密密钥、运行 forward migration，然后启动应用。迁移失败时应用不会服务。访问 `http://服务器IP:3000` 完成初始化。
+entrypoint 会准备目录与配置加密密钥、运行 forward migration，然后启动应用。迁移失败时应用不会服务。基础 Compose 会发布主机 3000 端口，访问 `http://服务器IP:3000` 完成初始化；只应在受信任局域网或有防火墙限制的环境使用该入口。
 
-> 内容附件通过 raw-body 流式写入 local 或 S3/R2；图片用途有界缓冲并由 sharp 做格式检测、重编码和 metadata stripping。`MAX_UPLOAD_SIZE_MB` 是内容附件实际字节上限。S3 multipart 使用 8 MiB × 2 路并发，并应配置中止未完成 multipart upload 的 bucket 生命周期规则。
+> 内容附件通过 raw-body 流式写入 local 或 S3/R2；图片用途有界缓冲并由 sharp 做格式检测、重编码和 metadata stripping。`MAX_UPLOAD_SIZE_MB` 是内容附件 env fallback；后台 DB 值可直接覆盖它。付款凭证/二维码上限则不能高于 `PAYMENT_PROOF_MAX_SIZE_MB` env ceiling。S3 multipart 使用 8 MiB × 2 路并发，并应配置中止未完成 multipart upload 的 bucket 生命周期规则。
 
 ## 4. 公网访问
 
-无公网 IP 推荐 [Cloudflare Tunnel](deploy-cloudflare-tunnel.md)；有公网 IP 见 [公网 VPS + 反向代理部署](deploy-vps.md)。
+无公网 IP 推荐 [Cloudflare Tunnel](deploy-cloudflare-tunnel.md)；有公网 IP 见 [公网 VPS + 反向代理部署](deploy-vps.md)。这两个生产 overlay 会用 `ports: !reset []` 移除基础 Compose 的 app host port；不要在其他 override 中重新发布 `3000:3000`。
 
 使用自建反向代理时，应设置正确可信 hop，保留视频 Range 请求/响应，并确保应用端口不直接暴露公网。
 
@@ -62,12 +62,12 @@ entrypoint 会准备目录与配置加密密钥、运行 forward migration，然
 至少备份：
 
 - PostgreSQL 数据库；
-- local 模式的 uploads volume；
+- 所有仍被数据库引用的 local uploads；
 - `/app/secrets/config-encryption-key` 或外部配置加密根密钥；
 - `SESSION_SECRET`（需要无缝保留会话时）；
-- S3/R2 bucket version/snapshot（使用对象存储时）。
+- 所有仍被数据库引用的 S3/R2 对象的 version/snapshot。
 
-运行 `scripts/backup.sh` 只覆盖标准归档中的 DB、file-backed config key 和 local uploads；S3 对象与外部 secret 仍需单独保护。详见 [备份与恢复](deployment/backup-restore.md)。
+当前 `scripts/backup.sh` 只读取 app 容器环境中的 `STORAGE_DRIVER` fallback，不读取后台 DB override，也不会为混合 local/S3 历史文件做完整 inventory。运行前必须对比后台有效 Storage 配置、env fallback 和 `files.storage_driver` 分布；env 选中之外的 local volume 或 S3/R2 recovery point 需要单独保护。详见[备份与恢复](deployment/backup-restore.md)。
 
 ## 6. 安全升级
 
@@ -77,11 +77,11 @@ entrypoint 会准备目录与配置加密密钥、运行 forward migration，然
 
 1. 阅读 `CHANGELOG.md` 与目标版本 release notes；
 2. 生成并验证完整备份，确认磁盘空间；
-3. 按 [升级指南](deployment/upgrade.md) stage 新镜像；
+3. 按[升级指南](deployment/upgrade.md) stage 新镜像；
 4. 停止全部旧 app replica；
 5. 运行 duplicate pending payment report/remediation；
 6. 运行 one-off migrator；
 7. 预览并执行 `files-backfill.mjs --apply`；
 8. 只有所有步骤成功后才启动新 app，并验证 `/api/ready`、登录、付款和样本文件。
 
-v1.0 的 S7 #87 还会把 archive 校验、旧 schema probe、恢复任务中和和 DB↔存储收敛加入正式恢复流程；发布验收以 [v1.0 清单](release-v1.0-checklist.md)为准。
+v1.0 的 S7 #87 还会把 archive 校验、旧 schema probe、恢复任务中和、DB-aware storage inventory 和 DB↔存储收敛加入正式恢复流程；发布验收以 [v1.0 清单](release-v1.0-checklist.md)为准。
