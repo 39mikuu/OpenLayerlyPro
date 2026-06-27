@@ -25,7 +25,7 @@
 - `smtp.ts`：DB ＞ env ＞ default；配置完整性由 host/from 判断。
 - `turnstile.ts`：逐字段 DB ＞ env；DB `enabled=false` 可覆盖 env `true`。
 - `storage.ts`：DB ＞ env ＞ default，支持 local / S3；历史文件仍按行内 driver/bucket。
-- `upload.ts`：内容附件和图片用途上限按 DB ＞ env ＞ default。
+- `upload.ts`：内容附件上限直接按 DB ＞ env；付款凭证/二维码上限按 DB 请求值与 env hard ceiling 取较小值。
 - `stripe.ts`：后台加密配置，默认 disabled；secret key/webhook secret 必须完整后才能启用。
 - `translation.ts`：后台加密配置，默认 disabled；provider/model/endpoint/API key 完整后才 configured。
 
@@ -72,10 +72,11 @@
 ## Upload ✅
 
 - API：`/api/admin/config/upload` GET/PUT/DELETE。
-- 配置内容附件 hard limit 与 payment proof/QR image limit；DB 值只能降低/覆盖对应部署上限契约，不能绕过服务端边界。
+- **内容附件 `maxUploadSizeMb`**：最终值直接按 DB ＞ `MAX_UPLOAD_SIZE_MB` env ＞ default 解析。后台 DB 值可以高于 env fallback；运维必须同步检查反向代理、磁盘、对象存储和业务容量，不能把 env 值误当成不可突破的 hard ceiling。
+- **付款凭证/二维码 `paymentProofMaxSizeMb`**：后台值只能降低或等于 `PAYMENT_PROOF_MAX_SIZE_MB` env ceiling，解析时使用 `Math.min(DB-or-env, env)`；DB 不能提高这一图片传输上限。
 - **内容附件**通过 raw-body 流式写入 local/S3，并在流中计算字节数与 SHA-256，不随整文件线性占用应用内存。
 - **图片用途**（avatar、QR、proof、content image、cover、thumbnail）会有界缓冲并交给 sharp 做权威格式检测、像素/帧限制、重编码和 metadata stripping。
-- 反向代理 body limit 只是第二层；应用实际字节累计仍是权威限制。
+- 反向代理 body limit 只是第二层；应用实际字节累计仍是权威限制。代理上限应覆盖计划允许的应用上限，但不应被当作应用校验替代品。
 
 ## Stripe ✅
 
