@@ -4,9 +4,10 @@ Last updated: 2026-06-27 (Asia/Singapore)
 
 ## Current stage
 
-S6 implementation, complete local verification, and final independent review
-are complete. Creating the S6 Draft PR is the next permitted action. S7 remains
-blocked on the human merge gate.
+S6 implementation, complete local verification, final independent review, and
+Draft PR publication are complete. PR #90 remains Draft and its implementation
+commit passed GitHub CI. The current stage is the human S6 merge gate; S7 must
+not begin before that merge.
 
 ## Authoritative inputs read
 
@@ -36,10 +37,13 @@ blocked on the human merge gate.
   39mikuu/docs/refresh-roadmap-v1-status`)
 - Branch: `codex/s6-security-response-headers`
 - Worktree: `/home/miku/OpenLayerlyPro-s6`
-- Current HEAD: `8d85e81b08d257f6382bfabe0c78351741e28b56`
-- Planned Docker Compose project: `openlayerlypro_s6_86`
-- Planned PostgreSQL test database: `openlayerlypro_s6_86_test`
-- Reserved app/PostgreSQL/MinIO ports: `3001`, `5433`, `9000`, `9001`
+- Reviewed implementation commit:
+  `e17e623b97dfca82043c88372c956b1811d9bef5`
+- Draft PR: `https://github.com/39mikuu/OpenLayerlyPro/pull/90`
+- Docker Compose project: `openlayerlypro_s6_86`
+- PostgreSQL test database: `openlayerlypro_s6_86_test`
+- Isolated app/PostgreSQL ports: `3001`, `5433`; standalone image smoke:
+  `3002`
 
 ## Completed work
 
@@ -113,6 +117,15 @@ blocked on the human merge gate.
 - Three final fresh-context verifiers independently reviewed the latest
   complete working-tree diff for security/specification, browser/tests, and
   documentation/evidence. All three returned `CLEAN`.
+- Committed and pushed the reviewed implementation as
+  `e17e623b97dfca82043c88372c956b1811d9bef5`.
+- Opened Draft PR #90 against canonical `main`; the PR closes #86, documents
+  the exact scope/invariants/migration behavior/evidence/limitations, and
+  explicitly excludes S7.
+- GitHub Actions CI run `28289646888` completed successfully for the exact
+  implementation commit. Its single `check` job passed install, static gates,
+  migration, all tests, build, browser installation, isolated browser DB
+  preparation, and the Playwright security scenario in 4m04s.
 
 ## Commands actually executed
 
@@ -217,6 +230,13 @@ sudo -n docker run --rm --entrypoint sh openlayerlypro:s6-86 ...
 sudo -n docker run ... openlayerlypro:s6-86
 curl ... http://127.0.0.1:3002/
   final standalone smoke passed with nonce rotation and required headers
+git commit -m "feat(security): add nonce-based response headers"
+  e17e623b97dfca82043c88372c956b1811d9bef5
+git push -u origin codex/s6-security-response-headers
+GitHub Draft PR creation
+  https://github.com/39mikuu/OpenLayerlyPro/pull/90
+gh run watch 28289646888 --repo 39mikuu/OpenLayerlyPro --exit-status
+  CI passed on e17e623b97dfca82043c88372c956b1811d9bef5
 ```
 
 ## Open reviewer findings
@@ -227,15 +247,16 @@ documentation/evidence verifiers each returned `CLEAN`.
 
 ## Blockers
 
-- No S6 implementation blocker. Docker access is available through
-  non-interactive `sudo -n docker`.
+- The S6 human merge gate is active. This is an intentional sequencing gate,
+  not an implementation failure.
+- Docker access is available through non-interactive `sudo -n docker`.
 - `rg` is unavailable; repository inspection uses `git grep`, `find`, and
   other non-mutating fallbacks.
 
 ## Next permitted action
 
-Commit the reviewed S6 working tree, review `origin/main...HEAD`, publish the
-S6 PR as Draft, and wait for CI. Do not start S7.
+Wait for a human to review and merge Draft PR #90. Do not mark it Ready, merge
+it, or begin S7 autonomously.
 
 ## Human gates still required
 
