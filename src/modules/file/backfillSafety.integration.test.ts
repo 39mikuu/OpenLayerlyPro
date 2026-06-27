@@ -14,14 +14,14 @@ const storageState = vi.hoisted(() => ({
 
 const uploadConfigState = vi.hoisted(() => ({ paymentProofMaxSizeMb: 10 }));
 
-vi.mock("@/modules/config", () => ({
+const uploadConfigMock = vi.hoisted(() => ({
   getUploadConfig: vi.fn(async () => ({
     maxUploadSizeMb: 500,
     paymentProofMaxSizeMb: uploadConfigState.paymentProofMaxSizeMb,
   })),
 }));
 
-vi.mock("@/modules/storage", () => ({
+const storageRuntimeMock = vi.hoisted(() => ({
   getStorageForDriver: vi.fn(async (driver: "local" | "s3") => ({
     driver,
     putObject: storageState.putObject,
@@ -30,6 +30,11 @@ vi.mock("@/modules/storage", () => ({
     deleteObject: storageState.deleteObject,
   })),
 }));
+
+vi.mock("@/modules/config", () => uploadConfigMock);
+vi.mock("@/modules/config/upload", () => uploadConfigMock);
+vi.mock("@/modules/storage", () => storageRuntimeMock);
+vi.mock("@/modules/storage/runtime", () => storageRuntimeMock);
 
 import { getDb } from "@/db";
 import { appEvents, files, tasks } from "@/db/schema";
