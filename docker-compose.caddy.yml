@@ -1,4 +1,9 @@
 services:
+  app:
+    # Production traffic must enter through Caddy. Remove the base Compose
+    # 0.0.0.0:3000 mapping so trusted proxy headers cannot be bypassed.
+    ports: !reset []
+
   caddy:
     image: caddy:2
     restart: unless-stopped
