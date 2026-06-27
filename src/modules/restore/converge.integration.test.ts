@@ -1,0 +1,106 @@
+import { randomUUID } from "crypto";
+import { and, eq } from "drizzle-orm";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+const storageState = vi.hoisted(() => ({
+  existing: new Map<string, string>(),
+  enumerated: [] as string[],
+}));
+
+vi.mock("@/modules/restore/storageProbe", async () => {
+  const actual = await vi.importActual<typeof import("./storageProbe")>(
+    "@/modules/restore/storageProbe",
+  );
+  return {
+    ...actual,
+    objectExists: vi.fn(async ({ objectKey }: { objectKey: string }) =>
+      storageState.existing.has(objectKey),
+    ),
+    enumerateStorageObjects: vi.fn(async () => ({
+      objectKeys: storageState.enumerated,
+      bucket: null,
+      truncated: false,
+    })),
+  };
+});
+
+import { getDb } from "@/db";
+import { files, tasks } from "@/db/schema";
+import { resetDatabase } from "@/modules/__invariants__/db-reset";
+import { FILE_SAFETY_REMEDIATION_VERSION } from "@/modules/file/backfillSafety";
+import { createStorageDeleteDedupeKeyForTests } from "@/modules/file/cleanup";
+
+import { runRestoreConverge } from "./converge";
+
+const describeWithDatabase =
+  process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
+
+describeWithDatabase("restore converge integration", () => {
+  const db = getDb();
+
+  beforeEach(async () => {
+    await resetDatabase(db);
+    storageState.existing.clear();
+    storageState.enumerated = [];
+    vi.clearAllMocks();
+  });
+
+  afterAll(async () => {
+    await resetDatabase(db);
+  });
+
+  async function seedFile(objectKey: string) {
+    const [file] = await db
+      .insert(files)
+      .values({
+        storageDriver: "local",
+        bucket: null,
+        objectKey,
+        originalName: `${objectKey}.png`,
+        mimeType: "image/png",
+        sizeBytes: 128,
+        purpose: "content_image",
+      })
+      .returning();
+    storageState.existing.set(objectKey, file!.id);
+    return file!;
+  }
+
+  it("quarantines missing referenced objects and enqueues orphan deletions", async () => {
+    const referenced = await seedFile(`referenced/${randomUUID()}.png`);
+    const missing = await seedFile(`missing/${randomUUID()}.png`);
+    storageState.existing.delete(missing.objectKey);
+    const orphanKey = `orphan/${randomUUID()}.png`;
+    storageState.enumerated = [referenced.objectKey, orphanKey];
+
+    const report = await runRestoreConverge(db);
+
+    expect(report.totalMissingReferenced).toBe(1);
+    expect(report.totalNewlyQuarantined).toBe(1);
+    expect(report.totalOrphanObjects).toBe(1);
+    expect(report.totalOrphanDeletesEnqueued).toBe(1);
+
+    const [missingRow] = await db.select().from(files).where(eq(files.id, missing.id));
+    expect(missingRow).toMatchObject({
+      quarantineReason: "missing after restore",
+      remediationVersion: FILE_SAFETY_REMEDIATION_VERSION,
+    });
+
+    const deletePayload = {
+      storageDriver: "local" as const,
+      bucket: null,
+      objectKey: orphanKey,
+    };
+    const [deleteTask] = await db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.kind, "storage.delete_object"),
+          eq(tasks.dedupeKey, createStorageDeleteDedupeKeyForTests(deletePayload)),
+        ),
+      );
+    expect(deleteTask).toBeDefined();
+    expect(deleteTask?.payloadJson).toEqual(deletePayload);
+  });
+});

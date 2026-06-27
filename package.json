@@ -21,6 +21,11 @@
     "files:backfill-safety": "node dist/files-backfill.mjs",
     "admin:reset": "node scripts/admin-reset.mjs",
     "build:admin-reset": "esbuild scripts/admin-reset.mjs --bundle --platform=node --format=esm --outfile=dist/admin-reset.mjs",
+    "build:restore-pre-scan": "esbuild scripts/restore-pre-scan.mjs --bundle --platform=node --format=esm --alias:@=./src --outfile=dist/restore-pre-scan.mjs",
+    "build:restore-neutralize": "esbuild scripts/restore-neutralize.mjs --bundle --platform=node --format=esm --alias:@=./src --outfile=dist/restore-neutralize.mjs",
+    "build:restore-converge": "esbuild scripts/restore-converge.mjs --bundle --platform=node --format=esm --alias:@=./src --outfile=dist/restore-converge.mjs",
+    "build:restore-schema-check": "esbuild scripts/restore-schema-check.mjs --bundle --platform=node --format=esm --alias:@=./src --outfile=dist/restore-schema-check.mjs",
+    "build:restore-tools": "pnpm run build:restore-pre-scan && pnpm run build:restore-neutralize && pnpm run build:restore-converge && pnpm run build:restore-schema-check",
     "prepare": "husky"
   },
   "dependencies": {

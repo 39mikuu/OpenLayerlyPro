@@ -12,7 +12,7 @@ RUN corepack enable pnpm
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm build && pnpm build:migrator && pnpm build:files-backfill && pnpm build:admin-reset
+RUN pnpm build && pnpm build:migrator && pnpm build:files-backfill && pnpm build:admin-reset && pnpm build:restore-tools
 
 # ---- 运行 ----
 FROM node:22-bookworm-slim AS runner
@@ -33,6 +33,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/src/db/migrations ./src/db/migrat
 COPY --from=builder --chown=nextjs:nodejs /app/dist/migrate.mjs ./dist/migrate.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/files-backfill.mjs ./dist/files-backfill.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/admin-reset.mjs ./dist/admin-reset.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-pre-scan.mjs ./dist/restore-pre-scan.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-neutralize.mjs ./dist/restore-neutralize.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-converge.mjs ./dist/restore-converge.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-schema-check.mjs ./dist/restore-schema-check.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/dedupe-pending-payments.mjs ./scripts/dedupe-pending-payments.mjs
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \

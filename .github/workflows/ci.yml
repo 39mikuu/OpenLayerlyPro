@@ -42,7 +42,24 @@ jobs:
       - run: pnpm db:migrate
       - run: pnpm test
       - run: pnpm build:migrator
+      - run: pnpm build:files-backfill
+      - run: pnpm build:admin-reset
+      - run: pnpm build:restore-tools
       - run: pnpm build
+      - name: Verify one-off artifacts
+        run: |
+          node --check dist/migrate.mjs
+          node --check dist/files-backfill.mjs
+          node --check dist/admin-reset.mjs
+          node --check dist/restore-pre-scan.mjs
+          node --check dist/restore-neutralize.mjs
+          node --check dist/restore-converge.mjs
+          node --check dist/restore-schema-check.mjs
+      - name: Shellcheck backup scripts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck scripts/backup.sh scripts/restore.sh
       - name: Install browser
         run: pnpm exec playwright install --with-deps chromium
       - name: Prepare browser test database

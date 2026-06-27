@@ -1,7 +1,5 @@
 # Backup and Restore
 
-> **Current runtime baseline:** the commands in this document describe the existing v1 archive/restore tooling. They do not yet implement S7 #87 archive checksums, legacy schema probing, restored-task neutralization, mandatory file-safety remediation during restore, DB↔storage convergence, or DB-aware storage-mode detection. Do not treat this baseline procedure as the final v1.0 recovery guarantee. The v1.0 release gate is [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
-
 OpenLayerlyPro data is not recoverable from the PostgreSQL dump alone. A recovery set must account for:
 
 - PostgreSQL database;
@@ -21,11 +19,12 @@ Required host tools:
 - Docker Engine;
 - Docker Compose v2;
 - POSIX `sh`;
-- `tar`, `mktemp`, and `curl`.
+- `tar`, `mktemp`, `curl`, and `sha256sum`;
+- Node.js on the host for `backup.sh` migration/manifest helpers.
 
 The scripts honor `COMPOSE_PROJECT_NAME`.
 
-## Create a Baseline Backup
+## Create a Backup
 
 ```bash
 ./scripts/backup.sh
@@ -37,23 +36,28 @@ The default output directory is `./backups`; another directory may be supplied:
 ./scripts/backup.sh /srv/backups/openlayerly
 ```
 
-The current archive is named like:
+New archives use `FORMAT_VERSION=2` and are named like:
 
 ```text
-openlayerly-backup-20260619-052110.tar.gz
+openlayerly-backup-20260627-134500.tar.gz
 ```
 
-Current v1 archive members:
+Archive members:
 
 ```text
 db.sql
 manifest.env
+checksums.sha256
 secrets/config-encryption-key
 uploads/                         # included only when container env STORAGE_DRIVER resolves to local
 UPLOADS_SKIPPED_S3               # written only when container env STORAGE_DRIVER resolves to s3
 ```
 
-The script uses restrictive permissions and fails if the database dump, config key, env-based storage detection, selected upload copy, or archive creation fails. It does not print database passwords or key contents. A successful exit does **not** prove that the selected storage mode matches the effective DB-backed Storage configuration or that mixed-driver history is complete.
+`manifest.env` records `APP_VERSION`, `STORAGE_DRIVER`, `UPLOADS_INCLUDED`, migration identity (`LATEST_MIGRATION_HASH`, `MIGRATION_IDENTITIES_JSON`), and a hot-backup window note (`pg_dump(T1)` then uploads `T2)`).
+
+`checksums.sha256` covers every payload member except itself. `restore.sh` verifies checksums before any destructive step on v2 archives.
+
+Legacy `FORMAT_VERSION=1` archives remain restorable through the compatibility path below, but they have no checksum protection and emit an explicit warning.
 
 ### External Config Key
 
@@ -61,9 +65,9 @@ When `CONFIG_ENCRYPTION_KEY` is supplied directly, `backup.sh` refuses to descri
 
 ### Storage Detection Limitation
 
-The current `backup.sh` reads only `STORAGE_DRIVER` from the app container environment. Runtime uploads instead resolve Storage as DB override > env fallback, and historical local/S3 files can coexist after a driver switch.
+`backup.sh` still reads only `STORAGE_DRIVER` from the app container environment. Runtime uploads resolve Storage as DB override > env fallback, and historical local/S3 files can coexist after a driver switch.
 
-Before relying on a baseline archive:
+Before relying on an archive:
 
 1. inspect the effective Storage configuration in the admin settings and compare it with the app container's `STORAGE_DRIVER` env fallback;
 2. query or otherwise inventory file rows by `storage_driver`;
@@ -71,66 +75,56 @@ Before relying on a baseline archive:
 4. if any S3 rows exist, preserve the matching bucket/version recovery point even when the env fallback is `local`;
 5. record the comparison and restore a sample in an isolated project.
 
-A DB override mismatch or mixed-driver history means `backup.sh` alone is not a complete recovery set. S7 #87 must replace this ambiguity with fail-safe manifest/inventory behavior; until then, operators must collect the missing storage side explicitly.
+Mixed-driver history still requires operators to protect both sides explicitly. Restore convergence reconciles DB references against the recovered storage recovery point, but it cannot recreate objects that were never restored.
 
 ### Local Storage Consistency
 
-When the script selects local mode from the container env, it performs a database dump and then copies local uploads. Writes during that interval can create a DB↔storage time gap. For the safest current baseline backup, stop the app or use a maintenance window that blocks writes until the archive and any separately collected storage data are complete.
-
-S7 #87 will retain the practical hot-backup option but add manifest/checksum metadata and mandatory pre-start convergence; until then, operators must understand this residual.
+When the script selects local mode from the container env, it performs a database dump and then copies local uploads. Writes during that interval can create a DB↔storage time gap. For the safest backup, stop the app or use a maintenance window that blocks writes until the archive and any separately collected storage data are complete.
 
 ### S3 / R2
 
-When the container env resolves to `s3`, the archive contains DB + config key and adds `UPLOADS_SKIPPED_S3`; it does not copy bucket objects. The marker reflects the env fallback, not a verified DB-effective mode or object inventory. Enable versioning/snapshots/provider backup and record a recovery point close to the DB backup. Restoring DB rows cannot recreate deleted objects.
+When the container env resolves to `s3`, the archive contains DB + config key and adds `UPLOADS_SKIPPED_S3`; it does not copy bucket objects. Enable versioning/snapshots/provider backup and record a recovery point close to the DB backup. Restoring DB rows cannot recreate deleted objects.
 
-## Restore the Current Baseline Archive
+## Restore
 
 > Restore is destructive. It replaces the target project's database, file-backed config key, and local uploads when present.
 
 Interactive:
 
 ```bash
-./scripts/restore.sh ./backups/openlayerly-backup-20260619-052110.tar.gz
+./scripts/restore.sh ./backups/openlayerly-backup-20260627-134500.tar.gz
 ```
 
 Reviewed automation:
 
 ```bash
-./scripts/restore.sh ./backups/openlayerly-backup-20260619-052110.tar.gz --yes
+./scripts/restore.sh ./backups/openlayerly-backup-20260627-134500.tar.gz --yes
 ```
 
-The **current** restore script:
+Legacy v1 archives with unreadable migration history require an explicit operator override:
 
-1. rejects unsafe archive paths;
-2. starts and waits for PostgreSQL;
-3. stops the app and recreates the target database;
-4. imports `db.sql` with `ON_ERROR_STOP=1`;
-5. restores the file-backed config encryption key;
-6. replaces local uploads when `uploads/` is present, or reports the env-derived S3 marker;
-7. starts the app, whose entrypoint runs forward migrations;
-8. polls `/api/ready`.
+```bash
+./scripts/restore.sh ./backups/legacy-v1-archive.tar.gz --yes --allow-legacy-v1-unknown-schema
+```
 
-This baseline sequence does **not** yet perform the S7 pre-start pipeline. In particular, it does not guarantee that restored task leases/dedupe keys are safe to replay, that old image rows have passed the mandatory S1a backfill, that the archive captured every local/S3 object referenced by the restored DB, or that every DB file reference matches storage before the dispatcher starts.
+That flag only relaxes **unknown** v1 history. It cannot bypass confirmed newer/divergent migration histories.
 
-For recovery work before #87 lands, prefer an isolated project, keep the production app stopped, review the imported data, run the documented one-off migration/file-safety steps where applicable, restore every separately protected local/S3 component, and do not expose the restored app until file/task/payment consistency has been assessed.
+### Hardened restore sequence
 
-The script refuses a target that sets `CONFIG_ENCRYPTION_KEY` directly because the env value would override the restored file. Restore the matching external key through the secret manager or remove the override before retrying.
-
-## S7 Target Restore Sequence (Not Yet Implemented)
-
-Issue #87 must implement and test this sequence before v1.0 release:
+`restore.sh` keeps the app/dispatcher stopped until the full pipeline succeeds:
 
 ```text
-validate archive / checksum
+validate archive paths
+→ verify v2 checksums (v1 warns and continues)
 → v2 manifest compatibility check, or v1 isolated temporary-DB schema probe
 → import official DB and restore matching secrets/storage recovery point
-→ one-off forward migrator
-→ pre-scan missing referenced objects and quarantine them
+→ one-off forward migrator (dist/migrate.mjs)
+→ pre-scan missing referenced objects and quarantine them (dist/restore-pre-scan.mjs)
 → mandatory files-backfill.mjs --apply
-→ transactionally neutralize/re-arm tasks and payment-provider events
-→ one-off DB↔storage convergence
+→ transactionally neutralize/re-arm tasks and payment-provider events (dist/restore-neutralize.mjs)
+→ one-off DB↔storage convergence (dist/restore-converge.mjs)
 → start normal app/dispatcher
-→ /api/ready and recovery report checks
+→ /api/ready
 ```
 
 Key invariants:
@@ -140,42 +134,54 @@ Key invariants:
 - provider-event rows and dispatch tasks are restored as a pair;
 - missing objects become quarantine/410, not storage 500;
 - only convergence may re-enqueue deletion for confirmed orphans;
-- any migration/backfill/neutralization/convergence error prevents normal app startup.
+- any migrator/backfill/neutralization/convergence error prevents normal app startup.
+
+The target image must contain and be able to execute:
+
+```text
+dist/migrate.mjs
+dist/files-backfill.mjs
+dist/admin-reset.mjs
+dist/restore-pre-scan.mjs
+dist/restore-neutralize.mjs
+dist/restore-converge.mjs
+dist/restore-schema-check.mjs
+```
+
+The script refuses a target that sets `CONFIG_ENCRYPTION_KEY` directly because the env value would override the restored file. Restore the matching external key through the secret manager or remove the override before retrying.
+
+### SESSION_SECRET semantics
+
+`SESSION_SECRET` is not stored in the archive. Operators must back it up separately. Losing or rotating it invalidates sessions and can make in-flight encrypted login-code tasks undecryptable. Recovery remains possible, but all users must sign in again.
+
+### Stripe residual risk
+
+After restore, review payment/subscription/dispute state near the archive timestamp. Provider events are re-armed from the DB snapshot; reconcile runs afterward, but DB and live Stripe state are not atomically identical.
 
 ## Restore to an Independent Project
 
 Use a separate Compose project for drills:
 
 ```bash
-docker compose -p ams_restore_test build app
-COMPOSE_PROJECT_NAME=ams_restore_test \
+docker compose -p openlayerlypro_s7_drill build app
+COMPOSE_PROJECT_NAME=openlayerlypro_s7_drill \
   READY_URL=http://localhost:3000/api/ready \
-  ./scripts/restore.sh ./backups/openlayerly-backup-20260619-052110.tar.gz --yes
+  ./scripts/restore.sh ./backups/openlayerly-backup-20260627-134500.tar.gz --yes
 ```
 
 Only one project can bind host port 3000 with the default Compose file. Stop the source app or use an override with another loopback-only host port and matching `READY_URL`.
 
 ## Version Boundary
 
-The current baseline only supports restoring into the same application version or a newer compatible release line. It relies on forward migrations at startup and cannot safely restore a newer DB into older application code.
-
-S7 #87 will make the check explicit:
-
-- v2 archives carry a migration identity and must be an exact same-order/hash prefix of the target journal;
-- v1 archives are imported into an isolated temporary DB for Drizzle migration-history comparison;
+- v2 archives carry migration identity and must be a same-order/hash prefix of the target image journal;
+- v1 archives are imported into an isolated temporary database for Drizzle migration-history comparison before the official DB is replaced;
 - confirmed newer/divergent history is rejected;
-- unknown v1 history fails closed unless an explicit legacy override is used, and that override cannot bypass confirmed incompatibility.
-
-## Historical Clean-Environment Drill
-
-A baseline drill passed on **2026-06-19** from commit `599a8d7` with PostgreSQL 16. It recovered one post, one membership, one local upload marker, and one encrypted SMTP group into a clean Compose project; `/api/ready` passed and the encrypted group was readable.
-
-That drill validates the original issue #11 archive mechanics only. It predates subscriptions, S1a/S1b task semantics, S5 delivery ledger, DB-backed Storage overrides, mixed-driver history, and the S7 consistency model, so it is not sufficient evidence for v1.0. #87/#88 require a new drill covering tasks, provider events, file remediation, local/S3 drift, checksums and legacy schema compatibility.
+- unknown v1 history fails closed unless `--allow-legacy-v1-unknown-schema` is supplied, and that override cannot bypass confirmed incompatibility.
 
 ## Cleanup After a Drill
 
 ```bash
-docker compose -p ams_restore_test down -v
+docker compose -p openlayerlypro_s7_drill down -v
 ```
 
 Never run `down -v` against production unless its data has already been safely recovered elsewhere.

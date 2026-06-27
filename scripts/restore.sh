@@ -5,7 +5,7 @@ set -eu
 umask 077
 
 usage() {
-  echo "Usage: $0 <archive.tar.gz> [--yes]" >&2
+  echo "Usage: $0 <archive.tar.gz> [--yes] [--allow-legacy-v1-unknown-schema]" >&2
 }
 
 fail() {
@@ -17,26 +17,49 @@ compose() {
   docker compose "$@"
 }
 
-[ "$#" -ge 1 ] && [ "$#" -le 2 ] || {
+run_one_off() {
+  compose run --rm --no-deps -T \
+    -v "$WORK_DIR:/restore-work:ro" \
+    --entrypoint node app "$@"
+}
+
+ARCHIVE_PATH=""
+ASSUME_YES=false
+ALLOW_LEGACY_V1_UNKNOWN=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --yes)
+      ASSUME_YES=true
+      ;;
+    --allow-legacy-v1-unknown-schema)
+      ALLOW_LEGACY_V1_UNKNOWN=true
+      ;;
+    --*)
+      usage
+      exit 2
+      ;;
+    *)
+      if [ -n "$ARCHIVE_PATH" ]; then
+        usage
+        exit 2
+      fi
+      ARCHIVE_PATH=$arg
+      ;;
+  esac
+done
+
+[ -n "$ARCHIVE_PATH" ] || {
   usage
   exit 2
 }
-
-ARCHIVE_PATH=$1
-ASSUME_YES=false
-if [ "$#" -eq 2 ]; then
-  [ "$2" = "--yes" ] || {
-    usage
-    exit 2
-  }
-  ASSUME_YES=true
-fi
 
 [ -f "$ARCHIVE_PATH" ] || fail "archive not found: $ARCHIVE_PATH"
 command -v docker >/dev/null 2>&1 || fail "docker is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v mktemp >/dev/null 2>&1 || fail "mktemp is required"
 command -v curl >/dev/null 2>&1 || fail "curl is required"
+command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
 docker compose version >/dev/null 2>&1 || fail "docker compose is required"
 
 if tar -tzf "$ARCHIVE_PATH" | grep -E '(^/|(^|/)\.\.(/|$))' >/dev/null 2>&1; then
@@ -44,7 +67,14 @@ if tar -tzf "$ARCHIVE_PATH" | grep -E '(^/|(^|/)\.\.(/|$))' >/dev/null 2>&1; the
 fi
 
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-restore.XXXXXX")
+PROBE_DB=""
 cleanup() {
+  if [ -n "$PROBE_DB" ]; then
+    compose exec -T postgres sh -c "
+      set -eu
+      dropdb --if-exists --force -U \"\${POSTGRES_USER:-artist}\" \"$PROBE_DB\" >/dev/null 2>&1 || true
+    " >/dev/null 2>&1 || true
+  fi
   rm -rf "$WORK_DIR"
 }
 trap cleanup 0 HUP INT TERM
@@ -52,11 +82,34 @@ trap cleanup 0 HUP INT TERM
 tar -xzf "$ARCHIVE_PATH" -C "$WORK_DIR"
 [ -s "$WORK_DIR/db.sql" ] || fail "archive is missing db.sql"
 [ -s "$WORK_DIR/secrets/config-encryption-key" ] || fail "archive is missing the config encryption key"
+[ -f "$WORK_DIR/manifest.env" ] || fail "archive is missing manifest.env"
+
+# shellcheck disable=SC1091
+. "$WORK_DIR/manifest.env"
+
+FORMAT_VERSION=${FORMAT_VERSION:-1}
+case "$FORMAT_VERSION" in
+  1|2) ;;
+  *) fail "unsupported FORMAT_VERSION=$FORMAT_VERSION" ;;
+esac
+
+if [ "$FORMAT_VERSION" = "2" ]; then
+  [ -f "$WORK_DIR/checksums.sha256" ] || fail "FORMAT_VERSION=2 archive is missing checksums.sha256"
+  echo "Verifying archive checksums..."
+  (
+    cd "$WORK_DIR" || exit 1
+    sha256sum -c checksums.sha256
+  ) || fail "archive checksum verification failed"
+else
+  echo "WARNING: FORMAT_VERSION=1 archive has no checksum protection" >&2
+fi
 
 if [ "$ASSUME_YES" != true ]; then
   [ -t 0 ] || fail "confirmation requires an interactive terminal; pass --yes for automation"
   echo "This will replace the target Compose project's database and file-backed secrets."
   echo "Local uploads will also be replaced when they are present in the archive."
+  echo "The hardened restore pipeline will run migrator, pre-scan, file-safety backfill,"
+  echo "task neutralization, and DB/storage convergence before starting the app."
   printf "Type RESTORE to continue: "
   read -r answer
   [ "$answer" = "RESTORE" ] || fail "restore cancelled"
@@ -79,6 +132,43 @@ compose create app >/dev/null
 
 if ! compose run --rm -T --no-deps --entrypoint sh app -c 'test -z "${CONFIG_ENCRYPTION_KEY:-}"'; then
   fail "target defines CONFIG_ENCRYPTION_KEY; unset it or restore the matching externally managed value before continuing"
+fi
+
+SCHEMA_ARGS="--format-version=$FORMAT_VERSION"
+if [ "$ALLOW_LEGACY_V1_UNKNOWN" = true ]; then
+  SCHEMA_ARGS="$SCHEMA_ARGS --allow-legacy-v1-unknown-schema"
+fi
+
+if [ "$FORMAT_VERSION" = "1" ]; then
+  PROBE_DB="openlayerly_restore_probe_${TIMESTAMP:-$(date +%s)}_$$"
+  echo "Probing legacy archive schema compatibility in isolated database $PROBE_DB..."
+  compose exec -T postgres sh -c "
+    set -eu
+    createdb -U \"\${POSTGRES_USER:-artist}\" \"$PROBE_DB\"
+  "
+  compose exec -T postgres sh -c "
+    set -eu
+    exec psql -v ON_ERROR_STOP=1 -U \"\${POSTGRES_USER:-artist}\" -d \"$PROBE_DB\"
+  " < "$WORK_DIR/db.sql"
+
+  PROBE_DATABASE_URL="postgresql://${POSTGRES_USER:-artist}:${POSTGRES_PASSWORD:-artist_password}@postgres:5432/$PROBE_DB"
+  if ! run_one_off /app/dist/restore-schema-check.mjs \
+    --database-url="$PROBE_DATABASE_URL" \
+    $SCHEMA_ARGS; then
+    fail "legacy archive schema compatibility check failed"
+  fi
+  compose exec -T postgres sh -c "
+    set -eu
+    dropdb --if-exists --force -U \"\${POSTGRES_USER:-artist}\" \"$PROBE_DB\"
+  "
+  PROBE_DB=""
+else
+  echo "Checking archive migration compatibility from manifest..."
+  if ! run_one_off /app/dist/restore-schema-check.mjs \
+    --manifest-path=/restore-work/manifest.env \
+    $SCHEMA_ARGS; then
+    fail "archive schema compatibility check failed"
+  fi
 fi
 
 echo "Replacing PostgreSQL database..."
@@ -112,7 +202,22 @@ else
   fail "archive contains neither uploads nor the S3 skip marker"
 fi
 
-echo "Starting application and applying forward migrations..."
+echo "Running forward migrator in one-off container..."
+run_one_off /app/dist/migrate.mjs || fail "forward migrator failed"
+
+echo "Pre-scanning referenced objects and quarantining missing files..."
+run_one_off /app/dist/restore-pre-scan.mjs || fail "restore pre-scan failed"
+
+echo "Applying mandatory file-safety backfill..."
+run_one_off /app/dist/files-backfill.mjs --apply || fail "file-safety backfill failed"
+
+echo "Neutralizing restored tasks and payment-provider events..."
+run_one_off /app/dist/restore-neutralize.mjs || fail "restore neutralization failed"
+
+echo "Converging database and storage references..."
+run_one_off /app/dist/restore-converge.mjs || fail "restore convergence failed"
+
+echo "Starting application..."
 compose up -d app
 
 READY_URL=${READY_URL:-http://localhost:3000/api/ready}
@@ -128,3 +233,4 @@ while :; do
 done
 
 echo "Restore completed from: $ARCHIVE_PATH"
+echo "Review Stripe/payment state near the archive timestamp and verify convergence output above."
