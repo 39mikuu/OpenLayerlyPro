@@ -53,9 +53,9 @@ uploads/                         # included only when container env STORAGE_DRIV
 UPLOADS_SKIPPED_S3               # written only when container env STORAGE_DRIVER resolves to s3
 ```
 
-`manifest.env` records `APP_VERSION`, `STORAGE_DRIVER`, `UPLOADS_INCLUDED`, migration identity (`LATEST_MIGRATION_HASH`, `MIGRATION_IDENTITIES_JSON`), and a hot-backup window note (`pg_dump(T1)` then uploads `T2)`).
+`manifest.env` records `APP_VERSION`, `STORAGE_DRIVER`, `UPLOADS_INCLUDED`, migration identity (`LATEST_MIGRATION_HASH`, `MIGRATION_IDENTITIES_JSON`), the source container `CONFIG_ENCRYPTION_KEY_FILE` path at backup time, and a hot-backup window note (`pg_dump(T1)` then uploads `T2)`).
 
-`checksums.sha256` covers every payload member except itself. `restore.sh` verifies checksums before any destructive step on v2 archives.
+`checksums.sha256` covers every payload member except itself. On v2 archives, `restore.sh` verifies checksums and then enforces a strict bijection: every extracted payload file must appear exactly once in the manifest, and every manifest entry must have a matching payload file. Either mismatch aborts restore before any destructive step.
 
 Legacy `FORMAT_VERSION=1` archives remain restorable through the compatibility path below, but they have no checksum protection and emit an explicit warning.
 
@@ -115,9 +115,9 @@ That flag only relaxes **unknown** v1 history. It cannot bypass confirmed newer/
 
 ```text
 validate archive paths
-→ verify v2 checksums (v1 warns and continues)
+→ verify v2 checksums and manifest/payload bijection (v1 warns and continues)
 → v2 manifest compatibility check, or v1 isolated temporary-DB schema probe
-→ import official DB and restore matching secrets/storage recovery point
+→ import official DB and restore config key to the target CONFIG_ENCRYPTION_KEY_FILE path
 → one-off forward migrator (dist/migrate.mjs)
 → pre-scan missing referenced objects and quarantine them (dist/restore-pre-scan.mjs)
 → mandatory files-backfill.mjs --apply
@@ -134,7 +134,9 @@ Key invariants:
 - provider-event rows and dispatch tasks are restored as a pair;
 - missing objects become quarantine/410, not storage 500;
 - only convergence may re-enqueue deletion for confirmed orphans;
-- any migrator/backfill/neutralization/convergence error prevents normal app startup.
+- any migrator/backfill/neutralization/convergence error prevents normal app startup;
+- S3 convergence enumerates only controlled application key namespaces (`avatars/`, `payment-qr/`, `payment-proof/`, `content/`, `legacy/`, `remediated/`). Override with comma-separated `RESTORE_S3_ENUM_PREFIXES` when needed;
+- incomplete storage enumeration (truncated listing or converge errors) exits non-zero and prevents app startup.
 
 The target image must contain and be able to execute:
 

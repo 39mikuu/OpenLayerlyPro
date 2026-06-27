@@ -25,8 +25,9 @@ vi.mock("@/modules/restore/storageProbe", async () => {
 });
 
 import { getDb } from "@/db";
-import { files, tasks } from "@/db/schema";
+import { files, postFiles, posts, tasks, users } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
+import { authorizeFileAccess } from "@/modules/download";
 import { FILE_SAFETY_REMEDIATION_VERSION } from "@/modules/file/backfillSafety";
 import { createStorageDeleteDedupeKeyForTests } from "@/modules/file/cleanup";
 
@@ -150,5 +151,36 @@ describeWithDatabase("restore converge integration", () => {
         ),
       );
     expect(deleteTask).toBeDefined();
+  });
+
+  it("returns 410 for authorized access after missing-after-restore quarantine", async () => {
+    const [owner] = await db
+      .insert(users)
+      .values({
+        email: `restore-converge-${randomUUID()}@example.com`,
+        role: "artist",
+      })
+      .returning();
+    const [post] = await db
+      .insert(posts)
+      .values({
+        slug: `restore-converge-${randomUUID()}`,
+        status: "published",
+        visibility: "public",
+        createdBy: owner!.id,
+      })
+      .returning();
+    const missing = await seedFile(`missing/${randomUUID()}.png`);
+    await db.insert(postFiles).values({ postId: post!.id, fileId: missing.id });
+    storageState.existing.delete(missing.objectKey);
+    storageState.enumerated = [];
+
+    await runRestoreConverge(db);
+
+    const [quarantined] = await db.select().from(files).where(eq(files.id, missing.id));
+    await expect(authorizeFileAccess(null, quarantined!)).rejects.toMatchObject({
+      status: 410,
+      code: "fileQuarantined",
+    });
   });
 });

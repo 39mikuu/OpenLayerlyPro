@@ -4,10 +4,11 @@ Last updated: 2026-06-27 (Asia/Singapore)
 
 ## Current stage
 
-S7 implementation is complete on branch `codex/s7-backup-consistency`.
-Restore modules, hardened backup/restore scripts, one-off bundle fixes, and
-isolated Compose E2E drill evidence are in place. Remaining work: independent
-S7 review sign-off and Draft PR publication (human merge gate unchanged).
+S7 audit remediation is complete on branch `codex/s7-backup-consistency`
+(HEAD post-review fixes). Review blockers addressed: checksum bijection,
+S3 prefix strategy, truncation fail-closed, target `CONFIG_ENCRYPTION_KEY_FILE`
+restore, expanded tests/docs. Remaining: push CI green, independent review,
+undraft PR #91 (human merge gate unchanged).
 
 ## Authoritative inputs read
 
@@ -130,11 +131,13 @@ Operational notes:
 - Docs: `docs/deployment/backup-restore.md` updated for S7 behavior.
 - Tests: 1064 passing (`RUN_DB_INTEGRATION_TESTS=true` on isolated DB
   `openlayerlypro_s7_87_test`), including restore integration tests.
-- E2E drill (2026-06-28): `./scripts/test-restore-e2e.sh` **passed end-to-end**
-  (exit 0, ~4.8 min after image cache warm). Archive:
-  `/tmp/openlayerlypro-s7-e2e-backups/openlayerly-backup-20260627-162824.tar.gz`.
+- E2E drill (2026-06-28, post-audit): `./scripts/test-restore-e2e.sh` **passed**
+  after checksum bijection fix. Archive:
+  `/tmp/openlayerlypro-s7-e2e-backups/openlayerly-backup-20260627-181306.tar.gz`.
   Source `openlayerlypro_s7_source` :3003 → restore `openlayerlypro_s7_restore` :3004;
-  pre-scan quarantined=1, neutralize cleared `storage.delete_object`, `/api/ready` ok.
+  checksum+bijection ok, quarantine=1, `/api/ready` ok.
+- Checksum gate drill: `./scripts/test-restore-checksum-gate.sh` rejects tampered
+  payload (`sha256sum -c`) and undeclared extra files (bijection mismatch).
 - Bundle fix: esbuild one-offs use `createRequire` banner; `sharp` external;
   slim imports (`storageResolve`, `storage/runtime`, `tasks/enqueue`) avoid
   bundling Next.js into restore tools.

@@ -117,6 +117,32 @@ describeWithDatabase("restore schema check integration", () => {
     }
   });
 
+  it("accepts v1 archive history that matches the target journal prefix", async () => {
+    const target = getTargetMigrationIdentity();
+    const prefix = target.map((entry) => ({
+      hash: entry.hash,
+      createdAt: entry.createdAt,
+    }));
+    const readHistory = vi
+      .spyOn(schemaCompatibility, "readDatabaseMigrationHistory")
+      .mockResolvedValueOnce(prefix);
+
+    try {
+      const report = await runRestoreSchemaCheck({
+        formatVersion: 1,
+        databaseUrl: process.env.DATABASE_URL,
+      });
+
+      expect(report.compatibility.result).toBe("compatible");
+      expect(isSchemaCheckPassing(report)).toBe(true);
+      expect(
+        report.warnings.some((line) => line.includes("FORMAT_VERSION=1 archive has no checksum")),
+      ).toBe(true);
+    } finally {
+      readHistory.mockRestore();
+    }
+  });
+
   it("rejects v1 diverged histories before destructive restore", async () => {
     const target = getTargetMigrationIdentity();
     const diverged = [

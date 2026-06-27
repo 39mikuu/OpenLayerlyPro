@@ -281,12 +281,8 @@ echo "Neutralizing restored tasks and payment-provider events..."
 run_one_off /app/dist/restore-neutralize.mjs || fail "restore neutralization failed"
 
 echo "Converging database and storage references..."
-STORAGE_DRIVER=$(
-  compose run --rm -T --no-deps --entrypoint sh app -c 'printf %s "${STORAGE_DRIVER:-local}"'
-)
 CONVERGE_ARGS=""
-if [ "$STORAGE_DRIVER" = "s3" ]; then
-  RESTORE_S3_ENUM_PREFIXES=${RESTORE_S3_ENUM_PREFIXES:-avatars/,payment-qr/,payment-proof/,content/,legacy/,remediated/}
+if [ -n "${RESTORE_S3_ENUM_PREFIXES:-}" ]; then
   CONVERGE_ARGS="--prefixes=$RESTORE_S3_ENUM_PREFIXES"
 fi
 # shellcheck disable=SC2086
