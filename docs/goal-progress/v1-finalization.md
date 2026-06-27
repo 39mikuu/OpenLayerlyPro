@@ -4,11 +4,12 @@ Last updated: 2026-06-27 (Asia/Singapore)
 
 ## Current stage
 
-S7 audit remediation is complete on branch `codex/s7-backup-consistency`
-(HEAD post-review fixes). Review blockers addressed: checksum bijection,
-S3 prefix strategy, truncation fail-closed, target `CONFIG_ENCRYPTION_KEY_FILE`
-restore, expanded tests/docs. Remaining: push CI green, independent review,
-undraft PR #91 (human merge gate unchanged).
+S7 audit remediation complete on `codex/s7-backup-consistency` @ `21f0b43e`.
+Round-1 and round-2 review blockers addressed (S3 prefix/identity, checksum
+bijection, truncation fail-closed, `/app/secrets` key restore, signal traps).
+CI run `28298064552` pass; E2E archive
+`/tmp/openlayerlypro-s7-e2e-backups/openlayerly-backup-20260627-192950.tar.gz`
+pass. PR #91 ready for human review (merge gate unchanged).
 
 ## Authoritative inputs read
 
@@ -131,11 +132,10 @@ Operational notes:
 - Docs: `docs/deployment/backup-restore.md` updated for S7 behavior.
 - Tests: 1064 passing (`RUN_DB_INTEGRATION_TESTS=true` on isolated DB
   `openlayerlypro_s7_87_test`), including restore integration tests.
-- E2E drill (2026-06-28, post-audit): `./scripts/test-restore-e2e.sh` **passed**
-  after checksum bijection fix. Archive:
-  `/tmp/openlayerlypro-s7-e2e-backups/openlayerly-backup-20260627-181306.tar.gz`.
-  Source `openlayerlypro_s7_source` :3003 → restore `openlayerlypro_s7_restore` :3004;
-  checksum+bijection ok, quarantine=1, `/api/ready` ok.
+- E2E drill (2026-06-28, round-2): `./scripts/test-restore-e2e.sh` **passed** @
+  `21f0b43e`. Archive:
+  `/tmp/openlayerlypro-s7-e2e-backups/openlayerly-backup-20260627-192950.tar.gz`.
+  encryptionKey ready ok, quarantine=1, delete tasks=0.
 - Checksum gate drill: `./scripts/test-restore-checksum-gate.sh` rejects tampered
   payload (`sha256sum -c`) and undeclared extra files (bijection mismatch).
 - Bundle fix: esbuild one-offs use `createRequire` banner; `sharp` external;
