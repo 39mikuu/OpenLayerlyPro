@@ -143,6 +143,36 @@ Operational notes:
   slim imports (`storageResolve`, `storage/runtime`, `tasks/enqueue`) avoid
   bundling Next.js into restore tools.
 
+## Final-HEAD drill evidence (2026-06-28, round-5)
+
+All restore drills were re-run against the round-5 code (the commit that adds this
+record, parent `65290206`). Each drill tears down its isolated Compose projects
+(`down -v`) and removes its generated `.env`/override/temp files on exit.
+
+- Local E2E — `./scripts/test-restore-e2e.sh` → **passed**.
+  Valid `renewal_reminder` payload settles as a no-op `succeeded`;
+  `subscription.reconcile` runs and defers (pending, `run_after` in the future);
+  provider event reaches `processed` with its dispatch task `succeeded`;
+  quarantine 410, intact download 200, nested `UPLOAD_DIR=/app/uploads/e2e-nested`.
+- MinIO/S3 E2E — `./scripts/test-restore-s3-e2e.sh` → **passed**.
+  ListObjectsV2 pagination forced (`--page-size=2` over 6 `content/` objects);
+  both seeded and injected orphans confirmed deleted from MinIO with their
+  `storage.delete_object` tasks `succeeded`; out-of-prefix sentinel left untouched;
+  truncated-converge and real S3 auth-error cases both fail closed (app never starts).
+- Legacy v1 path — `./scripts/test-restore-v1-e2e.sh` → **passed**.
+  Custom URL-reserved PostgreSQL credentials (`s7_v1_user` / `p@ss:w0rd/v1#x`) drive
+  the isolated schema probe through `restore.sh`; compatible archive restores to
+  ready; unknown-schema archive fails closed without `--allow-legacy-v1-unknown-schema`
+  and is overridden with it; the probe database is cleaned up on success, on failure,
+  and after SIGTERM (signal-path cleanup observed).
+- Checksum gate — `./scripts/test-restore-checksum-gate.sh <v2-archive>` → **passed**.
+  Rejects tampered payload (`sha256sum -c`), undeclared extra files (bijection
+  mismatch), counts nested `checksums.sha256` names, and rejects symlink payloads.
+
+Schema-compatibility variants (compatible / newer / diverged / unknown / override)
+remain covered by `schemaCompatibility.test.ts` and `schemaCheck.integration.test.ts`;
+the v1 drill above exercises the same gate end-to-end through the shell path.
+
 ## Human gates still required
 
 - Human merge of the future S7 Draft PR before v1.0 acceptance may begin.
