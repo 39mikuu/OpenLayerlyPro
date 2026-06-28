@@ -221,7 +221,7 @@ if [ "$FORMAT_VERSION" = "1" ]; then
     exec psql -v ON_ERROR_STOP=1 -U \"\${POSTGRES_USER:-artist}\" -d \"$PROBE_DB\"
   " < "$WORK_DIR/db.sql"
 
-  PROBE_DATABASE_URL="postgresql://${PROBE_PG_USER}:${PROBE_PG_PASSWORD}@postgres:5432/$PROBE_DB"
+  PROBE_DATABASE_URL="postgresql://$(urlencode "$PROBE_PG_USER"):$(urlencode "$PROBE_PG_PASSWORD")@postgres:5432/$PROBE_DB"
   if ! run_schema_check --database-url="$PROBE_DATABASE_URL" --format-version="$FORMAT_VERSION"; then
     fail "legacy archive schema compatibility check failed"
   fi

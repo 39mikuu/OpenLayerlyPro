@@ -98,6 +98,25 @@ read_container_config_key_file() {
     'printf %s "${CONFIG_ENCRYPTION_KEY_FILE:-/app/secrets/config-encryption-key}"'
 }
 
+# Percent-encode a string for safe use in a URL userinfo (user/password) component.
+# RFC 3986 unreserved characters are kept as-is; everything else becomes %XX so raw
+# credentials containing @ : / ? # % etc. cannot corrupt the connection URL.
+urlencode() {
+  urlencode_in=$1
+  urlencode_out=""
+  urlencode_i=1
+  urlencode_len=${#urlencode_in}
+  while [ "$urlencode_i" -le "$urlencode_len" ]; do
+    urlencode_ch=$(printf '%s' "$urlencode_in" | cut -c "$urlencode_i")
+    case "$urlencode_ch" in
+      [a-zA-Z0-9._~-]) urlencode_out="$urlencode_out$urlencode_ch" ;;
+      *) urlencode_out="$urlencode_out$(printf '%%%02X' "'$urlencode_ch")" ;;
+    esac
+    urlencode_i=$((urlencode_i + 1))
+  done
+  printf '%s' "$urlencode_out"
+}
+
 # Cryptographically random, identifier-safe (lowercase hex) suffix for the isolated
 # legacy-probe database name. Avoids predictable timestamp+PID names.
 probe_db_suffix() {
@@ -110,23 +129,35 @@ probe_db_suffix() {
   fi
 }
 
-# Prove a one-off container can write a sentinel into $probe_path that a *separate*
-# one-off container can read back and delete. Catches read-only/tmpfs/unshared
-# volumes before any destructive database work. Must be called before dropdb.
+# Prove a one-off container can write a sentinel into $probe_dir that a *separate*
+# one-off container can read back and delete. Catches read-only/tmpfs/unshared volumes
+# before any destructive database work. Must be called before dropdb.
+#
+# The probe file is created with mktemp (exclusive O_EXCL creation, unpredictable name)
+# *inside* the target mount, so it never overwrites or deletes a pre-existing file/
+# symlink and concurrent restores never collide. Only the exact file created here is
+# removed. Restore itself must never introduce data loss — including its own preflight.
 preflight_volume_write_read_delete() {
-  probe_path=$1
+  probe_dir=$1
   label=$2
 
   probe_token="restore-preflight-$(date +%s)-$$"
-  compose run --rm -T --no-deps --entrypoint sh app -c "
-    set -eu
-    printf '%s' '$probe_token' > \"$probe_path\"
-  " || fail "$label is not writable from a one-off container ($probe_path)"
+  probe_path=$(
+    compose run --rm -T --no-deps --entrypoint sh app -c "
+      set -eu
+      umask 077
+      probe=\$(mktemp \"$probe_dir/.restore-preflight.XXXXXX\")
+      printf '%s' '$probe_token' > \"\$probe\"
+      printf '%s' \"\$probe\"
+    " | tr -d '\r'
+  ) || fail "$label is not writable from a one-off container ($probe_dir)"
+  [ -n "$probe_path" ] || fail "$label preflight could not create a probe file ($probe_dir)"
 
   probe_readback=$(
     compose run --rm -T --no-deps --entrypoint sh app -c "
       set -eu
-      test -f \"$probe_path\"
+      [ -f \"$probe_path\" ] || exit 1
+      [ ! -L \"$probe_path\" ] || exit 1
       cat \"$probe_path\"
       rm -f \"$probe_path\"
     " | tr -d '\r'
@@ -155,7 +186,7 @@ preflight_config_key_restore_target() {
   " || fail "unable to prepare CONFIG_ENCRYPTION_KEY_FILE target on the secrets volume"
 
   preflight_volume_write_read_delete \
-    "$target_key_file.restore-preflight" "CONFIG_ENCRYPTION_KEY_FILE secrets volume"
+    "$target_key_dir" "CONFIG_ENCRYPTION_KEY_FILE secrets volume"
 }
 
 preflight_upload_dir_restore_target() {
@@ -169,5 +200,5 @@ preflight_upload_dir_restore_target() {
   " || fail "unable to prepare UPLOAD_DIR on the uploads volume ($upload_dir)"
 
   preflight_volume_write_read_delete \
-    "$upload_dir/.restore-preflight" "UPLOAD_DIR uploads volume"
+    "$upload_dir" "UPLOAD_DIR uploads volume"
 }

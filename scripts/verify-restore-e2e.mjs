@@ -87,45 +87,39 @@ try {
     fail(`expected one active membership for ${TIER_SLUG} (count=${membershipCount?.count})`);
   }
 
-  const [providerEvent] = await sql`
-    select id, status, locked_by, attempts
-    from payment_provider_events
-    where provider = 'stripe'
-      and event_type = 'invoice.paid'
-    order by created_at desc
-    limit 1
-  `;
-  if (!providerEvent) fail("provider event missing after restore");
-  if (providerEvent.status === "processing") {
-    fail(
-      `provider event still processing after restore (locked_by=${providerEvent.locked_by ?? "null"})`,
-    );
-  }
-  if (!["received", "processed"].includes(providerEvent.status)) {
-    fail(`provider event not re-armed (status=${providerEvent.status})`);
-  }
+  // The provider event must be re-armed AND actually replayed to a real terminal state
+  // ('processed'), with its dispatch task succeeding — not merely re-armed to 'received'.
+  // This proves idempotent execution completed, not just neutralization.
+  const providerEvent = await pollUntil(
+    async () => {
+      const [row] = await sql`
+        select id, status
+        from payment_provider_events
+        where provider = 'stripe'
+          and event_type = 'customer.updated'
+        order by created_at desc
+        limit 1
+      `;
+      return row ?? null;
+    },
+    (row) => row !== null && row.status === "processed",
+    "provider event was not replayed to a 'processed' terminal state after restore",
+  );
 
-  const [dispatchTask] = await sql`
-    select status, attempts, locked_by
-    from tasks
-    where kind = 'payment_provider_event.dispatch'
-      and dedupe_key = ${`payment-provider-event:${providerEvent.id}`}
-    limit 1
-  `;
-  if (!dispatchTask) fail("provider dispatch task missing after restore");
-  if (dispatchTask.status === "processing" && dispatchTask.locked_by === "stale-worker") {
-    fail("provider dispatch task still stranded from snapshot");
-  }
-  if (providerEvent.status === "received") {
-    if (dispatchTask.status !== "pending" || Number(dispatchTask.attempts) !== 0) {
-      fail("provider dispatch task not pending with attempts=0");
-    }
-    if (dispatchTask.locked_by) fail("provider dispatch task still locked");
-  } else if (dispatchTask.status !== "succeeded") {
-    fail(
-      `processed provider event dispatch task expected succeeded (status=${dispatchTask.status})`,
-    );
-  }
+  await pollUntil(
+    async () => {
+      const [row] = await sql`
+        select status, locked_by, attempts
+        from tasks
+        where kind = 'payment_provider_event.dispatch'
+          and dedupe_key = ${`payment-provider-event:${providerEvent.id}`}
+        limit 1
+      `;
+      return row ?? null;
+    },
+    (row) => row !== null && row.status === "succeeded" && !row.locked_by,
+    "provider dispatch task did not reach 'succeeded' after restore",
+  );
 
   const activated = await loadEmailTaskByTemplate("membership_activated");
   if (!activated || activated.status !== "dead") {

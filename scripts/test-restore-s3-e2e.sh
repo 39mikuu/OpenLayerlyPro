@@ -65,6 +65,28 @@ mirror_bucket() {
     "
 }
 
+# Returns 0 if the object exists on the given MinIO port, non-zero if absent.
+object_exists() {
+  oe_port=$1
+  oe_key=$2
+  sudo -n docker run --rm --network host --entrypoint /bin/sh minio/mc:latest -c "
+      mc alias set chk http://127.0.0.1:${oe_port} ${MINIO_USER} ${MINIO_PASSWORD} >/dev/null 2>&1
+      mc stat chk/${MINIO_BUCKET}/${oe_key} >/dev/null 2>&1
+    "
+}
+
+# Poll until an object is gone from MinIO (orphan cleanup actually executed).
+wait_object_absent() {
+  wa_port=$1
+  wa_key=$2
+  wa_attempt=0
+  while object_exists "$wa_port" "$wa_key"; do
+    wa_attempt=$((wa_attempt + 1))
+    [ "$wa_attempt" -lt 40 ] || fail "orphan object still present after restore: $wa_key"
+    sleep 3
+  done
+}
+
 command -v docker >/dev/null 2>&1 || fail "docker is required"
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
@@ -216,6 +238,23 @@ sudo -n docker run --rm --network host --entrypoint /bin/sh minio/mc:latest -c "
     mc alias set dst http://127.0.0.1:${RESTORE_MINIO_PORT} ${MINIO_USER} ${MINIO_PASSWORD}
     mc stat dst/${MINIO_BUCKET}/${SENTINEL_OBJECT_KEY} >/dev/null
   " || fail "out-of-prefix sentinel object was removed by convergence (prefix boundary violated)"
+
+echo "Verifying both orphan objects were actually deleted from MinIO..."
+INJECTED_ORPHAN_KEY="content/restore-s3-e2e/injected-orphan.txt"
+wait_object_absent "$RESTORE_MINIO_PORT" "$ORPHAN_OBJECT_KEY"
+wait_object_absent "$RESTORE_MINIO_PORT" "$INJECTED_ORPHAN_KEY"
+# Prove the delete tasks for exactly those two keys reached 'succeeded' (not merely
+# enqueued/pending), so the success path truly converged storage, not just the DB.
+for okey in "$ORPHAN_OBJECT_KEY" "$INJECTED_ORPHAN_KEY"; do
+  SUCC_COUNT=$(
+    S7_E2E_APP_PORT=$RESTORE_PORT S7_S3_MINIO_PORT=$RESTORE_MINIO_PORT \
+      compose "$RESTORE_PROJECT" exec -T -e OKEY="$okey" postgres sh -c '
+      exec psql -At -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" \
+        -c "select count(*) from tasks where kind = '"'"'storage.delete_object'"'"' and status = '"'"'succeeded'"'"' and payload_json->>'"'"'objectKey'"'"' = '"'"'$OKEY'"'"';"
+    '
+  )
+  [ "$SUCC_COUNT" -ge 1 ] || fail "no succeeded storage.delete_object task for orphan $okey (count=$SUCC_COUNT)"
+done
 
 echo "Verifying converge truncation prevents app startup..."
 FAIL_PROJECT=${RESTORE_PROJECT}_fail

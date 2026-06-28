@@ -214,6 +214,11 @@ try {
       on conflict (dedupe_key) do nothing
     `;
 
+    // A valid normalized "ignored" provider event (a Stripe event the app classifies as
+    // a no-op). Restore re-arms it and the worker must replay it to a real terminal
+    // 'processed'/'succeeded' — not pass merely because an untyped payload falls through
+    // the dispatcher switch. "ignored" needs no Stripe network call.
+    const providerEventId = `evt_restore_e2e_${randomUUID()}`;
     const [event] = await tx`
       insert into payment_provider_events (
         provider, provider_event_id, event_type, provider_created_at,
@@ -221,10 +226,10 @@ try {
       )
       values (
         'stripe',
-        ${`evt_restore_e2e_${randomUUID()}`},
-        'invoice.paid',
+        ${providerEventId},
+        'customer.updated',
         now(),
-        ${sql.json({ id: "evt_restore_e2e" })},
+        ${sql.json({ type: "ignored", providerEventId })},
         'processing',
         2,
         now()
