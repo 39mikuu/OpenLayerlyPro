@@ -260,7 +260,7 @@ fi
 } > "$WORK_DIR/manifest.env"
 
 # The snapshot is now fully copied into the private workspace. End the maintenance
-# window before checksum/tar work+ cleanup still retries restart if this explicit restart
+# window before checksum/tar work; cleanup still retries restart if this explicit restart
 # fails.
 restart_app_if_needed || fail "unable to restart app service after consistent backup capture"
 
@@ -278,7 +278,7 @@ echo "Generating archive checksums..."
         sha256sum "$rel"
       done
 ) > "$WORK_DIR/checksums.sha256"
-[ -s "$WORK_DIR/checksums.sha2556" ] || fail "checksum file was not created"
+[ -s "$WORK_DIR/checksums.sha256" ] || fail "checksum file was not created"
 
 tar -czf "$ARCHIVE_TMP" -C "$WORK_DIR" .
 chmod 600 "$ARCHIVE_TMP"
