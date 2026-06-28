@@ -37,10 +37,6 @@ COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-pre-scan.mjs ./dist/
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-neutralize.mjs ./dist/restore-neutralize.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-converge.mjs ./dist/restore-converge.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-schema-check.mjs ./dist/restore-schema-check.mjs
-COPY --from=builder --chown=nextjs:nodejs /app/dist/seed-restore-e2e.mjs ./dist/seed-restore-e2e.mjs
-COPY --from=builder --chown=nextjs:nodejs /app/dist/verify-restore-e2e.mjs ./dist/verify-restore-e2e.mjs
-COPY --from=builder --chown=nextjs:nodejs /app/dist/seed-restore-s3-e2e.mjs ./dist/seed-restore-s3-e2e.mjs
-COPY --from=builder --chown=nextjs:nodejs /app/dist/inject-restore-s3-drift.mjs ./dist/inject-restore-s3-drift.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/dedupe-pending-payments.mjs ./scripts/dedupe-pending-payments.mjs
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
@@ -50,3 +46,11 @@ RUN chmod +x /entrypoint.sh \
 EXPOSE 3000
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "server.js"]
+
+# ---- E2E 演练镜像(仅用于备份/恢复演练,含会改数据的测试工具,切勿用于生产) ----
+# 生产镜像请构建 `runner` target;本 stage 仅供 docker-compose.s7-e2e.yml 等演练编排使用。
+FROM runner AS e2e-runner
+COPY --from=builder --chown=nextjs:nodejs /app/dist/seed-restore-e2e.mjs ./dist/seed-restore-e2e.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/dist/verify-restore-e2e.mjs ./dist/verify-restore-e2e.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/dist/seed-restore-s3-e2e.mjs ./dist/seed-restore-s3-e2e.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/dist/inject-restore-s3-drift.mjs ./dist/inject-restore-s3-drift.mjs

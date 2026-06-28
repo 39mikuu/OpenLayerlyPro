@@ -4,7 +4,7 @@ set -eu
 
 umask 077
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
 SOURCE_PROJECT=${SOURCE_PROJECT:-openlayerlypro_s7_source}

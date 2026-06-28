@@ -1,5 +1,8 @@
 services:
   app:
+    build:
+      context: .
+      target: e2e-runner
     env_file:
       - .env.s7-e2e
     ports: !override

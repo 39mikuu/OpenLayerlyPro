@@ -98,14 +98,76 @@ read_container_config_key_file() {
     'printf %s "${CONFIG_ENCRYPTION_KEY_FILE:-/app/secrets/config-encryption-key}"'
 }
 
+# Cryptographically random, identifier-safe (lowercase hex) suffix for the isolated
+# legacy-probe database name. Avoids predictable timestamp+PID names.
+probe_db_suffix() {
+  if [ -r /dev/urandom ] && command -v od >/dev/null 2>&1; then
+    od -An -tx1 -N16 /dev/urandom | tr -d ' \n'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 16
+  else
+    fail "no source of randomness available for the probe database name"
+  fi
+}
+
+# Prove a one-off container can write a sentinel into $probe_path that a *separate*
+# one-off container can read back and delete. Catches read-only/tmpfs/unshared
+# volumes before any destructive database work. Must be called before dropdb.
+preflight_volume_write_read_delete() {
+  probe_path=$1
+  label=$2
+
+  probe_token="restore-preflight-$(date +%s)-$$"
+  compose run --rm -T --no-deps --entrypoint sh app -c "
+    set -eu
+    printf '%s' '$probe_token' > \"$probe_path\"
+  " || fail "$label is not writable from a one-off container ($probe_path)"
+
+  probe_readback=$(
+    compose run --rm -T --no-deps --entrypoint sh app -c "
+      set -eu
+      test -f \"$probe_path\"
+      cat \"$probe_path\"
+      rm -f \"$probe_path\"
+    " | tr -d '\r'
+  ) || fail "$label failed cross-container read/delete preflight ($probe_path)"
+
+  [ "$probe_readback" = "$probe_token" ] \
+    || fail "$label is not shared across one-off containers ($probe_path)"
+}
+
 preflight_config_key_restore_target() {
   target_key_file=$1
 
   validate_config_key_file_path "$target_key_file"
   target_key_dir=${target_key_file%/*}
+  # Prepare the parent dir and reject a non-regular file (e.g. a directory) sitting
+  # at the final key path: otherwise `compose cp` would copy the key *inside* it and
+  # a later `test -s <directory>` could still pass, leaving the app unable to read it.
   compose run --rm -T --no-deps --entrypoint sh app -c "
     set -eu
     mkdir -p \"$target_key_dir\"
     test -d \"$target_key_dir\"
-  " || fail "unable to prepare CONFIG_ENCRYPTION_KEY_FILE directory on target volume"
+    if [ -e \"$target_key_file\" ] && [ ! -f \"$target_key_file\" ]; then
+      echo 'CONFIG_ENCRYPTION_KEY_FILE target exists and is not a regular file' >&2
+      exit 1
+    fi
+  " || fail "unable to prepare CONFIG_ENCRYPTION_KEY_FILE target on the secrets volume"
+
+  preflight_volume_write_read_delete \
+    "$target_key_file.restore-preflight" "CONFIG_ENCRYPTION_KEY_FILE secrets volume"
+}
+
+preflight_upload_dir_restore_target() {
+  upload_dir=$1
+
+  validate_upload_dir_path "$upload_dir"
+  compose run --rm -T --no-deps --entrypoint sh app -c "
+    set -eu
+    mkdir -p \"$upload_dir\"
+    test -d \"$upload_dir\"
+  " || fail "unable to prepare UPLOAD_DIR on the uploads volume ($upload_dir)"
+
+  preflight_volume_write_read_delete \
+    "$upload_dir/.restore-preflight" "UPLOAD_DIR uploads volume"
 }

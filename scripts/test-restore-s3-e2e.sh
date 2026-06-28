@@ -4,7 +4,7 @@ set -eu
 
 umask 077
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
 SOURCE_PROJECT=${SOURCE_PROJECT:-openlayerlypro_s7_s3_source}
@@ -191,9 +191,10 @@ echo "$READY_BODY" | grep -q '"ok":true' || fail "ready body was not ok: $READY_
 
 QUARANTINE_COUNT=$(
   S7_E2E_APP_PORT=$RESTORE_PORT S7_S3_MINIO_PORT=$RESTORE_MINIO_PORT \
-    compose "$RESTORE_PROJECT" exec -T postgres sh -c '
+    compose "$RESTORE_PROJECT" exec -T -e REF_ID="$REFERENCED_FILE_ID" postgres sh -c '
     exec psql -At -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" \
-      -c "select count(*) from files where id = '"'"''"$REFERENCED_FILE_ID"''"'"' and quarantine_reason = '"'"'missing after restore'"'"';"
+      -v ref_id="$REF_ID" \
+      -c "select count(*) from files where id = :'"'"'ref_id'"'"' and quarantine_reason = '"'"'missing after restore'"'"';"
   '
 )
 [ "$QUARANTINE_COUNT" = "1" ] || fail "referenced S3 file was not quarantined (count=$QUARANTINE_COUNT)"

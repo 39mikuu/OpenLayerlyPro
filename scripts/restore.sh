@@ -205,8 +205,13 @@ if ! compose run --rm -T --no-deps --entrypoint sh app -c 'test -z "${CONFIG_ENC
 fi
 
 if [ "$FORMAT_VERSION" = "1" ]; then
-  PROBE_DB="openlayerly_restore_probe_${TIMESTAMP:-$(date +%s)}_$$"
+  PROBE_DB="openlayerly_restore_probe_$(probe_db_suffix)"
   echo "Probing legacy archive schema compatibility in isolated database $PROBE_DB..."
+  # Resolve probe connection credentials from the PostgreSQL container itself rather
+  # than host-shell defaults, so deployments using custom POSTGRES_USER/PASSWORD
+  # (e.g. via COMPOSE_ENV_FILE or service environment) still connect for the check.
+  PROBE_PG_USER=$(compose exec -T postgres sh -c 'printf %s "${POSTGRES_USER:-artist}"' | tr -d '\r')
+  PROBE_PG_PASSWORD=$(compose exec -T postgres sh -c 'printf %s "${POSTGRES_PASSWORD:-artist_password}"' | tr -d '\r')
   compose exec -T postgres sh -c "
     set -eu
     createdb -U \"\${POSTGRES_USER:-artist}\" \"$PROBE_DB\"
@@ -216,7 +221,7 @@ if [ "$FORMAT_VERSION" = "1" ]; then
     exec psql -v ON_ERROR_STOP=1 -U \"\${POSTGRES_USER:-artist}\" -d \"$PROBE_DB\"
   " < "$WORK_DIR/db.sql"
 
-  PROBE_DATABASE_URL="postgresql://${POSTGRES_USER:-artist}:${POSTGRES_PASSWORD:-artist_password}@postgres:5432/$PROBE_DB"
+  PROBE_DATABASE_URL="postgresql://${PROBE_PG_USER}:${PROBE_PG_PASSWORD}@postgres:5432/$PROBE_DB"
   if ! run_schema_check --database-url="$PROBE_DATABASE_URL" --format-version="$FORMAT_VERSION"; then
     fail "legacy archive schema compatibility check failed"
   fi
@@ -236,6 +241,18 @@ echo "Preflighting config encryption key restore target before database replacem
 TARGET_CONFIG_KEY_FILE=$(read_container_config_key_file)
 preflight_config_key_restore_target "$TARGET_CONFIG_KEY_FILE"
 
+# Resolve and fully preflight UPLOAD_DIR *before* the destructive dropdb, so an
+# invalid/out-of-mount/read-only upload target aborts the restore while the
+# database is still intact (instead of after it has been replaced).
+RESTORE_HAS_UPLOADS=false
+TARGET_UPLOAD_DIR=""
+if [ -d "$WORK_DIR/uploads" ]; then
+  RESTORE_HAS_UPLOADS=true
+  echo "Preflighting local uploads restore target before database replacement..."
+  TARGET_UPLOAD_DIR=$(read_container_upload_dir)
+  preflight_upload_dir_restore_target "$TARGET_UPLOAD_DIR"
+fi
+
 echo "Replacing PostgreSQL database..."
 compose exec -T postgres sh -c '
   set -eu
@@ -253,12 +270,12 @@ echo "Restoring config encryption key file to $TARGET_CONFIG_KEY_FILE..."
 compose cp "$WORK_DIR/secrets/config-encryption-key" "app:$TARGET_CONFIG_KEY_FILE"
 compose run --rm -T --no-deps --entrypoint sh app -c "
   set -eu
+  test -f \"$TARGET_CONFIG_KEY_FILE\"
   test -s \"$TARGET_CONFIG_KEY_FILE\"
 "
 
-if [ -d "$WORK_DIR/uploads" ]; then
-  UPLOAD_DIR=$(read_container_upload_dir)
-  validate_upload_dir_path "$UPLOAD_DIR"
+if [ "$RESTORE_HAS_UPLOADS" = true ]; then
+  UPLOAD_DIR=$TARGET_UPLOAD_DIR
   echo "Replacing local uploads at $UPLOAD_DIR..."
   compose run --rm -T --no-deps --entrypoint sh app -c "
     set -eu
