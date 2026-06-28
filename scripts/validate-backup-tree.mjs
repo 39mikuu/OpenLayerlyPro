@@ -34,9 +34,7 @@ async function walk(currentPath, relativePath) {
 
   const entries = await readdir(currentPath, { withFileTypes: true });
   for (const entry of entries) {
-    const childRelative = relativePath
-      ? `${relativePath}/${entry.name}`
-      : entry.name;
+    const childRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name;
     validateName(entry.name, childRelative);
     await walk(path.join(currentPath, entry.name), childRelative);
   }
@@ -45,8 +43,6 @@ async function walk(currentPath, relativePath) {
 try {
   await walk(root, "");
 } catch (error) {
-  console.error(
-    `backup: ${error instanceof Error ? error.message : String(error)}`,
-  );
+  console.error(`backup: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 }
