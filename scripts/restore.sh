@@ -157,7 +157,34 @@ if [ "$FORMAT_VERSION" = "2" ]; then
       | LC_ALL=C sort \
       | sed 's|^\./||' \
       > "$PAYLOAD_FILE_LIST"
-    awk '{print $2}' checksums.sha256 | LC_ALL=C sort > "$CHECKSUM_FILE_LIST"
+    CHECKSUM_FILE_LIST_UNSORTED="${CHECKSUM_FILE_LIST}.unsorted"
+    if ! awk '
+      substr($0, 1, 1) == "\\" {
+        print "restore: escaped checksum paths are unsupported" > "/dev/stderr"
+        exit 1
+      }
+      length($0) < 67 || substr($0, 65, 1) != " " ||
+        (substr($0, 66, 1) != " " && substr($0, 66, 1) != "*") {
+        print "restore: malformed checksum manifest line" > "/dev/stderr"
+        exit 1
+      }
+      {
+        print substr($0, 67)
+      }
+    ' checksums.sha256 > "$CHECKSUM_FILE_LIST_UNSORTED"; then
+      rm -f "$CHECKSUM_FILE_LIST_UNSORTED"
+      exit 1
+    fi
+    LC_ALL=C sort "$CHECKSUM_FILE_LIST_UNSORTED" > "$CHECKSUM_FILE_LIST"
+    rm -f "$CHECKSUM_FILE_LIST_UNSORTED"
+    if ! awk '
+      index($0, "\\") || $0 ~ /[[:cntrl:]]/ {
+        exit 1
+      }
+    ' "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST"; then
+      echo "restore: checksum paths contain unsupported backslash/control characters" >&2
+      exit 1
+    fi
     if ! diff -q "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST" >/dev/null; then
       echo "restore: checksum manifest does not match archive payload file set" >&2
       comm -23 "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST" | sed 's/^/  missing from manifest: /' >&2

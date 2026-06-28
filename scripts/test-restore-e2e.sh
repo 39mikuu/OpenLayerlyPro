@@ -127,30 +127,59 @@ SEED_JSON=$(
 QUARANTINE_FILE_ID=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.quarantineFileId);});')
 INTACT_FILE_ID=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.intactFileId);});')
 MISSING_OBJECT_KEY="restore-e2e/${QUARANTINE_FILE_ID}.txt"
+SPACE_OBJECT_KEY="restore-e2e/${INTACT_FILE_ID} with space.txt"
 if [ -z "$QUARANTINE_FILE_ID" ] || [ -z "$INTACT_FILE_ID" ]; then
   fail "seed markers missing file ids"
 fi
 
-echo "Creating baseline backup..."
+echo "Moving a referenced upload to a regular filename containing a space..."
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app sh -c "
+  set -eu
+  mv \"$NESTED_UPLOAD_DIR/restore-e2e/${INTACT_FILE_ID}.txt\" \
+    \"$NESTED_UPLOAD_DIR/$SPACE_OBJECT_KEY\"
+"
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T postgres sh -c "
+  set -eu
+  exec psql -v ON_ERROR_STOP=1 -U \"\${POSTGRES_USER:-artist}\" -d \"\${POSTGRES_DB:-artist_member}\" \
+    -c \"update files set object_key = '$SPACE_OBJECT_KEY' where id = '$INTACT_FILE_ID';\"
+"
+
+echo "Creating baseline backup in explicit stop/restart consistency mode..."
 export COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml"
 export COMPOSE_ENV_FILE="$DRILL_ENV"
 compose "$SOURCE_PROJECT" exec -T app sh -c 'test -z "${CONFIG_ENCRYPTION_KEY:-}"' || fail "source uses direct CONFIG_ENCRYPTION_KEY"
-COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh "$BACKUP_DIR"
+COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh --stop-app "$BACKUP_DIR"
+wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
 # shellcheck disable=SC2012 # controlled backup filenames; newest-by-mtime is intended
 ARCHIVE=$(ls -1t "$BACKUP_DIR"/openlayerly-backup-*.tar.gz | head -n 1)
 [ -n "$ARCHIVE" ] || fail "backup archive not found"
+tar -tzf "$ARCHIVE" | grep -F "./uploads/$SPACE_OBJECT_KEY" >/dev/null \
+  || fail "space-bearing referenced upload missing from backup archive"
 
 echo "Verifying backup rejects unsupported live upload entries without publishing an archive..."
 UNSAFE_BACKUP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-s7-unsafe-backup.XXXXXX")
 compose "$SOURCE_PROJECT" exec -T app sh -c \
   'ln -s restore-e2e /app/uploads/e2e-nested/unsafe-symlink'
-if COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh "$UNSAFE_BACKUP_DIR" >/dev/null 2>&1; then
+if COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh --stop-app "$UNSAFE_BACKUP_DIR" >/dev/null 2>&1; then
   fail "backup unexpectedly accepted a symlink in the live upload tree"
 fi
+wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
 if find "$UNSAFE_BACKUP_DIR" -name 'openlayerly-backup-*.tar.gz' -print -quit | grep -q .; then
   fail "backup published an archive after rejecting a live upload symlink"
 fi
 compose "$SOURCE_PROJECT" exec -T app rm -f /app/uploads/e2e-nested/unsafe-symlink
+
+compose "$SOURCE_PROJECT" exec -T app sh -c \
+  'printf unsupported > "$UPLOAD_DIR/unsafe\\backslash.txt"'
+if COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh "$UNSAFE_BACKUP_DIR" >/dev/null 2>&1; then
+  fail "backup unexpectedly accepted a backslash in an upload filename"
+fi
+if find "$UNSAFE_BACKUP_DIR" -name 'openlayerly-backup-*.tar.gz' -print -quit | grep -q .; then
+  fail "backup published an archive after rejecting an unsupported filename"
+fi
+compose "$SOURCE_PROJECT" exec -T app sh -c \
+  'rm -f "$UPLOAD_DIR/unsafe\\backslash.txt"'
+
 compose "$SOURCE_PROJECT" exec -T app mkfifo /app/uploads/e2e-nested/unsafe-fifo
 if COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh "$UNSAFE_BACKUP_DIR" >/dev/null 2>&1; then
   fail "backup unexpectedly accepted a FIFO in the live upload tree"

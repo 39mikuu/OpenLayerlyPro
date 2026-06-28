@@ -20,11 +20,13 @@ Required host tools:
 - Docker Compose v2;
 - POSIX `sh`;
 - `tar`, `mktemp`, `curl`, and `sha256sum`;
-- Node.js on the host for `backup.sh` migration/manifest helpers.
+- Node.js on the host for `backup.sh` migration/manifest and payload-path validation helpers.
 
 The scripts honor `COMPOSE_PROJECT_NAME`.
 
 ## Create a Backup
+
+Hot backup (the app remains online):
 
 ```bash
 ./scripts/backup.sh
@@ -35,6 +37,14 @@ The default output directory is `./backups`; another directory may be supplied:
 ```bash
 ./scripts/backup.sh /srv/backups/openlayerly
 ```
+
+For the strong-consistency path, let the script stop the normal app/dispatcher before `pg_dump`, keep it stopped through config-key and local-upload capture, and restart it immediately after the recovery set has been copied into the private workspace:
+
+```bash
+./scripts/backup.sh --stop-app /srv/backups/openlayerly
+```
+
+`--stop-app` resolves the app environment and volume paths through one-off containers, so it also works when the normal app container is already stopped. If the script stopped a previously running app, its exit/signal cleanup attempts to restart that same service on every success or failure path. An app that was already stopped is left stopped.
 
 New archives use `FORMAT_VERSION=2` and are named like:
 
@@ -53,9 +63,11 @@ uploads/                         # included only when container env STORAGE_DRIV
 UPLOADS_SKIPPED_S3               # written only when container env STORAGE_DRIVER resolves to s3
 ```
 
-`manifest.env` records `APP_VERSION`, `STORAGE_DRIVER`, `UPLOADS_INCLUDED`, migration identity (`LATEST_MIGRATION_HASH`, `MIGRATION_IDENTITIES_JSON`), the source container `CONFIG_ENCRYPTION_KEY_FILE` path at backup time, and a hot-backup window note (`pg_dump(T1)` then uploads `T2)`).
+`manifest.env` records `APP_VERSION`, `STORAGE_DRIVER`, `UPLOADS_INCLUDED`, migration identity (`LATEST_MIGRATION_HASH`, `MIGRATION_IDENTITIES_JSON`), the source container `CONFIG_ENCRYPTION_KEY_FILE` path at backup time, and whether the capture used hot or `--stop-app` consistency mode.
 
-`checksums.sha256` covers every regular-file payload member except the root `./checksums.sha256` manifest itself (nested upload files named `checksums.sha256` remain covered). On v2 archives, `restore.sh` rejects symlinks and special files, verifies checksums, and then enforces a strict bijection: every extracted regular-file payload must appear exactly once in the manifest, and every manifest entry must have a matching payload file. Either mismatch aborts restore before any destructive step.
+`checksums.sha256` covers every regular-file payload member except the root `./checksums.sha256` manifest itself (nested upload files named `checksums.sha256` remain covered). On v2 archives, `restore.sh` rejects symlinks and special files, verifies checksums, and then enforces a strict bijection: every extracted regular-file payload must appear exactly once in the manifest, and every manifest entry must have a matching payload file. The parser reads the fixed-width GNU checksum prefix, so ordinary filenames containing spaces are preserved exactly.
+
+To keep that manifest unambiguous and portable, `backup.sh` rejects path components containing backslashes, ASCII control characters (`U+0000`–`U+001F`), or `DEL` (`U+007F`) before publishing an archive. Ordinary spaces and non-ASCII Unicode names remain supported. The same validation runs on the live local upload tree before copying and on the assembled workspace before checksum/tar creation.
 
 Legacy `FORMAT_VERSION=1` archives remain restorable through the compatibility path below, but they have no checksum protection and emit an explicit warning.
 
@@ -79,11 +91,21 @@ Mixed-driver history still requires operators to protect both sides explicitly. 
 
 ### Local Storage Consistency
 
-When the script selects local mode from the container env, it performs a database dump and then copies local uploads. Writes during that interval can create a DB↔storage time gap. For the safest backup, stop the app or use a maintenance window that blocks writes until the archive and any separately collected storage data are complete.
+The default mode performs `pg_dump` and then copies local uploads while the app remains online. Writes during that interval can create a DB↔storage time gap.
+
+Use the explicit strong-consistency mode for the safest local recovery set:
+
+```bash
+./scripts/backup.sh --stop-app /srv/backups/openlayerly
+```
+
+The script first resolves and validates the app environment/volume paths using one-off containers, then stops the normal app service and asserts that no app container remains running. It captures the database, config key, and local uploads while writes and the task dispatcher are stopped. After those inputs are copied into the private backup workspace, it restarts a previously running app before checksum compression and final atomic archive publication. Stop failures are fatal; restart failures make the command fail and are retried by cleanup.
 
 ### S3 / R2
 
 When the container env resolves to `s3`, the archive contains DB + config key and adds `UPLOADS_SKIPPED_S3`; it does not copy bucket objects. Enable versioning/snapshots/provider backup and record a recovery point close to the DB backup. Restoring DB rows cannot recreate deleted objects.
+
+`--stop-app` makes the database/config capture application-consistent, but it does not snapshot the provider bucket. Coordinate the bucket recovery point separately.
 
 ## Restore
 
@@ -185,7 +207,7 @@ Only one project can bind host port 3000 with the default Compose file. Stop the
 
 ## Isolated E2E Drills
 
-Local nested-upload drill (membership, encrypted config decrypt, provider re-arm, email neutralization, quarantine 410):
+Local nested-upload drill (explicit backup stop/restart success and failure cleanup, referenced filename containing a space, membership, encrypted config decrypt, provider re-arm, email neutralization, quarantine 410):
 
 ```bash
 ./scripts/test-restore-e2e.sh

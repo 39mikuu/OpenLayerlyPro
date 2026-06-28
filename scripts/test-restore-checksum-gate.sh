@@ -46,6 +46,51 @@ trap cleanup 0 HUP INT TERM
 tar -xzf "$ARCHIVE_PATH" -C "$WORK_DIR"
 [ -f "$WORK_DIR/checksums.sha256" ] || fail "archive is missing checksums.sha256"
 
+write_checksum_path_list() {
+  checksum_manifest=$1
+  output_path=$2
+
+  unsorted_output="${output_path}.unsorted"
+  if ! awk '
+    substr($0, 1, 1) == "\\" {
+      print "restore-checksum-gate: escaped checksum paths are unsupported" > "/dev/stderr"
+      exit 1
+    }
+    length($0) < 67 || substr($0, 65, 1) != " " ||
+      (substr($0, 66, 1) != " " && substr($0, 66, 1) != "*") {
+      print "restore-checksum-gate: malformed checksum manifest line" > "/dev/stderr"
+      exit 1
+    }
+    {
+      print substr($0, 67)
+    }
+  ' "$checksum_manifest" > "$unsorted_output"; then
+    rm -f "$unsorted_output"
+    return 1
+  fi
+  LC_ALL=C sort "$unsorted_output" > "$output_path"
+  rm -f "$unsorted_output"
+
+  if ! awk '
+    index($0, "\\") || $0 ~ /[[:cntrl:]]/ {
+      exit 1
+    }
+  ' "$output_path"; then
+    fail "checksum paths contain unsupported backslash/control characters"
+  fi
+}
+
+validate_payload_path_list() {
+  path_list=$1
+  if ! awk '
+    index($0, "\\") || $0 ~ /[[:cntrl:]]/ {
+      exit 1
+    }
+  ' "$path_list"; then
+    fail "payload paths contain unsupported backslash/control characters"
+  fi
+}
+
 assert_bijection_mismatch() {
   PAYLOAD_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-checksum-gate-payload.XXXXXX")
   CHECKSUM_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-checksum-gate-checksum.XXXXXX")
@@ -55,7 +100,8 @@ assert_bijection_mismatch() {
       | LC_ALL=C sort \
       | sed 's|^\./||' \
       > "$PAYLOAD_FILE_LIST"
-    awk '{print $2}' checksums.sha256 | LC_ALL=C sort > "$CHECKSUM_FILE_LIST"
+    validate_payload_path_list "$PAYLOAD_FILE_LIST"
+    write_checksum_path_list checksums.sha256 "$CHECKSUM_FILE_LIST"
     if diff -q "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST" >/dev/null; then
       echo "restore-checksum-gate: bijection unexpectedly matched" >&2
       exit 1
@@ -73,7 +119,8 @@ CHECKSUM_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-checksum-gate-checksum.
     | LC_ALL=C sort \
     | sed 's|^\./||' \
     > "$PAYLOAD_FILE_LIST"
-  awk '{print $2}' checksums.sha256 | LC_ALL=C sort > "$CHECKSUM_FILE_LIST"
+  validate_payload_path_list "$PAYLOAD_FILE_LIST"
+  write_checksum_path_list checksums.sha256 "$CHECKSUM_FILE_LIST"
   diff -q "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST" >/dev/null
 ) || fail "intact archive failed bijection check"
 rm -f "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST"
