@@ -63,7 +63,9 @@ try {
   `;
   if (!providerEvent) fail("provider event missing after restore");
   if (providerEvent.status === "processing") {
-    fail(`provider event still processing after restore (locked_by=${providerEvent.locked_by ?? "null"})`);
+    fail(
+      `provider event still processing after restore (locked_by=${providerEvent.locked_by ?? "null"})`,
+    );
   }
   if (!["received", "processed"].includes(providerEvent.status)) {
     fail(`provider event not re-armed (status=${providerEvent.status})`);
@@ -86,7 +88,9 @@ try {
     }
     if (dispatchTask.locked_by) fail("provider dispatch task still locked");
   } else if (dispatchTask.status !== "succeeded") {
-    fail(`processed provider event dispatch task expected succeeded (status=${dispatchTask.status})`);
+    fail(
+      `processed provider event dispatch task expected succeeded (status=${dispatchTask.status})`,
+    );
   }
 
   const emailRows = await sql`
@@ -144,9 +148,7 @@ try {
     fail(`quarantined file download expected 410 (got ${quarantineResponse.status})`);
   }
 
-  const intactResponse = await fetch(
-    `${RESTORE_APP_URL}/api/files/${INTACT_FILE_ID}/download`,
-  );
+  const intactResponse = await fetch(`${RESTORE_APP_URL}/api/files/${INTACT_FILE_ID}/download`);
   if (!intactResponse.ok) {
     fail(`intact file download expected success (got ${intactResponse.status})`);
   }
