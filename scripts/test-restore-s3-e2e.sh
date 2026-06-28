@@ -28,6 +28,7 @@ compose() {
   project=$1
   shift
   sudo -n env \
+    COMPOSE_ENV_FILE="$DRILL_ENV" \
     S7_E2E_APP_PORT="${S7_E2E_APP_PORT:-3005}" \
     S7_S3_MINIO_PORT="${S7_S3_MINIO_PORT:-9005}" \
     docker compose \
@@ -94,7 +95,9 @@ sudo -n docker version >/dev/null 2>&1 || fail "passwordless sudo docker is requ
 
 DOCKER_SUDO_BIN=${DOCKER_SUDO_BIN:-/tmp/openlayerlypro-docker-sudo}
 mkdir -p "$(dirname "$DOCKER_SUDO_BIN")"
-printf '%s\n' '#!/bin/sh' 'exec sudo -n docker "$@"' >"$DOCKER_SUDO_BIN"
+printf '%s\n' '#!/bin/sh' \
+  'exec sudo -n env COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-.env.s7-e2e}" docker "$@"' \
+  >"$DOCKER_SUDO_BIN"
 chmod +x "$DOCKER_SUDO_BIN"
 PATH=$(dirname "$DOCKER_SUDO_BIN"):$PATH
 export PATH
@@ -131,22 +134,37 @@ else
   CREATED_DOT_ENV=false
 fi
 
-cleanup_dotenv() {
-  if [ "$CREATED_DOT_ENV" = true ] && [ -f .env ]; then
-    rm -f .env
-  fi
+teardown_projects() {
+  for tp_project in \
+    "$SOURCE_PROJECT" "$RESTORE_PROJECT" "${RESTORE_PROJECT}_fail" "${RESTORE_PROJECT}_autherr"; do
+    sudo -n env \
+      COMPOSE_ENV_FILE="$DRILL_ENV" \
+      S7_E2E_APP_PORT="${S7_E2E_APP_PORT:-3005}" \
+      S7_S3_MINIO_PORT="${S7_S3_MINIO_PORT:-9005}" \
+      docker compose -p "$tp_project" --env-file "$DRILL_ENV" \
+      -f docker-compose.yml -f docker-compose.s7-e2e.yml -f docker-compose.s7-s3-e2e.yml \
+      down -v >/dev/null 2>&1 || true
+  done
 }
-trap cleanup_dotenv 0 HUP INT TERM
+
+# Real teardown on every exit/signal: stop and remove every drill project (source,
+# restore, truncation-fail, auth-fail — containers + volumes) *before* deleting the env/
+# override files they reference, so no fixed-credential service is left running.
+cleanup() {
+  teardown_projects
+  [ "$CREATED_DOT_ENV" = true ] && [ -f .env ] && rm -f .env
+  rm -f \
+    "$DRILL_ENV" \
+    "${AUTH_FAIL_OVERRIDE:-/tmp/openlayerly-s7-s3-autherr-override.yml}" \
+    "${POLICY_JSON:-/tmp/openlayerly-s7-getonly-policy.json}"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "Cleaning previous S3 drill projects..."
-for project in "$SOURCE_PROJECT" "$RESTORE_PROJECT"; do
-  sudo -n env \
-    S7_E2E_APP_PORT="${S7_E2E_APP_PORT:-3005}" \
-    S7_S3_MINIO_PORT="${S7_S3_MINIO_PORT:-9005}" \
-    docker compose -p "$project" --env-file "$DRILL_ENV" \
-    -f docker-compose.yml -f docker-compose.s7-e2e.yml -f docker-compose.s7-s3-e2e.yml \
-    down -v >/dev/null 2>&1 || true
-done
+teardown_projects
 
 echo "Building source image..."
 S7_E2E_APP_PORT=$SOURCE_PORT S7_S3_MINIO_PORT=$SOURCE_MINIO_PORT \
@@ -173,7 +191,9 @@ REFERENCED_OBJECT_KEY=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];proce
 ORPHAN_OBJECT_KEY=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.orphanObjectKey);});')
 REFERENCED_FILE_ID=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.referencedFileId);});')
 SENTINEL_OBJECT_KEY=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.sentinelObjectKey);});')
-[ -n "$REFERENCED_OBJECT_KEY" ] && [ -n "$ORPHAN_OBJECT_KEY" ] || fail "S3 seed markers missing object keys"
+if [ -z "$REFERENCED_OBJECT_KEY" ] || [ -z "$ORPHAN_OBJECT_KEY" ]; then
+  fail "S3 seed markers missing object keys"
+fi
 [ -n "$SENTINEL_OBJECT_KEY" ] || fail "S3 seed marker missing out-of-prefix sentinel key"
 
 echo "Creating S3 baseline backup..."
@@ -181,6 +201,7 @@ export COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:docker-compose
 export COMPOSE_ENV_FILE="$DRILL_ENV"
 COMPOSE_PROJECT_NAME=$SOURCE_PROJECT S7_E2E_APP_PORT=$SOURCE_PORT S7_S3_MINIO_PORT=$SOURCE_MINIO_PORT \
   ./scripts/backup.sh "$BACKUP_DIR"
+# shellcheck disable=SC2012 # controlled backup filenames; newest-by-mtime is intended
 ARCHIVE=$(ls -1t "$BACKUP_DIR"/openlayerly-backup-*.tar.gz | head -n 1)
 [ -n "$ARCHIVE" ] || fail "backup archive not found"
 tar -tzf "$ARCHIVE" | grep -q 'UPLOADS_SKIPPED_S3' || fail "S3 backup missing UPLOADS_SKIPPED_S3 marker"
@@ -258,15 +279,15 @@ done
 
 echo "Verifying converge truncation prevents app startup..."
 FAIL_PROJECT=${RESTORE_PROJECT}_fail
-sudo -n env S7_E2E_APP_PORT=3007 S7_S3_MINIO_PORT=9007 \
+sudo -n env COMPOSE_ENV_FILE="$DRILL_ENV" S7_E2E_APP_PORT=3007 S7_S3_MINIO_PORT=9007 \
   docker compose -p "$FAIL_PROJECT" --env-file "$DRILL_ENV" \
   -f docker-compose.yml -f docker-compose.s7-e2e.yml -f docker-compose.s7-s3-e2e.yml \
   down -v >/dev/null 2>&1 || true
-sudo -n env S7_E2E_APP_PORT=3007 S7_S3_MINIO_PORT=9007 \
+sudo -n env COMPOSE_ENV_FILE="$DRILL_ENV" S7_E2E_APP_PORT=3007 S7_S3_MINIO_PORT=9007 \
   docker compose -p "$FAIL_PROJECT" --env-file "$DRILL_ENV" \
   -f docker-compose.yml -f docker-compose.s7-e2e.yml -f docker-compose.s7-s3-e2e.yml \
   up -d postgres minio minio-init >/dev/null
-sudo -n env S7_E2E_APP_PORT=3007 S7_S3_MINIO_PORT=9007 \
+sudo -n env COMPOSE_ENV_FILE="$DRILL_ENV" S7_E2E_APP_PORT=3007 S7_S3_MINIO_PORT=9007 \
   docker compose -p "$FAIL_PROJECT" --env-file "$DRILL_ENV" \
   -f docker-compose.yml -f docker-compose.s7-e2e.yml -f docker-compose.s7-s3-e2e.yml \
   create app >/dev/null
@@ -287,22 +308,35 @@ fi
 grep -q 'restore convergence failed' /tmp/openlayerly-s7-s3-fail-restore.log \
   || fail "truncated converge did not emit expected failure message"
 
-echo "Verifying a real S3 listing/auth error fails closed and keeps the app stopped..."
+echo "Verifying a denied ListObjectsV2 (GetObject allowed) fails closed at convergence..."
 AUTH_FAIL_PROJECT=${RESTORE_PROJECT}_autherr
 AUTH_FAIL_OVERRIDE=/tmp/openlayerly-s7-s3-autherr-override.yml
-# Override only the app's S3 secret via a compose file (its `environment:` wins over
-# both the env_file and the base s3 compose). Convergence/pre-scan then hits a genuine
-# ListObjects auth error — not a truncation cap — which must fail the restore before the
-# app starts. MinIO keeps its real root credentials, so it is purely a client-auth fault.
+POLICY_JSON=/tmp/openlayerly-s7-getonly-policy.json
+# A MinIO user that may GetObject (so pre-scan/backfill reads of referenced objects
+# succeed) but is denied s3:ListBucket. This isolates the provider/listing-error case:
+# pre-scan must pass and convergence's ListObjectsV2 must fail closed before app start.
+cat >"$POLICY_JSON" <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": ["arn:aws:s3:::$MINIO_BUCKET/*"]
+    }
+  ]
+}
+EOF
 cat >"$AUTH_FAIL_OVERRIDE" <<'EOF'
 services:
   app:
     environment:
-      S3_SECRET_ACCESS_KEY: wrong-secret-deadbeef
+      S3_ACCESS_KEY_ID: s7getonlyuser
+      S3_SECRET_ACCESS_KEY: s7getonlyuser-secret-0123
 EOF
 AUTH_FAIL_FILES="docker-compose.yml:docker-compose.s7-e2e.yml:docker-compose.s7-s3-e2e.yml:$AUTH_FAIL_OVERRIDE"
 authfail_compose() {
-  sudo -n env S7_E2E_APP_PORT=3008 S7_S3_MINIO_PORT=9008 \
+  sudo -n env COMPOSE_ENV_FILE="$DRILL_ENV" S7_E2E_APP_PORT=3008 S7_S3_MINIO_PORT=9008 \
     docker compose -p "$AUTH_FAIL_PROJECT" --env-file "$DRILL_ENV" \
     -f docker-compose.yml -f docker-compose.s7-e2e.yml -f docker-compose.s7-s3-e2e.yml \
     -f "$AUTH_FAIL_OVERRIDE" \
@@ -312,6 +346,15 @@ authfail_compose down -v >/dev/null 2>&1 || true
 authfail_compose up -d postgres minio minio-init >/dev/null
 authfail_compose create app >/dev/null
 mirror_bucket "$SOURCE_MINIO_PORT" 9008
+# Create the GetObject-only user/policy on the target MinIO (using its root creds).
+sudo -n docker run --rm --network host -v "$POLICY_JSON:/policy.json:ro" \
+  --entrypoint /bin/sh minio/mc:latest -c "
+    set -eu
+    mc alias set adm http://127.0.0.1:9008 ${MINIO_USER} ${MINIO_PASSWORD}
+    mc admin policy create adm s7getonly /policy.json
+    mc admin user add adm s7getonlyuser s7getonlyuser-secret-0123
+    mc admin policy attach adm s7getonly --user s7getonlyuser
+  " || fail "failed to provision GetObject-only MinIO user"
 if S7_E2E_APP_PORT=3008 S7_S3_MINIO_PORT=9008 \
   COMPOSE_PROJECT_NAME=$AUTH_FAIL_PROJECT \
   COMPOSE_FILE="$AUTH_FAIL_FILES" \
@@ -319,18 +362,19 @@ if S7_E2E_APP_PORT=3008 S7_S3_MINIO_PORT=9008 \
   RESTORE_S3_ENUM_PREFIXES="content/" \
   READY_URL="http://127.0.0.1:3008/api/ready" \
   ./scripts/restore.sh "$ARCHIVE" --yes >/tmp/openlayerly-s7-s3-autherr-restore.log 2>&1; then
-  fail "restore unexpectedly succeeded with invalid S3 credentials"
+  fail "restore unexpectedly succeeded despite denied ListObjectsV2"
 fi
 if curl -fsS "http://127.0.0.1:3008/api/ready" >/dev/null 2>&1; then
-  fail "app became ready after an S3 listing/auth failure"
+  fail "app became ready after a denied ListObjectsV2"
 fi
-# The bad S3 secret can surface during pre-scan or convergence depending on which
-# step lists first; either way the restore must fail closed before the app starts.
-grep -qiE 'pre.?scan|converg|storage|s3|signature|credential|denied|access' \
-  /tmp/openlayerly-s7-s3-autherr-restore.log \
-  || fail "S3 auth failure did not surface as a storage/convergence error"
+# Prove the failure is specifically the listing step: pre-scan (GetObject) succeeded and
+# the restore reached convergence, where ListObjectsV2 was denied and failed closed.
+grep -q 'Converging database and storage references' /tmp/openlayerly-s7-s3-autherr-restore.log \
+  || fail "restore failed before reaching convergence (GetObject reads should have passed)"
+grep -q 'restore convergence failed' /tmp/openlayerly-s7-s3-autherr-restore.log \
+  || fail "denied ListObjectsV2 did not surface as a convergence failure"
 authfail_compose down -v >/dev/null 2>&1 || true
-rm -f "$AUTH_FAIL_OVERRIDE"
+rm -f "$AUTH_FAIL_OVERRIDE" "$POLICY_JSON"
 
 echo "S7 S3 restore E2E drill passed."
 echo "Archive: $ARCHIVE"

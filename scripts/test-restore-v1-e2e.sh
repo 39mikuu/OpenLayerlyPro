@@ -37,7 +37,8 @@ fail() {
 v1_compose() {
   project=$1
   shift
-  sudo -n env S7_E2E_APP_PORT="${S7_E2E_APP_PORT:-$SRC_PORT}" \
+  sudo -n env COMPOSE_ENV_FILE="$DRILL_ENV" \
+    S7_E2E_APP_PORT="${S7_E2E_APP_PORT:-$SRC_PORT}" \
     docker compose -p "$project" --env-file "$DRILL_ENV" \
     -f docker-compose.yml -f docker-compose.s7-e2e.yml -f "$OVERRIDE" \
     "$@"
@@ -122,14 +123,18 @@ else
 fi
 
 cleanup() {
-  [ "$CREATED_DOT_ENV" = true ] && [ -f .env ] && rm -f .env
-  rm -f "$OVERRIDE"
-  rm -rf "$WORK"
+  # Tear projects down *before* removing the override/env files that v1_compose needs.
   for project in "$SRC_PROJECT" "$RST_PROJECT"; do
     S7_E2E_APP_PORT=$SRC_PORT v1_compose "$project" down -v >/dev/null 2>&1 || true
   done
+  [ "$CREATED_DOT_ENV" = true ] && [ -f .env ] && rm -f .env
+  rm -f "$OVERRIDE" "$DRILL_ENV"
+  rm -rf "$WORK"
 }
-trap cleanup 0 HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "Cleaning previous v1 drill projects..."
 for project in "$SRC_PROJECT" "$RST_PROJECT"; do
@@ -151,6 +156,7 @@ echo "Creating baseline backup, then converting it to a FORMAT_VERSION=1 archive
 export COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:$OVERRIDE"
 export COMPOSE_ENV_FILE="$DRILL_ENV"
 COMPOSE_PROJECT_NAME=$SRC_PROJECT S7_E2E_APP_PORT=$SRC_PORT ./scripts/backup.sh "$BACKUP_DIR"
+# shellcheck disable=SC2012 # controlled backup filenames; newest-by-mtime is intended
 V2_ARCHIVE=$(ls -1t "$BACKUP_DIR"/openlayerly-backup-*.tar.gz | head -n 1)
 [ -n "$V2_ARCHIVE" ] || fail "baseline backup archive not found"
 

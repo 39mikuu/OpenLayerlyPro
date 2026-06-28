@@ -48,9 +48,18 @@ ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "server.js"]
 
 # ---- E2E 演练镜像(仅用于备份/恢复演练,含会改数据的测试工具,切勿用于生产) ----
-# 生产镜像请构建 `runner` target;本 stage 仅供 docker-compose.s7-e2e.yml 等演练编排使用。
+# 生产镜像请构建 `production`(默认)或 `runner` target;本 stage 仅供
+# docker-compose.s7-e2e.yml 等演练编排使用(target: e2e-runner)。
 FROM runner AS e2e-runner
 COPY --from=builder --chown=nextjs:nodejs /app/dist/seed-restore-e2e.mjs ./dist/seed-restore-e2e.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/verify-restore-e2e.mjs ./dist/verify-restore-e2e.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/seed-restore-s3-e2e.mjs ./dist/seed-restore-s3-e2e.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/inject-restore-s3-drift.mjs ./dist/inject-restore-s3-drift.mjs
+# Marker that gates destructive E2E-only behaviour (drift injection) in restore.sh.
+# It exists ONLY in this image, so the production runner can never run those branches.
+RUN touch /app/.e2e-tools && chown nextjs:nodejs /app/.e2e-tools
+
+# ---- 生产运行镜像(默认 / 最后一个 stage)----
+# 必须放在 e2e-runner 之后,确保裸 `docker build .`(默认取最后一个 stage)产出的是
+# 不含任何测试改数工具、不含 E2E 标记的安全生产镜像。
+FROM runner AS production

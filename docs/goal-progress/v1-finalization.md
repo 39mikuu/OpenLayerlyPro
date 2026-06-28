@@ -1,16 +1,12 @@
 # v1.0 Finalization Progress
 
-Last updated: 2026-06-27 (Asia/Singapore)
+Last updated: 2026-06-29 (Asia/Singapore)
 
 ## Current stage
 
-S7 round-3 remediation complete on `codex/s7-backup-consistency` (Draft PR #91).
-Round-3 closes review blockers: runtime `UPLOAD_DIR`/`CONFIG_ENCRYPTION_KEY_FILE`
-handling with canonical preflight before `dropdb`, expanded local E2E assertion
-matrix (`verify-restore-e2e.mjs`), MinIO/S3 isolated drill
-(`test-restore-s3-e2e.sh`), and checksum-gate `! -path` coverage for nested names
-and symlink rejection. Local E2E, S3 E2E (`test-restore-s3-e2e.sh`), and checksum-gate scripts green in worktree;
-PR remains Draft pending human re-review.
+S7 final remediation is complete on `codex/s7-backup-consistency`. Closed Draft
+PR #91 is abandoned and is not a release deliverable. The final branch will be
+published as a new Draft PR closing #87, pending human review and merge.
 
 ## Authoritative inputs read
 
@@ -100,13 +96,12 @@ git worktree add /home/miku/OpenLayerlyPro-s7 \
 
 ## Open reviewer findings
 
-None for S7 (implementation not started).
-
-S6 had no open blocking findings at human merge.
+None known. Final local validation is green; the new S7 Draft PR still requires
+human review and merge.
 
 ## Blockers
 
-None for starting S7 implementation.
+Human merge of the new S7 Draft PR is required before starting #88.
 
 Operational notes:
 
@@ -115,8 +110,8 @@ Operational notes:
 
 ## Next permitted action
 
-1. Address any blocking S7 review findings.
-2. Open Draft PR closing #87 (do not mark Ready or merge).
+1. Open a new Draft PR closing #87 (do not reuse abandoned PR #91).
+2. Babysit CI and address any blocking findings.
 3. Wait for human merge before #88 acceptance.
 
 ## S7 work completed so far
@@ -131,7 +126,7 @@ Operational notes:
 - Dockerfile copies restore artifacts; CI builds/verifies all one-off artifacts and
   runs shellcheck on backup scripts.
 - Docs: `docs/deployment/backup-restore.md` updated for S7 behavior.
-- Tests: 1064 passing (`RUN_DB_INTEGRATION_TESTS=true` on isolated DB
+- Tests: 1086 passing across 140 files (`RUN_DB_INTEGRATION_TESTS=true` on isolated DB
   `openlayerlypro_s7_87_test`), including restore integration tests.
 - E2E drill (2026-06-28, round-2): `./scripts/test-restore-e2e.sh` **passed** @
   `21f0b43e`. Archive:
@@ -143,10 +138,9 @@ Operational notes:
   slim imports (`storageResolve`, `storage/runtime`, `tasks/enqueue`) avoid
   bundling Next.js into restore tools.
 
-## Final-HEAD drill evidence (2026-06-28, round-5)
+## Final worktree validation (2026-06-29)
 
-All restore drills were re-run against the round-5 code (the commit that adds this
-record, parent `65290206`). Each drill tears down its isolated Compose projects
+All restore drills were re-run against the final worktree. Each drill tears down its isolated Compose projects
 (`down -v`) and removes its generated `.env`/override/temp files on exit.
 
 - Local E2E — `./scripts/test-restore-e2e.sh` → **passed**.
@@ -158,7 +152,8 @@ record, parent `65290206`). Each drill tears down its isolated Compose projects
   ListObjectsV2 pagination forced (`--page-size=2` over 6 `content/` objects);
   both seeded and injected orphans confirmed deleted from MinIO with their
   `storage.delete_object` tasks `succeeded`; out-of-prefix sentinel left untouched;
-  truncated-converge and real S3 auth-error cases both fail closed (app never starts).
+  truncated convergence and denied `ListObjectsV2` with allowed `GetObject` both
+  fail closed (app never starts).
 - Legacy v1 path — `./scripts/test-restore-v1-e2e.sh` → **passed**.
   Custom URL-reserved PostgreSQL credentials (`s7_v1_user` / `p@ss:w0rd/v1#x`) drive
   the isolated schema probe through `restore.sh`; compatible archive restores to
@@ -167,7 +162,17 @@ record, parent `65290206`). Each drill tears down its isolated Compose projects
   and after SIGTERM (signal-path cleanup observed).
 - Checksum gate — `./scripts/test-restore-checksum-gate.sh <v2-archive>` → **passed**.
   Rejects tampered payload (`sha256sum -c`), undeclared extra files (bijection
-  mismatch), counts nested `checksums.sha256` names, and rejects symlink payloads.
+  mismatch), counts nested `checksums.sha256` names, and invokes the production
+  validator to reject symlink and FIFO payloads.
+- Full test suite — `pnpm test` with DB integration enabled → **140 files /
+  1086 tests passed**.
+- Static/build gates — lint, Prettier check, bounded request-body check,
+  TypeScript, ShellCheck, restore artifact builds, Next.js production build, and
+  default production Docker image contract → **passed**.
+- Default Docker image contains all required restore artifacts, contains no E2E
+  mutation tools, and has no `/app/.e2e-tools` marker.
+- Cleanup verification found no remaining drill containers; only the intentional
+  isolated test PostgreSQL container `openlayerlypro_s7_87-postgres` remained.
 
 Schema-compatibility variants (compatible / newer / diverged / unknown / override)
 remain covered by `schemaCompatibility.test.ts` and `schemaCheck.integration.test.ts`;

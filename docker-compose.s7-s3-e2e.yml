@@ -6,7 +6,7 @@ services:
       MINIO_ROOT_USER: s7minioadmin
       MINIO_ROOT_PASSWORD: s7minioadmin-secret-0123
     ports:
-      - "${S7_S3_MINIO_PORT:-9005}:9000"
+      - "127.0.0.1:${S7_S3_MINIO_PORT:-9005}:9000"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
       interval: 5s

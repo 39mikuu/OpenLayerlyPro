@@ -22,6 +22,7 @@ docker_cmd() {
     docker "$@"
   else
     sudo -n env \
+      ${COMPOSE_ENV_FILE:+COMPOSE_ENV_FILE=$COMPOSE_ENV_FILE} \
       ${S7_E2E_APP_PORT:+S7_E2E_APP_PORT=$S7_E2E_APP_PORT} \
       ${S7_S3_MINIO_PORT:+S7_S3_MINIO_PORT=$S7_S3_MINIO_PORT} \
       docker "$@"
@@ -128,12 +129,7 @@ trap 'RESTORE_SIGNAL_EXIT_CODE=143; on_signal' TERM
 trap 'RESTORE_SIGNAL_EXIT_CODE=1; on_signal' HUP
 
 tar -xzf "$ARCHIVE_PATH" -C "$WORK_DIR"
-if [ -n "$(find "$WORK_DIR" -type l -print -quit 2>/dev/null || true)" ]; then
-  fail "archive contains symlinks; only regular payload files are supported"
-fi
-if [ -n "$(find "$WORK_DIR" \( -type b -o -type c -o -type p -o -type s \) -print -quit 2>/dev/null || true)" ]; then
-  fail "archive contains special files; only regular payload files are supported"
-fi
+reject_unsafe_payload_tree "$WORK_DIR"
 [ -s "$WORK_DIR/db.sql" ] || fail "archive is missing db.sql"
 [ -s "$WORK_DIR/secrets/config-encryption-key" ] || fail "archive is missing the config encryption key"
 [ -f "$WORK_DIR/manifest.env" ] || fail "archive is missing manifest.env"
@@ -234,6 +230,16 @@ else
   echo "Checking archive migration compatibility from manifest..."
   if ! run_schema_check --manifest-path=/restore-work/manifest.env --format-version="$FORMAT_VERSION"; then
     fail "archive schema compatibility check failed"
+  fi
+fi
+
+# E2E drift injection (RESTORE_E2E_INJECT_MISSING) deliberately deletes restored
+# objects and must never run in production. Require the E2E-only image marker and fail
+# closed *before* any destructive step if it is requested on a non-E2E image, so an
+# inherited environment variable can never turn a production restore into data loss.
+if [ "${RESTORE_E2E_INJECT_MISSING:-}" = "1" ]; then
+  if ! compose run --rm -T --no-deps --entrypoint sh app -c 'test -f /app/.e2e-tools'; then
+    fail "RESTORE_E2E_INJECT_MISSING is set but this is not an E2E image (missing /app/.e2e-tools); refusing destructive drift injection"
   fi
 fi
 

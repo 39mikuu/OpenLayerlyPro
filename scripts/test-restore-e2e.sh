@@ -23,7 +23,8 @@ fail() {
 compose() {
   project=$1
   shift
-  sudo -n env S7_E2E_APP_PORT="${S7_E2E_APP_PORT:-3003}" docker compose \
+  sudo -n env COMPOSE_ENV_FILE="$DRILL_ENV" \
+    S7_E2E_APP_PORT="${S7_E2E_APP_PORT:-3003}" docker compose \
     -p "$project" \
     --env-file "$DRILL_ENV" \
     -f docker-compose.yml \
@@ -81,18 +82,28 @@ else
   CREATED_DOT_ENV=false
 fi
 
-cleanup_dotenv() {
-  if [ "$CREATED_DOT_ENV" = true ] && [ -f .env ]; then
-    rm -f .env
-  fi
+teardown_projects() {
+  for tp_project in "$SOURCE_PROJECT" "$RESTORE_PROJECT"; do
+    sudo -n env COMPOSE_ENV_FILE="$DRILL_ENV" \
+      docker compose -p "$tp_project" --env-file "$DRILL_ENV" \
+      -f docker-compose.yml -f docker-compose.s7-e2e.yml down -v >/dev/null 2>&1 || true
+  done
 }
-trap cleanup_dotenv 0 HUP INT TERM
+
+# Real teardown on every exit/signal: stop and remove all drill projects (containers +
+# volumes) *before* deleting the env files they reference, so nothing is left running.
+cleanup() {
+  teardown_projects
+  [ "$CREATED_DOT_ENV" = true ] && [ -f .env ] && rm -f .env
+  rm -f "$DRILL_ENV"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "Cleaning previous drill projects..."
-sudo -n docker compose -p "$SOURCE_PROJECT" --env-file "$DRILL_ENV" \
-  -f docker-compose.yml -f docker-compose.s7-e2e.yml down -v >/dev/null 2>&1 || true
-sudo -n docker compose -p "$RESTORE_PROJECT" --env-file "$DRILL_ENV" \
-  -f docker-compose.yml -f docker-compose.s7-e2e.yml down -v >/dev/null 2>&1 || true
+teardown_projects
 
 echo "Building source image..."
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" build app
@@ -115,13 +126,16 @@ SEED_JSON=$(
 QUARANTINE_FILE_ID=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.quarantineFileId);});')
 INTACT_FILE_ID=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.intactFileId);});')
 MISSING_OBJECT_KEY="restore-e2e/${QUARANTINE_FILE_ID}.txt"
-[ -n "$QUARANTINE_FILE_ID" ] && [ -n "$INTACT_FILE_ID" ] || fail "seed markers missing file ids"
+if [ -z "$QUARANTINE_FILE_ID" ] || [ -z "$INTACT_FILE_ID" ]; then
+  fail "seed markers missing file ids"
+fi
 
 echo "Creating baseline backup..."
 export COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml"
 export COMPOSE_ENV_FILE="$DRILL_ENV"
 compose "$SOURCE_PROJECT" exec -T app sh -c 'test -z "${CONFIG_ENCRYPTION_KEY:-}"' || fail "source uses direct CONFIG_ENCRYPTION_KEY"
 COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh "$BACKUP_DIR"
+# shellcheck disable=SC2012 # controlled backup filenames; newest-by-mtime is intended
 ARCHIVE=$(ls -1t "$BACKUP_DIR"/openlayerly-backup-*.tar.gz | head -n 1)
 [ -n "$ARCHIVE" ] || fail "backup archive not found"
 

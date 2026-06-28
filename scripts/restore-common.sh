@@ -22,6 +22,21 @@ validate_no_path_traversal() {
   esac
 }
 
+# Reject symlinks and non-regular (special: block/char/fifo/socket) files anywhere in an
+# extracted archive payload tree. restore.sh calls this immediately after extraction and
+# before any database replacement; the checksum-gate regression test calls this exact
+# helper against malicious archives, so the test exercises the real production rejection.
+reject_unsafe_payload_tree() {
+  payload_dir=$1
+
+  if [ -n "$(find "$payload_dir" -type l -print -quit 2>/dev/null || true)" ]; then
+    fail "archive contains symlinks; only regular payload files are supported"
+  fi
+  if [ -n "$(find "$payload_dir" \( -type b -o -type c -o -type p -o -type s \) -print -quit 2>/dev/null || true)" ]; then
+    fail "archive contains special files; only regular payload files are supported"
+  fi
+}
+
 canonicalize_container_path() {
   raw_path=$1
   label=$2
