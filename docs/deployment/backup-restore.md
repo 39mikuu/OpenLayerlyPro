@@ -137,7 +137,8 @@ Key invariants:
 - any migrator/backfill/neutralization/convergence error prevents normal app startup;
 - S3 convergence enumerates only controlled application key namespaces (`avatars/`, `payment-qr/`, `payment-proof/`, `content/`, `legacy/`, `remediated/`). Override with comma-separated `RESTORE_S3_ENUM_PREFIXES` when needed;
 - incomplete storage enumeration (truncated listing or converge errors) exits non-zero and prevents app startup;
-- `CONFIG_ENCRYPTION_KEY_FILE` must live under `/app/secrets` so restored keys survive one-off containers and `compose up --force-recreate`;
+- `CONFIG_ENCRYPTION_KEY_FILE` must be a canonical absolute file path under `/app/secrets` (no `..`, no directory path). Restore validates the target path before dropping the official database;
+- `UPLOAD_DIR` is read from the target container at backup/restore time and must stay under `/app/uploads`. Local upload backup and restore use that resolved path for both `compose cp` directions;
 - S3 `files.bucket = NULL` rows are matched against the configured bucket during convergence so referenced objects are not misclassified as orphans.
 
 The target image must contain and be able to execute:
@@ -182,10 +183,34 @@ Only one project can bind host port 3000 with the default Compose file. Stop the
 - confirmed newer/divergent history is rejected;
 - unknown v1 history fails closed unless `--allow-legacy-v1-unknown-schema` is supplied, and that override cannot bypass confirmed incompatibility.
 
+## Isolated E2E Drills
+
+Local nested-upload drill (membership, encrypted config decrypt, provider re-arm, email neutralization, quarantine 410):
+
+```bash
+./scripts/test-restore-e2e.sh
+```
+
+MinIO/S3 drill (bucket mirror, missing-object quarantine, orphan cleanup enqueue, truncated enumeration fail-closed):
+
+```bash
+./scripts/test-restore-s3-e2e.sh
+```
+
+Checksum gate on a produced archive:
+
+```bash
+./scripts/test-restore-checksum-gate.sh /tmp/openlayerlypro-s7-e2e-backups/openlayerly-backup-*.tar.gz
+```
+
 ## Cleanup After a Drill
 
 ```bash
 docker compose -p openlayerlypro_s7_drill down -v
+docker compose -p openlayerlypro_s7_source down -v
+docker compose -p openlayerlypro_s7_restore down -v
+docker compose -p openlayerlypro_s7_s3_source down -v
+docker compose -p openlayerlypro_s7_s3_restore down -v
 ```
 
 Never run `down -v` against production unless its data has already been safely recovered elsewhere.

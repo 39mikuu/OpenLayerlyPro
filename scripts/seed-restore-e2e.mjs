@@ -5,10 +5,15 @@ import path from "node:path";
 import bcrypt from "bcryptjs";
 import postgres from "postgres";
 
+import { encryptSecret } from "@/lib/crypto";
+
 const DATABASE_URL = process.env.DATABASE_URL;
 const UPLOAD_DIR = process.env.UPLOAD_DIR ?? "/app/uploads";
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "restore-e2e@example.com";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "restore-e2e-password-0123";
+const MEMBER_EMAIL = process.env.MEMBER_EMAIL ?? "restore-e2e-member@example.com";
+const MEMBER_PASSWORD = process.env.MEMBER_PASSWORD ?? "restore-e2e-member-pass-01";
+const SMTP_MARKER = "restore-e2e-smtp-host.example.com";
 
 if (!DATABASE_URL) {
   console.error("Missing DATABASE_URL");
@@ -19,12 +24,30 @@ const sql = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
 
 try {
   const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 12);
+  const memberPasswordHash = await bcrypt.hash(MEMBER_PASSWORD, 12);
   const postId = randomUUID();
-  const fileId = randomUUID();
-  const objectKey = `restore-e2e/${fileId}.txt`;
-  const uploadPath = path.join(UPLOAD_DIR, objectKey);
-  await mkdir(path.dirname(uploadPath), { recursive: true });
-  await writeFile(uploadPath, "restore-e2e-marker\n", "utf8");
+  const quarantineFileId = randomUUID();
+  const intactFileId = randomUUID();
+  const quarantineObjectKey = `restore-e2e/${quarantineFileId}.txt`;
+  const intactObjectKey = `restore-e2e/${intactFileId}.txt`;
+  const tierId = randomUUID();
+
+  for (const objectKey of [quarantineObjectKey, intactObjectKey]) {
+    const uploadPath = path.join(UPLOAD_DIR, objectKey);
+    await mkdir(path.dirname(uploadPath), { recursive: true });
+    await writeFile(uploadPath, `restore-e2e-marker:${objectKey}\n`, "utf8");
+  }
+
+  const smtpEncrypted = encryptSecret(
+    JSON.stringify({
+      host: SMTP_MARKER,
+      port: 587,
+      secure: false,
+      user: "restore-e2e",
+      password: "smtp-secret",
+      from: "restore-e2e@example.com",
+    }),
+  );
 
   await sql.begin(async (tx) => {
     const [admin] = await tx`
@@ -37,14 +60,76 @@ try {
       returning id
     `;
 
+    const [member] = await tx`
+      insert into users (email, password_hash, role, updated_at)
+      values (${MEMBER_EMAIL}, ${memberPasswordHash}, 'member', now())
+      on conflict (email) do update
+      set password_hash = excluded.password_hash,
+          role = 'member',
+          updated_at = now()
+      returning id
+    `;
+
+    await tx`
+      insert into membership_tiers (
+        id, name, slug, price_label, level, duration_days, updated_at
+      )
+      values (
+        ${tierId},
+        'Restore E2E Tier',
+        'restore-e2e-tier',
+        'E2E',
+        1,
+        31,
+        now()
+      )
+      on conflict (slug) do update
+      set name = excluded.name,
+          updated_at = now()
+    `;
+
+    await tx`
+      insert into memberships (
+        user_id, tier_id, source, starts_at, ends_at, status, updated_at
+      )
+      values (
+        ${member.id},
+        ${tierId},
+        'manual',
+        now() - interval '1 day',
+        now() + interval '30 days',
+        'active',
+        now()
+      )
+    `;
+
+    await tx`
+      insert into app_settings (key, value_encrypted, updated_at)
+      values ('smtp', ${smtpEncrypted}, now())
+      on conflict (key) do update
+      set value_encrypted = excluded.value_encrypted,
+          updated_at = now()
+    `;
+
     await tx`
       insert into files (
         id, purpose, storage_driver, bucket, object_key, original_name,
         mime_type, size_bytes, created_by, updated_at
       )
       values (
-        ${fileId}, 'content_image', 'local', null, ${objectKey}, 'marker.txt',
-        'text/plain', 18, ${admin.id}, now()
+        ${quarantineFileId}, 'content_attachment', 'local', null, ${quarantineObjectKey},
+        'marker.txt', 'text/plain', 18, ${admin.id}, now()
+      )
+    `;
+
+    await tx`
+      insert into files (
+        id, purpose, storage_driver, bucket, object_key, original_name,
+        mime_type, size_bytes, created_by, updated_at
+      )
+      values (
+        ${intactFileId}, 'content_attachment', 'local', null, ${intactObjectKey},
+        'marker.txt', 'text/plain', 18, ${admin.id}, now()
       )
     `;
 
@@ -66,18 +151,20 @@ try {
 
     await tx`
       insert into post_files (post_id, file_id, kind)
-      values (${postId}, ${fileId}, 'inline')
+      values
+        (${postId}, ${intactFileId}, 'inline'),
+        (${postId}, ${quarantineFileId}, 'inline')
     `;
 
     await tx`
       insert into tasks (kind, dedupe_key, payload_json, status, attempts, updated_at)
       values (
         'storage.delete_object',
-        ${`storage:delete_object:${fileId}`},
+        ${`storage:delete_object:${quarantineFileId}`},
         ${sql.json({
           storageDriver: "local",
           bucket: null,
-          objectKey,
+          objectKey: quarantineObjectKey,
         })},
         'succeeded',
         1,
@@ -117,15 +204,51 @@ try {
       )
       on conflict (dedupe_key) do nothing
     `;
+
+    await tx`
+      insert into tasks (kind, dedupe_key, payload_json, status, attempts, locked_by, updated_at)
+      values
+      (
+        'email',
+        ${`email:membership_activated:${randomUUID()}`},
+        ${sql.json({ template: "membership_activated", to: MEMBER_EMAIL })},
+        'processing',
+        1,
+        'stale-worker',
+        now()
+      ),
+      (
+        'email',
+        ${`email:renewal_reminder:${randomUUID()}`},
+        ${sql.json({ template: "renewal_reminder", to: MEMBER_EMAIL })},
+        'processing',
+        1,
+        'stale-worker',
+        now()
+      ),
+      (
+        'subscription.reconcile',
+        'subscription.reconcile',
+        ${sql.json({})},
+        'dead',
+        3,
+        null,
+        now()
+      )
+      on conflict (dedupe_key) do nothing
+    `;
   });
 
   console.log(
     JSON.stringify(
       {
         adminEmail: ADMIN_EMAIL,
+        memberEmail: MEMBER_EMAIL,
         postSlug: "restore-e2e-marker",
-        fileId,
-        objectKey,
+        tierSlug: "restore-e2e-tier",
+        quarantineFileId,
+        intactFileId,
+        smtpMarker: SMTP_MARKER,
       },
       null,
       2,

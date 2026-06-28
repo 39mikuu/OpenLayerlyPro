@@ -4,12 +4,13 @@ Last updated: 2026-06-27 (Asia/Singapore)
 
 ## Current stage
 
-S7 audit remediation complete on `codex/s7-backup-consistency` @ `21f0b43e`.
-Round-1 and round-2 review blockers addressed (S3 prefix/identity, checksum
-bijection, truncation fail-closed, `/app/secrets` key restore, signal traps).
-CI run `28298064552` pass; E2E archive
-`/tmp/openlayerlypro-s7-e2e-backups/openlayerly-backup-20260627-192950.tar.gz`
-pass. PR #91 ready for human review (merge gate unchanged).
+S7 round-3 remediation complete on `codex/s7-backup-consistency` (Draft PR #91).
+Round-3 closes review blockers: runtime `UPLOAD_DIR`/`CONFIG_ENCRYPTION_KEY_FILE`
+handling with canonical preflight before `dropdb`, expanded local E2E assertion
+matrix (`verify-restore-e2e.mjs`), MinIO/S3 isolated drill
+(`test-restore-s3-e2e.sh`), and checksum-gate `! -path` coverage for nested names
+and symlink rejection. Local E2E, S3 E2E (`test-restore-s3-e2e.sh`), and checksum-gate scripts green in worktree;
+PR remains Draft pending human re-review.
 
 ## Authoritative inputs read
 

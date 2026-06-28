@@ -67,7 +67,7 @@ PAYLOAD_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-checksum-gate-payload.XX
 CHECKSUM_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-checksum-gate-checksum.XXXXXX")
 (
   cd "$WORK_DIR" || exit 1
-  find . -type f ! -name 'checksums.sha256' -print \
+  find . -type f ! -path './checksums.sha256' -print \
     | LC_ALL=C sort \
     | sed 's|^\./||' \
     > "$PAYLOAD_FILE_LIST"
@@ -90,5 +90,41 @@ fi
 echo "Adding an undeclared payload file..."
 printf secret >"$WORK_DIR/uploads/extra-tamper.txt"
 assert_bijection_mismatch || fail "bijection did not detect extra payload file"
+
+echo "Verifying nested checksums.sha256 filenames are not excluded by basename rules..."
+NESTED_CHECKSUM_PATH="uploads/nested/checksums.sha256"
+mkdir -p "$WORK_DIR/uploads/nested"
+printf 'nested-checksum-payload' >"$WORK_DIR/$NESTED_CHECKSUM_PATH"
+PAYLOAD_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-checksum-gate-payload.XXXXXX")
+CHECKSUM_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-checksum-gate-checksum.XXXXXX")
+(
+  cd "$WORK_DIR" || exit 1
+  find . -type f ! -path './checksums.sha256' -print \
+    | LC_ALL=C sort \
+    | sed 's|^\./||' \
+    > "$PAYLOAD_FILE_LIST"
+  if ! grep -Fxq "$NESTED_CHECKSUM_PATH" "$PAYLOAD_FILE_LIST"; then
+    echo "restore-checksum-gate: nested checksums.sha256 path was excluded" >&2
+    exit 1
+  fi
+) || fail "nested checksums.sha256 exclusion regression detected"
+rm -f "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST"
+
+echo "Verifying payload symlinks are rejected before bijection..."
+SYMLINK_TARGET="$WORK_DIR/uploads/symlink-target.txt"
+printf 'symlink-payload' >"$SYMLINK_TARGET"
+ln -s "symlink-target.txt" "$WORK_DIR/uploads/symlink-payload.txt"
+PAYLOAD_FILE_LIST=$(mktemp "${TMPDIR:-/tmp}/openlayerly-checksum-gate-payload.XXXXXX")
+if (
+  cd "$WORK_DIR" || exit 1
+  find . -type f ! -path './checksums.sha256' -print \
+    | LC_ALL=C sort \
+    | sed 's|^\./||' \
+    > "$PAYLOAD_FILE_LIST"
+  grep -Fxq 'uploads/symlink-payload.txt' "$PAYLOAD_FILE_LIST"
+) >/dev/null 2>&1; then
+  fail "symlink payload was treated as a regular file"
+fi
+rm -f "$PAYLOAD_FILE_LIST"
 
 echo "Restore checksum gate checks passed for: $ARCHIVE_PATH"

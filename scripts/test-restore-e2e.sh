@@ -13,6 +13,7 @@ SOURCE_PORT=${SOURCE_PORT:-3003}
 RESTORE_PORT=${RESTORE_PORT:-3004}
 BACKUP_DIR=${BACKUP_DIR:-/tmp/openlayerlypro-s7-e2e-backups}
 DRILL_ENV=${DRILL_ENV:-.env.s7-e2e}
+NESTED_UPLOAD_DIR=${NESTED_UPLOAD_DIR:-/app/uploads/e2e-nested}
 
 fail() {
   echo "restore-e2e: $*" >&2
@@ -22,7 +23,7 @@ fail() {
 compose() {
   project=$1
   shift
-  S7_E2E_APP_PORT=${S7_E2E_APP_PORT:-3003} sudo -n docker compose \
+  sudo -n env S7_E2E_APP_PORT="${S7_E2E_APP_PORT:-3003}" docker compose \
     -p "$project" \
     --env-file "$DRILL_ENV" \
     -f docker-compose.yml \
@@ -46,6 +47,7 @@ wait_ready() {
 
 command -v docker >/dev/null 2>&1 || fail "docker is required"
 command -v curl >/dev/null 2>&1 || fail "curl is required"
+command -v node >/dev/null 2>&1 || fail "node is required"
 sudo -n docker version >/dev/null 2>&1 || fail "passwordless sudo docker is required in this environment"
 
 DOCKER_SUDO_BIN=${DOCKER_SUDO_BIN:-/tmp/openlayerlypro-docker-sudo}
@@ -57,8 +59,7 @@ export PATH
 
 mkdir -p "$BACKUP_DIR"
 
-if [ ! -f "$DRILL_ENV" ]; then
-  cat >"$DRILL_ENV" <<'EOF'
+cat >"$DRILL_ENV" <<EOF
 APP_URL=http://127.0.0.1:3003
 APP_NAME=OpenLayerlyPro S7 Restore Drill
 NODE_ENV=production
@@ -69,10 +70,9 @@ CONFIG_ENCRYPTION_KEY=
 CONFIG_ENCRYPTION_KEY_FILE=/app/secrets/config-encryption-key
 DATABASE_URL=postgresql://artist:artist_password@postgres:5432/artist_member
 STORAGE_DRIVER=local
-UPLOAD_DIR=/app/uploads
+UPLOAD_DIR=$NESTED_UPLOAD_DIR
 TURNSTILE_ENABLED=false
 EOF
-fi
 
 if [ ! -f .env ]; then
   cp "$DRILL_ENV" .env
@@ -101,14 +101,21 @@ sudo -n docker image inspect "openlayerlypro_s7_source-app:latest" >/dev/null 2>
   || fail "source app image was not built"
 sudo -n docker tag openlayerlypro_s7_source-app:latest openlayerlypro_s7_restore-app:latest
 
-echo "Starting source stack on port ${SOURCE_PORT}..."
+echo "Starting source stack on port ${SOURCE_PORT} with UPLOAD_DIR=${NESTED_UPLOAD_DIR}..."
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d postgres
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d app
 wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
 
 echo "Seeding source data..."
-S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" run --rm --no-deps \
-  --entrypoint node app /app/dist/seed-restore-e2e.mjs
+SEED_JSON=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" run --rm --no-deps \
+    --entrypoint node app /app/dist/seed-restore-e2e.mjs | awk '/^\{/,/^}/'
+)
+[ -n "$SEED_JSON" ] || fail "seed output missing JSON markers"
+QUARANTINE_FILE_ID=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.quarantineFileId);});')
+INTACT_FILE_ID=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.intactFileId);});')
+MISSING_OBJECT_KEY="restore-e2e/${QUARANTINE_FILE_ID}.txt"
+[ -n "$QUARANTINE_FILE_ID" ] && [ -n "$INTACT_FILE_ID" ] || fail "seed markers missing file ids"
 
 echo "Creating baseline backup..."
 export COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml"
@@ -131,6 +138,7 @@ S7_E2E_APP_PORT=$RESTORE_PORT \
   COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml" \
   COMPOSE_ENV_FILE="$DRILL_ENV" \
   RESTORE_E2E_INJECT_MISSING=1 \
+  RESTORE_E2E_MISSING_OBJECT_KEY="$MISSING_OBJECT_KEY" \
   READY_URL="http://127.0.0.1:${RESTORE_PORT}/api/ready" \
   ./scripts/restore.sh "$ARCHIVE" --yes
 
@@ -162,7 +170,15 @@ QUARANTINE_COUNT=$(
 )
 [ "$QUARANTINE_COUNT" = "1" ] || fail "expected one missing-after-restore quarantine (count=$QUARANTINE_COUNT)"
 
+S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" run --rm --no-deps \
+  -e DATABASE_URL=postgresql://artist:artist_password@postgres:5432/artist_member \
+  -e QUARANTINE_FILE_ID="$QUARANTINE_FILE_ID" \
+  -e INTACT_FILE_ID="$INTACT_FILE_ID" \
+  -e RESTORE_APP_URL=http://app:3000 \
+  --entrypoint node app /app/dist/verify-restore-e2e.mjs
+
 echo "S7 restore E2E drill passed."
 echo "Archive: $ARCHIVE"
 echo "Source project: $SOURCE_PROJECT (port $SOURCE_PORT)"
 echo "Restore project: $RESTORE_PROJECT (port $RESTORE_PORT)"
+echo "Nested upload dir: $NESTED_UPLOAD_DIR"

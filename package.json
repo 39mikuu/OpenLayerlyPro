@@ -26,7 +26,10 @@
     "build:restore-converge": "esbuild scripts/restore-converge.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --alias:@=./src --outfile=dist/restore-converge.mjs",
     "build:restore-schema-check": "esbuild scripts/restore-schema-check.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --alias:@=./src --outfile=dist/restore-schema-check.mjs",
     "build:restore-tools": "pnpm run build:restore-pre-scan && pnpm run build:restore-neutralize && pnpm run build:restore-converge && pnpm run build:restore-schema-check",
-    "build:seed-restore-e2e": "esbuild scripts/seed-restore-e2e.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=dist/seed-restore-e2e.mjs",
+    "build:seed-restore-e2e": "esbuild scripts/seed-restore-e2e.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --alias:@=./src --outfile=dist/seed-restore-e2e.mjs",
+    "build:verify-restore-e2e": "esbuild scripts/verify-restore-e2e.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --alias:@=./src --outfile=dist/verify-restore-e2e.mjs",
+    "build:seed-restore-s3-e2e": "esbuild scripts/seed-restore-s3-e2e.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --alias:@=./src --outfile=dist/seed-restore-s3-e2e.mjs",
+    "build:inject-restore-s3-drift": "esbuild scripts/inject-restore-s3-drift.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --alias:@=./src --outfile=dist/inject-restore-s3-drift.mjs",
     "prepare": "husky"
   },
   "dependencies": {

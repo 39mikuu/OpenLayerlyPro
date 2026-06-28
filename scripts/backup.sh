@@ -4,6 +4,10 @@ set -eu
 
 umask 077
 
+ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+# shellcheck source=scripts/restore-common.sh
+. "$ROOT_DIR/scripts/restore-common.sh"
+
 usage() {
   echo "Usage: $0 [output-directory]" >&2
 }
@@ -19,6 +23,7 @@ docker_cmd() {
   else
     sudo -n env \
       ${S7_E2E_APP_PORT:+S7_E2E_APP_PORT=$S7_E2E_APP_PORT} \
+      ${S7_S3_MINIO_PORT:+S7_S3_MINIO_PORT=$S7_S3_MINIO_PORT} \
       docker "$@"
   fi
 }
@@ -90,11 +95,8 @@ if ! compose exec -T app sh -c 'test -z "${CONFIG_ENCRYPTION_KEY:-}"'; then
   fail "CONFIG_ENCRYPTION_KEY is set; back up that externally managed value separately and use the file-backed key for single-archive backups"
 fi
 
-CONFIG_KEY_FILE=$(compose exec -T app sh -c 'printf %s "${CONFIG_ENCRYPTION_KEY_FILE:-/app/secrets/config-encryption-key}"')
-case "$CONFIG_KEY_FILE" in
-  /*) ;;
-  *) fail "CONFIG_ENCRYPTION_KEY_FILE must be an absolute container path" ;;
-esac
+CONFIG_KEY_FILE=$(read_live_container_config_key_file)
+validate_config_key_file_path "$CONFIG_KEY_FILE"
 
 echo "Reading migration identity from the live database..."
 MIGRATION_IDENTITIES_JSON=$(
@@ -131,9 +133,11 @@ chmod 600 "$WORK_DIR/secrets/config-encryption-key" || fail "unable to secure co
 STORAGE_DRIVER=$(compose exec -T app sh -c 'printf %s "${STORAGE_DRIVER:-local}"')
 case "$STORAGE_DRIVER" in
   local)
-    echo "Backing up local uploads..."
+    UPLOAD_DIR=$(read_live_container_upload_dir)
+    validate_upload_dir_path "$UPLOAD_DIR"
+    echo "Backing up local uploads from $UPLOAD_DIR..."
     mkdir -p "$WORK_DIR/uploads"
-    compose cp app:/app/uploads/. "$WORK_DIR/uploads"
+    compose cp "app:$UPLOAD_DIR/." "$WORK_DIR/uploads"
     fix_workspace_permissions
     UPLOADS_INCLUDED=true
     ;;

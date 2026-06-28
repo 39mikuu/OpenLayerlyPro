@@ -4,6 +4,10 @@ set -eu
 
 umask 077
 
+ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+# shellcheck source=scripts/restore-common.sh
+. "$ROOT_DIR/scripts/restore-common.sh"
+
 usage() {
   echo "Usage: $0 <archive.tar.gz> [--yes] [--allow-legacy-v1-unknown-schema]" >&2
 }
@@ -19,6 +23,7 @@ docker_cmd() {
   else
     sudo -n env \
       ${S7_E2E_APP_PORT:+S7_E2E_APP_PORT=$S7_E2E_APP_PORT} \
+      ${S7_S3_MINIO_PORT:+S7_S3_MINIO_PORT=$S7_S3_MINIO_PORT} \
       docker "$@"
   fi
 }
@@ -227,6 +232,10 @@ else
   fi
 fi
 
+echo "Preflighting config encryption key restore target before database replacement..."
+TARGET_CONFIG_KEY_FILE=$(read_container_config_key_file)
+preflight_config_key_restore_target "$TARGET_CONFIG_KEY_FILE"
+
 echo "Replacing PostgreSQL database..."
 compose exec -T postgres sh -c '
   set -eu
@@ -240,20 +249,7 @@ compose exec -T postgres sh -c '
   exec psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}"
 ' < "$WORK_DIR/db.sql"
 
-echo "Restoring config encryption key file..."
-TARGET_CONFIG_KEY_FILE=$(
-  compose run --rm -T --no-deps --entrypoint sh app -c \
-    'printf %s "${CONFIG_ENCRYPTION_KEY_FILE:-/app/secrets/config-encryption-key}"'
-)
-case "$TARGET_CONFIG_KEY_FILE" in
-  /app/secrets/*) ;;
-  *) fail "CONFIG_ENCRYPTION_KEY_FILE must be an absolute path under /app/secrets for persistent restore" ;;
-esac
-TARGET_CONFIG_KEY_DIR=${TARGET_CONFIG_KEY_FILE%/*}
-compose run --rm -T --no-deps --entrypoint sh app -c "
-  set -eu
-  mkdir -p \"$TARGET_CONFIG_KEY_DIR\"
-"
+echo "Restoring config encryption key file to $TARGET_CONFIG_KEY_FILE..."
 compose cp "$WORK_DIR/secrets/config-encryption-key" "app:$TARGET_CONFIG_KEY_FILE"
 compose run --rm -T --no-deps --entrypoint sh app -c "
   set -eu
@@ -261,26 +257,48 @@ compose run --rm -T --no-deps --entrypoint sh app -c "
 "
 
 if [ -d "$WORK_DIR/uploads" ]; then
-  echo "Replacing local uploads..."
-  compose run --rm -T --no-deps --entrypoint sh app -c '
+  UPLOAD_DIR=$(read_container_upload_dir)
+  validate_upload_dir_path "$UPLOAD_DIR"
+  echo "Replacing local uploads at $UPLOAD_DIR..."
+  compose run --rm -T --no-deps --entrypoint sh app -c "
     set -eu
-    upload_dir=${UPLOAD_DIR:-/app/uploads}
-    mkdir -p "$upload_dir"
-    rm -rf "$upload_dir"/* "$upload_dir"/.[!.]* "$upload_dir"/..?*
-  '
-  compose cp "$WORK_DIR/uploads/." app:/app/uploads
+    upload_dir=$UPLOAD_DIR
+    mkdir -p \"\$upload_dir\"
+    rm -rf \"\$upload_dir\"/* \"\$upload_dir\"/.[!.]* \"\$upload_dir\"/..?*
+  "
+  compose cp "$WORK_DIR/uploads/." "app:$UPLOAD_DIR"
   if [ "${RESTORE_E2E_INJECT_MISSING:-}" = "1" ]; then
     echo "Injecting post-restore storage drift for E2E drill..."
-    compose run --rm -T --no-deps --entrypoint sh app -c '
-      set -eu
-      upload_dir=${UPLOAD_DIR:-/app/uploads}
-      referenced=$(find "$upload_dir" -type f -name "*.txt" | head -n 1)
-      [ -n "$referenced" ] || exit 1
-      rm -f "$referenced"
-    ' || fail "failed to inject missing-object drift for E2E drill"
+    if [ -n "${RESTORE_E2E_MISSING_OBJECT_KEY:-}" ]; then
+      compose run --rm -T --no-deps --entrypoint sh app -c "
+        set -eu
+        upload_dir=$UPLOAD_DIR
+        rm -f \"\$upload_dir/$RESTORE_E2E_MISSING_OBJECT_KEY\"
+        test ! -f \"\$upload_dir/$RESTORE_E2E_MISSING_OBJECT_KEY\"
+      " || fail "failed to inject missing-object drift for E2E drill"
+    else
+      compose run --rm -T --no-deps --entrypoint sh app -c "
+        set -eu
+        upload_dir=$UPLOAD_DIR
+        referenced=\$(find \"\$upload_dir\" -type f -name '*.txt' | head -n 1)
+        [ -n \"\$referenced\" ] || exit 1
+        rm -f \"\$referenced\"
+      " || fail "failed to inject missing-object drift for E2E drill"
+    fi
   fi
 elif [ -f "$WORK_DIR/UPLOADS_SKIPPED_S3" ]; then
   echo "Archive was created for S3/R2; local uploads were not included."
+  if [ "${RESTORE_E2E_INJECT_MISSING:-}" = "1" ] && [ -n "${RESTORE_E2E_MISSING_OBJECT_KEY:-}" ]; then
+    echo "Injecting S3 missing-object drift for E2E drill..."
+    INJECT_ARGS="--missing=$RESTORE_E2E_MISSING_OBJECT_KEY"
+    if [ -n "${RESTORE_E2E_ORPHAN_OBJECT_KEY:-}" ]; then
+      INJECT_ARGS="$INJECT_ARGS --orphan=$RESTORE_E2E_ORPHAN_OBJECT_KEY"
+    fi
+    # shellcheck disable=SC2086
+    compose run --rm -T --no-deps \
+      --entrypoint node app /app/dist/inject-restore-s3-drift.mjs $INJECT_ARGS \
+      || fail "failed to inject S3 storage drift for E2E drill"
+  fi
 else
   fail "archive contains neither uploads nor the S3 skip marker"
 fi
@@ -301,6 +319,9 @@ echo "Converging database and storage references..."
 CONVERGE_ARGS=""
 if [ -n "${RESTORE_S3_ENUM_PREFIXES:-}" ]; then
   CONVERGE_ARGS="--prefixes=$RESTORE_S3_ENUM_PREFIXES"
+fi
+if [ -n "${RESTORE_CONVERGE_MAX_OBJECTS:-}" ]; then
+  CONVERGE_ARGS="$CONVERGE_ARGS --max-objects=$RESTORE_CONVERGE_MAX_OBJECTS"
 fi
 # shellcheck disable=SC2086
 run_one_off /app/dist/restore-converge.mjs $CONVERGE_ARGS || fail "restore convergence failed"

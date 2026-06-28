@@ -2,5 +2,7 @@ services:
   app:
     env_file:
       - .env.s7-e2e
-    ports:
+    ports: !override
       - "${S7_E2E_APP_PORT:-3003}:3000"
+    environment:
+      UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads/e2e-nested}
