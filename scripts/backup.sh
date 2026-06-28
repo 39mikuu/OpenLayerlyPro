@@ -77,9 +77,11 @@ TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
 CREATED_AT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-backup.XXXXXX")
 ARCHIVE_PATH="$OUTPUT_DIR/openlayerly-backup-$TIMESTAMP.tar.gz"
+ARCHIVE_TMP=$(mktemp "$OUTPUT_DIR/.openlayerly-backup-$TIMESTAMP.XXXXXX")
 
 cleanup() {
   rm -rf "$WORK_DIR"
+  rm -f "$ARCHIVE_TMP"
 }
 trap cleanup 0 HUP INT TERM
 
@@ -136,6 +138,17 @@ case "$STORAGE_DRIVER" in
   local)
     UPLOAD_DIR=$(read_live_container_upload_dir)
     validate_upload_dir_path "$UPLOAD_DIR"
+    compose exec -T app sh -c "
+      set -eu
+      if [ -n \"\$(find \"$UPLOAD_DIR\" -type l -print -quit 2>/dev/null || true)\" ]; then
+        echo 'backup: live upload tree contains symlinks' >&2
+        exit 1
+      fi
+      if [ -n \"\$(find \"$UPLOAD_DIR\" \\( -type b -o -type c -o -type p -o -type s \\) -print -quit 2>/dev/null || true)\" ]; then
+        echo 'backup: live upload tree contains special files' >&2
+        exit 1
+      fi
+    " || fail "live upload tree contains unsupported entries"
     echo "Backing up local uploads from $UPLOAD_DIR..."
     mkdir -p "$WORK_DIR/uploads"
     compose cp "app:$UPLOAD_DIR/." "$WORK_DIR/uploads"
@@ -164,6 +177,8 @@ esac
   echo "BACKUP_WINDOW_NOTE=hot-backup order pg_dump(T1) then uploads(T2); expect T1-T2 drift unless app was stopped"
 } > "$WORK_DIR/manifest.env"
 
+reject_unsafe_payload_tree "$WORK_DIR"
+
 echo "Generating archive checksums..."
 (
   cd "$WORK_DIR" || exit 1
@@ -176,9 +191,10 @@ echo "Generating archive checksums..."
 ) > "$WORK_DIR/checksums.sha256"
 [ -s "$WORK_DIR/checksums.sha256" ] || fail "checksum file was not created"
 
-tar -czf "$ARCHIVE_PATH" -C "$WORK_DIR" .
-chmod 600 "$ARCHIVE_PATH"
-[ -s "$ARCHIVE_PATH" ] || fail "archive was not created"
+tar -czf "$ARCHIVE_TMP" -C "$WORK_DIR" .
+chmod 600 "$ARCHIVE_TMP"
+[ -s "$ARCHIVE_TMP" ] || fail "archive was not created"
+mv -f "$ARCHIVE_TMP" "$ARCHIVE_PATH"
 
 echo "Backup created: $ARCHIVE_PATH"
 echo "Included: PostgreSQL database, config encryption key, manifest v2, checksums"

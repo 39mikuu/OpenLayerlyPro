@@ -183,3 +183,20 @@ the v1 drill above exercises the same gate end-to-end through the shell path.
 - Human merge of the future S7 Draft PR before v1.0 acceptance may begin.
 - Human authorization after review of the final release-candidate report
   before tag or GitHub Release publication.
+
+## PR #92 review remediation (Review 4588088584)
+
+- Storage payload shape and v2 manifest semantics are now validated before
+  confirmation, service stop, compatibility probing, or any official DB/key
+  replacement. Missing, dual, and manifest-mismatched forms fail closed.
+- The app stop failure is no longer ignored; an existing app container must stop
+  successfully and Compose must report no running app container before restore
+  continues.
+- Local backup rejects symlinks and special files in the live upload tree, reuses
+  the production payload validator on the assembled workspace, and atomically
+  publishes the final archive only after all validation/checksum/tar steps pass.
+- Local E2E sentinel cases prove malformed storage contracts leave the official
+  database and config key unchanged. Backup-side symlink/FIFO cases prove no final
+  archive is published.
+- Final remediation drills: checksum/contract gate, local E2E, MinIO/S3 E2E, and
+  v1 compatibility E2E all passed.

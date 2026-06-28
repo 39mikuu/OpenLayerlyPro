@@ -170,6 +170,8 @@ else
   echo "WARNING: FORMAT_VERSION=1 archive has no checksum protection" >&2
 fi
 
+validate_archive_storage_contract "$WORK_DIR" "$FORMAT_VERSION"
+
 if [ "$ASSUME_YES" != true ]; then
   [ -t 0 ] || fail "confirmation requires an interactive terminal; pass --yes for automation"
   echo "This will replace the target Compose project's database and file-backed secrets."
@@ -193,7 +195,13 @@ until compose exec -T postgres sh -c '
   sleep 2
 done
 
-compose stop app >/dev/null 2>&1 || true
+APP_CONTAINER_IDS=$(compose ps -aq app)
+if [ -n "$APP_CONTAINER_IDS" ]; then
+  compose stop app >/dev/null || fail "unable to stop app service; refusing to continue restore"
+fi
+if [ -n "$(compose ps -q --status running app)" ]; then
+  fail "app service is still running after stop; refusing to continue restore"
+fi
 compose create app >/dev/null
 
 if ! compose run --rm -T --no-deps --entrypoint sh app -c 'test -z "${CONFIG_ENCRYPTION_KEY:-}"'; then
@@ -309,7 +317,7 @@ if [ "$RESTORE_HAS_UPLOADS" = true ]; then
       " || fail "failed to inject missing-object drift for E2E drill"
     fi
   fi
-elif [ -f "$WORK_DIR/UPLOADS_SKIPPED_S3" ]; then
+else
   echo "Archive was created for S3/R2; local uploads were not included."
   if [ "${RESTORE_E2E_INJECT_MISSING:-}" = "1" ] && [ -n "${RESTORE_E2E_MISSING_OBJECT_KEY:-}" ]; then
     echo "Injecting S3 missing-object drift for E2E drill..."
@@ -322,8 +330,6 @@ elif [ -f "$WORK_DIR/UPLOADS_SKIPPED_S3" ]; then
       --entrypoint node app /app/dist/inject-restore-s3-drift.mjs $INJECT_ARGS \
       || fail "failed to inject S3 storage drift for E2E drill"
   fi
-else
-  fail "archive contains neither uploads nor the S3 skip marker"
 fi
 
 echo "Running forward migrator in one-off container..."

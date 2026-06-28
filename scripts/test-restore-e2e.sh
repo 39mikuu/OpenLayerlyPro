@@ -96,6 +96,7 @@ cleanup() {
   teardown_projects
   [ "$CREATED_DOT_ENV" = true ] && [ -f .env ] && rm -f .env
   rm -f "$DRILL_ENV"
+  rm -rf "${CONTRACT_WORK:-}" "${UNSAFE_BACKUP_DIR:-}"
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -139,12 +140,96 @@ COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh "$BACKUP_DIR"
 ARCHIVE=$(ls -1t "$BACKUP_DIR"/openlayerly-backup-*.tar.gz | head -n 1)
 [ -n "$ARCHIVE" ] || fail "backup archive not found"
 
+echo "Verifying backup rejects unsupported live upload entries without publishing an archive..."
+UNSAFE_BACKUP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-s7-unsafe-backup.XXXXXX")
+compose "$SOURCE_PROJECT" exec -T app sh -c \
+  'ln -s restore-e2e /app/uploads/e2e-nested/unsafe-symlink'
+if COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh "$UNSAFE_BACKUP_DIR" >/dev/null 2>&1; then
+  fail "backup unexpectedly accepted a symlink in the live upload tree"
+fi
+if find "$UNSAFE_BACKUP_DIR" -name 'openlayerly-backup-*.tar.gz' -print -quit | grep -q .; then
+  fail "backup published an archive after rejecting a live upload symlink"
+fi
+compose "$SOURCE_PROJECT" exec -T app rm -f /app/uploads/e2e-nested/unsafe-symlink
+compose "$SOURCE_PROJECT" exec -T app mkfifo /app/uploads/e2e-nested/unsafe-fifo
+if COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh "$UNSAFE_BACKUP_DIR" >/dev/null 2>&1; then
+  fail "backup unexpectedly accepted a FIFO in the live upload tree"
+fi
+if find "$UNSAFE_BACKUP_DIR" -name 'openlayerly-backup-*.tar.gz' -print -quit | grep -q .; then
+  fail "backup published an archive after rejecting a live upload FIFO"
+fi
+compose "$SOURCE_PROJECT" exec -T app rm -f /app/uploads/e2e-nested/unsafe-fifo
+rm -rf "$UNSAFE_BACKUP_DIR"
+
 echo "Stopping source app before restore target comes online..."
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" stop app
 
 echo "Starting isolated restore stack on port ${RESTORE_PORT}..."
 S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" up -d postgres
 S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" create app >/dev/null
+
+echo "Verifying malformed storage contracts cannot alter the official DB or key..."
+POSTGRES_ATTEMPT=0
+until S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T postgres sh -c \
+  'exec pg_isready -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" >/dev/null'; do
+  POSTGRES_ATTEMPT=$((POSTGRES_ATTEMPT + 1))
+  [ "$POSTGRES_ATTEMPT" -lt 60 ] || fail "restore PostgreSQL did not become ready"
+  sleep 2
+done
+S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T postgres sh -c '
+  exec psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" \
+    -c "create table restore_contract_sentinel (value text not null); insert into restore_contract_sentinel values (chr(117)||chr(110)||chr(116)||chr(111)||chr(117)||chr(99)||chr(104)||chr(101)||chr(100));"
+'
+S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" run --rm --no-deps \
+  --entrypoint sh app -c \
+  'printf contract-key-untouched > /app/secrets/config-encryption-key'
+CONTRACT_WORK=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-s7-contract.XXXXXX")
+for variant in missing both mismatch; do
+  mkdir -p "$CONTRACT_WORK/$variant"
+  tar -xzf "$ARCHIVE" -C "$CONTRACT_WORK/$variant"
+  case "$variant" in
+    missing)
+      rm -rf "$CONTRACT_WORK/$variant/uploads"
+      rm -f "$CONTRACT_WORK/$variant/UPLOADS_SKIPPED_S3"
+      ;;
+    both)
+      touch "$CONTRACT_WORK/$variant/UPLOADS_SKIPPED_S3"
+      ;;
+    mismatch)
+      rm -rf "$CONTRACT_WORK/$variant/uploads"
+      touch "$CONTRACT_WORK/$variant/UPLOADS_SKIPPED_S3"
+      ;;
+  esac
+  (
+    cd "$CONTRACT_WORK/$variant" || exit 1
+    find . -type f ! -path './checksums.sha256' -print | LC_ALL=C sort \
+      | while IFS= read -r path; do sha256sum "${path#./}"; done \
+      > checksums.sha256
+    tar -czf "../$variant.tar.gz" .
+  )
+  if S7_E2E_APP_PORT=$RESTORE_PORT \
+    COMPOSE_PROJECT_NAME=$RESTORE_PROJECT \
+    COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml" \
+    COMPOSE_ENV_FILE="$DRILL_ENV" \
+    ./scripts/restore.sh "$CONTRACT_WORK/$variant.tar.gz" --yes >/dev/null 2>&1; then
+    fail "restore unexpectedly accepted malformed storage contract: $variant"
+  fi
+  SENTINEL_DB=$(
+    S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T postgres sh -c '
+      exec psql -At -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" \
+        -c "select value from restore_contract_sentinel;"
+    '
+  )
+  [ "$SENTINEL_DB" = "untouched" ] || fail "malformed $variant archive changed official database"
+  SENTINEL_KEY=$(
+    S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" run --rm --no-deps \
+      --entrypoint sh app -c 'cat /app/secrets/config-encryption-key'
+  )
+  [ "$SENTINEL_KEY" = "contract-key-untouched" ] \
+    || fail "malformed $variant archive changed official config key"
+done
+rm -rf "$CONTRACT_WORK"
+CONTRACT_WORK=""
 
 echo "Running hardened restore into ${RESTORE_PROJECT}..."
 S7_E2E_APP_PORT=$RESTORE_PORT \

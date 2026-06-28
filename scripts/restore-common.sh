@@ -37,6 +37,39 @@ reject_unsafe_payload_tree() {
   fi
 }
 
+manifest_value() {
+  manifest_path=$1
+  key=$2
+  value=$(grep "^${key}=" "$manifest_path" | cut -d= -f2- | tr -d '\r')
+  [ -n "$value" ] || fail "archive manifest is missing $key"
+  printf '%s' "$value"
+}
+
+# Validate the archive's storage payload and its v2 semantic contract before any
+# target service is stopped or official database/key/upload state is replaced.
+validate_archive_storage_contract() {
+  payload_dir=$1
+  format_version=$2
+  has_uploads=false
+  has_skip_marker=false
+  [ -d "$payload_dir/uploads" ] && has_uploads=true
+  [ -f "$payload_dir/UPLOADS_SKIPPED_S3" ] && has_skip_marker=true
+
+  if [ "$has_uploads" = "$has_skip_marker" ]; then
+    fail "archive must contain exactly one of uploads/ or UPLOADS_SKIPPED_S3"
+  fi
+
+  [ "$format_version" = "2" ] || return 0
+  storage_driver=$(manifest_value "$payload_dir/manifest.env" STORAGE_DRIVER)
+  uploads_included=$(manifest_value "$payload_dir/manifest.env" UPLOADS_INCLUDED)
+  case "$storage_driver:$uploads_included:$has_uploads:$has_skip_marker" in
+    local:true:true:false|s3:false:false:true) ;;
+    *)
+      fail "archive storage payload does not match manifest STORAGE_DRIVER/UPLOADS_INCLUDED"
+      ;;
+  esac
+}
+
 canonicalize_container_path() {
   raw_path=$1
   label=$2
