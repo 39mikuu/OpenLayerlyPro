@@ -27,6 +27,40 @@ function fail(message) {
   process.exit(1);
 }
 
+async function pollUntil(
+  load,
+  predicate,
+  message,
+  { timeoutMs = 90_000, intervalMs = 2_000 } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  for (;;) {
+    last = await load();
+    if (predicate(last)) return last;
+    if (Date.now() >= deadline) {
+      fail(`${message} (last seen: ${JSON.stringify(last)})`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+async function loadEmailTaskByTemplate(template) {
+  const rows = await sql`
+    select status, run_after, last_error, payload_json
+    from tasks
+    where kind = 'email'
+  `;
+  return (
+    rows.find(
+      (row) =>
+        typeof row.payload_json === "object" &&
+        row.payload_json !== null &&
+        row.payload_json.template === template,
+    ) ?? null
+  );
+}
+
 try {
   const [smtpRow] = await sql`
     select value_encrypted
@@ -93,29 +127,7 @@ try {
     );
   }
 
-  const emailRows = await sql`
-    select payload_json, status, last_error
-    from tasks
-    where kind = 'email'
-  `;
-  const renewal = emailRows.find(
-    (row) =>
-      typeof row.payload_json === "object" &&
-      row.payload_json !== null &&
-      row.payload_json.template === "renewal_reminder",
-  );
-  const activated = emailRows.find(
-    (row) =>
-      typeof row.payload_json === "object" &&
-      row.payload_json !== null &&
-      row.payload_json.template === "membership_activated",
-  );
-  if (!renewal || renewal.status === "processing") {
-    fail("renewal_reminder email task still processing after restore");
-  }
-  if (renewal.status === "dead") {
-    fail("renewal_reminder email task was incorrectly neutralized to dead");
-  }
+  const activated = await loadEmailTaskByTemplate("membership_activated");
   if (!activated || activated.status !== "dead") {
     fail("membership_activated email task was not neutralized to dead");
   }
@@ -123,23 +135,38 @@ try {
     fail("membership_activated email task missing neutralization marker");
   }
 
-  const [reconcileTask] = await sql`
-    select status, attempts, locked_by
-    from tasks
-    where kind = 'subscription.reconcile'
-      and dedupe_key = 'subscription.reconcile'
-    limit 1
-  `;
-  if (!reconcileTask) fail("subscription.reconcile task missing after restore");
-  if (reconcileTask.status === "dead") {
-    fail("subscription.reconcile remained dead after restore");
-  }
-  if (reconcileTask.status === "processing" && reconcileTask.locked_by) {
-    fail("subscription.reconcile still locked from snapshot");
-  }
-  if (reconcileTask.status === "pending" && Number(reconcileTask.attempts) !== 0) {
-    fail("subscription.reconcile pending task did not reset attempts");
-  }
+  // The re-armed renewal_reminder carries a valid payload for a *stale* period, so the
+  // worker must drive it to a concrete 'succeeded' (no-op skip) terminal state. An
+  // invalid payload (which would land in failed/dead) must not pass this check.
+  await pollUntil(
+    () => loadEmailTaskByTemplate("renewal_reminder"),
+    (task) => task !== null && task.status === "succeeded",
+    "renewal_reminder email task did not reach a 'succeeded' no-op terminal state after restore",
+  );
+
+  // subscription.reconcile must be re-armed, actually run, and defer itself to the next
+  // interval. Assert a concrete deferred-pending state with run_after well into the
+  // future (proves a successful run happened) instead of merely "not dead".
+  const reconcileDeferredAfterMs = Date.now() + 30 * 60 * 1000;
+  await pollUntil(
+    async () => {
+      const [row] = await sql`
+        select status, attempts, locked_by, run_after
+        from tasks
+        where kind = 'subscription.reconcile'
+          and dedupe_key = 'subscription.reconcile'
+        limit 1
+      `;
+      return row ?? null;
+    },
+    (task) =>
+      task !== null &&
+      task.status === "pending" &&
+      !task.locked_by &&
+      task.run_after !== null &&
+      new Date(task.run_after).getTime() > reconcileDeferredAfterMs,
+    "subscription.reconcile did not defer to the next interval after a successful run",
+  );
 
   const quarantineResponse = await fetch(
     `${RESTORE_APP_URL}/api/files/${QUARANTINE_FILE_ID}/download`,

@@ -150,7 +150,9 @@ SEED_JSON=$(
 REFERENCED_OBJECT_KEY=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.referencedObjectKey);});')
 ORPHAN_OBJECT_KEY=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.orphanObjectKey);});')
 REFERENCED_FILE_ID=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.referencedFileId);});')
+SENTINEL_OBJECT_KEY=$(printf '%s' "$SEED_JSON" | node -e 'const input=[];process.stdin.on("data",d=>input.push(d));process.stdin.on("end",()=>{const j=JSON.parse(Buffer.concat(input).toString());process.stdout.write(j.sentinelObjectKey);});')
 [ -n "$REFERENCED_OBJECT_KEY" ] && [ -n "$ORPHAN_OBJECT_KEY" ] || fail "S3 seed markers missing object keys"
+[ -n "$SENTINEL_OBJECT_KEY" ] || fail "S3 seed marker missing out-of-prefix sentinel key"
 
 echo "Creating S3 baseline backup..."
 export COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:docker-compose.s7-s3-e2e.yml"
@@ -183,6 +185,7 @@ S7_E2E_APP_PORT=$RESTORE_PORT S7_S3_MINIO_PORT=$RESTORE_MINIO_PORT \
   RESTORE_E2E_MISSING_OBJECT_KEY="$REFERENCED_OBJECT_KEY" \
   RESTORE_E2E_ORPHAN_OBJECT_KEY="content/restore-s3-e2e/injected-orphan.txt" \
   RESTORE_S3_ENUM_PREFIXES="content/" \
+  RESTORE_CONVERGE_PAGE_SIZE=2 \
   READY_URL="http://127.0.0.1:${RESTORE_PORT}/api/ready" \
   ./scripts/restore.sh "$ARCHIVE" --yes
 
@@ -193,8 +196,7 @@ QUARANTINE_COUNT=$(
   S7_E2E_APP_PORT=$RESTORE_PORT S7_S3_MINIO_PORT=$RESTORE_MINIO_PORT \
     compose "$RESTORE_PROJECT" exec -T -e REF_ID="$REFERENCED_FILE_ID" postgres sh -c '
     exec psql -At -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" \
-      -v ref_id="$REF_ID" \
-      -c "select count(*) from files where id = :'"'"'ref_id'"'"' and quarantine_reason = '"'"'missing after restore'"'"';"
+      -c "select count(*) from files where id = '"'"'$REF_ID'"'"' and quarantine_reason = '"'"'missing after restore'"'"';"
   '
 )
 [ "$QUARANTINE_COUNT" = "1" ] || fail "referenced S3 file was not quarantined (count=$QUARANTINE_COUNT)"
@@ -207,6 +209,13 @@ DELETE_TASK_COUNT=$(
   '
 )
 [ "$DELETE_TASK_COUNT" -ge 2 ] || fail "expected orphan cleanup delete tasks (count=$DELETE_TASK_COUNT)"
+
+echo "Verifying out-of-prefix sentinel object was left untouched..."
+sudo -n docker run --rm --network host --entrypoint /bin/sh minio/mc:latest -c "
+    set -eu
+    mc alias set dst http://127.0.0.1:${RESTORE_MINIO_PORT} ${MINIO_USER} ${MINIO_PASSWORD}
+    mc stat dst/${MINIO_BUCKET}/${SENTINEL_OBJECT_KEY} >/dev/null
+  " || fail "out-of-prefix sentinel object was removed by convergence (prefix boundary violated)"
 
 echo "Verifying converge truncation prevents app startup..."
 FAIL_PROJECT=${RESTORE_PROJECT}_fail
@@ -238,6 +247,51 @@ if curl -fsS "http://127.0.0.1:3007/api/ready" >/dev/null 2>&1; then
 fi
 grep -q 'restore convergence failed' /tmp/openlayerly-s7-s3-fail-restore.log \
   || fail "truncated converge did not emit expected failure message"
+
+echo "Verifying a real S3 listing/auth error fails closed and keeps the app stopped..."
+AUTH_FAIL_PROJECT=${RESTORE_PROJECT}_autherr
+AUTH_FAIL_OVERRIDE=/tmp/openlayerly-s7-s3-autherr-override.yml
+# Override only the app's S3 secret via a compose file (its `environment:` wins over
+# both the env_file and the base s3 compose). Convergence/pre-scan then hits a genuine
+# ListObjects auth error — not a truncation cap — which must fail the restore before the
+# app starts. MinIO keeps its real root credentials, so it is purely a client-auth fault.
+cat >"$AUTH_FAIL_OVERRIDE" <<'EOF'
+services:
+  app:
+    environment:
+      S3_SECRET_ACCESS_KEY: wrong-secret-deadbeef
+EOF
+AUTH_FAIL_FILES="docker-compose.yml:docker-compose.s7-e2e.yml:docker-compose.s7-s3-e2e.yml:$AUTH_FAIL_OVERRIDE"
+authfail_compose() {
+  sudo -n env S7_E2E_APP_PORT=3008 S7_S3_MINIO_PORT=9008 \
+    docker compose -p "$AUTH_FAIL_PROJECT" --env-file "$DRILL_ENV" \
+    -f docker-compose.yml -f docker-compose.s7-e2e.yml -f docker-compose.s7-s3-e2e.yml \
+    -f "$AUTH_FAIL_OVERRIDE" \
+    "$@"
+}
+authfail_compose down -v >/dev/null 2>&1 || true
+authfail_compose up -d postgres minio minio-init >/dev/null
+authfail_compose create app >/dev/null
+mirror_bucket "$SOURCE_MINIO_PORT" 9008
+if S7_E2E_APP_PORT=3008 S7_S3_MINIO_PORT=9008 \
+  COMPOSE_PROJECT_NAME=$AUTH_FAIL_PROJECT \
+  COMPOSE_FILE="$AUTH_FAIL_FILES" \
+  COMPOSE_ENV_FILE="$DRILL_ENV" \
+  RESTORE_S3_ENUM_PREFIXES="content/" \
+  READY_URL="http://127.0.0.1:3008/api/ready" \
+  ./scripts/restore.sh "$ARCHIVE" --yes >/tmp/openlayerly-s7-s3-autherr-restore.log 2>&1; then
+  fail "restore unexpectedly succeeded with invalid S3 credentials"
+fi
+if curl -fsS "http://127.0.0.1:3008/api/ready" >/dev/null 2>&1; then
+  fail "app became ready after an S3 listing/auth failure"
+fi
+# The bad S3 secret can surface during pre-scan or convergence depending on which
+# step lists first; either way the restore must fail closed before the app starts.
+grep -qiE 'pre.?scan|converg|storage|s3|signature|credential|denied|access' \
+  /tmp/openlayerly-s7-s3-autherr-restore.log \
+  || fail "S3 auth failure did not surface as a storage/convergence error"
+authfail_compose down -v >/dev/null 2>&1 || true
+rm -f "$AUTH_FAIL_OVERRIDE"
 
 echo "S7 S3 restore E2E drill passed."
 echo "Archive: $ARCHIVE"

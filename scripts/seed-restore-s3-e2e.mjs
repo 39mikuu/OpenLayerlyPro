@@ -44,9 +44,22 @@ try {
   const referencedFileId = randomUUID();
   const referencedObjectKey = `content/restore-s3-e2e/${referencedFileId}.txt`;
   const orphanObjectKey = `content/restore-s3-e2e/orphan-${randomUUID()}.txt`;
+  // Out-of-prefix sentinel: lives outside the enumerated content/ prefix and has no
+  // DB row. Convergence must never list or touch it, proving prefix-boundary scope.
+  const sentinelObjectKey = `sentinel/restore-s3-e2e/outside-${randomUUID()}.txt`;
+  // Extra referenced objects so a small converge --page-size forces MinIO to return
+  // multiple pages (exercises ListObjectsV2 continuation-token pagination).
+  const fillerFiles = Array.from({ length: 4 }, () => {
+    const id = randomUUID();
+    return { id, objectKey: `content/restore-s3-e2e/filler-${id}.txt` };
+  });
 
   await putObject(referencedObjectKey, `restore-s3-e2e-referenced:${referencedFileId}\n`);
   await putObject(orphanObjectKey, "restore-s3-e2e-orphan\n");
+  await putObject(sentinelObjectKey, "restore-s3-e2e-sentinel\n");
+  for (const filler of fillerFiles) {
+    await putObject(filler.objectKey, `restore-s3-e2e-filler:${filler.id}\n`);
+  }
 
   await sql.begin(async (tx) => {
     const [admin] = await tx`
@@ -69,6 +82,19 @@ try {
         'referenced.txt', 'text/plain', 24, ${admin.id}, now()
       )
     `;
+
+    for (const filler of fillerFiles) {
+      await tx`
+        insert into files (
+          id, purpose, storage_driver, bucket, object_key, original_name,
+          mime_type, size_bytes, created_by, updated_at
+        )
+        values (
+          ${filler.id}, 'content_image', 's3', ${S3_BUCKET}, ${filler.objectKey},
+          'filler.txt', 'text/plain', 24, ${admin.id}, now()
+        )
+      `;
+    }
   });
 
   console.log(
@@ -77,6 +103,8 @@ try {
         referencedFileId,
         referencedObjectKey,
         orphanObjectKey,
+        sentinelObjectKey,
+        fillerObjectKeys: fillerFiles.map((filler) => filler.objectKey),
         bucket: S3_BUCKET,
       },
       null,

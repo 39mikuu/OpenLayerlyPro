@@ -340,6 +340,9 @@ fi
 if [ -n "${RESTORE_CONVERGE_MAX_OBJECTS:-}" ]; then
   CONVERGE_ARGS="$CONVERGE_ARGS --max-objects=$RESTORE_CONVERGE_MAX_OBJECTS"
 fi
+if [ -n "${RESTORE_CONVERGE_PAGE_SIZE:-}" ]; then
+  CONVERGE_ARGS="$CONVERGE_ARGS --page-size=$RESTORE_CONVERGE_PAGE_SIZE"
+fi
 # shellcheck disable=SC2086
 run_one_off /app/dist/restore-converge.mjs $CONVERGE_ARGS || fail "restore convergence failed"
 

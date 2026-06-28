@@ -31,6 +31,12 @@ try {
   const quarantineObjectKey = `restore-e2e/${quarantineFileId}.txt`;
   const intactObjectKey = `restore-e2e/${intactFileId}.txt`;
   const tierId = randomUUID();
+  const subscriptionId = randomUUID();
+  // The renewal payload points at a *stale* period (different from the subscription's
+  // real current period) so shouldSendRenewalReminderEmail() returns false and, after
+  // restore re-arms the task, the worker settles it as a deterministic no-op success
+  // (independent of the unreachable drill SMTP host).
+  const renewalStalePeriodIso = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString();
 
   for (const objectKey of [quarantineObjectKey, intactObjectKey]) {
     const uploadPath = path.join(UPLOAD_DIR, objectKey);
@@ -46,6 +52,18 @@ try {
       user: "restore-e2e",
       password: "smtp-secret",
       from: "restore-e2e@example.com",
+    }),
+  );
+
+  // A complete-but-dummy Stripe config so the recurring subscription.reconcile task can
+  // construct a provider and run successfully. The only seeded subscription is manual
+  // (provider IS NULL, no provider refs), so reconcile skips it without any network
+  // call and settles as a no-op success — letting us assert a concrete deferred state.
+  const stripeEncrypted = encryptSecret(
+    JSON.stringify({
+      enabled: true,
+      secretKey: "sk_test_restore_e2e_dummy",
+      webhookSecret: "whsec_restore_e2e_dummy",
     }),
   );
 
@@ -104,8 +122,31 @@ try {
     `;
 
     await tx`
+      insert into subscriptions (
+        id, user_id, tier_id, status, provider, current_period_ends_at, updated_at
+      )
+      values (
+        ${subscriptionId},
+        ${member.id},
+        ${tierId},
+        'active',
+        null,
+        now() + interval '30 days',
+        now()
+      )
+    `;
+
+    await tx`
       insert into app_settings (key, value_encrypted, updated_at)
       values ('smtp', ${smtpEncrypted}, now())
+      on conflict (key) do update
+      set value_encrypted = excluded.value_encrypted,
+          updated_at = now()
+    `;
+
+    await tx`
+      insert into app_settings (key, value_encrypted, updated_at)
+      values ('stripe', ${stripeEncrypted}, now())
       on conflict (key) do update
       set value_encrypted = excluded.value_encrypted,
           updated_at = now()
@@ -220,7 +261,14 @@ try {
       (
         'email',
         ${`email:renewal_reminder:${randomUUID()}`},
-        ${sql.json({ template: "renewal_reminder", to: MEMBER_EMAIL })},
+        ${sql.json({
+          template: "renewal_reminder",
+          subscriptionId,
+          periodEndsAt: renewalStalePeriodIso,
+          to: MEMBER_EMAIL,
+          locale: "en",
+          params: { tierName: "Restore E2E Tier", endsAt: renewalStalePeriodIso },
+        })},
         'processing',
         1,
         'stale-worker',
