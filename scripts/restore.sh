@@ -4,8 +4,8 @@ set -eu
 
 umask 077
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
-# shellcheck source=scripts/restore-common.sh
+ROOT_DIR=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
+# shellcheck source=scripts/restore-common.sh disable=SC1091
 . "$ROOT_DIR/scripts/restore-common.sh"
 
 usage() {
