@@ -45,6 +45,8 @@ async function walk(currentPath, relativePath) {
 try {
   await walk(root, "");
 } catch (error) {
-  console.error(`backup: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(
+    `backup: ${error instanceof Error ? error.message : String(error)}`,
+  );
   process.exit(1);
 }
