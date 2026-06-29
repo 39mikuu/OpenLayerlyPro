@@ -1,6 +1,6 @@
 # Production Checklist
 
-> This checklist describes current `main`. A production `v1.0.0` release additionally requires S7 #87 and every item in [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
+> This checklist describes current `main`. S7 #87 is merged; a production `v1.0.0` release still requires every item in [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
 
 ## Base deployment
 
@@ -69,13 +69,13 @@
 - [ ] Every referenced S3/R2 object has a matching version/snapshot recovery point even when the env fallback is `local`.
 - [ ] `SESSION_SECRET` is preserved separately when seamless recovery is required.
 - [ ] An archive plus separately protected storage components has been restored in an isolated Compose project.
-- [ ] Before v1.0 release, S7 verifies checksums, legacy schema probing, DB-aware inventory, file-safety backfill, task/payment-event neutralization and DB↔storage convergence.
+- [ ] Before v1.0 release, verify the merged S7 checksums, legacy schema probing, storage inventory/convergence, file-safety backfill and task/payment-event neutralization in isolated local and S3 drills.
 
 ## Current hardening status
 
-S4 authentication hardening, S5 mail reliability, and S6 security response
-headers are implemented. The remaining implementation blocker is S7 #87,
-followed by the complete #88 acceptance gate.
+S4 authentication hardening, S5 mail reliability, S6 security response headers,
+and S7 hardened recovery are implemented. The remaining release gate is #88
+real-environment acceptance.
 
 ## Application request-body limits
 

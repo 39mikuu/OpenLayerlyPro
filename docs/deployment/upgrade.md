@@ -1,8 +1,10 @@
 # Upgrade
 
-> This procedure describes the current `main` upgrade path. It already requires pending-payment remediation, a one-off forward migrator, and the mandatory file-safety backfill before the app starts. S7 #87 will further harden the restore/rollback side with archive integrity, schema probing, task neutralization, and DB↔storage convergence. For a production `v1.0.0` release, also complete [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
+> This procedure describes the current `main` upgrade path. It requires pending-payment remediation, a one-off forward migrator, and the mandatory file-safety backfill before the app starts. The merged S7 restore path adds archive integrity, schema probing, task neutralization, and DB↔storage convergence. For a production `v1.0.0` release, also complete [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
 
-Historical-version upgrade testing and downgrade migrations are not supported.
+The v1.0 acceptance path is tested from the `v0.1.0` tag. The unreleased v0.2
+candidate and arbitrary historical commits are not supported upgrade sources.
+Downgrade migrations are not supported.
 
 ## 1. Review the Release
 
@@ -32,7 +34,9 @@ Record the archive, current commit/image, and object-storage recovery point:
 git rev-parse HEAD
 ```
 
-The current archive is a baseline v1 format without S7 checksums/convergence. Before #87 lands, use a stopped-app maintenance window where possible and keep the old deployment intact until verification completes.
+Current archives use format v2 checksums and the hardened S7 restore pipeline.
+Use `backup.sh --stop-app` when a self-consistent local snapshot is required, and
+keep the old deployment intact until verification completes.
 
 ## 3. Stage the New Version Without Starting It
 
@@ -188,7 +192,10 @@ Baseline procedure:
 4. restore the matching S3/R2 state;
 5. verify readiness and sample data before exposure.
 
-The current `restore.sh` is the issue #11 baseline. It does not yet perform S7 task/payment/file convergence before starting the dispatcher. Until #87 is implemented, perform rollback in an isolated or carefully controlled stopped-app environment and assess restored tasks/files before serving traffic. After #87, follow the hardened restore pipeline in `backup-restore.md`.
+Current `restore.sh` keeps the normal app/dispatcher stopped while it verifies the
+archive, checks schema compatibility, migrates, remediates files, neutralizes
+restored tasks/provider events, and converges DB/storage state. Follow the
+hardened pipeline in `backup-restore.md`.
 
 Example baseline command:
 
@@ -205,4 +212,5 @@ Use `--yes` only in a reviewed recovery command.
 - Store archives off-host and encrypted; they may contain member files and payment proofs.
 - Monitor non-zero backup/upgrade exits and maintain adequate disk headroom for image builds and remediated objects.
 - A backup that has never been restored is not a verified recovery plan.
-- For v1.0 release, #87/#88 require new local and real/compatible S3 restore drills; the 2026-06-19 baseline drill alone is insufficient.
+- For v1.0 release, #88 requires current local and real/compatible S3 restore
+  drills; historical baseline drills alone are insufficient.
