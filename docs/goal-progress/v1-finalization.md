@@ -210,6 +210,8 @@ the v1 drill above exercises the same gate end-to-end through the shell path.
 - Production image digest and one-off artifact hashes are recorded in
   `docs/releases/v1.0.0-release-candidate-report.md`.
 - Exact-main GitHub CI run `28351135351` passed.
+- Acceptance-report GitHub CI run `28352507902` passed on commit
+  `a61b6633382de479297e5ba3bde1fb61687e65bc`.
 
 ### Unexecuted blockers
 
