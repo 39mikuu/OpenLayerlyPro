@@ -44,7 +44,7 @@ For the strong-consistency path, let the script stop the normal app/dispatcher b
 ./scripts/backup.sh --stop-app /srv/backups/openlayerly
 ```
 
-`--stop-app` resolves the app environment and volume paths through one-off containers, so it also works when the normal app container is already stopped. If the script stopped a previously running app, its exit/signal cleanup attempts to restart that same service on every success or failure path. An app that was already stopped is left stopped.
+`--stop-app` resolves the app environment and volume paths through one-off containers, so it also works when the normal app container is already stopped. It inspects every existing app-service container, stops the whole service even when a container is currently `restarting`, and records only containers that were active (`running`, `restarting`, or `paused`) as restart targets. Exit/signal cleanup restarts those exact containers; intentionally stopped or merely created containers remain stopped.
 
 New archives use `FORMAT_VERSION=2` and are named like:
 
@@ -99,7 +99,7 @@ Use the explicit strong-consistency mode for the safest local recovery set:
 ./scripts/backup.sh --stop-app /srv/backups/openlayerly
 ```
 
-The script first resolves and validates the app environment/volume paths using one-off containers, then stops the normal app service and asserts that no app container remains running. It captures the database, config key, and local uploads while writes and the task dispatcher are stopped. After those inputs are copied into the private backup workspace, it restarts a previously running app before checksum compression and final atomic archive publication. Stop failures are fatal; restart failures make the command fail and are retried by cleanup.
+The script first resolves and validates the app environment/volume paths using one-off containers, records the initial state of every app-service container, then issues `compose stop app` for every existing service container. Afterward it fails closed if any app container is still `running`, `restarting`, or `paused`. It captures the database, config key, and local uploads while writes and the task dispatcher are stopped. After those inputs are copied into the private backup workspace, it restarts only the containers that were active before the stop; containers that were already stopped or merely created remain stopped. Stop failures are fatal; restart failures make the command fail and are retried by cleanup.
 
 ### S3 / R2
 

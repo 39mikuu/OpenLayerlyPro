@@ -7,6 +7,8 @@ umask 077
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 # shellcheck source=scripts/restore-common.sh disable=SC1091
 . "$ROOT_DIR/scripts/restore-common.sh"
+# shellcheck source=scripts/backup-app-state.sh disable=SC1091
+. "$ROOT_DIR/scripts/backup-app-state.sh"
 
 usage() {
   echo "Usage: $0 [--stop-app] [output-directory]" >&2
@@ -59,22 +61,6 @@ compose() {
   docker_cmd compose $project_args $env_args $file_args "$@"
 }
 
-restart_app_if_needed() {
-  if [ "$APP_RESTART_NEEDED" != true ]; then
-    return 0
-  fi
-
-  echo "Restarting application after consistent backup window..."
-  if compose start app >/dev/null \
-    && [ -n "$(compose ps -q --status running app)" ]; then
-    APP_RESTART_NEEDED=false
-    return 0
-  fi
-
-  echo "backup: unable to restart app service" >&2
-  return 1
-}
-
 STOP_APP=false
 OUTPUT_DIR=""
 for arg in "$@"; do
@@ -112,7 +98,8 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-backup.XXXXXX")
 ARCHIVE_PATH="$OUTPUT_DIR/openlayerly-backup-$TIMESTAMP.tar.gz"
 ARCHIVE_TMP=$(mktemp "$OUTPUT_DIR/.openlayerly-backup-$TIMESTAMP.XXXXXX")
 APP_RESTART_NEEDED=false
-APP_WAS_RUNNING=false
+APP_WAS_ACTIVE=false
+APP_CONTAINER_IDS_TO_RESTART=""
 
 cleanup() {
   cleanup_status=$?
@@ -169,16 +156,7 @@ esac
 compose create app >/dev/null
 
 if [ "$STOP_APP" = true ]; then
-  RUNNING_APP_IDS=$(compose ps -q --status running app)
-  if [ -n "$RUNNING_APP_IDS" ]; then
-    APP_WAS_RUNNING=true
-    APP_RESTART_NEEDED=true
-    echo "Stopping application for a self-consistent backup..."
-    compose stop app >/dev/null || fail "unable to stop app service for consistent backup"
-  fi
-  if [ -n "$(compose ps -q --status running app)" ]; then
-    fail "app service is still running; refusing consistent backup"
-  fi
+  backup_stop_app_for_consistent_backup
 fi
 
 if [ "$STORAGE_DRIVER" = local ]; then
@@ -293,7 +271,7 @@ else
   echo "Uploads: skipped for S3/R2; back up the object-storage bucket separately"
 fi
 if [ "$STOP_APP" = true ]; then
-  if [ "$APP_WAS_RUNNING" = true ]; then
+  if [ "$APP_WAS_ACTIVE" = true ]; then
     echo "Consistency mode: app stopped during database/key/upload capture and restarted afterward"
   else
     echo "Consistency mode: app was already stopped and remained stopped during/after capture"

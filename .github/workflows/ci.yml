@@ -55,14 +55,18 @@ jobs:
           node --check dist/restore-neutralize.mjs
           node --check dist/restore-converge.mjs
           node --check dist/restore-schema-check.mjs
+      - name: Test backup app state machine
+        run: sh scripts/test-backup-app-state.sh
       - name: Shellcheck restore scripts
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
           shellcheck \
             scripts/restore-common.sh \
+            scripts/backup-app-state.sh \
             scripts/backup.sh \
             scripts/restore.sh \
+            scripts/test-backup-app-state.sh \
             scripts/test-restore-e2e.sh \
             scripts/test-restore-s3-e2e.sh \
             scripts/test-restore-v1-e2e.sh \
