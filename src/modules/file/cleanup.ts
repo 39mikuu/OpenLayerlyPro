@@ -1,4 +1,3 @@
-import { createHash } from "crypto";
 import { eq, inArray } from "drizzle-orm";
 
 import { getDb, type TxClient } from "@/db";
@@ -11,13 +10,12 @@ import {
   siteSettings,
 } from "@/db/schema";
 import { getStorageForDriver } from "@/modules/storage";
-import { enqueueTask } from "@/modules/tasks";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 
-export type StorageDeletePayload = {
-  storageDriver: "local" | "s3";
-  bucket: string | null;
-  objectKey: string;
-};
+import { storageDeleteDedupeKey, type StorageDeletePayload } from "./storageDeleteTask";
+
+export type { StorageDeletePayload } from "@/modules/file/storageDeleteTask";
+export { storageDeleteDedupeKey } from "@/modules/file/storageDeleteTask";
 
 export class UnsupportedOrphanCleanupPurposeError extends Error {}
 
@@ -26,12 +24,6 @@ const PROTECTED_SETTING_KEYS = [
   "site_logo_file_id",
   "site_icon_file_id",
 ] as const;
-
-export function storageDeleteDedupeKey(payload: StorageDeletePayload): string {
-  const identity = `${payload.storageDriver}\0${payload.bucket ?? ""}\0${payload.objectKey}`;
-  const hash = createHash("sha256").update(identity).digest("hex");
-  return `storage:delete_object:${hash}`;
-}
 
 export async function cleanupOrphanFile(
   fileId: string,

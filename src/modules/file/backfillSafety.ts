@@ -3,9 +3,9 @@ import type { Readable } from "stream";
 
 import { type DbClient, getDb } from "@/db";
 import { appEvents, type FileRecord, files } from "@/db/schema";
-import { getUploadConfig } from "@/modules/config";
-import { getStorageForDriver } from "@/modules/storage";
-import { enqueueTask } from "@/modules/tasks";
+import { getUploadConfig } from "@/modules/config/upload";
+import { getStorageForDriver } from "@/modules/storage/runtime";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 
 import { withAuthoritativeExtension } from "./authoritativeName";
 import {
@@ -14,8 +14,10 @@ import {
   UnsafeRasterImageError,
   UnsupportedRasterImageError,
 } from "./normalizeRasterImage";
+import { FILE_SAFETY_REMEDIATION_VERSION } from "./safetyConstants";
 
-export const FILE_SAFETY_REMEDIATION_VERSION = 1;
+export { FILE_SAFETY_REMEDIATION_VERSION } from "./safetyConstants";
+
 const FILE_SAFETY_BACKFILL_LOCK_KEY = `file-safety-backfill:v${FILE_SAFETY_REMEDIATION_VERSION}`;
 
 export class FileSafetyBackfillAlreadyRunningError extends Error {
