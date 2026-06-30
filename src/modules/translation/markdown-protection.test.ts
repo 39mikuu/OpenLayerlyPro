@@ -117,6 +117,43 @@ describe("Markdown translation protection", () => {
     expect(restoreProtectedMarkdown(protection.markdown, protection)).toBe(fenced);
   });
 
+  it.each([
+    ["unclosed link labels", "[".repeat(100_000)],
+    ["unclosed image labels", "![".repeat(50_000)],
+    ["escape-heavy unclosed destinations", `[x]((\\a`.repeat(10_000)],
+    ["parenthesis-heavy invalid destinations", `[x](${"(".repeat(99_996)}`],
+    ["mixed escaped invalid destinations", `[x]((${"\\(".repeat(25_000)}`],
+  ])("handles %s without producing destination tokens", (_label, source) => {
+    const protection = protectMarkdownForTranslation(source);
+
+    expect(protection.tokens.size).toBe(0);
+    expect(protection.markdown).toBe(source);
+    expect(restoreProtectedMarkdown(protection.markdown, protection)).toBe(source);
+  });
+
+  it.each([
+    ["[label](https://example.com/path)", "label", "https://example.com/path"],
+    [
+      "![alt](/api/files/550e8400-e29b-41d4-a716-446655440000/download)",
+      "alt",
+      "/api/files/550e8400-e29b-41d4-a716-446655440000/download",
+    ],
+    [
+      "[label](https://example.com/path_(balanced))",
+      "label",
+      "https://example.com/path_(balanced)",
+    ],
+    ["[label](<https://example.com/a b>)", "label", "<https://example.com/a b>"],
+    ["[label](https://example.com/a\\)b)", "label", "https://example.com/a\\)b"],
+  ])("protects a valid destination in %s", (source, label, destination) => {
+    const protection = protectMarkdownForTranslation(source);
+
+    expect(protection.markdown).toContain(`[${label}](`);
+    expect(protection.markdown).not.toContain(destination);
+    expect([...protection.tokens.values()]).toEqual([destination]);
+    expect(restoreProtectedMarkdown(protection.markdown, protection)).toBe(source);
+  });
+
   it.each(["missing", "duplicated", "modified", "unauthorized", "foreign-prefix"])(
     "rejects %s tokens",
     (mode) => {

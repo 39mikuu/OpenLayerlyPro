@@ -82,6 +82,118 @@ function protectFencedCode(markdown: string, protect: (value: string) => string)
   return output.join("");
 }
 
+type DestinationScan = {
+  end: number | null;
+  resumeAt: number;
+};
+
+function scanLinkDestination(markdown: string, start: number): DestinationScan {
+  if (start >= markdown.length) return { end: null, resumeAt: start };
+
+  if (markdown[start] === "<") {
+    let index = start + 1;
+    let hasContent = false;
+    while (index < markdown.length && markdown[index] !== "\n") {
+      if (markdown[index] === "\\" && index + 1 < markdown.length && markdown[index + 1] !== "\n") {
+        hasContent = true;
+        index += 2;
+        continue;
+      }
+      if (markdown[index] === ">") {
+        return { end: hasContent ? index + 1 : null, resumeAt: index + 1 };
+      }
+      hasContent = true;
+      index += 1;
+    }
+    return { end: null, resumeAt: index };
+  }
+
+  let index = start;
+  let depth = 0;
+  let hasContent = false;
+  while (index < markdown.length) {
+    const character = markdown[index];
+    if (character === "\n" || /\s/.test(character) || character === "<" || character === ">") {
+      break;
+    }
+    if (character === "\\") {
+      if (index + 1 >= markdown.length || markdown[index + 1] === "\n") {
+        return { end: null, resumeAt: index + 1 };
+      }
+      hasContent = true;
+      index += 2;
+      continue;
+    }
+    if (character === "(") {
+      depth += 1;
+      hasContent = true;
+      index += 1;
+      continue;
+    }
+    if (character === ")") {
+      if (depth === 0) break;
+      depth -= 1;
+      hasContent = true;
+      index += 1;
+      continue;
+    }
+    hasContent = true;
+    index += 1;
+  }
+
+  return { end: hasContent && depth === 0 ? index : null, resumeAt: index };
+}
+
+function protectLinkDestinations(markdown: string, protect: (value: string) => string): string {
+  const output: string[] = [];
+  let cursor = 0;
+  let labelStart: number | null = null;
+  let index = 0;
+
+  while (index < markdown.length) {
+    const character = markdown[index];
+    if (character === "\n") {
+      labelStart = null;
+      index += 1;
+      continue;
+    }
+    if (character === "[" && labelStart === null) {
+      labelStart = index;
+      index += 1;
+      continue;
+    }
+    if (character !== "]") {
+      index += 1;
+      continue;
+    }
+
+    if (labelStart !== null && markdown[index + 1] === "(") {
+      let destinationStart = index + 2;
+      while (markdown[destinationStart] === " " || markdown[destinationStart] === "\t") {
+        destinationStart += 1;
+      }
+      const destination = scanLinkDestination(markdown, destinationStart);
+      if (destination.end !== null) {
+        output.push(markdown.slice(cursor, destinationStart));
+        output.push(protect(markdown.slice(destinationStart, destination.end)));
+        cursor = destination.end;
+        index = destination.end;
+        labelStart = null;
+        continue;
+      }
+      index = Math.max(index + 1, destination.resumeAt);
+      labelStart = null;
+      continue;
+    }
+
+    labelStart = null;
+    index += 1;
+  }
+
+  output.push(markdown.slice(cursor));
+  return output.join("");
+}
+
 export function protectMarkdownForTranslation(markdown: string): ProtectedMarkdown {
   const tokenPrefix = `OLP_MD_${randomUUID().replaceAll("-", "")}_`;
   const tokens = new Map<string, string>();
@@ -99,10 +211,7 @@ export function protectMarkdownForTranslation(markdown: string): ProtectedMarkdo
   protectedText = protectedText.replace(/(`+)([^`\n]|`(?!\1))*?\1/g, (match) => protect(match));
 
   // Protect only the destination portion so link labels and image alt text remain translatable.
-  protectedText = protectedText.replace(
-    /(!?\[[^\]\n]*\]\([ \t]*)(<[^>\n]+>|(?:\\.|[^\s()<>]|\((?:\\.|[^\s()<>])*\))+)/g,
-    (_match, prefix: string, destination: string) => `${prefix}${protect(destination)}`,
-  );
+  protectedText = protectLinkDestinations(protectedText, protect);
   protectedText = protectedText.replace(/https?:\/\/(?:[^\s<>()]|\([^\s<>()]*\))+/g, (match) =>
     protect(match),
   );
