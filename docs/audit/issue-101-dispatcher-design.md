@@ -2,6 +2,10 @@
 
 - **Baseline:** `e08363ab988785cc510ea1900f7e2c178bf14cf8` (validated on the current `main`).
 - **Type:** design + benchmark. **No production code is changed in this branch.**
+- **Classification result:** **Confirmed P2 scalability issue; not a v1.0 correctness blocker.** The
+  query/index optimization (§4 items 1–3) may be tracked and landed independently, while batch
+  execution (§4.1) remains a separate guarded design task. The correctness/fencing invariants (§1)
+  are intact.
 - **Artifacts:** `src/modules/tasks/dispatcher-benchmark.integration.test.ts` (gated behind
   `RUN_TASK_BENCHMARK=true`) and this document.
 
