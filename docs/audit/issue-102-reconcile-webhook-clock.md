@@ -61,22 +61,34 @@ missing `statusEventAt` advance is the sole cause.
 
 ## Fix (implemented — issue #112, this PR)
 
-`reconcileSubscriptions()` now advances `statusEventAt` under the same monotonic guard the webhooks
-use, in a **single provider clock domain**, and protects the external-I/O race with a version CAS:
+`reconcileSubscriptions()` now advances `statusEventAt` in a **single provider clock domain** using a
+strict monotonic guard — no version CAS, no local-time fallback:
 
-1. **Provider clock domain.** `retrieveSubscription()` now returns `observedAt`, the provider server
-   clock at which the state was observed (the Stripe API response `Date` header). reconcile advances
-   `statusEventAt` to `observedAt` — the same clock domain as webhook `providerCreatedAt` — rather
-   than local `now()`, so clock skew cannot wrongly reject a genuinely later provider event.
-2. **Version CAS.** The reconcile write is guarded by `WHERE version = <version read before the
-   provider call>` in addition to `statusEventAt IS NULL OR statusEventAt <= observedAt`. A webhook
-   that commits while `retrieveSubscription()` is in flight bumps `version`, so the reconcile write
-   matches no rows and is skipped instead of clobbering the fresher webhook state.
+1. **Provider clock domain.** `retrieveSubscription()` returns `observedAt`, the provider server clock
+   at which the state was observed (the Stripe API response `Date` header). reconcile advances
+   `statusEventAt` to `observedAt` — the same clock domain as webhook `providerCreatedAt` — never
+   local `now()`, so clock skew cannot wrongly reject a genuinely later provider event.
+2. **Fail closed on a missing timestamp.** `observedAt` is `Date | null`; when the provider omits or
+   returns an unparseable `Date` header, reconcile skips the status/fence write entirely rather than
+   substitute local time (which would mix clock domains). Provider adapter unit tests cover valid,
+   missing, and invalid `Date` headers.
+3. **Strict `<` fence — ordering, not commit timing.** The write is guarded by
+   `statusEventAt IS NULL OR statusEventAt < observedAt`, evaluated against the live row. This alone
+   orders the external-I/O race without a version CAS: a webhook that committed during the provider
+   call with `providerCreatedAt >= observedAt` leaves the fence not-strictly-below `observedAt`, so
+   reconcile skips and the real event wins; one with `providerCreatedAt < observedAt` is already
+   reflected in the observation, so reconcile (strictly newer) wins. A version CAS would instead let
+   *commit timing* win over provider ordering, which is why it was removed.
+4. **Equal-timestamp policy.** Provider timestamps are second-granularity. On a tie
+   (`providerCreatedAt == observedAt`) the webhook wins: webhooks gate on `statusEventAt <=
+   providerCreatedAt` (accept equal) while reconcile uses strict `<` (does not overwrite an
+   equal-second event). Code and this report agree.
 
 The regression suite (`reconcile-webhook-clock.integration.test.ts` in the fix PR) asserts the
 surviving correct state: advance to the observation timestamp; reject delayed older
-`payment_failed`/`canceled` webhooks; accept a genuinely newer webhook; and a CAS case proving an
-in-flight webhook commit survives.
+`payment_failed`/`canceled` webhooks; accept a genuinely newer webhook; the equal-second tie; an
+in-flight newer webhook surviving and an in-flight older webhook losing to the observation;
+fail-closed on a null `observedAt`; and renewed-invoice ordering not regressing a newer fence.
 
 This reproduction PR's assertions intentionally encode the *pre-fix* buggy behavior, so it is
 superseded by the fix PR and closed rather than merged; this document is retained as the evidence

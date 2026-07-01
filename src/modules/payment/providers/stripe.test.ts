@@ -54,6 +54,46 @@ function provider() {
 }
 
 describe("Stripe payment provider", () => {
+  function subscriptionWithDateHeader(date: string | undefined) {
+    return {
+      id: "sub_obs",
+      status: "active",
+      customer: "cus_obs",
+      current_period_end: 1_893_456_000,
+      cancel_at_period_end: false,
+      lastResponse: { headers: date === undefined ? {} : { date } },
+    };
+  }
+
+  it("derives retrieveSubscription observedAt from the provider Date header", async () => {
+    const { instance, retrieveSubscription } = provider();
+    retrieveSubscription.mockResolvedValue(
+      subscriptionWithDateHeader("Tue, 20 Jan 2026 00:00:00 GMT"),
+    );
+
+    const result = await instance.retrieveSubscription("sub_obs");
+
+    expect(result.observedAt).toEqual(new Date("2026-01-20T00:00:00.000Z"));
+  });
+
+  it("returns null observedAt when the provider omits the Date header (fail closed)", async () => {
+    const { instance, retrieveSubscription } = provider();
+    retrieveSubscription.mockResolvedValue(subscriptionWithDateHeader(undefined));
+
+    const result = await instance.retrieveSubscription("sub_obs");
+
+    expect(result.observedAt).toBeNull();
+  });
+
+  it("returns null observedAt when the provider Date header is unparseable", async () => {
+    const { instance, retrieveSubscription } = provider();
+    retrieveSubscription.mockResolvedValue(subscriptionWithDateHeader("not-a-real-date"));
+
+    const result = await instance.retrieveSubscription("sub_obs");
+
+    expect(result.observedAt).toBeNull();
+  });
+
   it("creates a hosted one-time checkout session with ownership metadata", async () => {
     const { instance, create } = provider();
     create.mockResolvedValue({

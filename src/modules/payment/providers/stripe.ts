@@ -423,7 +423,7 @@ export class StripePaymentProvider implements PaymentProvider {
     providerCustomerRef: string | null;
     currentPeriodEndsAt: Date | null;
     cancelAtPeriodEnd: boolean;
-    observedAt: Date;
+    observedAt: Date | null;
   }> {
     const subscription = await this.client.subscriptions.retrieve(providerSubscriptionRef);
     return {
@@ -432,10 +432,11 @@ export class StripePaymentProvider implements PaymentProvider {
       providerCustomerRef: objectId(subscription.customer),
       currentPeriodEndsAt: subscriptionCurrentPeriodEnd(subscription),
       cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
-      // Provider server clock at which this state was observed. Any webhook event
-      // created at or before this instant is already reflected here and is stale.
-      // Falls back to local time only if the provider omits the Date header.
-      observedAt: stripeResponseDate(subscription) ?? new Date(),
+      // Provider server clock at which this state was observed (the API response
+      // `Date` header). Any webhook event created at or before this instant is
+      // already reflected here. `null` (missing/invalid header) makes reconcile
+      // fail closed — it never substitutes local time, which would mix clocks.
+      observedAt: stripeResponseDate(subscription),
     };
   }
 
