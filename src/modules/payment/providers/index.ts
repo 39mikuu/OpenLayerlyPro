@@ -136,11 +136,11 @@ export interface PaymentProvider {
     providerCustomerRef: string | null;
     currentPeriodEndsAt: Date | null;
     cancelAtPeriodEnd: boolean;
-    // Provider-clock timestamp for the observed state (e.g. the provider API
-    // response Date). Shares the clock domain with webhook `providerCreatedAt`
-    // so reconcile can advance the ordering fence without mixing clocks. `null`
-    // when the provider supplies no usable timestamp; reconcile then fails closed
-    // and skips the fence write rather than substituting local time.
+    // Provider-clock observation fence used by reconcile. Providers may expose a
+    // coarse timestamp (Stripe HTTP Date is second-granularity); getPaymentProvider
+    // normalizes it to the end of the represented provider second so an ambiguous
+    // same-second webhook cannot directly overwrite the observed state. `null`
+    // means no usable provider timestamp; reconcile then skips the fence write.
     observedAt: Date | null;
   }>;
   listPaidSubscriptionInvoices?(
@@ -162,6 +162,21 @@ export interface PaymentProvider {
   testConnection(): Promise<void>;
 }
 
+export function providerObservationFence(observedAt: Date): Date {
+  const providerSecondStart = Math.floor(observedAt.getTime() / 1_000) * 1_000;
+  return new Date(providerSecondStart + 999);
+}
+
+class ReconcileStripePaymentProvider extends StripePaymentProvider {
+  override async retrieveSubscription(providerSubscriptionRef: string) {
+    const remote = await super.retrieveSubscription(providerSubscriptionRef);
+    return {
+      ...remote,
+      observedAt: remote.observedAt ? providerObservationFence(remote.observedAt) : null,
+    };
+  }
+}
+
 export async function getPaymentProvider(
   id: string,
   options: { requireEnabled?: boolean } = {},
@@ -174,7 +189,7 @@ export async function getPaymentProvider(
   if (options.requireEnabled && !config.enabled) {
     throw new ApiError(400, "stripeDisabled");
   }
-  return new StripePaymentProvider({
+  return new ReconcileStripePaymentProvider({
     secretKey: config.secretKey,
     webhookSecret: config.webhookSecret,
   });
