@@ -1,9 +1,15 @@
 # Issue #103 — concurrent first-time initialization (validation report)
 
 - **Baseline:** `e08363ab988785cc510ea1900f7e2c178bf14cf8` (validated on the current `main`, unchanged code path).
-- **Classification result:** **NOT a correctness/security defect.** No unintended admin, no partial
-  initialization. One minor error-semantics wart (documented below). No locking/token mechanism is
-  required for correctness.
+- **Classification result:** **No concurrent data-integrity defect; setup must still be completed
+  before public exposure.** The three concerns are distinct and must not be conflated:
+  - **Concurrency integrity — confirmed safe.** No unintended admin, no partial initialization;
+    exactly one transaction commits. No locking/token mechanism is required for correctness.
+  - **Losing caller may receive 500 instead of 403 — non-blocking error semantics.** A cosmetic
+    wart, not a correctness or security issue.
+  - **Pre-setup public exposure — operational deployment boundary.** Unchanged by this analysis;
+    the setup route is public until initialized, so completing setup before the site is exposed
+    remains a documentation/checklist requirement, not something the concurrency behavior removes.
 - **Reproduction:** `src/modules/site/concurrent-setup.integration.test.ts` (real PostgreSQL).
 - **Production change in this branch:** none. Reproduction test + this report only.
 
