@@ -240,6 +240,7 @@ export const zh = {
       disabled: "已停用",
       none: "无",
       empty: "暂无记录。",
+      nextPage: "下一页",
       operationFailed: "操作失败",
       saveFailed: "保存失败",
       uploadFailed: "上传失败",

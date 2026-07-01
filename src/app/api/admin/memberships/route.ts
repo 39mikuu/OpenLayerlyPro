@@ -4,16 +4,22 @@ import { z } from "zod";
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
+import { parseAdminPageSize } from "@/modules/admin/pagination";
 import { requireAdmin } from "@/modules/auth/session";
-import { grantMembership, listMemberships } from "@/modules/membership";
+import { grantMembership, listMembershipsPage } from "@/modules/membership";
 import { findOrCreateUserByEmail, findUserByEmail } from "@/modules/user";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
     await requireAdmin();
-    return jsonOk(await listMemberships());
+    return jsonOk(
+      await listMembershipsPage({
+        cursor: req.nextUrl.searchParams.get("cursor"),
+        limit: parseAdminPageSize(req.nextUrl.searchParams.get("limit")),
+      }),
+    );
   } catch (err) {
     return handleApiError(err);
   }

@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/table";
 import { formatDate } from "@/lib/dates";
 import { getT } from "@/modules/i18n/server";
-import { listMemberships, listTiers } from "@/modules/membership";
+import { listMembershipsPage, listTiers } from "@/modules/membership";
 import {
   getMembershipDisplayState,
   type MembershipDisplayState,
@@ -34,8 +34,17 @@ const STATE_KEYS: Record<MembershipDisplayState, string> = {
   revoked: "admin.memberships.revoked",
 };
 
-export default async function AdminMembershipsPage() {
-  const [records, tiers] = await Promise.all([listMemberships(), listTiers({ activeOnly: true })]);
+export default async function AdminMembershipsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ cursor?: string }>;
+}) {
+  const filters = await searchParams;
+  const [recordsPage, tiers] = await Promise.all([
+    listMembershipsPage({ cursor: filters.cursor }),
+    listTiers({ activeOnly: true }),
+  ]);
+  const records = recordsPage.items;
   const t = await getT();
 
   return (
@@ -83,6 +92,14 @@ export default async function AdminMembershipsPage() {
       </Table>
       {records.length === 0 && (
         <p className="text-sm text-muted-foreground">{t("admin.memberships.empty")}</p>
+      )}
+      {recordsPage.nextCursor && (
+        <a
+          href={`/admin/memberships?cursor=${encodeURIComponent(recordsPage.nextCursor)}`}
+          className="text-primary text-sm font-medium hover:underline"
+        >
+          {t("admin.common.nextPage")}
+        </a>
       )}
     </div>
   );

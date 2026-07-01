@@ -248,6 +248,7 @@ export const en: Messages = {
       disabled: "Disabled",
       none: "None",
       empty: "No records.",
+      nextPage: "Next page",
       operationFailed: "Operation failed",
       saveFailed: "Save failed",
       uploadFailed: "Upload failed",

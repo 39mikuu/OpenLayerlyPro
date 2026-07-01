@@ -11,7 +11,7 @@ import {
 import { formatDateTime } from "@/lib/dates";
 import type { Translate } from "@/modules/i18n";
 import { getT } from "@/modules/i18n/server";
-import { listPaymentRequests } from "@/modules/payment";
+import { listPaymentRequestsPage, type PaymentRequestDetail } from "@/modules/payment";
 
 export const dynamic = "force-dynamic";
 
@@ -27,22 +27,52 @@ const STATUS_KEYS: Record<
   reversed: { key: "admin.reviews.reversed", variant: "secondary" },
 };
 
-export default async function AdminPaymentReviewsPage() {
-  const requests = await listPaymentRequests();
-  const pending = requests.filter((r) => r.request.status === "pending_review");
-  const others = requests.filter((r) => r.request.status !== "pending_review");
+export default async function AdminPaymentReviewsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ pendingCursor?: string; historyCursor?: string }>;
+}) {
+  const filters = await searchParams;
+  const [pendingPage, historyPage] = await Promise.all([
+    listPaymentRequestsPage({
+      status: "pending_review",
+      cursor: filters.pendingCursor,
+    }),
+    listPaymentRequestsPage({
+      excludeStatus: "pending_review",
+      cursor: filters.historyCursor,
+    }),
+  ]);
   const t = await getT();
 
   return (
     <div className="space-y-8">
       <div className="space-y-4">
         <h1 className="text-xl font-bold">{t("admin.reviews.title")}</h1>
-        <h2 className="font-semibold">{t("admin.reviews.pending", { count: pending.length })}</h2>
-        <RequestTable rows={pending} showActions t={t} />
+        <h2 className="font-semibold">
+          {t("admin.reviews.pending", { count: pendingPage.items.length })}
+        </h2>
+        <RequestTable rows={pendingPage.items} showActions t={t} />
+        {pendingPage.nextCursor && (
+          <a
+            href={paymentPageHref(filters, "pendingCursor", pendingPage.nextCursor)}
+            className="text-primary text-sm font-medium hover:underline"
+          >
+            {t("admin.common.nextPage")}
+          </a>
+        )}
       </div>
       <div className="space-y-4">
         <h2 className="font-semibold">{t("admin.reviews.history")}</h2>
-        <RequestTable rows={others} t={t} />
+        <RequestTable rows={historyPage.items} t={t} />
+        {historyPage.nextCursor && (
+          <a
+            href={paymentPageHref(filters, "historyCursor", historyPage.nextCursor)}
+            className="text-primary text-sm font-medium hover:underline"
+          >
+            {t("admin.common.nextPage")}
+          </a>
+        )}
       </div>
     </div>
   );
@@ -53,7 +83,7 @@ function RequestTable({
   showActions,
   t,
 }: {
-  rows: Awaited<ReturnType<typeof listPaymentRequests>>;
+  rows: PaymentRequestDetail[];
   showActions?: boolean;
   t: Translate;
 }) {
@@ -115,4 +145,16 @@ function RequestTable({
       </TableBody>
     </Table>
   );
+}
+
+function paymentPageHref(
+  current: { pendingCursor?: string; historyCursor?: string },
+  key: "pendingCursor" | "historyCursor",
+  cursor: string,
+): string {
+  const params = new URLSearchParams();
+  if (current.pendingCursor) params.set("pendingCursor", current.pendingCursor);
+  if (current.historyCursor) params.set("historyCursor", current.historyCursor);
+  params.set(key, cursor);
+  return `/admin/payments/reviews?${params.toString()}`;
 }

@@ -132,6 +132,7 @@ export const memberships = pgTable(
   (table) => [
     index("memberships_user_active_idx").on(table.userId, table.startsAt, table.endsAt),
     index("memberships_tier_id_idx").on(table.tierId),
+    index("memberships_created_id_idx").on(table.createdAt.desc(), table.id.desc()),
   ],
 );
 
@@ -228,7 +229,12 @@ export const paymentRequests = pgTable(
   },
   (table) => [
     index("payment_requests_user_created_idx").on(table.userId, table.createdAt.desc()),
-    index("payment_requests_status_created_idx").on(table.status, table.createdAt),
+    index("payment_requests_created_id_idx").on(table.createdAt.desc(), table.id.desc()),
+    index("payment_requests_status_created_id_idx").on(
+      table.status,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
     index("payment_requests_pending_user_tier_idx").on(table.userId, table.tierId, table.status),
     uniqueIndex("payment_requests_pending_user_tier_unique")
       .on(table.userId, table.tierId)
@@ -433,35 +439,46 @@ export const postTranslations = pgTable(
   ],
 );
 
-export const files = pgTable("files", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  storageDriver: text("storage_driver", { enum: ["local", "s3"] }).notNull(),
-  bucket: text("bucket"),
-  objectKey: text("object_key").notNull(),
-  originalName: text("original_name").notNull(),
-  mimeType: text("mime_type").notNull(),
-  sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
-  sha256: text("sha256"),
-  width: integer("width"),
-  height: integer("height"),
-  purpose: text("purpose", {
-    enum: [
-      "artist_avatar",
-      "payment_qr",
-      "payment_proof",
-      "content_image",
-      "content_attachment",
-      "cover",
-      "thumbnail",
-    ],
-  }).notNull(),
-  createdBy: uuid("created_by"),
-  quarantinedAt: timestamp("quarantined_at", { withTimezone: true }),
-  quarantineReason: text("quarantine_reason"),
-  remediationVersion: integer("remediation_version").notNull().default(0),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
-});
+export const files = pgTable(
+  "files",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    storageDriver: text("storage_driver", { enum: ["local", "s3"] }).notNull(),
+    bucket: text("bucket"),
+    objectKey: text("object_key").notNull(),
+    originalName: text("original_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    sha256: text("sha256"),
+    width: integer("width"),
+    height: integer("height"),
+    purpose: text("purpose", {
+      enum: [
+        "artist_avatar",
+        "payment_qr",
+        "payment_proof",
+        "content_image",
+        "content_attachment",
+        "cover",
+        "thumbnail",
+      ],
+    }).notNull(),
+    createdBy: uuid("created_by"),
+    quarantinedAt: timestamp("quarantined_at", { withTimezone: true }),
+    quarantineReason: text("quarantine_reason"),
+    remediationVersion: integer("remediation_version").notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("files_created_id_active_idx")
+      .on(table.createdAt.desc(), table.id.desc())
+      .where(sql`${table.quarantinedAt} is null`),
+    index("files_quarantined_id_idx")
+      .on(table.quarantinedAt.desc(), table.id.desc())
+      .where(sql`${table.quarantinedAt} is not null`),
+  ],
+);
 
 export const postFiles = pgTable(
   "post_files",

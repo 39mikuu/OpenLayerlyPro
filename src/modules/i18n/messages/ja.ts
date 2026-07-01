@@ -246,6 +246,7 @@ export const ja: Messages = {
       disabled: "無効",
       none: "なし",
       empty: "データがありません。",
+      nextPage: "次のページ",
       operationFailed: "操作に失敗しました",
       saveFailed: "保存に失敗しました",
       uploadFailed: "アップロードに失敗しました",
