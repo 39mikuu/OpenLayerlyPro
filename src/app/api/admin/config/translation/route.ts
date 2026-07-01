@@ -24,12 +24,12 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
+    await requireAdmin();
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
       translationConfigSchema,
     );
-    await requireAdmin();
     await saveTranslationConfig(input);
     return jsonOk(await getTranslationAdminView());
   } catch (err) {

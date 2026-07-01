@@ -24,8 +24,8 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, stripeConfigSchema);
     await requireAdmin();
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, stripeConfigSchema);
     await saveStripeConfig(input);
     return jsonOk(await getStripeAdminView());
   } catch (error) {
