@@ -9,7 +9,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDateTime } from "@/lib/dates";
-import { listFiles, listQuarantinedFiles } from "@/modules/file";
+import { listFilesPage, listQuarantinedFilesPage } from "@/modules/file";
 import { getT } from "@/modules/i18n/server";
 
 export const dynamic = "force-dynamic";
@@ -19,8 +19,18 @@ function formatSize(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-export default async function AdminFilesPage() {
-  const [files, quarantinedFiles] = await Promise.all([listFiles(), listQuarantinedFiles()]);
+export default async function AdminFilesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ cursor?: string; quarantinedCursor?: string }>;
+}) {
+  const filters = await searchParams;
+  const [filesPage, quarantinedPage] = await Promise.all([
+    listFilesPage({ cursor: filters.cursor }),
+    listQuarantinedFilesPage({ cursor: filters.quarantinedCursor }),
+  ]);
+  const files = filesPage.items;
+  const quarantinedFiles = quarantinedPage.items;
   const t = await getT();
   return (
     <div className="space-y-6">
@@ -63,6 +73,22 @@ export default async function AdminFilesPage() {
       {files.length === 0 && (
         <p className="text-sm text-muted-foreground">{t("admin.files.empty")}</p>
       )}
+      {filesPage.nextCursor && (
+        <a
+          href={filesPageHref(filters, "cursor", filesPage.nextCursor)}
+          className="text-primary text-sm font-medium hover:underline"
+        >
+          {t("admin.common.nextPage")}
+        </a>
+      )}
+      {filters.cursor && (
+        <a
+          href={filesPageHref(filters, "cursor")}
+          className="text-primary text-sm font-medium hover:underline"
+        >
+          {t("admin.common.firstPage")}
+        </a>
+      )}
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Quarantined files</h2>
@@ -95,7 +121,39 @@ export default async function AdminFilesPage() {
             ))}
           </TableBody>
         </Table>
+        {quarantinedPage.nextCursor && (
+          <a
+            href={filesPageHref(filters, "quarantinedCursor", quarantinedPage.nextCursor)}
+            className="text-primary text-sm font-medium hover:underline"
+          >
+            {t("admin.common.nextPage")}
+          </a>
+        )}
+        {filters.quarantinedCursor && (
+          <a
+            href={filesPageHref(filters, "quarantinedCursor")}
+            className="text-primary text-sm font-medium hover:underline"
+          >
+            {t("admin.common.firstPage")}
+          </a>
+        )}
       </section>
     </div>
   );
+}
+
+export function filesPageHref(
+  current: { cursor?: string; quarantinedCursor?: string },
+  key: "cursor" | "quarantinedCursor",
+  cursor?: string,
+): string {
+  const params = new URLSearchParams();
+  if (current.cursor) params.set("cursor", current.cursor);
+  if (current.quarantinedCursor) {
+    params.set("quarantinedCursor", current.quarantinedCursor);
+  }
+  if (cursor) params.set(key, cursor);
+  else params.delete(key);
+  const query = params.toString();
+  return query ? `/admin/files?${query}` : "/admin/files";
 }
