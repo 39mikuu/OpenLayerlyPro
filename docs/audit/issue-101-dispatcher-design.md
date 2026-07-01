@@ -107,11 +107,14 @@ Preserving every invariant in §1:
 2. **Sweep once per tick, not per claim.** Run the final-attempt sweep a single time at the start of
    `dispatchTaskBatch` (or fold it into the batch claim transaction), not inside every `claim(1)`.
    The `attempts >= max_attempts` → `dead` semantics and the mail dead-letter WARN must be preserved.
-3. **Batch the claim SELECT.** `claim(20)` costs the same as `claim(1)` (§2), so claiming the batch
-   in one query is ~19× less claim overhead per task than the current `claim(1)`×20 loop.
-4. **Keep bounded concurrency.** SKIP LOCKED already scales cleanly (2449 claims/s at 4 workers, no
-   lock-wait collapse). Any batch/concurrency change must retain a hard cap (`TASK_BATCH_SIZE`) and
-   the single-flight `running` guard.
+These three items **preserve the current claim-one / execute-one lease timing** — each task is still
+leased immediately before its own execution — so they carry no lease-before-start risk.
+
+> **Not in this package: batching the claim SELECT.** Although `claim(20)` costs the same as
+> `claim(1)` (§2), batch claiming is the point at which lease-before-start behavior begins: even with
+> sequential execution, every task in a batch starts its lease at batch-claim time, so a task later
+> in the batch can approach expiry before it is executed. Batch claim therefore belongs to the
+> separate guarded execution-model follow-up in §4.1, not to the low-risk query-path package above.
 
 ### 4.1 Sequential claim-one vs small-batch bounded concurrency
 
@@ -123,17 +126,23 @@ Preserving every invariant in §1:
 | Idempotency / fencing | unchanged | unchanged — completion still fenced on `lockedBy` + `status`; external side effects remain idempotent via `dedupeKey` |
 | DB connections | 1 per claim/finalize (pool max 10) | batch reduces claim-transaction count; parallel execution needs a bounded worker pool ≤ pool size |
 
-**Recommendation:** adopt the index + split-query + once-per-tick-sweep changes first (items 1–3);
-they are low-risk, preserve all invariants, and remove the O(total) scaling cliff. Treat "batch
-claim + bounded-parallel execution" (the lease-before-start concern) as a **separate, carefully
-guarded** follow-up — the safe form is a small batch sized to one lease window plus lease renewal on
-dequeue, never unbounded parallelism.
+**Recommendation — two explicitly separate follow-ups:**
+
+- **Low-risk query-path follow-up:** split the pending/failed and stale-processing probes; add the
+  matching partial indexes; run the final-attempt sweep once per tick; **preserve the current
+  claim-one / execute-one lease timing.** Removes the O(total) scaling cliff with no lease-timing
+  change.
+- **Separate guarded execution-model follow-up:** batch claim; bounded parallelism; dequeue-time
+  lease renewal (or equivalent lease protection); dedicated lease-expiry / concurrency tests. This
+  is where lease-before-start begins, so it must not be bundled with the query-path package.
 
 ## 5. v1.0 impact
 
 **Not release-blocking for correctness.** The invariants hold. At small task volumes the current
 ~22 ms/claim is immaterial. It becomes a throughput/latency problem only as the `tasks` table grows
-(especially with retained terminal rows). Recommendation: land items 1–3 as one narrowly-scoped
-performance issue post-HOLD (or before v1.0 if task volume is expected to be high), each behind its
-own reviewed Draft PR, with the existing invariant tests as regression guards. Await human approval
-before any implementation PR.
+(especially with retained terminal rows). Recommendation: land the **low-risk query-path follow-up**
+as one narrowly-scoped performance issue post-HOLD (or before v1.0 if task volume is expected to be
+high), behind its own reviewed Draft PR with the existing invariant tests as regression guards; track
+the **guarded execution-model follow-up** (batch claim + bounded parallelism + lease handling)
+separately with its own lease-expiry/concurrency test matrix. Await human approval before any
+implementation PR.
