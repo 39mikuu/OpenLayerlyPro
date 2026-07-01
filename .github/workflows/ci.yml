@@ -60,6 +60,8 @@ jobs:
           node --check dist/restore-schema-check.mjs
       - name: Test backup app state machine
         run: sh scripts/test-backup-app-state.sh
+      - name: Test restore shell argument boundaries
+        run: sh scripts/test-restore-shell-args.sh
       - name: Shellcheck restore scripts
         run: |
           sudo apt-get update -qq
@@ -70,6 +72,7 @@ jobs:
             scripts/backup.sh \
             scripts/restore.sh \
             scripts/test-backup-app-state.sh \
+            scripts/test-restore-shell-args.sh \
             scripts/test-restore-e2e.sh \
             scripts/test-restore-s3-e2e.sh \
             scripts/test-restore-v1-e2e.sh \

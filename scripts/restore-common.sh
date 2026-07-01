@@ -2,6 +2,56 @@
 # shellcheck disable=SC2016 # Expand Compose service variables inside the container shell.
 # Shared helpers for backup.sh and restore.sh (sourced, not executed directly).
 
+run_app_shell() {
+  script=$1
+  shift
+  compose run --rm -T --no-deps --entrypoint sh app -c "$script" restore-app "$@"
+}
+
+run_postgres_shell() {
+  script=$1
+  shift
+  compose exec -T postgres sh -c "$script" restore-postgres "$@"
+}
+
+verify_container_nonempty_file() {
+  target_file=$1
+  run_app_shell '
+    set -eu
+    test -f "$1"
+    test -s "$1"
+  ' "$target_file"
+}
+
+clear_container_directory() {
+  target_dir=$1
+  run_app_shell '
+    set -eu
+    mkdir -p "$1"
+    rm -rf "$1"/* "$1"/.[!.]* "$1"/..?*
+  ' "$target_dir"
+}
+
+remove_container_object() {
+  target_dir=$1
+  object_key=$2
+  run_app_shell '
+    set -eu
+    rm -f "$1/$2"
+    test ! -f "$1/$2"
+  ' "$target_dir" "$object_key"
+}
+
+remove_first_container_text_file() {
+  target_dir=$1
+  run_app_shell '
+    set -eu
+    referenced=$(find "$1" -type f -name "*.txt" | head -n 1)
+    [ -n "$referenced" ] || exit 1
+    rm -f "$referenced"
+  ' "$target_dir"
+}
+
 validate_absolute_container_path() {
   path=$1
   label=$2
@@ -78,14 +128,14 @@ canonicalize_container_path() {
   validate_no_path_traversal "$raw_path" "$label"
 
   canonical_path=$(
-    compose run --rm -T --no-deps --entrypoint sh app -c "
+    run_app_shell '
       set -eu
       if command -v realpath >/dev/null 2>&1; then
-        realpath -m -- '$raw_path'
+        realpath -m -- "$1"
       else
-        printf '%s\n' '$raw_path'
+        printf "%s\n" "$1"
       fi
-    " | tr -d '\r'
+    ' "$raw_path" | tr -d '\r'
   )
   [ -n "$canonical_path" ] || fail "unable to canonicalize $label"
 
@@ -191,24 +241,24 @@ preflight_volume_write_read_delete() {
 
   probe_token="restore-preflight-$(date +%s)-$$"
   probe_path=$(
-    compose run --rm -T --no-deps --entrypoint sh app -c "
+    run_app_shell '
       set -eu
       umask 077
-      probe=\$(mktemp \"$probe_dir/.restore-preflight.XXXXXX\")
-      printf '%s' '$probe_token' > \"\$probe\"
-      printf '%s' \"\$probe\"
-    " | tr -d '\r'
+      probe=$(mktemp "$1/.restore-preflight.XXXXXX")
+      printf "%s" "$2" > "$probe"
+      printf "%s" "$probe"
+    ' "$probe_dir" "$probe_token" | tr -d '\r'
   ) || fail "$label is not writable from a one-off container ($probe_dir)"
   [ -n "$probe_path" ] || fail "$label preflight could not create a probe file ($probe_dir)"
 
   probe_readback=$(
-    compose run --rm -T --no-deps --entrypoint sh app -c "
+    run_app_shell '
       set -eu
-      [ -f \"$probe_path\" ] || exit 1
-      [ ! -L \"$probe_path\" ] || exit 1
-      cat \"$probe_path\"
-      rm -f \"$probe_path\"
-    " | tr -d '\r'
+      [ -f "$1" ] || exit 1
+      [ ! -L "$1" ] || exit 1
+      cat "$1"
+      rm -f "$1"
+    ' "$probe_path" | tr -d '\r'
   ) || fail "$label failed cross-container read/delete preflight ($probe_path)"
 
   [ "$probe_readback" = "$probe_token" ] \
@@ -223,15 +273,16 @@ preflight_config_key_restore_target() {
   # Prepare the parent dir and reject a non-regular file (e.g. a directory) sitting
   # at the final key path: otherwise `compose cp` would copy the key *inside* it and
   # a later `test -s <directory>` could still pass, leaving the app unable to read it.
-  compose run --rm -T --no-deps --entrypoint sh app -c "
+  run_app_shell '
     set -eu
-    mkdir -p \"$target_key_dir\"
-    test -d \"$target_key_dir\"
-    if [ -e \"$target_key_file\" ] && [ ! -f \"$target_key_file\" ]; then
-      echo 'CONFIG_ENCRYPTION_KEY_FILE target exists and is not a regular file' >&2
+    mkdir -p "$1"
+    test -d "$1"
+    if [ -e "$2" ] && [ ! -f "$2" ]; then
+      echo "CONFIG_ENCRYPTION_KEY_FILE target exists and is not a regular file" >&2
       exit 1
     fi
-  " || fail "unable to prepare CONFIG_ENCRYPTION_KEY_FILE target on the secrets volume"
+  ' "$target_key_dir" "$target_key_file" \
+    || fail "unable to prepare CONFIG_ENCRYPTION_KEY_FILE target on the secrets volume"
 
   preflight_volume_write_read_delete \
     "$target_key_dir" "CONFIG_ENCRYPTION_KEY_FILE secrets volume"
@@ -241,11 +292,11 @@ preflight_upload_dir_restore_target() {
   upload_dir=$1
 
   validate_upload_dir_path "$upload_dir"
-  compose run --rm -T --no-deps --entrypoint sh app -c "
+  run_app_shell '
     set -eu
-    mkdir -p \"$upload_dir\"
-    test -d \"$upload_dir\"
-  " || fail "unable to prepare UPLOAD_DIR on the uploads volume ($upload_dir)"
+    mkdir -p "$1"
+    test -d "$1"
+  ' "$upload_dir" || fail "unable to prepare UPLOAD_DIR on the uploads volume ($upload_dir)"
 
   preflight_volume_write_read_delete \
     "$upload_dir" "UPLOAD_DIR uploads volume"
