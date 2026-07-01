@@ -112,10 +112,10 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-restore.XXXXXX")
 PROBE_DB=""
 cleanup_workdir() {
   if [ -n "$PROBE_DB" ]; then
-    compose exec -T postgres sh -c "
+    run_postgres_shell '
       set -eu
-      dropdb --if-exists --force -U \"\${POSTGRES_USER:-artist}\" \"$PROBE_DB\" >/dev/null 2>&1 || true
-    " >/dev/null 2>&1 || true
+      dropdb --if-exists --force -U "${POSTGRES_USER:-artist}" "$1" >/dev/null 2>&1 || true
+    ' "$PROBE_DB" >/dev/null 2>&1 || true
   fi
   rm -rf "$WORK_DIR"
 }
@@ -243,23 +243,23 @@ if [ "$FORMAT_VERSION" = "1" ]; then
   # (e.g. via COMPOSE_ENV_FILE or service environment) still connect for the check.
   PROBE_PG_USER=$(compose exec -T postgres sh -c 'printf %s "${POSTGRES_USER:-artist}"' | tr -d '\r')
   PROBE_PG_PASSWORD=$(compose exec -T postgres sh -c 'printf %s "${POSTGRES_PASSWORD:-artist_password}"' | tr -d '\r')
-  compose exec -T postgres sh -c "
+  run_postgres_shell '
     set -eu
-    createdb -U \"\${POSTGRES_USER:-artist}\" \"$PROBE_DB\"
-  "
-  compose exec -T postgres sh -c "
+    createdb -U "${POSTGRES_USER:-artist}" "$1"
+  ' "$PROBE_DB"
+  run_postgres_shell '
     set -eu
-    exec psql -v ON_ERROR_STOP=1 -U \"\${POSTGRES_USER:-artist}\" -d \"$PROBE_DB\"
-  " < "$WORK_DIR/db.sql"
+    exec psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-artist}" -d "$1"
+  ' "$PROBE_DB" < "$WORK_DIR/db.sql"
 
   PROBE_DATABASE_URL="postgresql://$(urlencode "$PROBE_PG_USER"):$(urlencode "$PROBE_PG_PASSWORD")@postgres:5432/$PROBE_DB"
   if ! run_schema_check --database-url="$PROBE_DATABASE_URL" --format-version="$FORMAT_VERSION"; then
     fail "legacy archive schema compatibility check failed"
   fi
-  compose exec -T postgres sh -c "
+  run_postgres_shell '
     set -eu
-    dropdb --if-exists --force -U \"\${POSTGRES_USER:-artist}\" \"$PROBE_DB\"
-  "
+    dropdb --if-exists --force -U "${POSTGRES_USER:-artist}" "$1"
+  ' "$PROBE_DB"
   PROBE_DB=""
 else
   echo "Checking archive migration compatibility from manifest..."
@@ -309,39 +309,21 @@ compose exec -T postgres sh -c '
 
 echo "Restoring config encryption key file to $TARGET_CONFIG_KEY_FILE..."
 compose cp "$WORK_DIR/secrets/config-encryption-key" "app:$TARGET_CONFIG_KEY_FILE"
-compose run --rm -T --no-deps --entrypoint sh app -c "
-  set -eu
-  test -f \"$TARGET_CONFIG_KEY_FILE\"
-  test -s \"$TARGET_CONFIG_KEY_FILE\"
-"
+verify_container_nonempty_file "$TARGET_CONFIG_KEY_FILE"
 
 if [ "$RESTORE_HAS_UPLOADS" = true ]; then
   UPLOAD_DIR=$TARGET_UPLOAD_DIR
   echo "Replacing local uploads at $UPLOAD_DIR..."
-  compose run --rm -T --no-deps --entrypoint sh app -c "
-    set -eu
-    upload_dir=$UPLOAD_DIR
-    mkdir -p \"\$upload_dir\"
-    rm -rf \"\$upload_dir\"/* \"\$upload_dir\"/.[!.]* \"\$upload_dir\"/..?*
-  "
+  clear_container_directory "$UPLOAD_DIR"
   compose cp "$WORK_DIR/uploads/." "app:$UPLOAD_DIR"
   if [ "${RESTORE_E2E_INJECT_MISSING:-}" = "1" ]; then
     echo "Injecting post-restore storage drift for E2E drill..."
     if [ -n "${RESTORE_E2E_MISSING_OBJECT_KEY:-}" ]; then
-      compose run --rm -T --no-deps --entrypoint sh app -c "
-        set -eu
-        upload_dir=$UPLOAD_DIR
-        rm -f \"\$upload_dir/$RESTORE_E2E_MISSING_OBJECT_KEY\"
-        test ! -f \"\$upload_dir/$RESTORE_E2E_MISSING_OBJECT_KEY\"
-      " || fail "failed to inject missing-object drift for E2E drill"
+      remove_container_object "$UPLOAD_DIR" "$RESTORE_E2E_MISSING_OBJECT_KEY" \
+        || fail "failed to inject missing-object drift for E2E drill"
     else
-      compose run --rm -T --no-deps --entrypoint sh app -c "
-        set -eu
-        upload_dir=$UPLOAD_DIR
-        referenced=\$(find \"\$upload_dir\" -type f -name '*.txt' | head -n 1)
-        [ -n \"\$referenced\" ] || exit 1
-        rm -f \"\$referenced\"
-      " || fail "failed to inject missing-object drift for E2E drill"
+      remove_first_container_text_file "$UPLOAD_DIR" \
+        || fail "failed to inject missing-object drift for E2E drill"
     fi
   fi
 else
