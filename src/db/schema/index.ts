@@ -246,6 +246,11 @@ export const paymentRequests = pgTable(
       .where(sql`${table.provider} is not null and ${table.reversalEventId} is not null`),
     index("payment_requests_provider_ref_idx").on(table.providerRef),
     index("payment_requests_subscription_idx").on(table.subscriptionId),
+    // Bounded existence probe support for file-deletion reference checks.
+    // Partial index covers only rows that actually reference a proof file.
+    index("payment_requests_proof_file_id_idx")
+      .on(table.proofFileId)
+      .where(sql`${table.proofFileId} is not null`),
   ],
 );
 
@@ -329,6 +334,11 @@ export const posts = pgTable(
   (table) => [
     index("posts_status_published_idx").on(table.status, table.publishedAt.desc()),
     index("posts_status_scheduled_idx").on(table.status, table.scheduledAt),
+    // Bounded existence probe support for file-deletion reference checks.
+    // Partial index covers only rows that actually reference a cover file.
+    index("posts_cover_file_id_idx")
+      .on(table.coverFileId)
+      .where(sql`${table.coverFileId} is not null`),
     check(
       "posts_schedule_pair_check",
       sql`(${table.scheduledAt} is null) = (${table.scheduleToken} is null)`,

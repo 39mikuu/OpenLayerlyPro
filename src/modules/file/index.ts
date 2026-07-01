@@ -392,25 +392,53 @@ export async function deleteFile(id: string): Promise<void> {
     if (!record) throw new ApiError(404, "fileNotFound");
     if (record.quarantinedAt) throw new ApiError(410, "fileQuarantined");
 
-    const [[postFile], [qr], [cover], [proof], settingRows] = await Promise.all([
-      tx.select({ c: count() }).from(postFiles).where(eq(postFiles.fileId, id)),
-      tx.select({ c: count() }).from(paymentMethods).where(eq(paymentMethods.qrFileId, id)),
-      tx.select({ c: count() }).from(posts).where(eq(posts.coverFileId, id)),
-      tx.select({ c: count() }).from(paymentRequests).where(eq(paymentRequests.proofFileId, id)),
+    // The deletion decision is existence-only, so the common (unreferenced) path
+    // uses bounded probes and never scans or counts a large table;
+    // posts.cover_file_id and payment_requests.proof_file_id are served by the
+    // partial reference indexes added in migration 0018.
+    const [postFileRef, qrRef, coverRef, proofRef, settingRows] = await Promise.all([
+      tx.select({ id: postFiles.id }).from(postFiles).where(eq(postFiles.fileId, id)).limit(1),
+      tx
+        .select({ id: paymentMethods.id })
+        .from(paymentMethods)
+        .where(eq(paymentMethods.qrFileId, id))
+        .limit(1),
+      tx.select({ id: posts.id }).from(posts).where(eq(posts.coverFileId, id)).limit(1),
+      tx
+        .select({ id: paymentRequests.id })
+        .from(paymentRequests)
+        .where(eq(paymentRequests.proofFileId, id))
+        .limit(1),
       tx
         .select({ value: siteSettings.valueJson })
         .from(siteSettings)
         .where(inArray(siteSettings.key, [...PROTECTED_SETTING_KEYS])),
     ]);
-    const params = {
-      postFiles: Number(postFile.c),
-      paymentMethods: Number(qr.c),
-      covers: Number(cover.c),
-      proofs: Number(proof.c),
-      settings: settingRows.filter((row) => row.value === id).length,
-    };
-    if (Object.values(params).some((value) => value > 0)) {
-      throw new ApiError(400, "fileInUse", params);
+    const settingRefs = settingRows.filter((row) => row.value === id).length;
+    const isReferenced =
+      postFileRef.length > 0 ||
+      qrRef.length > 0 ||
+      coverRef.length > 0 ||
+      proofRef.length > 0 ||
+      settingRefs > 0;
+
+    if (isReferenced) {
+      // Deletion is blocked. Only now compute exact reference counts for the
+      // fileInUse error, preserving the counted error contract (S1b handoff).
+      // These counts are index-backed and only run on the rejected path.
+      const [[postFile], [qr], [cover], [proof]] = await Promise.all([
+        tx.select({ c: count() }).from(postFiles).where(eq(postFiles.fileId, id)),
+        tx.select({ c: count() }).from(paymentMethods).where(eq(paymentMethods.qrFileId, id)),
+        tx.select({ c: count() }).from(posts).where(eq(posts.coverFileId, id)),
+        tx.select({ c: count() }).from(paymentRequests).where(eq(paymentRequests.proofFileId, id)),
+      ]);
+      throw new ApiError(400, "fileInUse", {
+        postFiles: Number(postFile.c),
+        paymentMethods: Number(qr.c),
+        covers: Number(cover.c),
+        proofs: Number(proof.c),
+        settings: settingRefs,
+      });
     }
 
     await deleteFileRowWithStorageTask(tx, record);
