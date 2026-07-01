@@ -82,12 +82,18 @@ strict monotonic guard — no version CAS and no local-time fallback:
    same second is recovered by the next durable provider reconcile; an event from the next provider
    second is accepted normally. This preserves existing webhook-vs-webhook equality behavior because
    only reconcile fences carry the fractional end-of-second marker.
+5. **Reconciled paid invoices remain on provider time.** `listPaidSubscriptionInvoices()` no longer
+   stamps reconstructed events with local `new Date()`. It uses Stripe
+   `status_transitions.paid_at`, falling back only to the provider invoice `created` timestamp. This
+   closes the alternate path that could otherwise reintroduce a local-time value into
+   `statusEventAt` after the subscription observation write.
 
 The regression suite asserts: advance through the provider observation second; reject delayed older
 `payment_failed`/`canceled` webhooks; accept a next-second webhook; reject an ambiguous same-second
 webhook; converge that same-second change on the next provider observation; preserve an in-flight
 next-second webhook; let an in-flight same-second webhook lose to the observation fence; fail closed
-on null `observedAt`; and prevent an older reconciled paid invoice from regressing a newer fence.
+on null `observedAt`; prevent an older reconciled paid invoice from regressing a newer fence; and use
+Stripe paid/created timestamps for reconstructed invoice events.
 
 PR #109's assertions intentionally encoded the pre-fix buggy behavior, so it was closed rather than
 merged; this document is retained as the evidence record in the fix PR.
