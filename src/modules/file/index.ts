@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { count, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import path from "path";
 import type { Readable } from "stream";
 
@@ -392,8 +392,8 @@ export async function deleteFile(id: string): Promise<void> {
     if (!record) throw new ApiError(404, "fileNotFound");
     if (record.quarantinedAt) throw new ApiError(410, "fileQuarantined");
 
-    // Deletion only needs to know whether a reference exists, never how many.
-    // Each probe is bounded to a single row so a large table is never counted;
+    // The deletion decision is existence-only, so the common (unreferenced) path
+    // uses bounded probes and never scans or counts a large table;
     // posts.cover_file_id and payment_requests.proof_file_id are served by the
     // partial reference indexes added in migration 0018.
     const [postFileRef, qrRef, coverRef, proofRef, settingRows] = await Promise.all([
@@ -414,16 +414,31 @@ export async function deleteFile(id: string): Promise<void> {
         .from(siteSettings)
         .where(inArray(siteSettings.key, [...PROTECTED_SETTING_KEYS])),
     ]);
-    // Values are bounded presence indicators (0 or 1), not exact reference counts.
-    const params = {
-      postFiles: postFileRef.length,
-      paymentMethods: qrRef.length,
-      covers: coverRef.length,
-      proofs: proofRef.length,
-      settings: settingRows.filter((row) => row.value === id).length,
-    };
-    if (Object.values(params).some((value) => value > 0)) {
-      throw new ApiError(400, "fileInUse", params);
+    const settingRefs = settingRows.filter((row) => row.value === id).length;
+    const isReferenced =
+      postFileRef.length > 0 ||
+      qrRef.length > 0 ||
+      coverRef.length > 0 ||
+      proofRef.length > 0 ||
+      settingRefs > 0;
+
+    if (isReferenced) {
+      // Deletion is blocked. Only now compute exact reference counts for the
+      // fileInUse error, preserving the counted error contract (S1b handoff).
+      // These counts are index-backed and only run on the rejected path.
+      const [[postFile], [qr], [cover], [proof]] = await Promise.all([
+        tx.select({ c: count() }).from(postFiles).where(eq(postFiles.fileId, id)),
+        tx.select({ c: count() }).from(paymentMethods).where(eq(paymentMethods.qrFileId, id)),
+        tx.select({ c: count() }).from(posts).where(eq(posts.coverFileId, id)),
+        tx.select({ c: count() }).from(paymentRequests).where(eq(paymentRequests.proofFileId, id)),
+      ]);
+      throw new ApiError(400, "fileInUse", {
+        postFiles: Number(postFile.c),
+        paymentMethods: Number(qr.c),
+        covers: Number(cover.c),
+        proofs: Number(proof.c),
+        settings: settingRefs,
+      });
     }
 
     await deleteFileRowWithStorageTask(tx, record);

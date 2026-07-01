@@ -122,6 +122,20 @@ describeWithDatabase("file deletion reference existence checks", () => {
     await expect(db.select().from(files).where(eq(files.id, file.id))).resolves.toHaveLength(1);
   });
 
+  it("reports the exact cover count when multiple posts reference one cover file", async () => {
+    const file = await seedFile("cover");
+    await seedPost({ coverFileId: file.id });
+    await seedPost({ coverFileId: file.id });
+    await seedPost({ coverFileId: file.id });
+
+    await expect(deleteFile(file.id)).rejects.toMatchObject({
+      status: 400,
+      code: "fileInUse",
+      params: { covers: 3 },
+    });
+    await expect(db.select().from(files).where(eq(files.id, file.id))).resolves.toHaveLength(1);
+  });
+
   it("blocks deletion when a payment request proof references the file", async () => {
     const { user, tier } = await seedIdentity();
     const file = await seedFile("payment_proof", user.id);
@@ -135,7 +149,7 @@ describeWithDatabase("file deletion reference existence checks", () => {
     await expect(db.select().from(files).where(eq(files.id, file.id))).resolves.toHaveLength(1);
   });
 
-  it("blocks deletion (presence, not count) when multiple payment requests share one proof", async () => {
+  it("reports the exact shared-proof count when multiple payment requests reference one proof", async () => {
     const { user, tier } = await seedIdentity();
     const file = await seedFile("payment_proof", user.id);
     await seedPaymentRequest({ userId: user.id, tierId: tier.id, proofFileId: file.id });
@@ -144,8 +158,9 @@ describeWithDatabase("file deletion reference existence checks", () => {
     await expect(deleteFile(file.id)).rejects.toMatchObject({
       status: 400,
       code: "fileInUse",
-      // Bounded existence probe reports presence (1), never the exact share count.
-      params: { proofs: 1 },
+      // The blocked path reports the exact reference count (counted contract), not
+      // just presence: two payment requests share this proof.
+      params: { proofs: 2 },
     });
     await expect(db.select().from(files).where(eq(files.id, file.id))).resolves.toHaveLength(1);
   });
