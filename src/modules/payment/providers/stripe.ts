@@ -27,6 +27,18 @@ function subscriptionCurrentPeriodEnd(subscription: Stripe.Subscription): Date |
   return typeof periodEnd === "number" ? new Date(periodEnd * 1000) : null;
 }
 
+// Raw provider server time from the API response `Date` header. Production
+// getPaymentProvider normalizes this second-granularity value into the provider
+// observation fence used by reconcile.
+function stripeResponseDate(resource: {
+  lastResponse?: { headers?: Record<string, string> };
+}): Date | null {
+  const raw = resource.lastResponse?.headers?.date;
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function subscriptionMetadata(subscription: Stripe.Subscription): Record<string, string> {
   return (subscription.metadata ?? {}) as Record<string, string>;
 }
@@ -54,6 +66,18 @@ function linePriceRef(line: Stripe.InvoiceLineItem): string | null {
 function invoicePeriod(line: Stripe.InvoiceLineItem): { start: Date; end: Date } | null {
   if (!line.period?.start || !line.period?.end || line.period.end <= line.period.start) return null;
   return { start: new Date(line.period.start * 1000), end: new Date(line.period.end * 1000) };
+}
+
+function invoiceProviderCreatedAt(invoice: Stripe.Invoice): Date {
+  const raw = invoice as unknown as {
+    created?: number;
+    status_transitions?: { paid_at?: number | null };
+  };
+  const providerTimestamp = raw.status_transitions?.paid_at ?? raw.created;
+  if (typeof providerTimestamp !== "number" || !Number.isFinite(providerTimestamp)) {
+    throw new ApiError(422, "stripeEventInvalid");
+  }
+  return new Date(providerTimestamp * 1000);
 }
 
 function normalizeStripeSubscriptionStatus(
@@ -411,6 +435,7 @@ export class StripePaymentProvider implements PaymentProvider {
     providerCustomerRef: string | null;
     currentPeriodEndsAt: Date | null;
     cancelAtPeriodEnd: boolean;
+    observedAt: Date | null;
   }> {
     const subscription = await this.client.subscriptions.retrieve(providerSubscriptionRef);
     return {
@@ -419,6 +444,7 @@ export class StripePaymentProvider implements PaymentProvider {
       providerCustomerRef: objectId(subscription.customer),
       currentPeriodEndsAt: subscriptionCurrentPeriodEnd(subscription),
       cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+      observedAt: stripeResponseDate(subscription),
     };
   }
 
@@ -436,7 +462,7 @@ export class StripePaymentProvider implements PaymentProvider {
       normalizeSubscriptionInvoice(
         invoice,
         `reconcile:${invoice.id}`,
-        new Date(),
+        invoiceProviderCreatedAt(invoice),
         localSubscriptionId,
       ),
     );

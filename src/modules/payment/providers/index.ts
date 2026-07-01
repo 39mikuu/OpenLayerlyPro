@@ -136,6 +136,12 @@ export interface PaymentProvider {
     providerCustomerRef: string | null;
     currentPeriodEndsAt: Date | null;
     cancelAtPeriodEnd: boolean;
+    // Provider-clock observation fence used by reconcile. Providers may expose a
+    // coarse timestamp (Stripe HTTP Date is second-granularity); getPaymentProvider
+    // normalizes it to the end of the represented provider second so an ambiguous
+    // same-second webhook cannot directly overwrite the observed state. `null`
+    // means no usable provider timestamp; reconcile then skips the fence write.
+    observedAt: Date | null;
   }>;
   listPaidSubscriptionInvoices?(
     providerSubscriptionRef: string,
@@ -156,6 +162,21 @@ export interface PaymentProvider {
   testConnection(): Promise<void>;
 }
 
+export function providerObservationFence(observedAt: Date): Date {
+  const providerSecondStart = Math.floor(observedAt.getTime() / 1_000) * 1_000;
+  return new Date(providerSecondStart + 999);
+}
+
+class ReconcileStripePaymentProvider extends StripePaymentProvider {
+  override async retrieveSubscription(providerSubscriptionRef: string) {
+    const remote = await super.retrieveSubscription(providerSubscriptionRef);
+    return {
+      ...remote,
+      observedAt: remote.observedAt ? providerObservationFence(remote.observedAt) : null,
+    };
+  }
+}
+
 export async function getPaymentProvider(
   id: string,
   options: { requireEnabled?: boolean } = {},
@@ -168,7 +189,7 @@ export async function getPaymentProvider(
   if (options.requireEnabled && !config.enabled) {
     throw new ApiError(400, "stripeDisabled");
   }
-  return new StripePaymentProvider({
+  return new ReconcileStripePaymentProvider({
     secretKey: config.secretKey,
     webhookSecret: config.webhookSecret,
   });

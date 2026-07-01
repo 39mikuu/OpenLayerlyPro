@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lt, lte, or, sql } from "drizzle-orm";
 
 import { getDb, type TxClient } from "@/db";
 import {
@@ -941,16 +941,45 @@ export async function reconcileSubscriptions(): Promise<number> {
     if (!providerSubscriptionRef || !subscription.providerPriceRef) continue;
 
     const remote = await provider.retrieveSubscription(providerSubscriptionRef);
-    await getDb()
-      .update(subscriptions)
-      .set({
-        status: remote.status,
-        providerCustomerRef: remote.providerCustomerRef,
-        currentPeriodEndsAt: remote.currentPeriodEndsAt,
-        cancelAtPeriodEnd: remote.cancelAtPeriodEnd,
-        updatedAt: new Date(),
-      })
-      .where(eq(subscriptions.id, subscription.id));
+    // Advance the ordering fence to the provider-clock instant at which this state
+    // was observed (`observedAt`), in the same clock domain as webhook
+    // `providerCreatedAt` (issue #112 / reproduced in #102).
+    //
+    // The guard is a STRICT `<` evaluated against the live row at update time, which
+    // both orders the external-I/O race and defines the tie policy without a version
+    // CAS:
+    //   - a webhook that committed with providerCreatedAt >= observedAt (newer, or
+    //     equal to the observed second) leaves statusEventAt not-strictly-below
+    //     observedAt, so reconcile skips and the real event wins;
+    //   - a webhook that committed with providerCreatedAt < observedAt is already
+    //     reflected in this observation, so reconcile (strictly newer) wins.
+    // Provider ordering therefore governs, not commit timing. On an equal
+    // provider-second timestamp the webhook wins (webhooks gate on `<=`).
+    //
+    // Fail closed if the provider gives no observation timestamp: skip the
+    // status/fence write rather than fall back to local time (which would mix clock
+    // domains). Invoice reconciliation below still runs.
+    if (remote.observedAt) {
+      await getDb()
+        .update(subscriptions)
+        .set({
+          status: remote.status,
+          providerCustomerRef: remote.providerCustomerRef,
+          currentPeriodEndsAt: remote.currentPeriodEndsAt,
+          cancelAtPeriodEnd: remote.cancelAtPeriodEnd,
+          statusEventAt: remote.observedAt,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(subscriptions.id, subscription.id),
+            or(
+              sql`${subscriptions.statusEventAt} is null`,
+              lt(subscriptions.statusEventAt, remote.observedAt),
+            ),
+          ),
+        );
+    }
 
     const invoices = await provider.listPaidSubscriptionInvoices(
       providerSubscriptionRef,

@@ -356,6 +356,7 @@ describeWithDatabase("Stripe subscription integration", () => {
       providerCustomerRef: "cus_recovered",
       currentPeriodEndsAt: invoice.lines[0]!.periodEnd,
       cancelAtPeriodEnd: false,
+      observedAt: new Date(),
     });
     providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([invoice]);
 
@@ -408,6 +409,7 @@ describeWithDatabase("Stripe subscription integration", () => {
       providerCustomerRef: "cus_race",
       currentPeriodEndsAt: event.lines[0]!.periodEnd,
       cancelAtPeriodEnd: false,
+      observedAt: new Date(),
     });
     providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([event]);
     await persistPaymentProviderEvent("stripe", event);
@@ -442,6 +444,7 @@ describeWithDatabase("Stripe subscription integration", () => {
       providerCustomerRef: "cus_canceled",
       currentPeriodEndsAt: event.lines[0]!.periodEnd,
       cancelAtPeriodEnd: false,
+      observedAt: new Date(),
     });
     providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([event]);
 
