@@ -10,6 +10,7 @@ indexes added by migration `0019`; the “after” run recreated them.
 | --- | ---: | ---: | ---: |
 | memberships | 23.477 ms | 0.061 ms | 1,741 / 5 |
 | payment history (`status <> pending_review`) | 24.158 ms | 0.060 ms | 1,656 / 5 |
+| pending payments (`status = pending_review`) | 3.128 ms | 0.109 ms | 232 / 4 |
 | active files | 23.335 ms | 0.069 ms | 1,868 / 5 |
 | quarantined files | 12.126 ms | 0.091 ms | 1,852 / 12 |
 
@@ -29,6 +30,19 @@ This row comparison is the exact predicate shape emitted by the production
 services. The payment-history query additionally used
 `status <> 'pending_review'`; active and quarantined file queries used their
 corresponding partial-index predicate and timestamp.
+
+The pending-payment path was measured separately with 10,000 pending rows
+(unique users, matching the production uniqueness constraint) mixed with
+100,000 history rows. Its after plan used the status-leading composite index:
+
+```text
+Limit (actual time=0.062..0.076 rows=51 loops=1)
+  Buffers: shared hit=1 read=3
+  -> Index Only Scan using payment_requests_status_created_id_idx
+       Index Cond: ((status = 'pending_review'::text)
+         AND (ROW(created_at, id) < ROW(...)))
+Execution Time: 0.109 ms
+```
 
 Representative before/after plans:
 
@@ -64,7 +78,6 @@ Limit (actual time=0.021..0.036 rows=51 loops=1)
   Buffers: shared hit=5
   -> Index Scan using payment_requests_created_id_idx on payment_requests
        Index Cond: (ROW(created_at, id) < ROW(...))
-       Filter: (status = 'approved'::text)
        Filter: (status <> 'pending_review'::text)
 Execution Time: 0.060 ms
 
