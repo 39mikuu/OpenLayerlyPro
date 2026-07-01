@@ -50,6 +50,7 @@
 ## 5. 部署、升级、备份与恢复
 
 - [ ] 全新 Docker Compose 安装、迁移和 `/admin/setup` 正常。
+- [ ] 首次初始化前，实例、Cloudflare Tunnel 与反向代理保持非公开；确认首次 setup 已完成（`initialized=true`）、`/admin/setup` 已关闭后再对公网暴露。setup 端点在初始化前对未认证访问者开放，第一个完成 setup 的调用者即成为管理员——并发不会造成部分初始化或重复管理员（见 `docs/audit/issue-103-concurrent-setup.md`），但公开暴露窗口仍须由运维在暴露前关闭。
 - [ ] 从受支持旧版本升级时，先解决 pending-payment 冲突，再运行 migrator 与 mandatory file-safety backfill，最后启动 app。
 - [ ] archive v2 包含 manifest 与完整 SHA-256；任一 payload 被篡改时在破坏正式数据库前失败。
 - [ ] v1 legacy archive 的 migration prefix、更新、分叉、unknown 和显式 override 矩阵符合 fail-closed 规则。

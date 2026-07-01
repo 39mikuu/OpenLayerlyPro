@@ -77,11 +77,14 @@ security issue. Optional future polish: map a concurrent-loser unique violation 
   correctness — the unique constraints already guarantee single-admin, no-partial-init. Any of these
   would only improve the loser's error message, which the optional mapping above achieves more
   cheaply.
-- **Documented deployment precondition:** recommended — this is the actual residual risk (public
-  pre-init exposure), and it is a docs/ops item, not a code change.
+- **Documented deployment precondition:** recommended, and now **landed** — the operator requirement
+  (keep the instance, Cloudflare Tunnel, and reverse proxy non-public until first setup completes and
+  `/admin/setup` is confirmed closed) is added as a concrete gate in `docs/release-v1.0-checklist.md`
+  (§5, Deployment). It is a docs/ops item, not a code change.
 
 ## v1.0 impact
 
-**Not release-blocking.** Recommend closing #103 as "not a defect" (keep the reproduction as a
-regression guard), optionally tracking the error-message polish and the deployment-precondition doc
-as separate non-blocking follow-ups.
+**Not release-blocking as a concurrency defect.** Recommend closing #103's data-integrity concern as
+"not a defect" (keep the reproduction as a regression guard). The pre-setup public-exposure boundary
+is not removed by this analysis and is tracked as a v1.0 acceptance gate in the release checklist
+(§5). The losing-caller 500-vs-403 error-message polish is an optional non-blocking follow-up.
