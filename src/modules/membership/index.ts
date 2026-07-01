@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, asc, desc, eq, gt, gte, lt, lte, max, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, lte, max, ne, sql } from "drizzle-orm";
 
 import { type DbClient, getDb, type TxClient } from "@/db";
 import {
@@ -468,13 +468,8 @@ export async function listMembershipsPage(
     .innerJoin(users, eq(memberships.userId, users.id))
     .where(
       cursor
-        ? or(
-            lt(memberships.createdAt, sql`${cursor.timestamp}::timestamptz`),
-            and(
-              eq(memberships.createdAt, sql`${cursor.timestamp}::timestamptz`),
-              lt(memberships.id, cursor.id),
-            ),
-          )
+        ? sql`(${memberships.createdAt}, ${memberships.id}) <
+            (${cursor.timestamp}::timestamptz, ${cursor.id}::uuid)`
         : undefined,
     )
     .orderBy(desc(memberships.createdAt), desc(memberships.id))

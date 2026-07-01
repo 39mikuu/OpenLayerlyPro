@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, desc, eq, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, ne, or, sql } from "drizzle-orm";
 
 import { type DbClient, getDb, type TxClient } from "@/db";
 import {
@@ -231,13 +231,8 @@ export async function listPaymentRequestsPage(
     ...(opts.excludeStatus ? [ne(paymentRequests.status, opts.excludeStatus)] : []),
     ...(cursor
       ? [
-          or(
-            lt(paymentRequests.createdAt, sql`${cursor.timestamp}::timestamptz`),
-            and(
-              eq(paymentRequests.createdAt, sql`${cursor.timestamp}::timestamptz`),
-              lt(paymentRequests.id, cursor.id),
-            ),
-          )!,
+          sql`(${paymentRequests.createdAt}, ${paymentRequests.id}) <
+              (${cursor.timestamp}::timestamptz, ${cursor.id}::uuid)`,
         ]
       : []),
   ];

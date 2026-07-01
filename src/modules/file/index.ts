@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, count, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import path from "path";
 import type { Readable } from "stream";
 
@@ -381,13 +381,8 @@ export async function listFilesPage(
         isNull(files.quarantinedAt),
         ...(cursor
           ? [
-              or(
-                lt(files.createdAt, sql`${cursor.timestamp}::timestamptz`),
-                and(
-                  eq(files.createdAt, sql`${cursor.timestamp}::timestamptz`),
-                  lt(files.id, cursor.id),
-                ),
-              )!,
+              sql`(${files.createdAt}, ${files.id}) <
+                  (${cursor.timestamp}::timestamptz, ${cursor.id}::uuid)`,
             ]
           : []),
       ),
@@ -437,13 +432,8 @@ export async function listQuarantinedFilesPage(
         isNotNull(files.quarantinedAt),
         ...(cursor
           ? [
-              or(
-                lt(files.quarantinedAt, sql`${cursor.timestamp}::timestamptz`),
-                and(
-                  eq(files.quarantinedAt, sql`${cursor.timestamp}::timestamptz`),
-                  lt(files.id, cursor.id),
-                ),
-              )!,
+              sql`(${files.quarantinedAt}, ${files.id}) <
+                  (${cursor.timestamp}::timestamptz, ${cursor.id}::uuid)`,
             ]
           : []),
       ),
