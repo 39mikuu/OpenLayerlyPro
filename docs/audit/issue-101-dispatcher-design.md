@@ -3,7 +3,7 @@
 - **Baseline:** `e08363ab988785cc510ea1900f7e2c178bf14cf8` (validated on the current `main`).
 - **Type:** design + benchmark. **No production code is changed in this branch.**
 - **Classification result:** **Confirmed P2 scalability issue; not a v1.0 correctness blocker.** The
-  query/index optimization (§4 items 1–3) may be tracked and landed independently, while batch
+  two low-risk query-path optimizations in §4 may be tracked and landed independently, while batch
   execution (§4.1) remains a separate guarded design task. The correctness/fencing invariants (§1)
   are intact.
 - **Artifacts:** `src/modules/tasks/dispatcher-benchmark.integration.test.ts` (gated behind
@@ -107,7 +107,7 @@ Preserving every invariant in §1:
 2. **Sweep once per tick, not per claim.** Run the final-attempt sweep a single time at the start of
    `dispatchTaskBatch` (or fold it into the batch claim transaction), not inside every `claim(1)`.
    The `attempts >= max_attempts` → `dead` semantics and the mail dead-letter WARN must be preserved.
-These three items **preserve the current claim-one / execute-one lease timing** — each task is still
+These two items **preserve the current claim-one / execute-one lease timing** — each task is still
 leased immediately before its own execution — so they carry no lease-before-start risk.
 
 > **Not in this package: batching the claim SELECT.** Although `claim(20)` costs the same as
