@@ -940,6 +940,12 @@ export async function reconcileSubscriptions(): Promise<number> {
     }
     if (!providerSubscriptionRef || !subscription.providerPriceRef) continue;
 
+    // Anchor the reconciled state to the moment we asked the provider for truth,
+    // so it participates in the same clock ordering as webhook events. Capturing
+    // observedAt before the network call is conservative: a webhook whose event is
+    // genuinely newer than this snapshot (providerCreatedAt > observedAt) is left
+    // free to win via the monotonic guard below instead of being wrongly rejected.
+    const observedAt = new Date();
     const remote = await provider.retrieveSubscription(providerSubscriptionRef);
     await getDb()
       .update(subscriptions)
@@ -948,9 +954,20 @@ export async function reconcileSubscriptions(): Promise<number> {
         providerCustomerRef: remote.providerCustomerRef,
         currentPeriodEndsAt: remote.currentPeriodEndsAt,
         cancelAtPeriodEnd: remote.cancelAtPeriodEnd,
-        updatedAt: new Date(),
+        // Advance statusEventAt so a stale, delayed webhook can no longer overwrite
+        // the reconciled state (issue #112 / reproduced in #102).
+        statusEventAt: observedAt,
+        updatedAt: observedAt,
       })
-      .where(eq(subscriptions.id, subscription.id));
+      .where(
+        and(
+          eq(subscriptions.id, subscription.id),
+          or(
+            sql`${subscriptions.statusEventAt} is null`,
+            lte(subscriptions.statusEventAt, observedAt),
+          ),
+        ),
+      );
 
     const invoices = await provider.listPaidSubscriptionInvoices(
       providerSubscriptionRef,
