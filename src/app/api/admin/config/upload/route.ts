@@ -24,8 +24,8 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, uploadConfigSchema);
     await requireAdmin();
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, uploadConfigSchema);
     await saveUploadConfig(input);
     return jsonOk(await getUploadAdminView());
   } catch (err) {

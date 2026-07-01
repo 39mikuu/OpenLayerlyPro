@@ -24,12 +24,12 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
+    await requireAdmin();
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
       storageConfigSchema,
     );
-    await requireAdmin();
     await saveStorageConfig(input);
     return jsonOk(await getStorageAdminView());
   } catch (err) {
