@@ -3,7 +3,7 @@
 - **Baseline:** `e08363ab988785cc510ea1900f7e2c178bf14cf8` (validated on the current `main`, unchanged code path).
 - **Classification result:** **CONFIRMED user-visible incorrect state.**
 - **Reproduction:** `src/modules/payment/reconcile-webhook-clock.integration.test.ts` (real PostgreSQL, drives the production `reconcileSubscriptions`, `persistPaymentProviderEvent`, and `dispatchPaymentProviderEvent`).
-- **Production change in this branch:** none. Reproduction test + this report only.
+- **Production change in this branch:** implemented under #112; this report records the reproduced defect and final ordering design.
 
 ## Root cause
 
@@ -46,9 +46,9 @@ while remote is `active` — full loss of subscription locally).
 
 ## Control (test 4) — isolates the cause
 
-Repeating test 2 but manually advancing `statusEventAt` to the reconcile time (the candidate fix)
-makes the gate reject the stale webhook; the reconciled `active` state survives. This confirms the
-missing `statusEventAt` advance is the sole cause.
+Repeating test 2 but advancing `statusEventAt` to the provider observation fence makes the gate
+reject the stale webhook; the reconciled `active` state survives. This confirms the missing
+reconcile fence advance is the root cause.
 
 ## Blast radius
 
@@ -62,39 +62,37 @@ missing `statusEventAt` advance is the sole cause.
 ## Fix (implemented — issue #112, this PR)
 
 `reconcileSubscriptions()` now advances `statusEventAt` in a **single provider clock domain** using a
-strict monotonic guard — no version CAS, no local-time fallback:
+strict monotonic guard — no version CAS and no local-time fallback:
 
-1. **Provider clock domain.** `retrieveSubscription()` returns `observedAt`, the provider server clock
-   at which the state was observed (the Stripe API response `Date` header). reconcile advances
-   `statusEventAt` to `observedAt` — the same clock domain as webhook `providerCreatedAt` — never
-   local `now()`, so clock skew cannot wrongly reject a genuinely later provider event.
-2. **Fail closed on a missing timestamp.** `observedAt` is `Date | null`; when the provider omits or
-   returns an unparseable `Date` header, reconcile skips the status/fence write entirely rather than
-   substitute local time (which would mix clock domains). Provider adapter unit tests cover valid,
-   missing, and invalid `Date` headers.
-3. **Strict `<` fence — ordering, not commit timing.** The write is guarded by
-   `statusEventAt IS NULL OR statusEventAt < observedAt`, evaluated against the live row. This alone
-   orders the external-I/O race without a version CAS: a webhook that committed during the provider
-   call with `providerCreatedAt >= observedAt` leaves the fence not-strictly-below `observedAt`, so
-   reconcile skips and the real event wins; one with `providerCreatedAt < observedAt` is already
-   reflected in the observation, so reconcile (strictly newer) wins. A version CAS would instead let
-   *commit timing* win over provider ordering, which is why it was removed.
-4. **Equal-timestamp policy.** Provider timestamps are second-granularity. On a tie
-   (`providerCreatedAt == observedAt`) the webhook wins: webhooks gate on `statusEventAt <=
-   providerCreatedAt` (accept equal) while reconcile uses strict `<` (does not overwrite an
-   equal-second event). Code and this report agree.
+1. **Provider clock domain.** Stripe exposes the API response `Date` header as `observedAt`. Production
+   `getPaymentProvider()` normalizes that coarse second-granularity value to the end of the represented
+   provider second (`.999`). The resulting value is an observation fence, still entirely in the Stripe
+   clock domain.
+2. **Fail closed on a missing timestamp.** `observedAt` is `Date | null`; when Stripe omits or returns
+   an unparseable `Date` header, reconcile skips the status/fence write rather than substituting local
+   time. Adapter tests cover valid, missing, and invalid headers.
+3. **Strict `<` live-row guard.** Reconcile writes only when the current fence is null or strictly
+   older than the provider observation fence. A webhook from a later provider second therefore
+   survives an in-flight reconcile, while an older webhook cannot beat a later provider observation.
+   No version CAS is used, because commit timing must not override provider-clock ordering.
+4. **Same-second ambiguity policy.** Stripe webhook `event.created` and HTTP `Date` are both only
+   second-granularity, so their true sub-second order is unknowable. The deterministic fail-closed
+   policy is that the provider observation owns the represented second: the fence is stored at
+   `.999`, so a same-second webhook cannot directly overwrite it. A genuinely later change from that
+   same second is recovered by the next durable provider reconcile; an event from the next provider
+   second is accepted normally. This preserves existing webhook-vs-webhook equality behavior because
+   only reconcile fences carry the fractional end-of-second marker.
 
-The regression suite (`reconcile-webhook-clock.integration.test.ts` in the fix PR) asserts the
-surviving correct state: advance to the observation timestamp; reject delayed older
-`payment_failed`/`canceled` webhooks; accept a genuinely newer webhook; the equal-second tie; an
-in-flight newer webhook surviving and an in-flight older webhook losing to the observation;
-fail-closed on a null `observedAt`; and renewed-invoice ordering not regressing a newer fence.
+The regression suite asserts: advance through the provider observation second; reject delayed older
+`payment_failed`/`canceled` webhooks; accept a next-second webhook; reject an ambiguous same-second
+webhook; converge that same-second change on the next provider observation; preserve an in-flight
+next-second webhook; let an in-flight same-second webhook lose to the observation fence; fail closed
+on null `observedAt`; and prevent an older reconciled paid invoice from regressing a newer fence.
 
-This reproduction PR's assertions intentionally encode the *pre-fix* buggy behavior, so it is
-superseded by the fix PR and closed rather than merged; this document is retained as the evidence
-record.
+PR #109's assertions intentionally encoded the pre-fix buggy behavior, so it was closed rather than
+merged; this document is retained as the evidence record in the fix PR.
 
 ## v1.0 impact
 
-Release-blocking correctness defect for Stripe subscription entitlements. Recommend fixing before
-v1.0 leaves HOLD.
+Release-blocking correctness defect for Stripe subscription entitlements. Fix before v1.0 leaves
+HOLD.
