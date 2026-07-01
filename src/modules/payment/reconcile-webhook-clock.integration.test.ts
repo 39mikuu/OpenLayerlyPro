@@ -7,15 +7,17 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
  * (defect reproduced under #102).
  *
  * Clock model — a single provider (Stripe) clock domain:
- * - webhook ordering uses `providerCreatedAt` (provider event time);
- * - reconcile advances `statusEventAt` to `retrieveSubscription().observedAt`, the
- *   provider server clock at which the state was observed (its API response Date).
+ * - webhook ordering uses `providerCreatedAt` (provider event time, whole seconds);
+ * - reconcile advances `statusEventAt` to `retrieveSubscription().observedAt`, a
+ *   provider-clock fence through the end of the Stripe response Date second.
  *
- * Ordering policy: reconcile advances the fence with a STRICT `<` guard evaluated
- * against the live row, so provider ordering (not commit timing) governs, and on an
- * equal provider-second timestamp the real webhook event wins. If the provider gives
- * no observation timestamp, reconcile fails closed and skips the fence write (never
- * substitutes local time). Drives real production functions against real PostgreSQL.
+ * Because Stripe event.created and the HTTP Date header are both second-granularity,
+ * their order inside one second is unknowable. The deterministic fail-closed policy is
+ * therefore: the provider observation wins the represented second; a same-second
+ * webhook cannot directly overwrite it and the next provider reconciliation converges
+ * any genuinely later same-second change. A webhook from the next provider second is
+ * still accepted normally. Missing observation timestamps never fall back to local
+ * time. Tests drive real production functions against real PostgreSQL.
  */
 
 const providerMocks = vi.hoisted(() => ({
@@ -47,10 +49,12 @@ const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
 
 const T0 = new Date("2026-01-01T00:00:00.000Z"); // stale statusEventAt on the seeded row
-const DELAYED = new Date("2026-01-10T00:00:00.000Z"); // stale webhook (T0 < DELAYED < OBSERVED)
-const OBSERVED = new Date("2026-01-20T00:00:00.000Z"); // provider observation time
-const LATE = new Date("2026-03-01T00:00:00.000Z"); // a fence already newer than OBSERVED
-const FUTURE = new Date("2999-01-01T00:00:00.000Z"); // a genuinely newer event (after OBSERVED)
+const DELAYED = new Date("2026-01-10T00:00:00.000Z"); // stale webhook (T0 < DELAYED)
+const OBSERVED_SECOND = new Date("2026-01-20T00:00:00.000Z");
+const OBSERVED_FENCE = new Date("2026-01-20T00:00:00.999Z");
+const NEXT_SECOND = new Date("2026-01-20T00:00:01.000Z");
+const NEXT_OBSERVATION_FENCE = new Date("2026-01-20T00:00:01.999Z");
+const LATE = new Date("2026-03-01T00:00:00.000Z"); // a fence already newer than observation
 const PERIOD_END = new Date("2026-02-01T00:00:00.000Z");
 
 describeWithDatabase("issue #112 reconcile fence ordering (single provider clock domain)", () => {
@@ -65,13 +69,16 @@ describeWithDatabase("issue #112 reconcile fence ordering (single provider clock
       retrieveSubscription: providerMocks.retrieveSubscription,
       listPaidSubscriptionInvoices: providerMocks.listPaidSubscriptionInvoices,
     });
+    // Production getPaymentProvider normalizes Stripe's second-granularity HTTP Date
+    // into an end-of-second provider observation fence. This mock returns that
+    // normalized contract directly.
     providerMocks.retrieveSubscription.mockResolvedValue({
       status: "active",
       providerSubscriptionRef: "sub_123",
       providerCustomerRef: "cus_123",
       currentPeriodEndsAt: PERIOD_END,
       cancelAtPeriodEnd: false,
-      observedAt: OBSERVED,
+      observedAt: OBSERVED_FENCE,
     });
     providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([]);
   });
@@ -171,14 +178,14 @@ describeWithDatabase("issue #112 reconcile fence ordering (single provider clock
     };
   }
 
-  it("advances statusEventAt to the provider observation timestamp", async () => {
+  it("advances statusEventAt through the provider observation second", async () => {
     const seeded = await seedSubscription();
 
     await reconcileSubscriptions();
 
     const [row] = await db.select().from(subscriptions).where(eq(subscriptions.id, seeded.id));
     expect(row!.status).toBe("active");
-    expect(row!.statusEventAt).toEqual(OBSERVED);
+    expect(row!.statusEventAt).toEqual(OBSERVED_FENCE);
     expect(row!.currentPeriodEndsAt).toEqual(PERIOD_END);
   });
 
@@ -203,65 +210,80 @@ describeWithDatabase("issue #112 reconcile fence ordering (single provider clock
     expect(row!.status).toBe("active");
   });
 
-  it("still applies a genuinely newer webhook created after the observation", async () => {
+  it("accepts a genuinely newer webhook from the next provider second", async () => {
     const seeded = await seedSubscription();
     await reconcileSubscriptions();
 
-    await dispatchEvent(canceledEvent(FUTURE));
+    await dispatchEvent(canceledEvent(NEXT_SECOND));
 
     const [row] = await db.select().from(subscriptions).where(eq(subscriptions.id, seeded.id));
     expect(row!.status).toBe("canceled");
-    expect(row!.statusEventAt).toEqual(FUTURE);
+    expect(row!.statusEventAt).toEqual(NEXT_SECOND);
   });
 
-  it("lets a webhook at the exact observation second win (tie favors the real event)", async () => {
+  it("does not let an ambiguous same-second webhook directly overwrite the observation", async () => {
     const seeded = await seedSubscription();
-    await reconcileSubscriptions(); // sets statusEventAt = OBSERVED
+    await reconcileSubscriptions();
 
-    await dispatchEvent(canceledEvent(OBSERVED));
+    await dispatchEvent(canceledEvent(OBSERVED_SECOND));
 
     const [row] = await db.select().from(subscriptions).where(eq(subscriptions.id, seeded.id));
-    // Webhook gate is `statusEventAt <= providerCreatedAt`, so an equal-second event applies.
-    expect(row!.status).toBe("canceled");
-    expect(row!.statusEventAt).toEqual(OBSERVED);
+    expect(row!.status).toBe("active");
+    expect(row!.statusEventAt).toEqual(OBSERVED_FENCE);
   });
 
-  it("in-flight NEWER webhook (providerCreatedAt > observedAt) survives the reconcile write", async () => {
+  it("converges a genuinely later same-second change on the next provider observation", async () => {
     const seeded = await seedSubscription();
-    // A webhook newer than the observation commits during the provider call.
+    await reconcileSubscriptions();
+    await dispatchEvent(canceledEvent(OBSERVED_SECOND));
+
+    providerMocks.retrieveSubscription.mockResolvedValue({
+      status: "canceled",
+      providerSubscriptionRef: "sub_123",
+      providerCustomerRef: "cus_123",
+      currentPeriodEndsAt: PERIOD_END,
+      cancelAtPeriodEnd: false,
+      observedAt: NEXT_OBSERVATION_FENCE,
+    });
+    await reconcileSubscriptions();
+
+    const [row] = await db.select().from(subscriptions).where(eq(subscriptions.id, seeded.id));
+    expect(row!.status).toBe("canceled");
+    expect(row!.statusEventAt).toEqual(NEXT_OBSERVATION_FENCE);
+  });
+
+  it("in-flight NEWER webhook from the next second survives the reconcile write", async () => {
+    const seeded = await seedSubscription();
     providerMocks.retrieveSubscription.mockImplementation(async () => {
-      await dispatchEvent(canceledEvent(FUTURE));
+      await dispatchEvent(canceledEvent(NEXT_SECOND));
       return {
         status: "active",
         providerSubscriptionRef: "sub_123",
         providerCustomerRef: "cus_123",
         currentPeriodEndsAt: PERIOD_END,
         cancelAtPeriodEnd: false,
-        observedAt: OBSERVED,
+        observedAt: OBSERVED_FENCE,
       };
     });
 
     await reconcileSubscriptions();
 
     const [row] = await db.select().from(subscriptions).where(eq(subscriptions.id, seeded.id));
-    // statusEventAt (FUTURE) is not strictly below observedAt, so reconcile skips.
     expect(row!.status).toBe("canceled");
-    expect(row!.statusEventAt).toEqual(FUTURE);
+    expect(row!.statusEventAt).toEqual(NEXT_SECOND);
   });
 
-  it("in-flight OLDER webhook loses to the fresher observation (provider ordering, not commit timing)", async () => {
+  it("in-flight same-second webhook loses to the provider observation fence", async () => {
     const seeded = await seedSubscription();
-    // A webhook older than the observation commits during the provider call. Because
-    // the observation already reflects it, reconcile (strictly newer) still wins.
     providerMocks.retrieveSubscription.mockImplementation(async () => {
-      await dispatchEvent(canceledEvent(DELAYED));
+      await dispatchEvent(canceledEvent(OBSERVED_SECOND));
       return {
         status: "active",
         providerSubscriptionRef: "sub_123",
         providerCustomerRef: "cus_123",
         currentPeriodEndsAt: PERIOD_END,
         cancelAtPeriodEnd: false,
-        observedAt: OBSERVED,
+        observedAt: OBSERVED_FENCE,
       };
     });
 
@@ -269,7 +291,7 @@ describeWithDatabase("issue #112 reconcile fence ordering (single provider clock
 
     const [row] = await db.select().from(subscriptions).where(eq(subscriptions.id, seeded.id));
     expect(row!.status).toBe("active");
-    expect(row!.statusEventAt).toEqual(OBSERVED);
+    expect(row!.statusEventAt).toEqual(OBSERVED_FENCE);
   });
 
   it("fails closed and skips the fence write when the provider gives no observedAt", async () => {
@@ -286,14 +308,11 @@ describeWithDatabase("issue #112 reconcile fence ordering (single provider clock
     await reconcileSubscriptions();
 
     const [row] = await db.select().from(subscriptions).where(eq(subscriptions.id, seeded.id));
-    // No local-time substitution: status and fence are left untouched.
     expect(row!.status).toBe("past_due");
     expect(row!.statusEventAt).toEqual(T0);
   });
 
-  it("does not let an older reconciled paid invoice regress a newer status fence (renewed ordering)", async () => {
-    // Fence is already LATE (newer than the observation), so neither the status
-    // write nor the paid-invoice apply may regress it.
+  it("does not let an older reconciled paid invoice regress a newer status fence", async () => {
     const seeded = await seedSubscription({
       status: "active",
       statusEventAt: LATE,
