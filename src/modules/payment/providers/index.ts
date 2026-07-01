@@ -136,6 +136,10 @@ export interface PaymentProvider {
     providerCustomerRef: string | null;
     currentPeriodEndsAt: Date | null;
     cancelAtPeriodEnd: boolean;
+    // Provider-clock timestamp for the observed state (e.g. the provider API
+    // response Date). Shares the clock domain with webhook `providerCreatedAt`
+    // so reconcile can advance the ordering fence without mixing clocks.
+    observedAt: Date;
   }>;
   listPaidSubscriptionInvoices?(
     providerSubscriptionRef: string,

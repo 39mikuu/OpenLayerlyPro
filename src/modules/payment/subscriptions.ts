@@ -940,13 +940,15 @@ export async function reconcileSubscriptions(): Promise<number> {
     }
     if (!providerSubscriptionRef || !subscription.providerPriceRef) continue;
 
-    // Anchor the reconciled state to the moment we asked the provider for truth,
-    // so it participates in the same clock ordering as webhook events. Capturing
-    // observedAt before the network call is conservative: a webhook whose event is
-    // genuinely newer than this snapshot (providerCreatedAt > observedAt) is left
-    // free to win via the monotonic guard below instead of being wrongly rejected.
-    const observedAt = new Date();
     const remote = await provider.retrieveSubscription(providerSubscriptionRef);
+    // Advance the ordering fence to the provider-clock instant at which this state
+    // was observed, in the same clock domain as webhook `providerCreatedAt`, so a
+    // stale delayed webhook can no longer overwrite the reconciled state (issue
+    // #112 / reproduced in #102). The version CAS closes the external-I/O race: if
+    // a webhook committed while retrieveSubscription() was in flight, it bumped
+    // `version`, this update matches no rows, and the reconcile write is skipped
+    // instead of clobbering the fresher webhook state. The monotonic fence guard
+    // additionally refuses to regress a newer event's timestamp.
     await getDb()
       .update(subscriptions)
       .set({
@@ -954,17 +956,17 @@ export async function reconcileSubscriptions(): Promise<number> {
         providerCustomerRef: remote.providerCustomerRef,
         currentPeriodEndsAt: remote.currentPeriodEndsAt,
         cancelAtPeriodEnd: remote.cancelAtPeriodEnd,
-        // Advance statusEventAt so a stale, delayed webhook can no longer overwrite
-        // the reconciled state (issue #112 / reproduced in #102).
-        statusEventAt: observedAt,
-        updatedAt: observedAt,
+        statusEventAt: remote.observedAt,
+        updatedAt: new Date(),
+        version: sql`${subscriptions.version} + 1`,
       })
       .where(
         and(
           eq(subscriptions.id, subscription.id),
+          eq(subscriptions.version, subscription.version),
           or(
             sql`${subscriptions.statusEventAt} is null`,
-            lte(subscriptions.statusEventAt, observedAt),
+            lte(subscriptions.statusEventAt, remote.observedAt),
           ),
         ),
       );

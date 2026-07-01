@@ -27,6 +27,18 @@ function subscriptionCurrentPeriodEnd(subscription: Stripe.Subscription): Date |
   return typeof periodEnd === "number" ? new Date(periodEnd * 1000) : null;
 }
 
+// The provider server clock at which an API resource was returned (its HTTP
+// `Date` header). Used as the reconcile observation timestamp so it shares the
+// clock domain with webhook `providerCreatedAt`.
+function stripeResponseDate(resource: {
+  lastResponse?: { headers?: Record<string, string> };
+}): Date | null {
+  const raw = resource.lastResponse?.headers?.date;
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function subscriptionMetadata(subscription: Stripe.Subscription): Record<string, string> {
   return (subscription.metadata ?? {}) as Record<string, string>;
 }
@@ -411,6 +423,7 @@ export class StripePaymentProvider implements PaymentProvider {
     providerCustomerRef: string | null;
     currentPeriodEndsAt: Date | null;
     cancelAtPeriodEnd: boolean;
+    observedAt: Date;
   }> {
     const subscription = await this.client.subscriptions.retrieve(providerSubscriptionRef);
     return {
@@ -419,6 +432,10 @@ export class StripePaymentProvider implements PaymentProvider {
       providerCustomerRef: objectId(subscription.customer),
       currentPeriodEndsAt: subscriptionCurrentPeriodEnd(subscription),
       cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+      // Provider server clock at which this state was observed. Any webhook event
+      // created at or before this instant is already reflected here and is stale.
+      // Falls back to local time only if the provider omits the Date header.
+      observedAt: stripeResponseDate(subscription) ?? new Date(),
     };
   }
 
