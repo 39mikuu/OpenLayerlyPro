@@ -368,7 +368,7 @@ export async function listFilesPage(
   opts: { cursor?: string | null; limit?: number } = {},
 ): Promise<AdminListPage<FileRecord>> {
   const limit = normalizeAdminPageSize(opts.limit);
-  const cursor = decodeAdminListCursor(opts.cursor);
+  const cursor = decodeAdminListCursor(opts.cursor, "files:active");
   const cursorCreatedAt = sql<string>`to_char(
     ${files.createdAt} at time zone 'UTC',
     'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
@@ -395,7 +395,12 @@ export async function listFilesPage(
     items: pageRows.map((row) => row.file),
     nextCursor:
       rows.length > limit && last
-        ? encodeAdminListCursor({ timestamp: last.cursorCreatedAt, id: last.file.id })
+        ? encodeAdminListCursor({
+            version: 1,
+            scope: "files:active",
+            timestamp: last.cursorCreatedAt,
+            id: last.file.id,
+          })
         : null,
   };
 }
@@ -412,7 +417,7 @@ export async function listQuarantinedFilesPage(
   opts: { cursor?: string | null; limit?: number } = {},
 ): Promise<AdminListPage<QuarantinedFileListItem>> {
   const limit = normalizeAdminPageSize(opts.limit);
-  const cursor = decodeAdminListCursor(opts.cursor);
+  const cursor = decodeAdminListCursor(opts.cursor, "files:quarantined");
   const cursorQuarantinedAt = sql<string>`to_char(
     ${files.quarantinedAt} at time zone 'UTC',
     'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
@@ -453,7 +458,12 @@ export async function listQuarantinedFilesPage(
     items,
     nextCursor:
       rows.length > limit && last
-        ? encodeAdminListCursor({ timestamp: last.cursorQuarantinedAt, id: last.id })
+        ? encodeAdminListCursor({
+            version: 1,
+            scope: "files:quarantined",
+            timestamp: last.cursorQuarantinedAt,
+            id: last.id,
+          })
         : null,
   };
 }

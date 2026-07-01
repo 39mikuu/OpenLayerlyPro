@@ -105,6 +105,13 @@ describeWithDatabase("admin keyset pagination integration", () => {
       cursor: pendingFirst.nextCursor,
       limit: 2,
     });
+    await expect(
+      listPaymentRequestsPage({
+        excludeStatus: "pending_review",
+        cursor: pendingFirst.nextCursor,
+        limit: 2,
+      }),
+    ).rejects.toMatchObject({ status: 400, code: "invalidCursor" });
     const historyFirst = await listPaymentRequestsPage({
       excludeStatus: "pending_review",
       limit: 2,
@@ -159,6 +166,9 @@ describeWithDatabase("admin keyset pagination integration", () => {
       limit: 2,
       cursor: quarantineFirst.nextCursor,
     });
+    await expect(
+      listQuarantinedFilesPage({ limit: 2, cursor: activeFirst.nextCursor }),
+    ).rejects.toMatchObject({ status: 400, code: "invalidCursor" });
 
     expect(activeFirst.items.map((item) => item.id)).toEqual([activeHigh, activeLow]);
     expect(activeSecond.items.map((item) => item.id)).toEqual([activeOldest]);

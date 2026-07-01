@@ -81,6 +81,14 @@ export default async function AdminFilesPage({
           {t("admin.common.nextPage")}
         </a>
       )}
+      {filters.cursor && (
+        <a
+          href={filesPageHref(filters, "cursor")}
+          className="text-primary text-sm font-medium hover:underline"
+        >
+          {t("admin.common.firstPage")}
+        </a>
+      )}
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Quarantined files</h2>
@@ -121,21 +129,31 @@ export default async function AdminFilesPage({
             {t("admin.common.nextPage")}
           </a>
         )}
+        {filters.quarantinedCursor && (
+          <a
+            href={filesPageHref(filters, "quarantinedCursor")}
+            className="text-primary text-sm font-medium hover:underline"
+          >
+            {t("admin.common.firstPage")}
+          </a>
+        )}
       </section>
     </div>
   );
 }
 
-function filesPageHref(
+export function filesPageHref(
   current: { cursor?: string; quarantinedCursor?: string },
   key: "cursor" | "quarantinedCursor",
-  cursor: string,
+  cursor?: string,
 ): string {
   const params = new URLSearchParams();
   if (current.cursor) params.set("cursor", current.cursor);
   if (current.quarantinedCursor) {
     params.set("quarantinedCursor", current.quarantinedCursor);
   }
-  params.set(key, cursor);
-  return `/admin/files?${params.toString()}`;
+  if (cursor) params.set(key, cursor);
+  else params.delete(key);
+  const query = params.toString();
+  return query ? `/admin/files?${query}` : "/admin/files";
 }

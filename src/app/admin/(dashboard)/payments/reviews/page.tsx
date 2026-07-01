@@ -49,9 +49,7 @@ export default async function AdminPaymentReviewsPage({
     <div className="space-y-8">
       <div className="space-y-4">
         <h1 className="text-xl font-bold">{t("admin.reviews.title")}</h1>
-        <h2 className="font-semibold">
-          {t("admin.reviews.pending", { count: pendingPage.items.length })}
-        </h2>
+        <h2 className="font-semibold">{t("admin.reviews.pending")}</h2>
         <RequestTable rows={pendingPage.items} showActions t={t} />
         {pendingPage.nextCursor && (
           <a
@@ -59,6 +57,14 @@ export default async function AdminPaymentReviewsPage({
             className="text-primary text-sm font-medium hover:underline"
           >
             {t("admin.common.nextPage")}
+          </a>
+        )}
+        {filters.pendingCursor && (
+          <a
+            href={paymentPageHref(filters, "pendingCursor")}
+            className="text-primary text-sm font-medium hover:underline"
+          >
+            {t("admin.common.firstPage")}
           </a>
         )}
       </div>
@@ -71,6 +77,14 @@ export default async function AdminPaymentReviewsPage({
             className="text-primary text-sm font-medium hover:underline"
           >
             {t("admin.common.nextPage")}
+          </a>
+        )}
+        {filters.historyCursor && (
+          <a
+            href={paymentPageHref(filters, "historyCursor")}
+            className="text-primary text-sm font-medium hover:underline"
+          >
+            {t("admin.common.firstPage")}
           </a>
         )}
       </div>
@@ -147,14 +161,16 @@ function RequestTable({
   );
 }
 
-function paymentPageHref(
+export function paymentPageHref(
   current: { pendingCursor?: string; historyCursor?: string },
   key: "pendingCursor" | "historyCursor",
-  cursor: string,
+  cursor?: string,
 ): string {
   const params = new URLSearchParams();
   if (current.pendingCursor) params.set("pendingCursor", current.pendingCursor);
   if (current.historyCursor) params.set("historyCursor", current.historyCursor);
-  params.set(key, cursor);
-  return `/admin/payments/reviews?${params.toString()}`;
+  if (cursor) params.set(key, cursor);
+  else params.delete(key);
+  const query = params.toString();
+  return query ? `/admin/payments/reviews?${query}` : "/admin/payments/reviews";
 }

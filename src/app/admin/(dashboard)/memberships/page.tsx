@@ -101,6 +101,11 @@ export default async function AdminMembershipsPage({
           {t("admin.common.nextPage")}
         </a>
       )}
+      {filters.cursor && (
+        <a href="/admin/memberships" className="text-primary text-sm font-medium hover:underline">
+          {t("admin.common.firstPage")}
+        </a>
+      )}
     </div>
   );
 }

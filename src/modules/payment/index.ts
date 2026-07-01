@@ -213,22 +213,25 @@ export async function listMyPaymentRequestDetails(
 }
 
 export async function listPaymentRequestsPage(
-  opts: {
-    status?: PaymentRequest["status"];
-    excludeStatus?: PaymentRequest["status"];
+  opts: (
+    | { status: "pending_review"; excludeStatus?: never }
+    | { status?: never; excludeStatus: "pending_review" }
+  ) & {
     cursor?: string | null;
     limit?: number;
-  } = {},
+  },
 ): Promise<AdminListPage<PaymentRequestDetail>> {
   const limit = normalizeAdminPageSize(opts.limit);
-  const cursor = decodeAdminListCursor(opts.cursor);
+  const scope = opts.status === "pending_review" ? "payments:pending" : "payments:history";
+  const cursor = decodeAdminListCursor(opts.cursor, scope);
   const cursorCreatedAt = sql<string>`to_char(
     ${paymentRequests.createdAt} at time zone 'UTC',
     'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
   )`;
   const conditions = [
-    ...(opts.status ? [eq(paymentRequests.status, opts.status)] : []),
-    ...(opts.excludeStatus ? [ne(paymentRequests.status, opts.excludeStatus)] : []),
+    ...(opts.status === "pending_review"
+      ? [eq(paymentRequests.status, "pending_review")]
+      : [ne(paymentRequests.status, "pending_review")]),
     ...(cursor
       ? [
           sql`(${paymentRequests.createdAt}, ${paymentRequests.id}) <
@@ -260,7 +263,12 @@ export async function listPaymentRequestsPage(
     items,
     nextCursor:
       rows.length > limit && last
-        ? encodeAdminListCursor({ timestamp: last.cursorCreatedAt, id: last.request.id })
+        ? encodeAdminListCursor({
+            version: 1,
+            scope,
+            timestamp: last.cursorCreatedAt,
+            id: last.request.id,
+          })
         : null,
   };
 }

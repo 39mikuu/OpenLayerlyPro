@@ -451,7 +451,7 @@ export async function listMembershipsPage(
   opts: { cursor?: string | null; limit?: number } = {},
 ): Promise<AdminListPage<MembershipListItem>> {
   const limit = normalizeAdminPageSize(opts.limit);
-  const cursor = decodeAdminListCursor(opts.cursor);
+  const cursor = decodeAdminListCursor(opts.cursor, "memberships");
   const cursorCreatedAt = sql<string>`to_char(
     ${memberships.createdAt} at time zone 'UTC',
     'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
@@ -484,7 +484,12 @@ export async function listMembershipsPage(
     items,
     nextCursor:
       rows.length > limit && last
-        ? encodeAdminListCursor({ timestamp: last.cursorCreatedAt, id: last.membership.id })
+        ? encodeAdminListCursor({
+            version: 1,
+            scope: "memberships",
+            timestamp: last.cursorCreatedAt,
+            id: last.membership.id,
+          })
         : null,
   };
 }
