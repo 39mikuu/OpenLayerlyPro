@@ -1,0 +1,2 @@
+CREATE INDEX "payment_requests_proof_file_id_idx" ON "payment_requests" USING btree ("proof_file_id") WHERE "payment_requests"."proof_file_id" is not null;--> statement-breakpoint
+CREATE INDEX "posts_cover_file_id_idx" ON "posts" USING btree ("cover_file_id") WHERE "posts"."cover_file_id" is not null;

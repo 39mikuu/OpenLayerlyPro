@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { count, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import path from "path";
 import type { Readable } from "stream";
 
@@ -392,21 +392,34 @@ export async function deleteFile(id: string): Promise<void> {
     if (!record) throw new ApiError(404, "fileNotFound");
     if (record.quarantinedAt) throw new ApiError(410, "fileQuarantined");
 
-    const [[postFile], [qr], [cover], [proof], settingRows] = await Promise.all([
-      tx.select({ c: count() }).from(postFiles).where(eq(postFiles.fileId, id)),
-      tx.select({ c: count() }).from(paymentMethods).where(eq(paymentMethods.qrFileId, id)),
-      tx.select({ c: count() }).from(posts).where(eq(posts.coverFileId, id)),
-      tx.select({ c: count() }).from(paymentRequests).where(eq(paymentRequests.proofFileId, id)),
+    // Deletion only needs to know whether a reference exists, never how many.
+    // Each probe is bounded to a single row so a large table is never counted;
+    // posts.cover_file_id and payment_requests.proof_file_id are served by the
+    // partial reference indexes added in migration 0018.
+    const [postFileRef, qrRef, coverRef, proofRef, settingRows] = await Promise.all([
+      tx.select({ id: postFiles.id }).from(postFiles).where(eq(postFiles.fileId, id)).limit(1),
+      tx
+        .select({ id: paymentMethods.id })
+        .from(paymentMethods)
+        .where(eq(paymentMethods.qrFileId, id))
+        .limit(1),
+      tx.select({ id: posts.id }).from(posts).where(eq(posts.coverFileId, id)).limit(1),
+      tx
+        .select({ id: paymentRequests.id })
+        .from(paymentRequests)
+        .where(eq(paymentRequests.proofFileId, id))
+        .limit(1),
       tx
         .select({ value: siteSettings.valueJson })
         .from(siteSettings)
         .where(inArray(siteSettings.key, [...PROTECTED_SETTING_KEYS])),
     ]);
+    // Values are bounded presence indicators (0 or 1), not exact reference counts.
     const params = {
-      postFiles: Number(postFile.c),
-      paymentMethods: Number(qr.c),
-      covers: Number(cover.c),
-      proofs: Number(proof.c),
+      postFiles: postFileRef.length,
+      paymentMethods: qrRef.length,
+      covers: coverRef.length,
+      proofs: proofRef.length,
       settings: settingRows.filter((row) => row.value === id).length,
     };
     if (Object.values(params).some((value) => value > 0)) {
