@@ -27,9 +27,9 @@ function subscriptionCurrentPeriodEnd(subscription: Stripe.Subscription): Date |
   return typeof periodEnd === "number" ? new Date(periodEnd * 1000) : null;
 }
 
-// The provider server clock at which an API resource was returned (its HTTP
-// `Date` header). Used as the reconcile observation timestamp so it shares the
-// clock domain with webhook `providerCreatedAt`.
+// Raw provider server time from the API response `Date` header. Production
+// getPaymentProvider normalizes this second-granularity value into the provider
+// observation fence used by reconcile.
 function stripeResponseDate(resource: {
   lastResponse?: { headers?: Record<string, string> };
 }): Date | null {
@@ -66,6 +66,18 @@ function linePriceRef(line: Stripe.InvoiceLineItem): string | null {
 function invoicePeriod(line: Stripe.InvoiceLineItem): { start: Date; end: Date } | null {
   if (!line.period?.start || !line.period?.end || line.period.end <= line.period.start) return null;
   return { start: new Date(line.period.start * 1000), end: new Date(line.period.end * 1000) };
+}
+
+function invoiceProviderCreatedAt(invoice: Stripe.Invoice): Date {
+  const raw = invoice as unknown as {
+    created?: number;
+    status_transitions?: { paid_at?: number | null };
+  };
+  const providerTimestamp = raw.status_transitions?.paid_at ?? raw.created;
+  if (typeof providerTimestamp !== "number" || !Number.isFinite(providerTimestamp)) {
+    throw new ApiError(422, "stripeEventInvalid");
+  }
+  return new Date(providerTimestamp * 1000);
 }
 
 function normalizeStripeSubscriptionStatus(
@@ -432,10 +444,6 @@ export class StripePaymentProvider implements PaymentProvider {
       providerCustomerRef: objectId(subscription.customer),
       currentPeriodEndsAt: subscriptionCurrentPeriodEnd(subscription),
       cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
-      // Provider server clock at which this state was observed (the API response
-      // `Date` header). Any webhook event created at or before this instant is
-      // already reflected here. `null` (missing/invalid header) makes reconcile
-      // fail closed — it never substitutes local time, which would mix clocks.
       observedAt: stripeResponseDate(subscription),
     };
   }
@@ -454,7 +462,7 @@ export class StripePaymentProvider implements PaymentProvider {
       normalizeSubscriptionInvoice(
         invoice,
         `reconcile:${invoice.id}`,
-        new Date(),
+        invoiceProviderCreatedAt(invoice),
         localSubscriptionId,
       ),
     );
