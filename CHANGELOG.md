@@ -2,9 +2,9 @@
 
 ## Unreleased — v1.0.0
 
-OpenLayerlyPro is in pre-release v1.0 security hardening. Payment, subscription, content, file, theme, and translation implementation is present on `main`; the remaining release gates are S6 security response headers (#86), S7 backup/restore consistency (#87), and the real-environment acceptance checklist (#88 / `docs/release-v1.0-checklist.md`).
+OpenLayerlyPro is in pre-release v1.0 final acceptance. Payment, subscription, content, file, theme, translation, S6 security response headers (#86), and S7 backup/restore consistency (#87) are present on `main`; the remaining gate is the real-environment acceptance checklist (#88 / `docs/release-v1.0-checklist.md`).
 
-Do not create a production `v1.0.0` tag until all three gates are complete.
+Do not create a production `v1.0.0` tag until #88 is complete.
 
 ### Payments and Memberships
 
@@ -28,8 +28,8 @@ Do not create a production `v1.0.0` tag until all three gates are complete.
 - Added S4 authentication hardening: trusted resolved/unresolved identities, high-entropy login codes, keyed email identities, persistent delivery fences, correct-code-first semantics, and source-scoped pre-comparison budgets.
 - Added S5 mail reliability: failure classification, operator defer/dead behavior, stable Message-ID, delivery ledger, retry/admin visibility, and stale/cancel send guards.
 - Added encrypted configuration groups and admin UI for SMTP, Turnstile, storage, upload limits, Stripe, and AI translation.
-- Added backup/restore and upgrade tooling; v1.0 S7 will harden archive integrity, legacy schema probing, restored-task neutralization, mandatory file-safety remediation, and DB↔storage convergence before release.
-- v1.0 S6 will add nonce-based CSP, global security response headers, dynamic Turnstile/storage/video/integration sources, and safe migration of legacy custom footer code.
+- Added archive v2 integrity, legacy schema probing, restored-task/provider-event neutralization, mandatory file-safety remediation, local/S3 convergence, and isolated recovery drills.
+- Added nonce-based CSP, global security response headers, dynamic Turnstile/storage/video/integration sources, revision fencing, and safe migration of legacy custom footer code.
 
 ### i18n, Translation, and Theme
 

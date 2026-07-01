@@ -4,9 +4,9 @@ Last updated: 2026-06-29 (Asia/Singapore)
 
 ## Current stage
 
-S7 final remediation is complete on `codex/s7-backup-consistency`. Closed Draft
-PR #91 is abandoned and is not a release deliverable. The final branch will be
-published as a new Draft PR closing #87, pending human review and merge.
+Final v1.0 acceptance (#88) is in progress from merged S7 main commit
+`4768aafa`. This is an evidence-gathering and release-preparation stage; no tag,
+release, issue closure, production mutation, or autonomous publication is allowed.
 
 ## Authoritative inputs read
 
@@ -21,7 +21,8 @@ published as a new Draft PR closing #87, pending human review and merge.
 - Accepted ADR 0007, `docs/adr/0007-inline-video-playback.md`
 - Accepted ADR 0008, `docs/adr/0008-public-video-embeds.md`
 - Accepted ADR 0011, `docs/adr/0011-upload-file-safety.md`
-- Current implementation and tests at `origin/main` including merged S6
+- Accepted ADRs 0001–0011
+- Current implementation and tests at `origin/main` including merged S6 and S7
 
 ## Base, branch, and worktree
 
@@ -37,6 +38,14 @@ published as a new Draft PR closing #87, pending human review and merge.
 - S7 branch: `codex/s7-backup-consistency`
 - S7 worktree: `/home/miku/OpenLayerlyPro-s7`
 - S7 HEAD at preflight: `2cd51b76`
+- Acceptance base/HEAD at preflight: `4768aafa`
+- Acceptance branch: `codex/v1-acceptance`
+- Acceptance worktree: `/home/miku/OpenLayerlyPro-v1-acceptance`
+- Acceptance isolation:
+  - Docker Compose project prefix: `openlayerlypro_v1_acceptance_88`
+  - PostgreSQL test database: `openlayerlypro_v1_acceptance_88_test`
+  - PostgreSQL port: `5435`
+  - app/browser port: `3009`
 - Planned S7 isolation:
   - Docker Compose project: `openlayerlypro_s7_87`
   - PostgreSQL test database: `openlayerlypro_s7_87_test`
@@ -101,7 +110,9 @@ human review and merge.
 
 ## Blockers
 
-Human merge of the new S7 Draft PR is required before starting #88.
+No implementation blocker. Real external Stripe, SMTP, R2/Tunnel, and production
+CSP observation requirements may remain unexecuted if credentials/infrastructure
+are unavailable; they must be reported as blocked rather than replaced by mocks.
 
 Operational notes:
 
@@ -110,9 +121,11 @@ Operational notes:
 
 ## Next permitted action
 
-1. Open a new Draft PR closing #87 (do not reuse abandoned PR #91).
-2. Babysit CI and address any blocking findings.
-3. Wait for human merge before #88 acceptance.
+1. Execute the complete #88 acceptance matrix from immutable commit `4768aafa`.
+2. If a concrete release blocker is found, create a focused defect branch/PR and
+   stop for human merge before rerunning the affected section.
+3. Otherwise prepare the fully evidenced release-candidate report and stop at the
+   human publication gate.
 
 ## S7 work completed so far
 
@@ -180,9 +193,39 @@ the v1 drill above exercises the same gate end-to-end through the shell path.
 
 ## Human gates still required
 
-- Human merge of the future S7 Draft PR before v1.0 acceptance may begin.
-- Human authorization after review of the final release-candidate report
-  before tag or GitHub Release publication.
+- Human/operator execution of the external acceptance blockers listed below.
+- Human authorization after review of a fully passing final release-candidate
+  report before tag or GitHub Release publication.
+
+## Final acceptance evidence (2026-06-29)
+
+- Base/tested main commit: `4768aafa523924dc9b3b25815a5467df45ca6fb4`.
+- Frozen install, lint, formatting, bounded-body check, TypeScript, 140 test
+  files / 1086 tests, all one-off builds, production build and ShellCheck passed.
+- Real Chromium S6 browser E2E passed.
+- Fresh isolated Compose install, `/admin/setup`, health and readiness passed.
+- Caddy/Tunnel merged configs publish no app host port.
+- Local, MinIO/S3, legacy-v1 and checksum/contract recovery drills passed.
+- `v0.1.0` → current migration/backfill/startup/admin/config upgrade drill passed.
+- Production image digest and one-off artifact hashes are recorded in
+  `docs/releases/v1.0.0-release-candidate-report.md`.
+- Exact-main GitHub CI run `28351135351` passed.
+- Acceptance-report GitHub CI run `28352507902` passed on commit
+  `a61b6633382de479297e5ba3bde1fb61687e65bc`.
+
+### Unexecuted blockers
+
+- No Stripe Test Mode credentials, SMTP server, operator R2/S3/Tunnel topology,
+  or OpenAI-compatible provider credentials were available.
+- Actual CSP report-only observation against the operator's external origins and
+  integrations was therefore not executable.
+- Dependabot, Code Scanning/CodeQL and Secret Scanning REST endpoints returned
+  404 to the current token; alert status is unproven.
+- Operator custody of off-host external secrets and provider recovery points
+  cannot be established from this isolated environment.
+
+The release decision is **HOLD**. No tag, Release, issue closure or production
+mutation is permitted while these blockers remain.
 
 ## PR #92 review remediation (Review 4588088584)
 
