@@ -24,7 +24,10 @@ If migrations fail, the app does not start.
 ## Required Production Settings
 
 - `APP_URL`
-- `SESSION_SECRET` or `SESSION_SECRET_FILE` (Compose defaults to the persistent file)
+- `SESSION_SECRET` or `SESSION_SECRET_FILE` (Compose auto-generates a persistent
+  file-backed secret at `/app/secrets/session-secret` when both are unset). `docker-compose.yml`
+  no longer pins `SESSION_SECRET_FILE`, so a value set in `.env` is honoured; a custom path
+  must be inside the container and have its directory mounted (e.g. the `secrets` volume).
 - `DATABASE_URL`
 - SMTP settings for fan login emails
 - `CONFIG_ENCRYPTION_KEY` or `CONFIG_ENCRYPTION_KEY_FILE`

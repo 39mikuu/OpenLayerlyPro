@@ -61,7 +61,7 @@
 - [ ] 非终态 provider event 与 dispatch task 成对复位；缺 task、饱和 attempts 和窄窗口均可幂等恢复。
 - [ ] local 与真实 S3/R2：备份 → 人为制造 DB/对象/任务/支付漂移 → 独立 Compose 恢复 → `/api/ready` 200。
 - [ ] 恢复后抽样核对管理员、会员、付款、订阅、文章、翻译、加密配置、文件和任务状态。
-- [ ] file-backed `SESSION_SECRET` 随 checksum 归档并等值恢复；external secret 不入档且指纹匹配；历史归档无显式 secret 时 fail-loud。
+- [ ] file-backed `SESSION_SECRET` 随 checksum 归档并等值恢复；external secret 不入档且指纹匹配；历史归档缺少显式强 secret 时在破坏数据库前 fail-loud。
 - [ ] `SESSION_SECRET` 与 `CONFIG_ENCRYPTION_KEY` 的托管、恢复和丢失语义已由操作者实际确认。
 
 ## 6. 工程质量

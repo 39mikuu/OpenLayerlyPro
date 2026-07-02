@@ -14,10 +14,7 @@ import path from "path";
 import { promisify } from "util";
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  ensureSessionSecretFile,
-  fsyncDirectory,
-} from "../../../docker/ensure-session-secret.mjs";
+import { ensureSessionSecretFile, fsyncDirectory } from "../../../docker/ensure-session-secret.mjs";
 
 const execFileAsync = promisify(execFile);
 const script = path.resolve("docker/ensure-session-secret.mjs");

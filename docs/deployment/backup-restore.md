@@ -190,8 +190,11 @@ The script refuses a target that sets `CONFIG_ENCRYPTION_KEY` directly because t
 File-backed secrets are checksummed, restored as a regular file with mode `0600`, and
 validated before app startup. External secrets must be supplied explicitly and match the
 manifest SHA-256 fingerprint. Historical archives have no fingerprint or secret payload:
-restore requires an explicit `SESSION_SECRET` and warns that continuity cannot be proven.
-It never lets entrypoint silently generate a replacement during restore.
+restore requires an explicit, strong `SESSION_SECRET` (non-empty after trimming, not
+`change-me`, at least 32 characters). This is validated before any destructive database or
+key work, so a weak or missing value aborts while the target database is still intact, and
+warns that continuity cannot be proven. It never lets entrypoint silently generate a
+replacement during restore.
 
 ### Stripe residual risk
 
