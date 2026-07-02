@@ -14,6 +14,12 @@ RESTORE_PORT=${RESTORE_PORT:-3004}
 BACKUP_DIR=${BACKUP_DIR:-/tmp/openlayerlypro-s7-e2e-backups}
 DRILL_ENV=${DRILL_ENV:-.env.s7-e2e}
 NESTED_UPLOAD_DIR=${NESTED_UPLOAD_DIR:-/app/uploads/e2e-nested}
+# Deliberately use a *custom* SESSION_SECRET_FILE (not the entrypoint default) so this drill
+# proves docker-compose.yml no longer pins SESSION_SECRET_FILE and honours the operator's
+# .env value end to end: generation, restart/recreate survival, backup, and restore all
+# follow the custom path. DEFAULT_SESSION_SECRET_FILE must never be created in this run.
+CUSTOM_SESSION_SECRET_FILE=${CUSTOM_SESSION_SECRET_FILE:-/app/secrets/custom-session-secret}
+DEFAULT_SESSION_SECRET_FILE=/app/secrets/session-secret
 
 fail() {
   echo "restore-e2e: $*" >&2
@@ -64,7 +70,7 @@ cat >"$DRILL_ENV" <<EOF
 APP_URL=http://127.0.0.1:3003
 APP_NAME=OpenLayerlyPro S7 Restore Drill
 NODE_ENV=production
-SESSION_SECRET_FILE=/app/secrets/session-secret
+SESSION_SECRET_FILE=$CUSTOM_SESSION_SECRET_FILE
 SECURITY_CSP_MODE=auto
 SECURITY_HSTS_ENABLED=false
 CONFIG_ENCRYPTION_KEY=
@@ -122,6 +128,29 @@ SOURCE_SESSION_SECRET=$(
     sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
 )
 [ "${#SOURCE_SESSION_SECRET}" -ge 32 ] || fail "source session secret was not generated"
+
+echo "Verifying Compose honours the custom SESSION_SECRET_FILE path (override removed)..."
+RESOLVED_SECRET_FILE=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+    sh -c 'printf %s "${SESSION_SECRET_FILE:-unset}"' | tr -d '\r'
+)
+[ "$RESOLVED_SECRET_FILE" = "$CUSTOM_SESSION_SECRET_FILE" ] \
+  || fail "container SESSION_SECRET_FILE resolved to '$RESOLVED_SECRET_FILE', expected '$CUSTOM_SESSION_SECRET_FILE'"
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app sh -c '
+  set -eu
+  test -f "$1"
+  [ ! -e "$2" ] || { echo "default session secret path was unexpectedly created"; exit 1; }
+' custom-path-check "$CUSTOM_SESSION_SECRET_FILE" "$DEFAULT_SESSION_SECRET_FILE" \
+  || fail "custom SESSION_SECRET_FILE not generated at the operator path, or default path leaked"
+
+echo "Verifying an unset SESSION_SECRET_FILE resolves to the entrypoint default path..."
+DEFAULT_PATH_RESOLVED=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" run --rm --no-deps -T \
+    -e SESSION_SECRET_FILE= --entrypoint sh app -c \
+    'printf %s "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"' | tr -d '\r'
+)
+[ "$DEFAULT_PATH_RESOLVED" = "$DEFAULT_SESSION_SECRET_FILE" ] \
+  || fail "unset SESSION_SECRET_FILE did not fall back to $DEFAULT_SESSION_SECRET_FILE (got '$DEFAULT_PATH_RESOLVED')"
 
 echo "Verifying session secret survives restart and container recreation..."
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" restart app >/dev/null
@@ -298,13 +327,13 @@ for symlink_variant in regular dangling; do
   S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" run --rm --no-deps \
     --entrypoint sh app -c '
       set -eu
-      rm -f /app/secrets/session-secret
+      rm -f "$2"
       if [ "$1" = regular ]; then
-        ln -s /app/secrets/config-encryption-key /app/secrets/session-secret
+        ln -s /app/secrets/config-encryption-key "$2"
       else
-        ln -s /app/secrets/missing-session-secret /app/secrets/session-secret
+        ln -s /app/secrets/missing-session-secret "$2"
       fi
-    ' restore-symlink "$symlink_variant"
+    ' restore-symlink "$symlink_variant" "$CUSTOM_SESSION_SECRET_FILE"
   if S7_E2E_APP_PORT=$RESTORE_PORT \
     COMPOSE_PROJECT_NAME=$RESTORE_PROJECT \
     COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml" \
@@ -321,7 +350,7 @@ for symlink_variant in regular dangling; do
   [ "$SENTINEL_DB" = "untouched" ] \
     || fail "$symlink_variant session-secret target symlink changed official database"
   S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" run --rm --no-deps \
-    --entrypoint sh app -c 'rm -f /app/secrets/session-secret'
+    --entrypoint sh app -c 'rm -f "$1"' restore-symlink-cleanup "$CUSTOM_SESSION_SECRET_FILE"
 done
 rm -rf "$CONTRACT_WORK"
 CONTRACT_WORK=""
@@ -343,6 +372,12 @@ RESTORED_SESSION_SECRET=$(
 )
 [ "$RESTORED_SESSION_SECRET" = "$SOURCE_SESSION_SECRET" ] \
   || fail "restored session secret does not match the source"
+S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T app sh -c '
+  set -eu
+  test -f "$1"
+  [ ! -e "$2" ] || { echo "restore created the default session secret path instead of the custom one"; exit 1; }
+' restored-custom-path-check "$CUSTOM_SESSION_SECRET_FILE" "$DEFAULT_SESSION_SECRET_FILE" \
+  || fail "restore did not land the session secret at the custom SESSION_SECRET_FILE path"
 READY_BODY=$(curl -fsS "http://127.0.0.1:${RESTORE_PORT}/api/ready")
 echo "$READY_BODY" | grep -q '"ok":true' || fail "ready body was not ok: $READY_BODY"
 
