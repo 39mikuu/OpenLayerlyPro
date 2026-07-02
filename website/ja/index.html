@@ -1,31 +1,34 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="ja">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenLayerlyPro — 开源自托管的单画师会员站</title>
+    <title>OpenLayerlyPro — オープンソースのセルフホスト型・絵師向けメンバーシップサイト</title>
     <meta
       name="description"
-      content="OpenLayerlyPro 是开源、自托管的单画师会员站系统：发布会员作品、灵活收款、会员文件分发，一切都跑在你自己的服务器上。"
+      content="OpenLayerlyPro は、個人イラストレーターのためのオープンソース・セルフホスト型メンバーシップサイトシステム。会員向け作品の公開、柔軟な決済、ファイル配信を自分のサーバーで。"
     />
     <meta name="theme-color" content="#2563eb" />
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Cpath%20d='M12%203%2021%208.2%2012%2013.4%203%208.2Z'%20fill='%232563eb'/%3E%3Cpath%20d='M3%2012.4%2012%2017.6%2021%2012.4'%20stroke='%2360a5fa'%20stroke-width='2'%20fill='none'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3Cpath%20d='M3%2016.6%2012%2021.8%2021%2016.6'%20stroke='%23bfdbfe'%20stroke-width='2'%20fill='none'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E"
     />
-    <link rel="canonical" href="https://39mikuu.github.io/OpenLayerlyPro/" />
+    <link rel="canonical" href="https://39mikuu.github.io/OpenLayerlyPro/ja/" />
     <link rel="alternate" hreflang="zh-CN" href="https://39mikuu.github.io/OpenLayerlyPro/" />
     <link rel="alternate" hreflang="en" href="https://39mikuu.github.io/OpenLayerlyPro/en/" />
     <link rel="alternate" hreflang="ja" href="https://39mikuu.github.io/OpenLayerlyPro/ja/" />
     <link rel="alternate" hreflang="x-default" href="https://39mikuu.github.io/OpenLayerlyPro/" />
     <meta property="og:type" content="website" />
-    <meta property="og:locale" content="zh_CN" />
-    <meta property="og:title" content="OpenLayerlyPro — 开源自托管的单画师会员站" />
+    <meta property="og:locale" content="ja_JP" />
+    <meta
+      property="og:title"
+      content="OpenLayerlyPro — オープンソースのセルフホスト型・絵師向けメンバーシップサイト"
+    />
     <meta
       property="og:description"
-      content="发布会员作品，灵活收款，把高清图、PSD 和视频直接交付给粉丝。没有平台抽成，数据完全归你。"
+      content="会員向け作品を公開し、柔軟に決済を受け付け、高解像度画像・PSD・動画をファンへ直接届ける。プラットフォーム手数料なし、データはすべてあなたのもの。"
     />
-    <meta property="og:url" content="https://39mikuu.github.io/OpenLayerlyPro/" />
+    <meta property="og:url" content="https://39mikuu.github.io/OpenLayerlyPro/ja/" />
     <meta property="og:image" content="https://39mikuu.github.io/OpenLayerlyPro/og.png" />
     <meta name="twitter:card" content="summary_large_image" />
     <style>
@@ -59,10 +62,10 @@
           -apple-system,
           "Segoe UI",
           Roboto,
-          "PingFang SC",
-          "Hiragino Sans GB",
-          "Microsoft YaHei",
-          "Noto Sans CJK SC",
+          "Hiragino Kaku Gothic ProN",
+          "Yu Gothic UI",
+          Meiryo,
+          "Noto Sans CJK JP",
           sans-serif;
         background: var(--bg);
         color: var(--ink);
@@ -525,7 +528,7 @@
         filter: blur(16px) saturate(0.75) brightness(1.06);
       }
       .art.locked::after {
-        content: "会员可见";
+        content: "会員限定";
         position: absolute;
         inset: 0;
         margin: auto;
@@ -785,12 +788,12 @@
           OpenLayerlyPro</a
         >
         <nav class="nav-links">
-          <a href="#features">功能</a>
-          <a href="#flow">工作方式</a>
-          <a href="#start">快速开始</a>
+          <a href="#features">機能</a>
+          <a href="#flow">仕組み</a>
+          <a href="#start">はじめる</a>
         </nav>
         <div class="nav-right">
-          <span class="lang"><b>中文</b> · <a href="en/">EN</a> · <a href="ja/">日本語</a></span>
+          <span class="lang"><a href="../">中文</a> · <a href="../en/">EN</a> · <b>日本語</b></span>
           <a class="btn btn-ghost btn-sm" href="https://github.com/39mikuu/OpenLayerlyPro"
             >GitHub</a
           >
@@ -802,20 +805,22 @@
       <div class="hero">
         <div class="orbs"><span class="orb orb1"></span><span class="orb orb2"></span></div>
         <div class="wrap">
-          <span class="badge rise d1">开源 · 自托管 · AGPL-3.0</span>
+          <span class="badge rise d1">オープンソース · セルフホスト · AGPL-3.0</span>
           <h1 class="rise d2">
-            属于画师自己的<span class="blue">会员站</span><br />跑在自己的服务器上
+            自分だけの<span class="blue">メンバーシップサイト</span>を<br />自分のサーバーで
           </h1>
           <p class="sub rise d3">
-            发布会员作品，灵活收款，把高清图、PSD 和视频直接交付给粉丝。没有平台抽成，数据完全归你。
+            会員向け作品を公開し、柔軟に決済を受け付け、高解像度画像・PSD・動画をファンへ直接届ける。プラットフォーム手数料なし、データはすべてあなたのもの。
           </p>
           <div class="cta-row rise d4">
-            <a class="btn btn-primary" href="#start">快速开始</a>
-            <a class="btn btn-ghost" href="https://github.com/39mikuu/OpenLayerlyPro">查看源码</a>
+            <a class="btn btn-primary" href="#start">はじめる</a>
+            <a class="btn btn-ghost" href="https://github.com/39mikuu/OpenLayerlyPro"
+              >ソースコード</a
+            >
           </div>
           <div class="term rise d5" id="start">
             <div class="term-bar">
-              <i></i><i></i><i></i><button class="copy" id="copy-btn" type="button">复制</button>
+              <i></i><i></i><i></i><button class="copy" id="copy-btn" type="button">コピー</button>
             </div>
             <pre id="type-target"><span class="caret"></span></pre>
           </div>
@@ -833,17 +838,17 @@
                 <span class="avatar"></span>
                 <div>
                   <div class="name">ヒナタ · Hinata</div>
-                  <div class="meta">插画 / 角色设计</div>
+                  <div class="meta">イラスト / キャラクターデザイン</div>
                 </div>
-                <span class="pill">成为会员</span>
+                <span class="pill">会員になる</span>
               </div>
               <div class="grid-art">
-                <div class="art b1"><span class="tag">公开</span></div>
+                <div class="art b1"><span class="tag">公開</span></div>
                 <div class="art b2 locked"></div>
-                <div class="art b3"><span class="tag">公开</span></div>
+                <div class="art b3"><span class="tag">公開</span></div>
                 <div class="art b4 locked"></div>
                 <div class="art b5 locked"></div>
-                <div class="art b6"><span class="tag">登录可见</span></div>
+                <div class="art b6"><span class="tag">ログイン限定</span></div>
               </div>
             </div>
           </div>
@@ -852,8 +857,8 @@
 
       <section id="features">
         <div class="wrap">
-          <h2 class="reveal">只做单创作者需要的东西</h2>
-          <p class="lead reveal">不做平台，不做推荐流。</p>
+          <h2 class="reveal">個人クリエイターに必要なものだけ</h2>
+          <p class="lead reveal">プラットフォームも、おすすめフィードも作らない。</p>
           <div class="features">
             <div class="feat reveal">
               <div class="ico">
@@ -869,8 +874,8 @@
                   <path d="M2 10h20" />
                 </svg>
               </div>
-              <h3>灵活收款</h3>
-              <p>收款码人工审核、Stripe 一次性付款或自动订阅，可组合使用。</p>
+              <h3>柔軟な決済</h3>
+              <p>支払いコードの手動確認、Stripe の単発決済・自動サブスクを自由に組み合わせ。</p>
             </div>
             <div class="feat reveal">
               <div class="ico">
@@ -886,8 +891,8 @@
                   <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                 </svg>
               </div>
-              <h3>会员权限</h3>
-              <p>public / login / member 三级内容可见性，锁住该锁的。</p>
+              <h3>会員限定公開</h3>
+              <p>public / login / member の 3 段階の公開範囲。守るべきものはしっかりロック。</p>
             </div>
             <div class="feat reveal">
               <div class="ico">
@@ -904,8 +909,8 @@
                   <path d="M12 15V3" />
                 </svg>
               </div>
-              <h3>大文件交付</h3>
-              <p>高清图、PSD、笔刷包与视频，断点下载与在线播放。</p>
+              <h3>大容量ファイル配信</h3>
+              <p>高解像度画像・PSD・ブラシ・動画。レジューム対応 DL とインライン再生。</p>
             </div>
             <div class="feat reveal">
               <div class="ico">
@@ -922,8 +927,8 @@
                   <path d="M6 8h.01M10 8h.01" />
                 </svg>
               </div>
-              <h3>自托管部署</h3>
-              <p>Docker Compose 一键启动，支持 Cloudflare Tunnel，无公网 IP 也能用。</p>
+              <h3>セルフホスト</h3>
+              <p>Docker Compose で一発起動。Cloudflare Tunnel で固定 IP なしでも公開可能。</p>
             </div>
           </div>
         </div>
@@ -931,27 +936,27 @@
 
       <section id="flow">
         <div class="wrap">
-          <h2 class="reveal">四步走完核心闭环</h2>
+          <h2 class="reveal">4 ステップで完結</h2>
           <div class="flow">
             <div class="fstep reveal">
               <span class="dot">1</span>
-              <h3>初始化站点</h3>
-              <p>引导页完成站点与账号设置</p>
+              <h3>サイトを初期化</h3>
+              <p>セットアップ画面でサイトと管理者を設定</p>
             </div>
             <div class="fstep reveal">
               <span class="dot">2</span>
-              <h3>发布作品</h3>
-              <p>创建会员等级，发布分级内容</p>
+              <h3>作品を公開</h3>
+              <p>会員プランを作成し、限定コンテンツを投稿</p>
             </div>
             <div class="fstep reveal">
               <span class="dot">3</span>
-              <h3>粉丝付款</h3>
-              <p>截图审核或 Stripe 自动确认</p>
+              <h3>ファンが支払い</h3>
+              <p>スクリーンショット確認または Stripe 自動確認</p>
             </div>
             <div class="fstep reveal">
               <span class="dot">4</span>
-              <h3>自动交付</h3>
-              <p>开通会员，粉丝按权限下载</p>
+              <h3>自動でお届け</h3>
+              <p>会員権を付与し、権限に応じてダウンロード</p>
             </div>
           </div>
         </div>
@@ -959,14 +964,14 @@
 
       <section class="cta">
         <div class="wrap">
-          <h2 class="reveal">你的作品，你的粉丝，你的服务器</h2>
-          <p class="lead reveal">开源、可审计、可迁移。</p>
+          <h2 class="reveal">あなたの作品、あなたのファン、あなたのサーバー</h2>
+          <p class="lead reveal">オープンソース・監査可能・移行自由。</p>
           <div class="cta-row reveal">
             <a class="btn btn-primary" href="https://github.com/39mikuu/OpenLayerlyPro"
-              >在 GitHub 上开始</a
+              >GitHub で始める</a
             >
           </div>
-          <p class="hint reveal">AGPL-3.0 开源协议 · 中 / 英 / 日三语界面</p>
+          <p class="hint reveal">AGPL-3.0 ライセンス · UI は日中英 3 言語対応</p>
         </div>
       </section>
     </main>
@@ -976,8 +981,8 @@
         <span>OpenLayerlyPro</span>
         <div class="links">
           <a href="https://github.com/39mikuu/OpenLayerlyPro">GitHub</a>
-          <a href="https://github.com/39mikuu/OpenLayerlyPro/blob/main/CHANGELOG.md">更新日志</a>
-          <a href="https://github.com/39mikuu/OpenLayerlyPro/blob/main/SECURITY.md">安全政策</a>
+          <a href="https://github.com/39mikuu/OpenLayerlyPro/blob/main/CHANGELOG.md">更新履歴</a>
+          <a href="https://github.com/39mikuu/OpenLayerlyPro/blob/main/SECURITY.md">セキュリティ</a>
         </div>
       </div>
     </footer>
@@ -1019,10 +1024,10 @@
           var cmd =
             "git clone https://github.com/39mikuu/OpenLayerlyPro.git\ncd OpenLayerlyPro && cp .env.example .env\ndocker compose up -d";
           navigator.clipboard.writeText(cmd).then(function () {
-            copyBtn.textContent = "已复制";
+            copyBtn.textContent = "コピーしました";
             copyBtn.classList.add("ok");
             setTimeout(function () {
-              copyBtn.textContent = "复制";
+              copyBtn.textContent = "コピー";
               copyBtn.classList.remove("ok");
             }, 1800);
           });
