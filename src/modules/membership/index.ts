@@ -13,6 +13,12 @@ import {
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { addDays } from "@/lib/dates";
+import {
+  type AdminListPage,
+  decodeAdminListCursor,
+  encodeAdminListCursor,
+  normalizeAdminPageSize,
+} from "@/modules/admin/pagination";
 import { pickMembershipAudit, recordAudit } from "@/modules/audit";
 import { advanceManualReminderAfterGrant } from "@/modules/membership/renewal-reminders";
 
@@ -435,16 +441,57 @@ async function throwTransitionFailure(
   throw new ApiError(409, evaluation.ok ? "invalidMembershipTransition" : evaluation.errorCode);
 }
 
-export async function listMemberships(): Promise<
-  { membership: Membership; tier: MembershipTier; userEmail: string }[]
-> {
+export type MembershipListItem = {
+  membership: Membership;
+  tier: MembershipTier;
+  userEmail: string;
+};
+
+export async function listMembershipsPage(
+  opts: { cursor?: string | null; limit?: number } = {},
+): Promise<AdminListPage<MembershipListItem>> {
+  const limit = normalizeAdminPageSize(opts.limit);
+  const cursor = decodeAdminListCursor(opts.cursor, "memberships");
+  const cursorCreatedAt = sql<string>`to_char(
+    ${memberships.createdAt} at time zone 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+  )`;
   const rows = await getDb()
-    .select({ membership: memberships, tier: membershipTiers, userEmail: users.email })
+    .select({
+      membership: memberships,
+      tier: membershipTiers,
+      userEmail: users.email,
+      cursorCreatedAt,
+    })
     .from(memberships)
     .innerJoin(membershipTiers, eq(memberships.tierId, membershipTiers.id))
     .innerJoin(users, eq(memberships.userId, users.id))
-    .orderBy(desc(memberships.createdAt));
-  return rows;
+    .where(
+      cursor
+        ? sql`(${memberships.createdAt}, ${memberships.id}) <
+            (${cursor.timestamp}::timestamptz, ${cursor.id}::uuid)`
+        : undefined,
+    )
+    .orderBy(desc(memberships.createdAt), desc(memberships.id))
+    .limit(limit + 1);
+  const pageRows = rows.slice(0, limit);
+  const items = pageRows.map(({ cursorCreatedAt, ...item }) => {
+    void cursorCreatedAt;
+    return item;
+  });
+  const last = pageRows.at(-1);
+  return {
+    items,
+    nextCursor:
+      rows.length > limit && last
+        ? encodeAdminListCursor({
+            version: 1,
+            scope: "memberships",
+            timestamp: last.cursorCreatedAt,
+            id: last.membership.id,
+          })
+        : null,
+  };
 }
 
 export async function getMembershipDetail(

@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, ne, or, sql } from "drizzle-orm";
 
 import { type DbClient, getDb, type TxClient } from "@/db";
 import {
@@ -15,6 +15,12 @@ import {
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { logger } from "@/lib/logger";
+import {
+  type AdminListPage,
+  decodeAdminListCursor,
+  encodeAdminListCursor,
+  normalizeAdminPageSize,
+} from "@/modules/admin/pagination";
 import { recordAudit } from "@/modules/audit";
 import { grantMembership, revokeMembership } from "@/modules/membership";
 import { enqueuePaymentProofCleanup } from "@/modules/payment/proof-lifecycle";
@@ -206,19 +212,65 @@ export async function listMyPaymentRequestDetails(
     .orderBy(desc(paymentRequests.createdAt));
 }
 
-export async function listPaymentRequests(
-  status?: PaymentRequest["status"],
-): Promise<PaymentRequestDetail[]> {
+export async function listPaymentRequestsPage(
+  opts: (
+    | { status: "pending_review"; excludeStatus?: never }
+    | { status?: never; excludeStatus: "pending_review" }
+  ) & {
+    cursor?: string | null;
+    limit?: number;
+  },
+): Promise<AdminListPage<PaymentRequestDetail>> {
+  const limit = normalizeAdminPageSize(opts.limit);
+  const scope = opts.status === "pending_review" ? "payments:pending" : "payments:history";
+  const cursor = decodeAdminListCursor(opts.cursor, scope);
+  const cursorCreatedAt = sql<string>`to_char(
+    ${paymentRequests.createdAt} at time zone 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+  )`;
+  const conditions = [
+    ...(opts.status === "pending_review"
+      ? [eq(paymentRequests.status, "pending_review")]
+      : [ne(paymentRequests.status, "pending_review")]),
+    ...(cursor
+      ? [
+          sql`(${paymentRequests.createdAt}, ${paymentRequests.id}) <
+              (${cursor.timestamp}::timestamptz, ${cursor.id}::uuid)`,
+        ]
+      : []),
+  ];
   const db = getDb();
-  const base = db
-    .select({ request: paymentRequests, tier: membershipTiers, userEmail: users.email })
+  const rows = await db
+    .select({
+      request: paymentRequests,
+      tier: membershipTiers,
+      userEmail: users.email,
+      cursorCreatedAt,
+    })
     .from(paymentRequests)
     .innerJoin(membershipTiers, eq(paymentRequests.tierId, membershipTiers.id))
-    .innerJoin(users, eq(paymentRequests.userId, users.id));
-  const rows = status
-    ? await base.where(eq(paymentRequests.status, status)).orderBy(asc(paymentRequests.createdAt))
-    : await base.orderBy(desc(paymentRequests.createdAt));
-  return rows;
+    .innerJoin(users, eq(paymentRequests.userId, users.id))
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(paymentRequests.createdAt), desc(paymentRequests.id))
+    .limit(limit + 1);
+  const pageRows = rows.slice(0, limit);
+  const items = pageRows.map(({ cursorCreatedAt, ...item }) => {
+    void cursorCreatedAt;
+    return item;
+  });
+  const last = pageRows.at(-1);
+  return {
+    items,
+    nextCursor:
+      rows.length > limit && last
+        ? encodeAdminListCursor({
+            version: 1,
+            scope,
+            timestamp: last.cursorCreatedAt,
+            id: last.request.id,
+          })
+        : null,
+  };
 }
 
 export async function getPaymentRequest(id: string): Promise<PaymentRequest | null> {

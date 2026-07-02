@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { count, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import path from "path";
 import type { Readable } from "stream";
 
@@ -15,6 +15,12 @@ import {
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
+import {
+  type AdminListPage,
+  decodeAdminListCursor,
+  encodeAdminListCursor,
+  normalizeAdminPageSize,
+} from "@/modules/admin/pagination";
 import { getUploadConfig } from "@/modules/config";
 import { getStorage } from "@/modules/storage";
 import { StorageObjectTooLargeError } from "@/modules/storage/stream";
@@ -358,26 +364,108 @@ export async function getFileById(id: string): Promise<FileRecord | null> {
   return record ?? null;
 }
 
-export async function listFiles(): Promise<FileRecord[]> {
-  return getDb()
-    .select()
+export async function listFilesPage(
+  opts: { cursor?: string | null; limit?: number } = {},
+): Promise<AdminListPage<FileRecord>> {
+  const limit = normalizeAdminPageSize(opts.limit);
+  const cursor = decodeAdminListCursor(opts.cursor, "files:active");
+  const cursorCreatedAt = sql<string>`to_char(
+    ${files.createdAt} at time zone 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+  )`;
+  const rows = await getDb()
+    .select({ file: files, cursorCreatedAt })
     .from(files)
-    .where(isNull(files.quarantinedAt))
-    .orderBy(desc(files.createdAt));
+    .where(
+      and(
+        isNull(files.quarantinedAt),
+        ...(cursor
+          ? [
+              sql`(${files.createdAt}, ${files.id}) <
+                  (${cursor.timestamp}::timestamptz, ${cursor.id}::uuid)`,
+            ]
+          : []),
+      ),
+    )
+    .orderBy(desc(files.createdAt), desc(files.id))
+    .limit(limit + 1);
+  const pageRows = rows.slice(0, limit);
+  const last = pageRows.at(-1);
+  return {
+    items: pageRows.map((row) => row.file),
+    nextCursor:
+      rows.length > limit && last
+        ? encodeAdminListCursor({
+            version: 1,
+            scope: "files:active",
+            timestamp: last.cursorCreatedAt,
+            id: last.file.id,
+          })
+        : null,
+  };
 }
 
-export async function listQuarantinedFiles() {
-  return getDb()
+export type QuarantinedFileListItem = {
+  id: string;
+  purpose: FilePurpose;
+  originalName: string;
+  quarantineReason: string | null;
+  quarantinedAt: Date;
+};
+
+export async function listQuarantinedFilesPage(
+  opts: { cursor?: string | null; limit?: number } = {},
+): Promise<AdminListPage<QuarantinedFileListItem>> {
+  const limit = normalizeAdminPageSize(opts.limit);
+  const cursor = decodeAdminListCursor(opts.cursor, "files:quarantined");
+  const cursorQuarantinedAt = sql<string>`to_char(
+    ${files.quarantinedAt} at time zone 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+  )`;
+  const rows = await getDb()
     .select({
       id: files.id,
       purpose: files.purpose,
       originalName: files.originalName,
       quarantineReason: files.quarantineReason,
       quarantinedAt: files.quarantinedAt,
+      cursorQuarantinedAt,
     })
     .from(files)
-    .where(isNotNull(files.quarantinedAt))
-    .orderBy(desc(files.quarantinedAt));
+    .where(
+      and(
+        isNotNull(files.quarantinedAt),
+        ...(cursor
+          ? [
+              sql`(${files.quarantinedAt}, ${files.id}) <
+                  (${cursor.timestamp}::timestamptz, ${cursor.id}::uuid)`,
+            ]
+          : []),
+      ),
+    )
+    .orderBy(desc(files.quarantinedAt), desc(files.id))
+    .limit(limit + 1);
+  const pageRows = rows.slice(0, limit);
+  const items = pageRows.map(({ cursorQuarantinedAt, ...item }) => {
+    void cursorQuarantinedAt;
+    return {
+      ...item,
+      quarantinedAt: item.quarantinedAt!,
+    };
+  });
+  const last = pageRows.at(-1);
+  return {
+    items,
+    nextCursor:
+      rows.length > limit && last
+        ? encodeAdminListCursor({
+            version: 1,
+            scope: "files:quarantined",
+            timestamp: last.cursorQuarantinedAt,
+            id: last.id,
+          })
+        : null,
+  };
 }
 
 const PROTECTED_SETTING_KEYS = [
