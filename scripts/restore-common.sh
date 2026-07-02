@@ -323,6 +323,21 @@ preflight_session_secret_restore_target() {
     "$target_secret_dir" "SESSION_SECRET_FILE secrets volume"
 }
 
+# Validate that a SESSION_SECRET provided through the target app environment is explicit
+# and strong, using the exact same rule as the runtime resolver, the backup fingerprint
+# capture, and the file/external archive branches: present, non-blank after trim, not the
+# `change-me` placeholder, and at least 32 characters. Runs in a one-off app container and
+# never prints the secret. Returns non-zero when the value is missing or weak; callers must
+# treat that as a hard, pre-destructive restore failure.
+require_strong_env_session_secret() {
+  compose run --rm -T --no-deps --entrypoint node app -e '
+    const value = process.env.SESSION_SECRET;
+    if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) {
+      process.exit(1);
+    }
+  '
+}
+
 verify_container_session_secret_file() {
   target_secret_file=$1
   run_app_shell '

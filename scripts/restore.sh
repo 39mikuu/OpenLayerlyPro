@@ -237,9 +237,12 @@ case "$SESSION_SECRET_SOURCE" in
       || fail "externally managed SESSION_SECRET does not match the archive fingerprint"
     ;;
   legacy)
-    compose run --rm -T --no-deps --entrypoint sh app -c '
-      test -n "${SESSION_SECRET:-}"
-    ' || fail "historical archive requires an explicit SESSION_SECRET"
+    # Historical archives carry no session-secret manifest fields, so the target must supply
+    # an explicit, strong SESSION_SECRET. Validate it here, before any destructive database
+    # or key work, using the same rule as the runtime resolver; a weak/blank/placeholder
+    # value must abort while the target database is still intact.
+    require_strong_env_session_secret \
+      || fail "historical archive requires an explicit strong SESSION_SECRET"
     echo "WARNING: historical archive cannot verify whether SESSION_SECRET matches the original" >&2
     ;;
   *) fail "unsupported SESSION_SECRET_SOURCE=$SESSION_SECRET_SOURCE" ;;
