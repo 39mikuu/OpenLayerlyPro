@@ -2,9 +2,9 @@
 
 ## Unreleased — v1.0.0
 
-OpenLayerlyPro is in pre-release v1.0 final acceptance. Payment, subscription, content, file, theme, translation, S6 security response headers (#86), and S7 backup/restore consistency (#87) are present on `main`; the remaining gate is the real-environment acceptance checklist (#88 / `docs/release-v1.0-checklist.md`).
+OpenLayerlyPro is in pre-release v1.0 final acceptance. Payment, subscription, content, file, theme, translation, S6 security response headers (#86), and S7 backup/restore consistency (#87) are present on `main`. #88 is closed; the remaining gate is #104 — rerunning the `docs/release-v1.0-checklist.md` matrix against a frozen post-audit candidate, including #119.
 
-Do not create a production `v1.0.0` tag until #88 is complete.
+Do not create a production `v1.0.0` tag until #104 is complete.
 
 ### Payments and Memberships
 
@@ -13,6 +13,7 @@ Do not create a production `v1.0.0` tag until #88 is complete.
 - Added Stripe recurring subscriptions with provider-event inbox/dispatcher processing, invoice-level financial idempotency, exact Stripe billing periods, cancellation, and subscription reconciliation.
 - Added manual renewal reminders for non-card deployments, with period-scoped durable tasks, user controls, stale/cancel no-op checks, and localized mail.
 - Serialized all membership grants per user and deduplicated pending manual/automatic payment entry paths.
+- Hardened subscription reconcile/webhook ordering with a strict provider-clock fence that fails closed (#113).
 
 ### Files, Content, and Delivery
 
@@ -22,6 +23,8 @@ Do not create a production `v1.0.0` tag until #88 is complete.
 - Added raw-body streaming attachment uploads, local atomic `.part` writes, bounded S3 multipart uploads, streamed SHA-256, and failure compensation.
 - Added inline video playback with local/S3 single-range 200/206/416 behavior, public signed playback redirects, private application proxying, and separate playback/download authorization.
 - Added Markdown editing, inline images, public video embeds, scheduled publishing, categories/tags, keyset pagination, and cross-cutting authorization regression coverage.
+- Added keyset pagination to the admin files, memberships, and payment-review lists (#114).
+- Fixed inline images referenced only by archived translations being treated as unreferenced (#118).
 
 ### Authentication, Mail, and Operations
 

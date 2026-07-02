@@ -9,10 +9,11 @@
 ```text
 S6 #86 全局安全响应头 ✅
 → S7 #87 备份与恢复一致性 ✅
-→ #88 v1.0 最终验收与发布
+→ #88 v1.0 最终验收（矩阵基线）✅ 已关闭
+→ #104 审计修复后冻结候选的 exact-main 重验收与发布（含 #119）
 ```
 
-Phase 4 Integration 与 Phase 5 Theme 的 v1 基座已经完成。它们剩余的扩展属于后续按需工作，不再与 v1.0 发布线同时标记为“进行中”。只有 #86、#87、#88 全部完成后，才能关闭 #64 并发布 `v1.0.0`。
+Phase 4 Integration 与 Phase 5 Theme 的 v1 基座已经完成。它们剩余的扩展属于后续按需工作，不再与 v1.0 发布线同时标记为“进行中”。只有 #86、#87 与 #104 全部完成后，才能关闭 #64 并发布 `v1.0.0`。
 
 ## Phase 0：MVP 主链路 ✅
 
@@ -87,7 +88,7 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 - keyset 分页、流式上传、S3 multipart。
 - 视频附件、local/S3 单段 Range 与权限代理。
 
-真实 Stripe、local/S3、升级和恢复统一归入 #88 验收。
+真实 Stripe、local/S3、升级和恢复统一归入 #104 重验收（矩阵沿用 #88）。
 
 ## v1.0 安全硬化 ▶
 
@@ -97,7 +98,7 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 
 - **S6 ✅**：#86；nonce CSP、动态来源、legacy footer 迁移和浏览器验证。
 - **S7 ✅**：#87；archive v2、旧 archive 探测、文件安全修复、任务/支付事件中和和 DB↔存储收敛。
-- **最终验收 🚧**：#88；真实环境验证、三个 one-off artifact、tag 与 GitHub Release。
+- **最终验收 🚧**：#104（原 #88 已关闭，其矩阵按审计修复后的冻结候选重跑，前置含 #119）；真实环境验证、三个 one-off artifact、tag 与 GitHub Release。
 
 ## v1.1：不只画师 🚧
 

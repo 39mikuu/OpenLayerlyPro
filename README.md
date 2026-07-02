@@ -2,9 +2,11 @@
 
 开源、自托管、单画师会员站系统。
 
+官网：[openlayerlypro 项目主页](https://39mikuu.github.io/OpenLayerlyPro/)（中文 · [EN](https://39mikuu.github.io/OpenLayerlyPro/en/) · [日本語](https://39mikuu.github.io/OpenLayerlyPro/ja/)）
+
 OpenLayerlyPro helps independent illustrators and creators run their own membership site: publish posts, offer membership tiers through manual review, Stripe hosted one-time checkout, or recurring Stripe subscriptions, and deliver member-only files from a self-hosted deployment.
 
-Current status: **v1.0 pre-release final acceptance**. The application includes the payment, subscription, content, file, theme, translation, S6 security-response-header, and S7 hardened backup/restore feature set. The remaining release gate is #88 real-environment acceptance. Do not create a production `v1.0.0` tag until [the v1.0 acceptance checklist](docs/release-v1.0-checklist.md) is complete. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, payments, and backups.
+Current status: **v1.0 pre-release final acceptance**. The application includes the payment, subscription, content, file, theme, translation, S6 security-response-header, and S7 hardened backup/restore feature set. The remaining release gate is #104 — rerunning the full acceptance matrix (originally #88, now closed) against a frozen post-audit candidate, including #119. Do not create a production `v1.0.0` tag until [the v1.0 acceptance checklist](docs/release-v1.0-checklist.md) is complete under #104. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, payments, and backups.
 
 ## 核心特性
 
