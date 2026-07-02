@@ -7,304 +7,183 @@
 <meta name="description" content="OpenLayerlyPro 是开源、自托管的单画师会员站系统：发布会员作品、收款码人工审核、Stripe 一次性付款与自动订阅、会员文件分发，一切都跑在你自己的服务器上。" />
 <style>
   :root {
-    --bg: #fbfaf8;
-    --bg-soft: #f4f2ee;
-    --ink: #1c1a17;
-    --ink-2: #57534c;
-    --ink-3: #8a857c;
-    --line: #e7e4dd;
-    --card: #ffffff;
-    --accent: #6d4fe0;
+    --bg: #fdfdfc;
+    --bg-soft: #f5f5f3;
+    --ink: #1b1b1a;
+    --ink-2: #5c5c58;
+    --ink-3: #97978f;
+    --line: #e6e6e2;
+    --accent: #5346c9;
     --accent-ink: #ffffff;
-    --accent-soft: #efeafd;
-    --warm: #e8896b;
-    --code-bg: #211e2b;
-    --code-ink: #e8e4f5;
-    --code-accent: #b9a5ff;
-    --shadow: 0 1px 2px rgba(28, 26, 23, .05), 0 12px 40px -12px rgba(28, 26, 23, .12);
   }
   .dark {
-    --bg: #16141a;
-    --bg-soft: #1d1a23;
-    --ink: #ece9f2;
-    --ink-2: #aaa4b8;
-    --ink-3: #746e84;
-    --line: #2b2734;
-    --card: #1e1b26;
-    --accent: #a08bff;
-    --accent-ink: #17131f;
-    --accent-soft: #2a2440;
-    --warm: #f09e80;
-    --code-bg: #12101a;
-    --code-ink: #ddd8ec;
-    --code-accent: #b9a5ff;
-    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 16px 48px -12px rgba(0, 0, 0, .5);
+    --bg: #141416;
+    --bg-soft: #1c1c1f;
+    --ink: #e9e9e7;
+    --ink-2: #a4a49e;
+    --ink-3: #6e6e68;
+    --line: #29292d;
+    --accent: #a89dff;
+    --accent-ink: #16161a;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
   body {
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
       "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
     background: var(--bg);
     color: var(--ink);
-    line-height: 1.7;
+    line-height: 1.75;
+    font-size: 15px;
     -webkit-font-smoothing: antialiased;
-    transition: background .25s ease, color .25s ease;
   }
-  ::selection { background: var(--accent); color: var(--accent-ink); }
   a { color: inherit; text-decoration: none; }
+  a.text { color: var(--accent); }
+  a.text:hover { text-decoration: underline; text-underline-offset: 3px; }
   code, pre { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
 
-  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
 
-  /* ---------- header ---------- */
-  header {
-    position: sticky; top: 0; z-index: 50;
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    background: color-mix(in srgb, var(--bg) 78%, transparent);
-    border-bottom: 1px solid var(--line);
-  }
-  .nav { display: flex; align-items: center; gap: 28px; height: 60px; }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
-  .logo {
-    width: 26px; height: 26px; border-radius: 8px; flex: none;
-    background: conic-gradient(from 210deg, var(--accent), var(--warm), var(--accent));
-    position: relative;
-  }
-  .logo::after {
-    content: ""; position: absolute; inset: 7px;
-    border-radius: 4px; background: var(--bg);
-  }
-  .nav-links { display: flex; gap: 22px; font-size: 14px; color: var(--ink-2); margin-left: 8px; }
+  /* header */
+  header { border-bottom: 1px solid var(--line); }
+  .nav { display: flex; align-items: center; height: 58px; gap: 26px; }
+  .brand { font-weight: 650; font-size: 15px; letter-spacing: -.01em; }
+  .nav-links { display: flex; gap: 20px; font-size: 13.5px; color: var(--ink-2); }
   .nav-links a:hover { color: var(--ink); }
-  .nav-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-  .lang { font-size: 13px; color: var(--ink-3); letter-spacing: .02em; }
-  .lang b { color: var(--ink); font-weight: 600; }
-
-  .btn {
-    display: inline-flex; align-items: center; gap: 8px;
-    font-size: 14px; font-weight: 600; line-height: 1;
-    padding: 10px 18px; border-radius: 10px; border: 1px solid transparent;
-    cursor: pointer; transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
-    white-space: nowrap;
-  }
-  .btn:active { transform: translateY(1px); }
-  .btn-primary { background: var(--accent); color: var(--accent-ink); }
-  .btn-primary:hover { box-shadow: 0 6px 20px -6px color-mix(in srgb, var(--accent) 70%, transparent); }
-  .btn-ghost { border-color: var(--line); color: var(--ink); background: var(--card); }
-  .btn-ghost:hover { background: var(--bg-soft); }
-  .btn-sm { padding: 8px 13px; font-size: 13px; border-radius: 9px; }
-
+  .nav-right { margin-left: auto; display: flex; align-items: center; gap: 16px; font-size: 13.5px; }
+  .lang { color: var(--ink-3); }
+  .lang b { color: var(--ink); font-weight: 550; }
   .toggle {
-    width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--line);
-    background: var(--card); color: var(--ink-2); cursor: pointer;
-    display: inline-flex; align-items: center; justify-content: center;
+    border: none; background: none; color: var(--ink-3); cursor: pointer;
+    display: inline-flex; align-items: center; padding: 4px;
   }
   .toggle:hover { color: var(--ink); }
-  .toggle svg { width: 16px; height: 16px; }
+  .toggle svg { width: 15px; height: 15px; }
   .dark .icon-sun { display: block; } .dark .icon-moon { display: none; }
   .icon-sun { display: none; } .icon-moon { display: block; }
 
-  /* ---------- hero ---------- */
-  .hero { position: relative; padding: 88px 0 40px; overflow: hidden; }
-  .hero-glow {
-    position: absolute; pointer-events: none; inset: 0; overflow: hidden; z-index: -1;
+  .btn {
+    display: inline-block; font-size: 14px; font-weight: 550; line-height: 1;
+    padding: 11px 20px; border-radius: 7px; border: 1px solid transparent;
   }
-  .hero-glow::before {
-    content: ""; position: absolute; width: 640px; height: 640px;
-    left: 50%; top: -380px; transform: translateX(-72%);
-    background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 22%, transparent), transparent);
-  }
-  .hero-glow::after {
-    content: ""; position: absolute; width: 520px; height: 520px;
-    left: 50%; top: -300px; transform: translateX(4%);
-    background: radial-gradient(closest-side, color-mix(in srgb, var(--warm) 18%, transparent), transparent);
-  }
-  .badge {
-    display: inline-flex; align-items: center; gap: 8px;
-    font-size: 13px; font-weight: 600; color: var(--accent);
-    background: var(--accent-soft); border-radius: 999px; padding: 6px 14px;
-    margin-bottom: 22px;
-  }
-  .badge .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--warm); }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); }
+  .btn-primary:hover { opacity: .9; }
+  .btn-ghost { border-color: var(--line); }
+  .btn-ghost:hover { background: var(--bg-soft); }
+
+  /* hero */
+  .hero { padding: 96px 0 72px; }
+  .hero .meta { font-size: 13.5px; color: var(--ink-3); margin-bottom: 20px; }
   h1 {
-    font-size: clamp(34px, 5.4vw, 56px); line-height: 1.18; letter-spacing: -.02em;
-    font-weight: 800; max-width: 15em;
+    font-size: clamp(30px, 4.6vw, 42px); line-height: 1.3; letter-spacing: -.015em;
+    font-weight: 700; max-width: 18em;
   }
-  h1 .accent {
-    background: linear-gradient(100deg, var(--accent), var(--warm));
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
-  .sub { font-size: 17px; color: var(--ink-2); max-width: 38em; margin: 22px 0 30px; }
-  .cta-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  .hint { font-size: 13px; color: var(--ink-3); margin-top: 14px; }
+  .sub { color: var(--ink-2); max-width: 36em; margin: 20px 0 32px; font-size: 16px; }
+  .cta-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .hint { font-size: 13px; color: var(--ink-3); margin-top: 16px; }
 
-  /* terminal */
-  .term {
-    margin-top: 34px; max-width: 620px;
-    background: var(--code-bg); color: var(--code-ink);
-    border-radius: 14px; box-shadow: var(--shadow);
-    border: 1px solid color-mix(in srgb, var(--code-bg) 60%, var(--line));
-    overflow: hidden;
+  pre.code {
+    margin-top: 40px; padding: 20px 22px;
+    background: var(--bg-soft); border: 1px solid var(--line); border-radius: 8px;
+    font-size: 13.5px; line-height: 2; overflow-x: auto; color: var(--ink);
   }
-  .term-bar {
-    display: flex; align-items: center; gap: 6px; padding: 11px 14px;
-    border-bottom: 1px solid rgba(255,255,255,.07); font-size: 12px; color: #8f89a3;
-  }
-  .term-bar i { width: 10px; height: 10px; border-radius: 999px; background: #4a4460; display: inline-block; }
-  .term-bar span { margin-left: 8px; }
-  .term pre { padding: 18px 20px; font-size: 13.5px; line-height: 1.9; overflow-x: auto; }
-  .term .c { color: #7d7694; }
-  .term .a { color: var(--code-accent); }
+  pre.code .c { color: var(--ink-3); }
+  pre.code .p { color: var(--ink-3); user-select: none; }
 
-  /* ---------- product mockup ---------- */
-  .mock-wrap { padding: 42px 0 20px; }
-  .mock {
-    background: var(--card); border: 1px solid var(--line); border-radius: 18px;
-    box-shadow: var(--shadow); overflow: hidden;
-  }
+  /* mockup */
+  .mock-wrap { padding-bottom: 8px; }
+  .mock { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
   .mock-bar {
-    display: flex; align-items: center; gap: 6px; padding: 12px 16px;
-    border-bottom: 1px solid var(--line);
+    padding: 10px 16px; border-bottom: 1px solid var(--line);
+    font-size: 12px; color: var(--ink-3); text-align: center;
   }
-  .mock-bar i { width: 10px; height: 10px; border-radius: 999px; background: var(--line); display: inline-block; }
-  .mock-url {
-    margin: 0 auto; font-size: 12px; color: var(--ink-3);
-    background: var(--bg-soft); border-radius: 999px; padding: 4px 18px;
-  }
-  .mock-body { padding: 26px 28px 30px; }
-  .mock-head { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
-  .avatar {
-    width: 42px; height: 42px; border-radius: 999px; flex: none;
-    background: linear-gradient(135deg, var(--warm), var(--accent));
-  }
-  .mock-head .name { font-weight: 700; font-size: 15px; line-height: 1.3; }
-  .mock-head .meta { font-size: 12px; color: var(--ink-3); }
-  .mock-head .pill {
-    margin-left: auto; font-size: 12px; font-weight: 600; color: var(--accent);
-    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-    border-radius: 999px; padding: 5px 14px;
-  }
-  .grid-art { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .mock-body { padding: 22px; }
+  .mock-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 18px; }
+  .mock-head .name { font-weight: 650; font-size: 14.5px; }
+  .mock-head .meta { font-size: 12.5px; color: var(--ink-3); }
+  .mock-head .join { margin-left: auto; font-size: 12.5px; color: var(--accent); font-weight: 550; }
+  .grid-art { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
   .art {
-    position: relative; border-radius: 12px; aspect-ratio: 4/3; overflow: hidden;
-    border: 1px solid var(--line);
+    position: relative; border-radius: 6px; aspect-ratio: 4/3;
+    border: 1px solid var(--line); overflow: hidden;
   }
   .art .tag {
-    position: absolute; left: 10px; bottom: 10px;
-    font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
-    background: rgba(20, 16, 28, .55); color: #fff; backdrop-filter: blur(4px);
+    position: absolute; left: 0; bottom: 0; font-size: 11px; line-height: 1;
+    padding: 5px 9px; border-top-right-radius: 6px;
+    background: var(--bg); color: var(--ink-3);
   }
+  .art.locked { background: var(--bg-soft) !important; }
   .art.locked::after {
-    content: "🔒 会员可见"; position: absolute; inset: 0;
+    content: "会员可见"; position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: center;
-    font-size: 12.5px; font-weight: 600; color: var(--ink);
-    background: color-mix(in srgb, var(--bg) 72%, transparent);
-    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    font-size: 12px; color: var(--ink-3); letter-spacing: .05em;
   }
-  .a1 { background: linear-gradient(140deg, #f6c88f, #e8896b 55%, #b45f7d); }
-  .a2 { background: linear-gradient(160deg, #9fb8e8, #6d4fe0 70%, #3d2f80); }
-  .a3 { background: linear-gradient(120deg, #bfe3d0, #77b8a1 60%, #3f7566); }
-  .a4 { background: linear-gradient(150deg, #e8b3cf, #b56ab0 60%, #6d3f80); }
-  .a5 { background: linear-gradient(130deg, #f2e2a8, #d9a05b 65%, #98653a); }
-  .a6 { background: linear-gradient(155deg, #a8c8f2, #6b8fd9 55%, #38508f); }
+  .a1 { background: #cdb9a5; } .a3 { background: #a5b4ad; } .a6 { background: #a9b0c2; }
+  .dark .a1 { background: #4e463c; } .dark .a3 { background: #3c4540; } .dark .a6 { background: #3d4250; }
+  .mock-note { font-size: 12.5px; color: var(--ink-3); margin-top: 12px; text-align: center; }
 
-  /* ---------- sections ---------- */
-  section { padding: 84px 0 0; }
-  .kicker {
-    font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
-    color: var(--accent); margin-bottom: 12px;
-  }
-  h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -.02em; line-height: 1.25; font-weight: 800; }
-  .lead { color: var(--ink-2); max-width: 42em; margin-top: 14px; font-size: 15.5px; }
+  /* sections */
+  section { border-top: 1px solid var(--line); padding: 72px 0; }
+  h2 { font-size: 22px; letter-spacing: -.01em; font-weight: 650; margin-bottom: 10px; }
+  .lead { color: var(--ink-2); max-width: 40em; margin-bottom: 40px; }
 
-  /* flow */
-  .flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 40px; counter-reset: step; }
-  .step {
-    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
-    padding: 22px 20px; position: relative;
+  /* steps */
+  .steps { display: grid; gap: 0; counter-reset: step; }
+  .step-item {
+    display: grid; grid-template-columns: 44px 180px 1fr; gap: 16px;
+    padding: 18px 0; border-top: 1px solid var(--line);
   }
-  .step::before {
-    counter-increment: step; content: counter(step, decimal-leading-zero);
-    font-size: 12px; font-weight: 700; color: var(--accent);
-    display: inline-block; background: var(--accent-soft);
-    border-radius: 999px; padding: 3px 11px; margin-bottom: 14px;
-    font-family: ui-monospace, Menlo, monospace;
-  }
-  .step h3 { font-size: 15.5px; font-weight: 700; margin-bottom: 6px; }
-  .step p { font-size: 13.5px; color: var(--ink-2); line-height: 1.65; }
+  .step-item:first-child { border-top: none; padding-top: 0; }
+  .step-item .n { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--ink-3); padding-top: 2px; }
+  .step-item h3 { font-size: 15px; font-weight: 650; }
+  .step-item p { font-size: 14px; color: var(--ink-2); }
 
   /* features */
-  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 40px; }
-  .feat {
-    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
-    padding: 24px 22px; transition: border-color .15s ease;
-  }
-  .feat:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
-  .feat .ico {
-    width: 38px; height: 38px; border-radius: 10px; margin-bottom: 16px;
-    background: var(--accent-soft); color: var(--accent);
-    display: flex; align-items: center; justify-content: center;
-  }
-  .feat .ico svg { width: 19px; height: 19px; }
-  .feat h3 { font-size: 16px; font-weight: 700; margin-bottom: 7px; }
-  .feat p { font-size: 13.5px; color: var(--ink-2); line-height: 1.7; }
+  .features { display: grid; grid-template-columns: 1fr 1fr; gap: 36px 48px; }
+  .feat h3 { font-size: 15px; font-weight: 650; margin-bottom: 6px; }
+  .feat p { font-size: 14px; color: var(--ink-2); }
 
   /* honest */
-  .honest { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 40px; }
-  .panel { border-radius: 16px; padding: 30px 30px 26px; border: 1px solid var(--line); background: var(--card); }
-  .panel h3 { font-size: 17px; font-weight: 800; margin-bottom: 16px; display: flex; align-items: center; gap: 9px; }
-  .panel ul { list-style: none; display: grid; gap: 10px; }
-  .panel li { font-size: 14px; color: var(--ink-2); padding-left: 24px; position: relative; }
-  .panel li::before { position: absolute; left: 0; top: 0; font-weight: 700; }
-  .panel.yes li::before { content: "✓"; color: var(--accent); }
-  .panel.no li::before { content: "—"; color: var(--ink-3); }
-  .panel.no { background: var(--bg-soft); }
-  .panel .note { font-size: 12.5px; color: var(--ink-3); margin-top: 16px; }
+  .honest { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; }
+  .honest h3 { font-size: 15px; font-weight: 650; margin-bottom: 14px; }
+  .honest ul { list-style: none; }
+  .honest li {
+    font-size: 14px; color: var(--ink-2); padding: 9px 0 9px 0;
+    border-top: 1px solid var(--line);
+  }
+  .honest li:first-child { border-top: none; padding-top: 0; }
+  .honest .note { font-size: 13px; color: var(--ink-3); margin-top: 14px; }
 
   /* deploy */
-  .deploy { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; margin-top: 40px; }
-  .deploy-list { display: grid; gap: 14px; margin-top: 24px; }
-  .deploy-item { display: flex; gap: 13px; font-size: 14px; color: var(--ink-2); }
-  .deploy-item b { color: var(--ink); font-weight: 650; }
-  .deploy-item .d {
-    flex: none; width: 8px; height: 8px; border-radius: 999px; margin-top: 9px;
-    background: linear-gradient(135deg, var(--accent), var(--warm));
+  .deploy-list { display: grid; gap: 0; margin-bottom: 36px; }
+  .deploy-item {
+    display: grid; grid-template-columns: 170px 1fr; gap: 16px;
+    font-size: 14px; color: var(--ink-2); padding: 12px 0; border-top: 1px solid var(--line);
   }
+  .deploy-item:first-child { border-top: none; padding-top: 0; }
+  .deploy-item b { color: var(--ink); font-weight: 600; }
+  .deploy pre.code { margin-top: 0; }
 
   /* cta */
-  .cta {
-    margin-top: 92px; border-top: 1px solid var(--line);
-    background:
-      radial-gradient(560px 260px at 30% -60px, color-mix(in srgb, var(--accent) 14%, transparent), transparent),
-      radial-gradient(460px 240px at 75% -80px, color-mix(in srgb, var(--warm) 12%, transparent), transparent),
-      var(--bg-soft);
-    padding: 84px 0;
-    text-align: center;
-  }
-  .cta h2 { max-width: 20em; margin: 0 auto; }
-  .cta .lead { margin: 16px auto 30px; }
+  .cta { text-align: center; }
+  .cta h2 { margin-bottom: 8px; }
+  .cta .lead { margin: 0 auto 28px; }
   .cta .cta-row { justify-content: center; }
 
-  footer { border-top: 1px solid var(--line); padding: 34px 0 44px; }
-  .foot { display: flex; align-items: center; gap: 20px; font-size: 13px; color: var(--ink-3); flex-wrap: wrap; }
-  .foot .brand { font-size: 14px; color: var(--ink); }
-  .foot .links { margin-left: auto; display: flex; gap: 18px; }
+  footer { border-top: 1px solid var(--line); padding: 28px 0 40px; }
+  .foot { display: flex; gap: 18px; font-size: 13px; color: var(--ink-3); flex-wrap: wrap; }
+  .foot .links { margin-left: auto; display: flex; gap: 16px; }
   .foot a:hover { color: var(--ink); }
 
-  @media (max-width: 860px) {
+  @media (max-width: 760px) {
     .nav-links { display: none; }
-    .flow { grid-template-columns: 1fr 1fr; }
-    .features { grid-template-columns: 1fr 1fr; }
-    .honest, .deploy { grid-template-columns: 1fr; }
+    .features, .honest { grid-template-columns: 1fr; }
+    .step-item { grid-template-columns: 36px 1fr; }
+    .step-item p { grid-column: 2; }
+    .deploy-item { grid-template-columns: 1fr; gap: 2px; }
     .grid-art { grid-template-columns: 1fr 1fr; }
     .art:nth-child(n+5) { display: none; }
-  }
-  @media (max-width: 560px) {
-    .flow, .features { grid-template-columns: 1fr; }
-    .hero { padding-top: 64px; }
+    .hero { padding: 64px 0 56px; }
   }
 </style>
 </head>
@@ -312,13 +191,12 @@
 
 <header>
   <div class="wrap nav">
-    <a class="brand" href="#"><span class="logo"></span>OpenLayerlyPro</a>
+    <a class="brand" href="#">OpenLayerlyPro</a>
     <nav class="nav-links">
       <a href="#features">功能</a>
       <a href="#flow">工作方式</a>
       <a href="#honest">适合谁</a>
       <a href="#deploy">部署</a>
-      <a href="#">文档</a>
     </nav>
     <div class="nav-right">
       <span class="lang"><b>中文</b> · EN · 日本語</span>
@@ -326,86 +204,76 @@
         <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
         <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
       </button>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/39mikuu/OpenLayerlyPro">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-2.17c-3.2.7-3.87-1.37-3.87-1.37-.52-1.33-1.28-1.68-1.28-1.68-1.04-.72.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.74.4-1.25.72-1.53-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.67.41.35.77 1.05.77 2.12v3.15c0 .3.21.66.8.55A10.52 10.52 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z"/></svg>
-        GitHub
-      </a>
+      <a href="https://github.com/39mikuu/OpenLayerlyPro">GitHub</a>
     </div>
   </div>
 </header>
 
 <main>
-  <div class="hero">
-    <div class="hero-glow"></div>
-    <div class="wrap">
-      <span class="badge"><span class="dot"></span>开源 · AGPL-3.0 · v1.0 pre-release</span>
-      <h1>属于画师自己的<br /><span class="accent">会员站</span>，跑在自己的服务器上</h1>
-      <p class="sub">
-        OpenLayerlyPro 是开源、自托管的单画师会员站系统。发布会员作品、设置会员等级，
-        用收款码人工审核、Stripe 一次性付款或自动订阅收款，把高清图、PSD、笔刷包和视频
-        直接交付给你的粉丝——没有平台抽成，数据完全归你。
-      </p>
-      <div class="cta-row">
-        <a class="btn btn-primary" href="#deploy">快速开始</a>
-        <a class="btn btn-ghost" href="https://github.com/39mikuu/OpenLayerlyPro">查看源码</a>
-      </div>
-      <p class="hint">一台能跑 Docker 的机器即可，支持 Cloudflare Tunnel，家庭服务器无公网 IP 也能用。</p>
-
-      <div class="term">
-        <div class="term-bar"><i></i><i></i><i></i><span>terminal</span></div>
-        <pre><span class="c"># 三分钟拉起你的会员站</span>
-<span class="a">git clone</span> https://github.com/39mikuu/OpenLayerlyPro.git
-<span class="a">cd</span> OpenLayerlyPro && cp .env.example .env
-<span class="a">docker compose</span> up -d</pre>
-      </div>
+  <div class="hero wrap">
+    <p class="meta">开源 · AGPL-3.0 · 自托管</p>
+    <h1>属于画师自己的会员站，跑在自己的服务器上</h1>
+    <p class="sub">
+      发布会员作品，设置会员等级，用收款码人工审核、Stripe 一次性付款或自动订阅收款，
+      把高清图、PSD、笔刷包和视频直接交付给粉丝。没有平台抽成，数据完全归你。
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="#deploy">快速开始</a>
+      <a class="btn btn-ghost" href="https://github.com/39mikuu/OpenLayerlyPro">GitHub</a>
     </div>
+    <p class="hint">一台能跑 Docker 的机器即可。支持 Cloudflare Tunnel，无公网 IP 也能部署。</p>
+
+    <pre class="code"><span class="p">$</span> git clone https://github.com/39mikuu/OpenLayerlyPro.git
+<span class="p">$</span> cd OpenLayerlyPro && cp .env.example .env
+<span class="p">$</span> docker compose up -d   <span class="c"># 首次访问 /admin/setup 完成初始化</span></pre>
   </div>
 
   <div class="mock-wrap wrap">
     <div class="mock">
-      <div class="mock-bar"><i></i><i></i><i></i><span class="mock-url">yourname.example.com</span></div>
+      <div class="mock-bar">yourname.example.com</div>
       <div class="mock-body">
         <div class="mock-head">
-          <span class="avatar"></span>
-          <div>
-            <div class="name">ヒナタ · Hinata</div>
-            <div class="meta">插画 / 角色设计 · 会员站</div>
-          </div>
-          <span class="pill">成为会员</span>
+          <span class="name">ヒナタ · Hinata</span>
+          <span class="meta">插画 / 角色设计</span>
+          <a class="join" href="#">成为会员 →</a>
         </div>
         <div class="grid-art">
           <div class="art a1"><span class="tag">公开</span></div>
-          <div class="art a2 locked"></div>
+          <div class="art locked"></div>
           <div class="art a3"><span class="tag">公开</span></div>
-          <div class="art a4 locked"></div>
-          <div class="art a5 locked"></div>
+          <div class="art locked"></div>
+          <div class="art locked"></div>
           <div class="art a6"><span class="tag">登录可见</span></div>
         </div>
+        <p class="mock-note">public / login / member 三级内容权限</p>
       </div>
     </div>
   </div>
 
   <section id="flow">
     <div class="wrap">
-      <p class="kicker">核心闭环</p>
-      <h2>从发布作品到粉丝下载，一条链路走完</h2>
-      <p class="lead">不需要拼接一堆 SaaS。发布、收款、审核、开通、交付，全部在一个系统里完成。</p>
-      <div class="flow">
-        <div class="step">
+      <h2>工作方式</h2>
+      <p class="lead">发布、收款、审核、开通、交付，在一个系统里走完，不需要拼接一堆 SaaS。</p>
+      <div class="steps">
+        <div class="step-item">
+          <span class="n">01</span>
           <h3>初始化站点</h3>
-          <p>首次访问进入引导页，填写站点名称、创作者信息和管理员账号，配置 SMTP 与存储。</p>
+          <p>首次访问进入引导页，填写站点信息和管理员账号，配置 SMTP 与存储。</p>
         </div>
-        <div class="step">
+        <div class="step-item">
+          <span class="n">02</span>
           <h3>创建会员等级</h3>
-          <p>配置收款码和/或 Stripe，设置会员等级与价格，发布 public / login / member 三级权限的作品。</p>
+          <p>配置收款码和/或 Stripe，设置等级与价格，发布三级权限的作品。</p>
         </div>
-        <div class="step">
+        <div class="step-item">
+          <span class="n">03</span>
           <h3>粉丝付款</h3>
           <p>粉丝邮箱验证码登录，上传付款截图、进入 Stripe Checkout，或创建自动续费订阅。</p>
         </div>
-        <div class="step">
+        <div class="step-item">
+          <span class="n">04</span>
           <h3>开通与交付</h3>
-          <p>人工审核或签名 webhook 自动确认后，系统事务化开通会员并发送邮件，粉丝按权限访问和下载。</p>
+          <p>人工审核或 webhook 自动确认后，系统事务化开通会员并发送邮件，粉丝按权限访问和下载。</p>
         </div>
       </div>
     </div>
@@ -413,39 +281,32 @@
 
   <section id="features">
     <div class="wrap">
-      <p class="kicker">功能</p>
-      <h2>为「一个人的创作事业」设计</h2>
+      <h2>功能</h2>
       <p class="lead">不做多画师平台、不做推荐流，只把单创作者会员站需要的东西做扎实。</p>
       <div class="features">
         <div class="feat">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg></div>
           <h3>三种收款方式</h3>
-          <p>收款码 + 付款截图人工审核、Stripe 一次性 Checkout、Stripe 自动订阅续费，可组合使用，无卡地区也有手动续费提醒。</p>
+          <p>收款码 + 付款截图人工审核、Stripe 一次性 Checkout、Stripe 自动订阅，可组合使用；无卡地区有手动续费提醒。</p>
         </div>
         <div class="feat">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
           <h3>三级内容权限</h3>
-          <p>public / login / member 三档可见性，首页限量展示，作品列表游标分页，锁住该锁的，露出该露的。</p>
+          <p>public / login / member 三档可见性，首页限量展示，作品列表游标分页。</p>
         </div>
         <div class="feat">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></div>
           <h3>大文件交付</h3>
-          <p>高清图、PSD、ZIP、笔刷包与 mp4/webm 视频附件，流式上传、Range 断点下载、内联视频播放，本地或 S3/R2 存储。</p>
+          <p>高清图、PSD、ZIP、笔刷包与视频附件，流式上传、Range 断点下载、内联播放，本地或 S3 / R2 存储。</p>
         </div>
         <div class="feat">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg></div>
           <h3>可靠的授予与反转</h3>
-          <p>签名 webhook 持久化 inbox、事务化会员开通、durable outbox 邮件投递；退款与拒付自动反转对应付款期。</p>
+          <p>签名 webhook 持久化、事务化会员开通、可靠邮件投递；退款与拒付自动反转对应付款期。</p>
         </div>
         <div class="feat">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z"/></svg></div>
           <h3>中 / 英 / 日三语</h3>
-          <p>UI 完整 i18n，内容支持多语言与 AI 辅助翻译草稿（默认关闭、管理员手动触发），面向全球粉丝。</p>
+          <p>UI 完整 i18n，内容支持多语言与 AI 辅助翻译草稿（默认关闭，管理员手动触发）。</p>
         </div>
         <div class="feat">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01"/><path d="M2 12h20"/></svg></div>
           <h3>自托管友好</h3>
-          <p>Docker Compose 一键部署，启动时自动迁移数据库；per-request nonce CSP、安全响应头与硬化备份/恢复开箱即用。</p>
+          <p>Docker Compose 部署，启动时自动迁移数据库；CSP、安全响应头与硬化备份 / 恢复开箱即用。</p>
         </div>
       </div>
     </div>
@@ -453,28 +314,27 @@
 
   <section id="honest">
     <div class="wrap">
-      <p class="kicker">适合谁</p>
-      <h2>我们把「不做什么」也写在首页</h2>
-      <p class="lead">开源项目最省时间的方式，是让你在部署之前就知道它是不是你要的。</p>
+      <h2>适合谁</h2>
+      <p class="lead">在部署之前，先确认它是不是你要的。</p>
       <div class="honest">
-        <div class="panel yes">
-          <h3>✦ 适合你，如果</h3>
+        <div>
+          <h3>适合你，如果</h3>
           <ul>
             <li>你是想自己掌握粉丝关系和收入的单画师 / 单创作者</li>
-            <li>你想用收款码人工审核、Stripe 一次性付款或自动订阅，或三者组合</li>
-            <li>你（或你的朋友）能维护 Docker Compose、PostgreSQL、SMTP 和备份</li>
-            <li>你想在家庭服务器 / NAS 上跑，通过 Cloudflare Tunnel 暴露服务</li>
+            <li>你想用收款码人工审核、Stripe 付款或订阅，或三者组合</li>
+            <li>你能维护 Docker Compose、PostgreSQL、SMTP 和备份</li>
+            <li>你想在家庭服务器或 NAS 上跑，通过 Cloudflare Tunnel 对外服务</li>
           </ul>
         </div>
-        <div class="panel no">
+        <div>
           <h3>当前版本不包含</h3>
           <ul>
             <li>多画师入驻平台、内容广场或推荐流</li>
             <li>评论、点赞、收藏、关注</li>
             <li>OAuth 或粉丝密码注册</li>
-            <li>视频转码、HLS/DASH 与多实例高可用编排</li>
+            <li>视频转码、HLS/DASH 与多实例高可用</li>
           </ul>
-          <p class="note">完整的非目标清单见 README——我们宁可现在说清楚，也不想让你部署完才发现。</p>
+          <p class="note">完整的非目标清单见 <a class="text" href="https://github.com/39mikuu/OpenLayerlyPro#非目标">README</a>。</p>
         </div>
       </div>
     </div>
@@ -482,52 +342,38 @@
 
   <section id="deploy">
     <div class="wrap">
-      <div class="deploy">
-        <div>
-          <p class="kicker">部署</p>
-          <h2>一台小主机，就是你的全部基础设施</h2>
-          <div class="deploy-list">
-            <div class="deploy-item"><span class="d"></span><span><b>Docker Compose 启动</b>：容器启动时自动执行数据库迁移，迁移失败则拒绝启动，不会带病上线。</span></div>
-            <div class="deploy-item"><span class="d"></span><span><b>Cloudflare Tunnel</b>：无公网 IP 的家庭服务器、NAS、PVE 虚拟机都能对外服务。</span></div>
-            <div class="deploy-item"><span class="d"></span><span><b>存储随你选</b>：本地磁盘（原子写入）或 S3 / Cloudflare R2 对象存储。</span></div>
-            <div class="deploy-item"><span class="d"></span><span><b>硬化备份 / 恢复</b>：数据库与文件的备份恢复流程经过端到端验收测试。</span></div>
-          </div>
-        </div>
-        <div class="term" style="margin-top:0; max-width:none;">
-          <div class="term-bar"><i></i><i></i><i></i><span>.env</span></div>
-          <pre><span class="c"># 至少配置这两项就能跑起来</span>
-<span class="a">SESSION_SECRET</span>=change-me-to-a-long-random-string
-<span class="a">SMTP_URL</span>=smtps://user:pass@smtp.example.com:465
-
-<span class="c"># 可选：Stripe / S3 / Cloudflare Tunnel</span>
-<span class="a">STRIPE_SECRET_KEY</span>=sk_live_...
-<span class="a">APP_URL</span>=https://yourname.example.com</pre>
-        </div>
+      <h2>部署</h2>
+      <p class="lead">一台小主机，就是你的全部基础设施。</p>
+      <div class="deploy-list">
+        <div class="deploy-item"><b>Docker Compose</b><span>容器启动时自动执行数据库迁移，迁移失败则拒绝启动。</span></div>
+        <div class="deploy-item"><b>Cloudflare Tunnel</b><span>无公网 IP 的家庭服务器、NAS、PVE 虚拟机都能对外服务。</span></div>
+        <div class="deploy-item"><b>存储</b><span>本地磁盘（原子写入）或 S3 / Cloudflare R2 对象存储。</span></div>
+        <div class="deploy-item"><b>备份 / 恢复</b><span>数据库与文件的备份恢复流程经过端到端验收测试。</span></div>
       </div>
+      <pre class="code"><span class="c"># .env 至少配置这两项就能跑起来</span>
+SESSION_SECRET=change-me-to-a-long-random-string
+SMTP_URL=smtps://user:pass@smtp.example.com:465</pre>
     </div>
   </section>
 
-  <div class="cta">
+  <section class="cta">
     <div class="wrap">
-      <h2>你的作品，你的粉丝，<br />你的服务器。</h2>
-      <p class="lead">开源、可审计、可迁移。今天就把会员站搬回自己手里。</p>
+      <h2>你的作品，你的粉丝，你的服务器</h2>
+      <p class="lead">开源、可审计、可迁移。</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="https://github.com/39mikuu/OpenLayerlyPro">在 GitHub 上开始</a>
-        <a class="btn btn-ghost" href="#">阅读部署文档</a>
       </div>
     </div>
-  </div>
+  </section>
 </main>
 
 <footer>
   <div class="wrap foot">
-    <a class="brand" href="#"><span class="logo" style="width:20px;height:20px;border-radius:6px;"></span>OpenLayerlyPro</a>
-    <span>AGPL-3.0 开源协议</span>
+    <span>OpenLayerlyPro · AGPL-3.0</span>
     <div class="links">
       <a href="https://github.com/39mikuu/OpenLayerlyPro">GitHub</a>
-      <a href="#">文档</a>
-      <a href="#">更新日志</a>
-      <a href="#">安全政策</a>
+      <a href="https://github.com/39mikuu/OpenLayerlyPro/blob/main/CHANGELOG.md">更新日志</a>
+      <a href="https://github.com/39mikuu/OpenLayerlyPro/blob/main/SECURITY.md">安全政策</a>
     </div>
   </div>
 </footer>
