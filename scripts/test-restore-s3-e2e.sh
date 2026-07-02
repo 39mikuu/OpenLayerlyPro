@@ -136,7 +136,8 @@ fi
 
 teardown_projects() {
   for tp_project in \
-    "$SOURCE_PROJECT" "$RESTORE_PROJECT" "${RESTORE_PROJECT}_fail" "${RESTORE_PROJECT}_autherr"; do
+    "$SOURCE_PROJECT" "$RESTORE_PROJECT" "${RESTORE_PROJECT}_fail" \
+    "${RESTORE_PROJECT}_autherr" "${RESTORE_PROJECT}_secret_mismatch"; do
     sudo -n env \
       COMPOSE_ENV_FILE="$DRILL_ENV" \
       S7_E2E_APP_PORT="${S7_E2E_APP_PORT:-3005}" \
@@ -155,6 +156,7 @@ cleanup() {
   [ "$CREATED_DOT_ENV" = true ] && [ -f .env ] && rm -f .env
   rm -f \
     "$DRILL_ENV" \
+    "${WRONG_SESSION_ENV:-/tmp/openlayerly-s7-wrong-session.env}" \
     "${AUTH_FAIL_OVERRIDE:-/tmp/openlayerly-s7-s3-autherr-override.yml}" \
     "${POLICY_JSON:-/tmp/openlayerly-s7-getonly-policy.json}"
 }
@@ -205,6 +207,23 @@ COMPOSE_PROJECT_NAME=$SOURCE_PROJECT S7_E2E_APP_PORT=$SOURCE_PORT S7_S3_MINIO_PO
 ARCHIVE=$(ls -1t "$BACKUP_DIR"/openlayerly-backup-*.tar.gz | head -n 1)
 [ -n "$ARCHIVE" ] || fail "backup archive not found"
 tar -tzf "$ARCHIVE" | grep -q 'UPLOADS_SKIPPED_S3' || fail "S3 backup missing UPLOADS_SKIPPED_S3 marker"
+
+echo "Verifying an external session-secret fingerprint mismatch fails before restore..."
+WRONG_SESSION_ENV=$(mktemp "${TMPDIR:-/tmp}/openlayerly-s7-wrong-session.XXXXXX")
+sed 's/^SESSION_SECRET=.*/SESSION_SECRET=wrong-session-secret-012345678901234/' \
+  "$DRILL_ENV" > "$WRONG_SESSION_ENV"
+sudo -n docker tag \
+  "${SOURCE_PROJECT}-app:latest" "${RESTORE_PROJECT}_secret_mismatch-app:latest"
+if S7_E2E_APP_PORT=$RESTORE_PORT S7_S3_MINIO_PORT=$RESTORE_MINIO_PORT \
+  COMPOSE_PROJECT_NAME="${RESTORE_PROJECT}_secret_mismatch" \
+  COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:docker-compose.s7-s3-e2e.yml" \
+  COMPOSE_ENV_FILE="$WRONG_SESSION_ENV" \
+  ./scripts/restore.sh "$ARCHIVE" --yes >/tmp/openlayerly-s7-secret-mismatch.log 2>&1; then
+  fail "restore unexpectedly accepted a mismatched external SESSION_SECRET"
+fi
+grep -q "does not match the archive fingerprint" /tmp/openlayerly-s7-secret-mismatch.log \
+  || fail "restore did not report the expected session-secret mismatch"
+rm -f /tmp/openlayerly-s7-secret-mismatch.log
 
 echo "Stopping source app before restore target comes online..."
 S7_E2E_APP_PORT=$SOURCE_PORT S7_S3_MINIO_PORT=$SOURCE_MINIO_PORT \

@@ -168,6 +168,16 @@ validate_config_key_file_path() {
   esac
 }
 
+validate_session_secret_file_path() {
+  path=$1
+
+  validate_path_under_mount "$path" "/app/secrets" "SESSION_SECRET_FILE"
+  case "$path" in
+    /app/secrets) fail "SESSION_SECRET_FILE must be a file path, not a directory" ;;
+    */) fail "SESSION_SECRET_FILE must be a file path, not a directory" ;;
+  esac
+}
+
 validate_upload_dir_path() {
   path=$1
 
@@ -194,6 +204,11 @@ read_live_container_config_key_file() {
 read_container_config_key_file() {
   compose run --rm -T --no-deps --entrypoint sh app -c \
     'printf %s "${CONFIG_ENCRYPTION_KEY_FILE:-/app/secrets/config-encryption-key}"'
+}
+
+read_container_session_secret_file() {
+  compose run --rm -T --no-deps --entrypoint sh app -c \
+    'printf %s "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
 }
 
 # Percent-encode a string for safe use in a URL userinfo (user/password) component.
@@ -286,6 +301,43 @@ preflight_config_key_restore_target() {
 
   preflight_volume_write_read_delete \
     "$target_key_dir" "CONFIG_ENCRYPTION_KEY_FILE secrets volume"
+}
+
+preflight_session_secret_restore_target() {
+  target_secret_file=$1
+
+  validate_session_secret_file_path "$target_secret_file"
+  target_secret_dir=${target_secret_file%/*}
+  run_app_shell '
+    set -eu
+    mkdir -p "$1"
+    test -d "$1"
+    if [ -e "$2" ] && [ ! -f "$2" ]; then
+      echo "SESSION_SECRET_FILE target exists and is not a regular file" >&2
+      exit 1
+    fi
+  ' "$target_secret_dir" "$target_secret_file" \
+    || fail "unable to prepare SESSION_SECRET_FILE target on the secrets volume"
+
+  preflight_volume_write_read_delete \
+    "$target_secret_dir" "SESSION_SECRET_FILE secrets volume"
+}
+
+verify_container_session_secret_file() {
+  target_secret_file=$1
+  run_app_shell '
+    set -eu
+    test -f "$1"
+    test ! -L "$1"
+    node -e "
+      const fs = require(\"fs\");
+      const value = fs.readFileSync(process.argv[1], \"utf8\").replace(/\\r?\\n$/, \"\");
+      if (!value || value.trim().length === 0 || value === \"change-me\" || value.length < 32) {
+        process.exit(1);
+      }
+    " "$1"
+    chmod 600 "$1"
+  ' "$target_secret_file"
 }
 
 preflight_upload_dir_restore_target() {

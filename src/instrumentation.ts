@@ -8,6 +8,10 @@ export async function register() {
     try {
       const { getEnv } = await import("@/lib/env");
       const env = getEnv();
+      if (process.env.NEXT_PHASE !== "phase-production-build") {
+        const { getSessionSecret } = await import("@/modules/security/session-secret");
+        getSessionSecret();
+      }
       if (env.APP_INSTANCE_COUNT > 1) {
         console.warn(
           "APP_INSTANCE_COUNT is greater than 1, but v1.0 rate limits are process-local and not globally consistent across replicas.",

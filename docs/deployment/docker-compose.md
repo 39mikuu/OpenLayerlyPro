@@ -6,7 +6,7 @@ The default deployment uses the included app and PostgreSQL services.
 
 ```bash
 cp .env.example .env
-# Edit APP_URL, SESSION_SECRET, SMTP, and storage settings.
+# Edit APP_URL, SMTP, and storage settings. SESSION_SECRET may stay unset.
 docker compose up -d --build
 ```
 
@@ -14,15 +14,17 @@ The app container entrypoint:
 
 1. prepares uploads and secrets directories,
 2. creates or loads the config encryption key,
-3. runs database migrations,
-4. starts the Next.js server.
+3. atomically creates or loads `/app/secrets/session-secret`,
+4. runs database migrations,
+5. validates the session secret before dispatch starts,
+6. starts the Next.js server.
 
 If migrations fail, the app does not start.
 
 ## Required Production Settings
 
 - `APP_URL`
-- `SESSION_SECRET`
+- `SESSION_SECRET` or `SESSION_SECRET_FILE` (Compose defaults to the persistent file)
 - `DATABASE_URL`
 - SMTP settings for fan login emails
 - `CONFIG_ENCRYPTION_KEY` or `CONFIG_ENCRYPTION_KEY_FILE`
@@ -43,6 +45,11 @@ curl http://localhost:3000/api/ready
 
 - PostgreSQL data volume
 - uploads volume when using local storage
-- secrets volume containing `/app/secrets/config-encryption-key`
+- secrets volume containing `/app/secrets/config-encryption-key` and
+  `/app/secrets/session-secret`
 
-Losing the config encryption key may make encrypted admin settings unrecoverable.
+`SESSION_SECRET` environment overrides are never copied to disk. All replicas must use
+the same externally managed value or mounted file; a named volume is local to one Docker
+host. Losing/replacing the secret invalidates sessions and authentication intermediates.
+`docker compose down -v` deletes the secrets volume and is destructive without a tested
+backup.

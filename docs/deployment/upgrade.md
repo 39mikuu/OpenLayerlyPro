@@ -24,7 +24,10 @@ Create and retain a complete archive immediately before upgrading:
 ./scripts/backup.sh /srv/backups/openlayerly
 ```
 
-Do not proceed unless the command exits successfully. For local storage, the archive contains PostgreSQL, the file-backed config encryption key, and uploads. `SESSION_SECRET` and externally managed secrets remain outside the archive and must be preserved separately.
+Do not proceed unless the command exits successfully. For local storage, the archive contains
+PostgreSQL, file-backed config/session secrets, and uploads. An environment-managed
+`SESSION_SECRET` is not archived; its fingerprint is recorded and the exact value must remain
+in the operator's secret manager.
 
 For S3/R2, record and verify a matching bucket version/snapshot/provider recovery point. The archive alone cannot restore object bytes.
 
@@ -54,6 +57,10 @@ docker compose pull app
 ```
 
 Do not run `docker compose up` yet. The normal entrypoint runs migrations and starts the dispatcher, which is too early for the required pre-migration remediation/backfill sequence.
+
+Existing env-managed deployments remain compatible. To switch from env to file, first write
+the exact existing value to `SESSION_SECRET_FILE` with mode `0600`, then remove the env
+override. Never let entrypoint generate a different value during this migration.
 
 ## 4. Stop Writes and Resolve Duplicate Pending Payments
 

@@ -26,9 +26,10 @@ If private vulnerability reporting is temporarily unavailable, contact the maint
 
 ## Self-Hosting Security Checklist
 
-- Set a strong `SESSION_SECRET` in production. The app refuses to start with the default or short value.
+- Docker Compose atomically generates a strong file-backed `SESSION_SECRET`; advanced deployments may provide an external env value or mounted file.
 - Back up the config encryption key file or Docker `secrets` volume. Losing it can make encrypted settings unrecoverable.
-- Preserve the same `SESSION_SECRET` for seamless session/login-task recovery; rotating it intentionally invalidates sessions and can make in-flight encrypted login-code tasks undecryptable.
+- Preserve the same `SESSION_SECRET` for session/login-task recovery. Replacing or deleting it intentionally invalidates sessions and can make in-flight encrypted login-code tasks undecryptable. File-backed values are archived; external values remain the operator's responsibility.
+- Never run `docker compose down -v` without a tested recovery point for the secrets volume.
 - Run the app behind HTTPS using Cloudflare Tunnel, Caddy, Nginx, Traefik, or another trusted edge.
 - Configure `TRUSTED_PROXY_HEADER` and `TRUSTED_PROXY_HOPS` only for proxy layers you control.
 - Do not expose the origin port directly when trusting single-value headers such as `cf-connecting-ip`.

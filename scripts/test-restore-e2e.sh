@@ -64,7 +64,7 @@ cat >"$DRILL_ENV" <<EOF
 APP_URL=http://127.0.0.1:3003
 APP_NAME=OpenLayerlyPro S7 Restore Drill
 NODE_ENV=production
-SESSION_SECRET=s7-restore-e2e-session-secret-0123456789
+SESSION_SECRET_FILE=/app/secrets/session-secret
 SECURITY_CSP_MODE=auto
 SECURITY_HSTS_ENABLED=false
 CONFIG_ENCRYPTION_KEY=
@@ -117,6 +117,38 @@ echo "Starting source stack on port ${SOURCE_PORT} with UPLOAD_DIR=${NESTED_UPLO
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d postgres
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d app
 wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
+SOURCE_SESSION_SECRET=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+    sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
+)
+[ "${#SOURCE_SESSION_SECRET}" -ge 32 ] || fail "source session secret was not generated"
+
+echo "Verifying session secret survives restart and container recreation..."
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" restart app >/dev/null
+wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
+RESTARTED_SESSION_SECRET=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+    sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
+)
+[ "$RESTARTED_SESSION_SECRET" = "$SOURCE_SESSION_SECRET" ] \
+  || fail "session secret changed after restart"
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d --force-recreate app >/dev/null
+wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
+RECREATED_SESSION_SECRET=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+    sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
+)
+[ "$RECREATED_SESSION_SECRET" = "$SOURCE_SESSION_SECRET" ] \
+  || fail "session secret changed after container recreation"
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" down >/dev/null
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d postgres app >/dev/null
+wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
+RECREATED_STACK_SESSION_SECRET=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+    sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
+)
+[ "$RECREATED_STACK_SESSION_SECRET" = "$SOURCE_SESSION_SECRET" ] \
+  || fail "session secret changed after compose down/up with retained volumes"
 
 echo "Seeding source data..."
 SEED_JSON=$(
@@ -271,6 +303,12 @@ S7_E2E_APP_PORT=$RESTORE_PORT \
   ./scripts/restore.sh "$ARCHIVE" --yes
 
 echo "Verifying restored content..."
+RESTORED_SESSION_SECRET=$(
+  S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T app \
+    sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
+)
+[ "$RESTORED_SESSION_SECRET" = "$SOURCE_SESSION_SECRET" ] \
+  || fail "restored session secret does not match the source"
 READY_BODY=$(curl -fsS "http://127.0.0.1:${RESTORE_PORT}/api/ready")
 echo "$READY_BODY" | grep -q '"ok":true' || fail "ready body was not ok: $READY_BODY"
 
