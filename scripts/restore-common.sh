@@ -312,7 +312,7 @@ preflight_session_secret_restore_target() {
     set -eu
     mkdir -p "$1"
     test -d "$1"
-    if [ -e "$2" ] && [ ! -f "$2" ]; then
+    if [ -L "$2" ] || { [ -e "$2" ] && [ ! -f "$2" ]; }; then
       echo "SESSION_SECRET_FILE target exists and is not a regular file" >&2
       exit 1
     fi

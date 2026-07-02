@@ -289,6 +289,37 @@ for variant in missing both mismatch; do
   [ "$SENTINEL_KEY" = "contract-key-untouched" ] \
     || fail "malformed $variant archive changed official config key"
 done
+
+echo "Verifying session-secret target symlinks fail before database replacement..."
+for symlink_variant in regular dangling; do
+  S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" run --rm --no-deps \
+    --entrypoint sh app -c '
+      set -eu
+      rm -f /app/secrets/session-secret
+      if [ "$1" = regular ]; then
+        ln -s /app/secrets/config-encryption-key /app/secrets/session-secret
+      else
+        ln -s /app/secrets/missing-session-secret /app/secrets/session-secret
+      fi
+    ' restore-symlink "$symlink_variant"
+  if S7_E2E_APP_PORT=$RESTORE_PORT \
+    COMPOSE_PROJECT_NAME=$RESTORE_PROJECT \
+    COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml" \
+    COMPOSE_ENV_FILE="$DRILL_ENV" \
+    ./scripts/restore.sh "$ARCHIVE" --yes >/dev/null 2>&1; then
+    fail "restore unexpectedly accepted a $symlink_variant session-secret target symlink"
+  fi
+  SENTINEL_DB=$(
+    S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T postgres sh -c '
+      exec psql -At -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" \
+        -c "select value from restore_contract_sentinel;"
+    '
+  )
+  [ "$SENTINEL_DB" = "untouched" ] \
+    || fail "$symlink_variant session-secret target symlink changed official database"
+  S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" run --rm --no-deps \
+    --entrypoint sh app -c 'rm -f /app/secrets/session-secret'
+done
 rm -rf "$CONTRACT_WORK"
 CONTRACT_WORK=""
 
