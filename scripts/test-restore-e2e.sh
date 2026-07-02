@@ -245,7 +245,7 @@ S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" run --rm --no-deps \
   --entrypoint sh app -c \
   'printf contract-key-untouched > /app/secrets/config-encryption-key'
 CONTRACT_WORK=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-s7-contract.XXXXXX")
-for variant in missing both mismatch; do
+for variant in missing both mismatch weak-session-secret; do
   mkdir -p "$CONTRACT_WORK/$variant"
   tar -xzf "$ARCHIVE" -C "$CONTRACT_WORK/$variant"
   case "$variant" in
@@ -259,6 +259,9 @@ for variant in missing both mismatch; do
     mismatch)
       rm -rf "$CONTRACT_WORK/$variant/uploads"
       touch "$CONTRACT_WORK/$variant/UPLOADS_SKIPPED_S3"
+      ;;
+    weak-session-secret)
+      printf '%32s' '' > "$CONTRACT_WORK/$variant/secrets/session-secret"
       ;;
   esac
   (

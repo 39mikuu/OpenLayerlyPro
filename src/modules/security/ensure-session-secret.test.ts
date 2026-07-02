@@ -1,5 +1,13 @@
 import { execFile } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { promisify } from "util";
@@ -42,9 +50,20 @@ describe("persistent session secret creation", () => {
   it("uses an environment override without creating or modifying a file", async () => {
     const { file } = fixture();
     const external = "external-session-secret-012345678901234";
-    const result = await run(file, external);
+    const resultWithoutFile = await run(file, external);
     expect(() => readFileSync(file)).toThrow();
-    expect(result.stdout).not.toContain(external);
+    expect(resultWithoutFile.stdout).not.toContain(external);
+
+    const existing = "existing-session-secret-012345678901234";
+    writeFileSync(file, existing, { mode: 0o644 });
+    chmodSync(file, 0o644);
+    const before = statSync(file);
+    const resultWithFile = await run(file, external);
+    const after = statSync(file);
+    expect(readFileSync(file, "utf8")).toBe(existing);
+    expect(after.mode & 0o777).toBe(0o644);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+    expect(resultWithFile.stdout).not.toContain(external);
   });
 
   it.each(["", "short", "change-me"])("rejects an existing weak file: %s", async (value) => {

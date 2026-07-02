@@ -28,16 +28,20 @@ fi
 # 会话密钥：环境变量优先；否则由独占、原子发布流程首次生成并持久化。
 # 已存在但非法的文件会失败，不会被替换。
 node /app/docker/ensure-session-secret.mjs "$SESSION_SECRET_FILE"
-chmod 600 "$SESSION_SECRET_FILE" 2>/dev/null || [ -n "${SESSION_SECRET:-}" ]
 
 if [ "$(id -u)" = "0" ]; then
   chown -R nextjs:nodejs "$UPLOAD_DIR"
   if [ -d "$SECRETS_DIR" ]; then
-    # 密钥文件必须归运行用户所有且可读
-    chown -R nextjs:nodejs "$SECRETS_DIR"
+    chown nextjs:nodejs "$SECRETS_DIR"
+    if [ -f "$CONFIG_ENCRYPTION_KEY_FILE" ]; then
+      chown nextjs:nodejs "$CONFIG_ENCRYPTION_KEY_FILE"
+    fi
   fi
   if [ "$SESSION_SECRETS_DIR" != "$SECRETS_DIR" ] && [ -d "$SESSION_SECRETS_DIR" ]; then
-    chown -R nextjs:nodejs "$SESSION_SECRETS_DIR"
+    chown nextjs:nodejs "$SESSION_SECRETS_DIR"
+  fi
+  if [ -z "${SESSION_SECRET:-}" ] && [ -f "$SESSION_SECRET_FILE" ]; then
+    chown nextjs:nodejs "$SESSION_SECRET_FILE"
   fi
   # 启动应用前显式执行数据库迁移（失败则退出，不启动应用）
   runuser -u nextjs -- node /app/dist/migrate.mjs

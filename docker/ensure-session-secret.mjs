@@ -8,6 +8,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  chmodSync,
   unlinkSync,
   writeFileSync,
 } from "fs";
@@ -44,6 +45,7 @@ function readTarget() {
     throw new Error("session secret file is unreadable");
   }
   validate(value);
+  chmodSync(target, 0o600);
   return value;
 }
 

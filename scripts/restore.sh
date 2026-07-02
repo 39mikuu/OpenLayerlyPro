@@ -210,6 +210,16 @@ case "$SESSION_SECRET_SOURCE" in
     SESSION_SECRET_ARCHIVE_PATH=$(manifest_value "$WORK_DIR/manifest.env" SESSION_SECRET_ARCHIVE_PATH)
     [ "$SESSION_SECRET_ARCHIVE_PATH" = "secrets/session-secret" ] \
       || fail "archive session secret path is unsupported"
+    run_one_off -e '
+      const fs = require("fs");
+      const path = "/restore-work/secrets/session-secret";
+      const metadata = fs.lstatSync(path);
+      if (!metadata.isFile() || metadata.isSymbolicLink()) process.exit(1);
+      const value = fs.readFileSync(path, "utf8").replace(/\r?\n$/, "");
+      if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) {
+        process.exit(1);
+      }
+    ' || fail "archived session secret is invalid"
     ;;
   external)
     EXPECTED_SESSION_SECRET_SHA256=$(manifest_value "$WORK_DIR/manifest.env" SESSION_SECRET_SHA256)
