@@ -5,6 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>OpenLayerlyPro — 开源自托管的单画师会员站</title>
 <meta name="description" content="OpenLayerlyPro 是开源、自托管的单画师会员站系统：发布会员作品、灵活收款、会员文件分发，一切都跑在你自己的服务器上。" />
+<meta name="theme-color" content="#2563eb" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Cpath%20d='M12%203%2021%208.2%2012%2013.4%203%208.2Z'%20fill='%232563eb'/%3E%3Cpath%20d='M3%2012.4%2012%2017.6%2021%2012.4'%20stroke='%2360a5fa'%20stroke-width='2'%20fill='none'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3Cpath%20d='M3%2016.6%2012%2021.8%2021%2016.6'%20stroke='%23bfdbfe'%20stroke-width='2'%20fill='none'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="canonical" href="https://39mikuu.github.io/OpenLayerlyPro/" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="OpenLayerlyPro — 开源自托管的单画师会员站" />
+<meta property="og:description" content="发布会员作品，灵活收款，把高清图、PSD 和视频直接交付给粉丝。没有平台抽成，数据完全归你。" />
+<meta property="og:url" content="https://39mikuu.github.io/OpenLayerlyPro/" />
+<meta property="og:image" content="https://39mikuu.github.io/OpenLayerlyPro/og.png" />
+<meta name="twitter:card" content="summary_large_image" />
 <style>
   :root {
     --bg: #fafcff;
@@ -21,7 +30,7 @@
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
+  html { scroll-behavior: smooth; overflow-x: hidden; }
   body {
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
       "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
@@ -131,9 +140,17 @@
     border-radius: 14px; box-shadow: var(--shadow);
     overflow: hidden;
   }
-  .term-bar { display: flex; gap: 6px; padding: 12px 15px; border-bottom: 1px solid rgba(219, 231, 251, .08); }
+  .term-bar { display: flex; align-items: center; gap: 6px; padding: 10px 15px; border-bottom: 1px solid rgba(219, 231, 251, .08); }
   .term-bar i { width: 10px; height: 10px; border-radius: 999px; background: #2c3d63; }
-  .term pre { padding: 20px 22px; font-size: 13.5px; line-height: 2.1; min-height: 128px; }
+  .copy {
+    margin-left: auto; font-size: 12px; font-weight: 600; line-height: 1;
+    color: #7fa8f5; background: none; border: 1px solid rgba(127, 168, 245, .35);
+    border-radius: 7px; padding: 6px 12px; cursor: pointer;
+    transition: background .2s, color .2s;
+  }
+  .copy:hover { background: rgba(127, 168, 245, .12); }
+  .copy.ok { color: #7ee2a8; border-color: rgba(126, 226, 168, .4); }
+  .term pre { padding: 20px 22px; font-size: 13.5px; line-height: 2.1; min-height: 128px; overflow-x: auto; }
   .term .p { color: #5c74a3; user-select: none; }
   .caret { display: inline-block; width: 8px; height: 15px; background: #7fa8f5; vertical-align: -2px; animation: blink 1.1s step-end infinite; }
 
@@ -187,7 +204,9 @@
   .b6 { background: linear-gradient(155deg, #93c5fd, #3b82f6); }
 
   /* ---------- sections ---------- */
-  section { padding: 96px 0 0; text-align: center; }
+  section { padding: 96px 0 0; text-align: center; scroll-margin-top: 64px; }
+  #start { scroll-margin-top: 84px; }
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 4px; }
   h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -.02em; font-weight: 800; }
   .lead { color: var(--ink-2); max-width: 32em; margin: 14px auto 0; font-size: 15.5px; }
 
@@ -247,7 +266,7 @@
     .flow::before { display: none; }
   }
   @media (max-width: 620px) {
-    .nav-links { display: none; }
+    .nav-links, .lang { display: none; }
     .features, .flow { grid-template-columns: 1fr; }
     .grid-art { grid-template-columns: 1fr 1fr; }
     .art:nth-child(n+5) { display: none; }
@@ -290,7 +309,7 @@
         <a class="btn btn-ghost" href="https://github.com/39mikuu/OpenLayerlyPro">查看源码</a>
       </div>
       <div class="term rise d5" id="start">
-        <div class="term-bar"><i></i><i></i><i></i></div>
+        <div class="term-bar"><i></i><i></i><i></i><button class="copy" id="copy-btn" type="button">复制</button></div>
         <pre id="type-target"><span class="caret"></span></pre>
       </div>
     </div>
@@ -407,6 +426,20 @@
       }, { threshold: .15 });
       reveals.forEach(function (el) { io.observe(el); });
     }
+
+    // 复制命令
+    var copyBtn = document.getElementById("copy-btn");
+    copyBtn.addEventListener("click", function () {
+      var cmd = "git clone https://github.com/39mikuu/OpenLayerlyPro.git\ncd OpenLayerlyPro && cp .env.example .env\ndocker compose up -d";
+      navigator.clipboard.writeText(cmd).then(function () {
+        copyBtn.textContent = "已复制";
+        copyBtn.classList.add("ok");
+        setTimeout(function () {
+          copyBtn.textContent = "复制";
+          copyBtn.classList.remove("ok");
+        }, 1800);
+      });
+    });
 
     // 终端打字效果
     var lines = [
