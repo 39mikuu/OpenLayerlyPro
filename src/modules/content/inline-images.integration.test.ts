@@ -35,10 +35,12 @@ import {
   detachFileFromPost,
   publishTranslation,
   savePublishedPostBody,
+  unpublishTranslation,
   updatePost,
   updatePostTaxonomy,
   upsertDraftTranslation,
 } from "@/modules/content";
+import { canAccessFile } from "@/modules/download";
 import { saveUploadedFile } from "@/modules/file";
 import { cleanupOrphanFile } from "@/modules/file/cleanup";
 import { runTaskHandler } from "@/modules/tasks/handlers";
@@ -276,6 +278,39 @@ describeWithDatabase("Markdown inline image lifecycle integration", () => {
     await expect(links(post.id)).resolves.toEqual([]);
     const cleanup = await cleanupTasks(file.id);
     expect(cleanup.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("retains archived translation images without granting public download access", async () => {
+    const file = await seedFile();
+    const post = await createPost({
+      title: "Archived translation",
+      slug: `archived-translation-${randomUUID()}`,
+      body: null,
+      visibility: "public",
+    });
+    await db
+      .update(posts)
+      .set({ status: "published", publishedAt: new Date() })
+      .where(eq(posts.id, post.id));
+    await upsertDraftTranslation(post.id, "ja", {
+      title: "アーカイブ",
+      body: markdownImage(file.id),
+    });
+
+    await expect(canAccessFile(null, file)).resolves.toMatchObject({ allowed: false });
+    await publishTranslation(post.id, "ja");
+    await expect(canAccessFile(null, file)).resolves.toEqual({
+      allowed: true,
+      postId: post.id,
+    });
+
+    await unpublishTranslation(post.id, "ja");
+
+    await expect(links(post.id)).resolves.toHaveLength(1);
+    await expect(cleanupOrphanFile(file.id)).resolves.toBe("referenced");
+    await expect(db.select().from(files).where(eq(files.id, file.id))).resolves.toHaveLength(1);
+    await expect(canAccessFile(null, file)).resolves.toMatchObject({ allowed: false });
+    await expect(storageDeleteTasks()).resolves.toEqual([]);
   });
 
   it("reconciles links when a published translation is explicitly deleted", async () => {

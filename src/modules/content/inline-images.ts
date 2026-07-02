@@ -55,7 +55,7 @@ async function referencedInlineIds(tx: DbClient, postId: string): Promise<Set<st
     .where(
       and(
         eq(postTranslations.postId, postId),
-        inArray(postTranslations.status, ["draft", "published"]),
+        inArray(postTranslations.status, ["draft", "published", "archived"]),
       ),
     );
 
