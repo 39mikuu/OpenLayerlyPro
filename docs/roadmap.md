@@ -99,6 +99,10 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 - **S7 ✅**：#87；archive v2、旧 archive 探测、文件安全修复、任务/支付事件中和和 DB↔存储收敛。
 - **最终验收 🚧**：#88；真实环境验证、三个 one-off artifact、tag 与 GitHub Release。
 
+## v1.1：不只画师 🚧
+
+v1.0 发布并完成稳定窗口后启动。范围、顺序与发布门槛见 [release-v1.1-plan.md](./release-v1.1-plan.md)（提案）：博客主题与主题选择器、新内容邮件通知（含投递额度与信誉治理）、RSS/Atom、内容 SEO/hreflang、赞助者鸣谢墙、可选的自托管统计集成。
+
 ## Phase 8：Plugin v0 🚧
 
 - 能力模型、隔离、生命周期与审计。
