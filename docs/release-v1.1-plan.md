@@ -29,6 +29,13 @@
   - 两个主题共用同一套 Core view-model 契约；Blog 主题不得引入新的数据需求，如确有需要，先扩展契约并同步内置主题。
 - **范围外**：主题包上传/安装、主题市场、per-post 主题、第三方主题生命周期（维持 roadmap ⏸ 状态）。
 - **依赖基座**：Theme v1 数据契约与 view-model 边界（`docs/architecture/theme-system.md`）。
+- **实现要点**
+  - 主题以**编译期静态注册表**内置（仿 Integration 注册表模式），无动态加载与上传面；
+    活动主题 id 存配置中心「外观」组，读取走 `app_settings` 统一入口，修改即生效无需重启。
+  - 动工前先做半日**契约盘点**：枚举 Blog 主题所需 view-model 字段，缺口一律
+    「先扩契约、同步内置主题、再写新主题」，禁止主题旁路取数。
+  - 两主题共享既有色板/字体 CSS 变量层，切换只改变渲染分支，不引入运行时样式拼接，
+    S6 nonce CSP 行为不变。
 - **验收**
   - [ ] 全部公开页面在 Blog 主题下渲染正常，权限矩阵（匿名/登录/会员/admin）无回退。
   - [ ] 明暗模式、颜色预设、自定义 hue、zh/en/ja 在两个主题下均正常。
@@ -63,6 +70,20 @@
       明确引导「订阅更新首选 RSS（WP3），邮件通知为补充」。
 - **范围外**：站内通知中心、Web Push、分标签订阅；每日/每周**摘要模式**（数量级最大的
   额度压缩器，但需聚合状态——观察项：出现日更且订阅量大的真实部署者再立项）。
+- **实现要点**
+  - **收件人按引用，不按值**：通知任务 payload 只存 `userId`，邮箱、通知偏好与抑制状态
+    在发送时刻解析（取最新状态，退订即时生效）；本项同步收敛 known-gaps **G1**，
+    历史事务邮件 payload 的脱敏 backfill 一并纳入本 WP。
+  - **campaign 游标展开**：发布只落一条 campaign 任务，任务持有 `lastUserId` 游标，
+    每个 tick 以 keyset 方式展开下一批 per-recipient 发送任务（复用现有 lease/fencing
+    与 dedupe），预算耗尽即停、次日续跑；幂等由 `(campaignId, userId)` 唯一约束兜底。
+  - **预算记账不新增计数器**：当日已发通知数直接从 S5 delivery ledger 按 UTC 日聚合
+    （加覆盖索引），审计与预算同源，天然无漂移、无需清零任务。
+  - **退订 token 零存储**：`HMAC(userId, prefsVersion)`，密钥自 `SESSION_SECRET` 派生；
+    用户重新开启通知即递增 `prefsVersion`，全部旧 token 立即失效——无 token 表、
+    无过期清理任务。
+  - 双通道以任务类型 + dispatcher 认领顺序实现：事务类型永远先于通知类型被认领，
+    不引入第二套队列。
 - **依赖基座**：S5 邮件可靠性、durable task/outbox、定时发布、`users.locale`。
 - **验收**
   - [ ] 可见性矩阵：public/login/member × 匿名/登录/会员 的通知对象集合正确。
@@ -82,6 +103,9 @@
   - `/feed.xml`（Atom）：仅 public 内容，标题 + 摘要（或安全渲染后的正文，二选一，倾向摘要）、发布时间、规范链接；按站点默认语言输出，译文以 alternate link 呈现。
   - 有界条目数（如最近 20 条）、正确的 `Cache-Control`、条目 GUID 稳定。
 - **范围外**：member 内容的带 token 私有 feed（等真实需求）、podcast 扩展、JSON Feed。
+- **实现要点**：复用首页 keyset 查询取最近 N 条 public 内容；摘要走与页面一致的安全
+  渲染/转义管线；输出 `ETag`/`Last-Modified` 支持条件请求，`Cache-Control` 设短
+  `s-maxage` 便于 CDN 分担阅读器轮询。
 - **验收**
   - [ ] 主流阅读器（Miniflux/Feedly）解析通过；W3C validator 无错误。
   - [ ] login/member 内容绝不出现在 feed 中（含摘要与图片 URL）。
@@ -97,6 +121,9 @@
   - 已发布译文输出 `hreflang` alternate（PRD §7 遗留项收口）；`robots.txt` 显式化。
   - login/member 内容：`noindex`，不进 sitemap。
 - **范围外**：结构化数据 JSON-LD 全家桶（只做 Article 基础字段或留到后续）、站长平台自动提交。
+- **实现要点**：sitemap 以 keyset 分页流式生成，超过单文件上限时输出 sitemap index；
+  文章 meta 走框架 `generateMetadata`（不引入运行时模板引擎）；hreflang 仅枚举
+  `published` 状态译文，与内容 i18n 的回落规则一致。
 - **验收**
   - [ ] Google/Bing 校验工具通过；非 public 内容在 sitemap 与 meta 层面均不可发现。
   - [ ] 三语译文的 hreflang 互指正确，与 UI 语言协商不冲突。
@@ -127,6 +154,14 @@
 - **范围外**：金额排序/打赏榜（与「会员制」语义冲突，且诱导攀比）、历史赞助者永久墙、
   留言回复/楼层/任何对话结构（这才是评论系统非目标的边界所在）。
 - **依赖基座**：会员生命周期（active/suspended/revoked）、Theme 契约（新增一个公开页 view-model）。
+- **实现要点**
+  - **可见性在查询时派生，不做下墙任务**：墙页查询 = wall 条目 join 当期有效会员状态，
+    过期/反转在下一次渲染即自然消失；无任何定时下墙 job、无状态复制、无漂移面。
+    缓存用短 TTL 或跟随会员事件失效。
+  - 数据模型：`supporter_wall_entries`（userId 唯一、message、status:
+    pending/approved/hidden、时间戳），显示名引用 `users.displayName` 不做快照，
+    改名即时生效；状态机 pending→approved/hidden 全部落 `audit_events`。
+  - 留言长度/字符集校验服务端强制；渲染走纯文本转义路径，URL 不做 autolink。
 - **验收**
   - [ ] 默认不泄露任何会员身份；opt-in 状态变化即时生效并有 audit 记录。
   - [ ] 未设置显示名的会员不出现在墙上；任何渲染路径不回落邮箱。
