@@ -35,6 +35,7 @@ compose() {
     --env-file "$DRILL_ENV" \
     -f docker-compose.yml \
     -f docker-compose.s7-e2e.yml \
+    -f "$SECRET_OVERRIDE" \
     "$@"
 }
 
@@ -81,6 +82,19 @@ UPLOAD_DIR=$NESTED_UPLOAD_DIR
 TURNSTILE_ENABLED=false
 EOF
 
+# Pin SESSION_SECRET to empty for every drill container. The app service's fixed
+# `env_file: .env` would otherwise leak an operator-provided SESSION_SECRET into the drill
+# (the drill env deliberately has no SESSION_SECRET line), flipping the entrypoint to the
+# external branch so the custom file-backed secret is never generated. `environment` takes
+# precedence over env_file, and every consumer treats an empty value as unset.
+SECRET_OVERRIDE=$(mktemp "${TMPDIR:-/tmp}/openlayerly-s7-secret-override.XXXXXX")
+cat >"$SECRET_OVERRIDE" <<'EOF'
+services:
+  app:
+    environment:
+      SESSION_SECRET: ""
+EOF
+
 if [ ! -f .env ]; then
   cp "$DRILL_ENV" .env
   CREATED_DOT_ENV=true
@@ -92,7 +106,8 @@ teardown_projects() {
   for tp_project in "$SOURCE_PROJECT" "$RESTORE_PROJECT"; do
     sudo -n env COMPOSE_ENV_FILE="$DRILL_ENV" \
       docker compose -p "$tp_project" --env-file "$DRILL_ENV" \
-      -f docker-compose.yml -f docker-compose.s7-e2e.yml down -v >/dev/null 2>&1 || true
+      -f docker-compose.yml -f docker-compose.s7-e2e.yml -f "$SECRET_OVERRIDE" \
+      down -v >/dev/null 2>&1 || true
   done
 }
 
@@ -101,7 +116,7 @@ teardown_projects() {
 cleanup() {
   teardown_projects
   [ "$CREATED_DOT_ENV" = true ] && [ -f .env ] && rm -f .env
-  rm -f "$DRILL_ENV"
+  rm -f "$DRILL_ENV" "$SECRET_OVERRIDE"
   rm -rf "${CONTRACT_WORK:-}" "${UNSAFE_BACKUP_DIR:-}"
 }
 trap cleanup EXIT
@@ -123,6 +138,9 @@ echo "Starting source stack on port ${SOURCE_PORT} with UPLOAD_DIR=${NESTED_UPLO
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d postgres
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d app
 wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+  sh -c 'test -z "${SESSION_SECRET:-}"' \
+  || fail "app container resolved a non-empty SESSION_SECRET; the drill override failed to neutralise the operator .env"
 SOURCE_SESSION_SECRET=$(
   S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
     sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
@@ -206,7 +224,7 @@ S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T postgres sh -c "
 "
 
 echo "Creating baseline backup in explicit stop/restart consistency mode..."
-export COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml"
+export COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:$SECRET_OVERRIDE"
 export COMPOSE_ENV_FILE="$DRILL_ENV"
 compose "$SOURCE_PROJECT" exec -T app sh -c 'test -z "${CONFIG_ENCRYPTION_KEY:-}"' || fail "source uses direct CONFIG_ENCRYPTION_KEY"
 COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh --stop-app "$BACKUP_DIR"
@@ -302,7 +320,7 @@ for variant in missing both mismatch weak-session-secret; do
   )
   if S7_E2E_APP_PORT=$RESTORE_PORT \
     COMPOSE_PROJECT_NAME=$RESTORE_PROJECT \
-    COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml" \
+    COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:$SECRET_OVERRIDE" \
     COMPOSE_ENV_FILE="$DRILL_ENV" \
     ./scripts/restore.sh "$CONTRACT_WORK/$variant.tar.gz" --yes >/dev/null 2>&1; then
     fail "restore unexpectedly accepted malformed storage contract: $variant"
@@ -336,7 +354,7 @@ for symlink_variant in regular dangling; do
     ' restore-symlink "$symlink_variant" "$CUSTOM_SESSION_SECRET_FILE"
   if S7_E2E_APP_PORT=$RESTORE_PORT \
     COMPOSE_PROJECT_NAME=$RESTORE_PROJECT \
-    COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml" \
+    COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:$SECRET_OVERRIDE" \
     COMPOSE_ENV_FILE="$DRILL_ENV" \
     ./scripts/restore.sh "$ARCHIVE" --yes >/dev/null 2>&1; then
     fail "restore unexpectedly accepted a $symlink_variant session-secret target symlink"
@@ -358,7 +376,7 @@ CONTRACT_WORK=""
 echo "Running hardened restore into ${RESTORE_PROJECT}..."
 S7_E2E_APP_PORT=$RESTORE_PORT \
   COMPOSE_PROJECT_NAME=$RESTORE_PROJECT \
-  COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml" \
+  COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:$SECRET_OVERRIDE" \
   COMPOSE_ENV_FILE="$DRILL_ENV" \
   RESTORE_E2E_INJECT_MISSING=1 \
   RESTORE_E2E_MISSING_OBJECT_KEY="$MISSING_OBJECT_KEY" \
