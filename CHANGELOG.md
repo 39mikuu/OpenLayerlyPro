@@ -2,7 +2,7 @@
 
 ## Unreleased — v1.0.0
 
-OpenLayerlyPro is in pre-release v1.0 final acceptance. Payment, subscription, content, file, theme, translation, S6 security response headers (#86), and S7 backup/restore consistency (#87) are present on `main`. #88 is closed; the remaining gate is #104 — rerunning the `docs/release-v1.0-checklist.md` matrix against a frozen post-audit candidate, including #119.
+OpenLayerlyPro is in pre-release v1.0 final acceptance. Payment, subscription, content, file, theme, translation, S6 security response headers (#86), S7 backup/restore consistency (#87), the approved audit fixes, #58, and persistent automatic Compose session-secret generation (#119/#120) are present on `main`. The operator has completed the real Stripe, SMTP, S3/R2, Turnstile/CSP, secret-custody, and recovery gates. The remaining #104 work is evidence normalization, final-candidate SHA freeze, exact-final-SHA CI and narrowly impacted rechecks, plus explicit publication authorization.
 
 Do not create a production `v1.0.0` tag until #104 is complete.
 
@@ -33,6 +33,7 @@ Do not create a production `v1.0.0` tag until #104 is complete.
 - Added encrypted configuration groups and admin UI for SMTP, Turnstile, storage, upload limits, Stripe, and AI translation.
 - Added archive v2 integrity, legacy schema probing, restored-task/provider-event neutralization, mandatory file-safety remediation, local/S3 convergence, and isolated recovery drills.
 - Added nonce-based CSP, global security response headers, dynamic Turnstile/storage/video/integration sources, revision fencing, and safe migration of legacy custom footer code.
+- Added persistent automatic `SESSION_SECRET` generation for standard Docker Compose deployments, with environment/file override compatibility and restore/legacy validation (#119/#120).
 
 ### i18n, Translation, and Theme
 
@@ -42,8 +43,9 @@ Do not create a production `v1.0.0` tag until #104 is complete.
 
 ### Release Gate
 
-- Follow `docs/release-v1.0-checklist.md` for security, Stripe, local/S3, upgrade, backup/restore, browser, and full-CI acceptance.
-- Plugin runtime, Hub, multi-instance high availability, and video transcoding/thumbnail/HLS work remain post-v1.0.
+- Follow `docs/release-v1.0-checklist.md` and issue #104 for evidence indexing, final-SHA CI, impacted rechecks, security-alert visibility, and publication authorization.
+- Already completed external provider/recovery work must be recorded, not mislabeled as unexecuted or repeated without a change-based reason.
+- Plugin runtime, Hub, multi-instance high availability, a second theme, and video transcoding/thumbnail/HLS work remain post-v1.0 unless the version plan is explicitly changed before candidate freeze.
 
 ## v0.2.0 (unreleased historical candidate; superseded)
 
