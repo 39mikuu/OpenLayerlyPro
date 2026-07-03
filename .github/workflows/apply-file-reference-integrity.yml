@@ -3,16 +3,13 @@ name: Apply file reference integrity
 on:
   push:
     branches: [fix/file-reference-integrity]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   implement:
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ !contains(github.event.head_commit.message, 'capture bootstrap test failure') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -79,7 +76,20 @@ jobs:
       - run: pnpm check:request-bodies
       - run: pnpm exec tsc --noEmit
       - run: pnpm db:migrate
-      - run: pnpm test
+      - name: Run tests with diagnostic capture
+        id: tests
+        continue-on-error: true
+        run: pnpm test > test-output.log 2>&1
+      - name: Persist test failure diagnostics
+        if: steps.tests.outcome == 'failure'
+        run: |
+          tail -n 500 test-output.log > test-failure-tail.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f test-failure-tail.log
+          git commit -m "chore(files): capture bootstrap test failure"
+          git push origin HEAD:fix/file-reference-integrity
+          exit 1
       - run: pnpm build:migrator
       - run: pnpm build:files-backfill
       - run: pnpm build:admin-reset
