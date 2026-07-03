@@ -3,13 +3,16 @@ name: Apply file reference integrity
 on:
   push:
     branches: [fix/file-reference-integrity]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   implement:
-    if: ${{ !contains(github.event.head_commit.message, 'capture bootstrap test failure') }}
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -86,7 +89,7 @@ jobs:
           tail -n 500 test-output.log > test-failure-tail.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f test-failure-tail.log
+          git add -f test-failure-tail.log .github/workflows/apply-file-reference-integrity.yml
           git commit -m "chore(files): capture bootstrap test failure"
           git push origin HEAD:fix/file-reference-integrity
           exit 1
