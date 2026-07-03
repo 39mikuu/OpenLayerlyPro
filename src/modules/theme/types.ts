@@ -3,7 +3,7 @@ import type { ComponentType, ReactNode } from "react";
 import type { Translate } from "@/modules/i18n";
 
 /** 站内已注册的主题 id；后续新增主题在此扩展。 */
-export type ThemeId = "builtin";
+export type ThemeId = "builtin" | "blog";
 
 export type PostVisibility = "public" | "login" | "member";
 export type TaxonomyLinkView = { name: string; slug: string };

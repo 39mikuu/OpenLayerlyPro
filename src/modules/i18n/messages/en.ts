@@ -656,6 +656,9 @@ export const en: Messages = {
       addLink: "Add link",
       saveSettings: "Save settings",
       appearance: "Appearance",
+      theme: "Theme",
+      themeHelp:
+        "Switch the theme used by the public site; changes apply on save. Colors are saved per theme.",
       appearanceDescription:
         "Choose a built-in color preset for the public site. Visitors control light and dark mode.",
       colorPreset: "Color preset",

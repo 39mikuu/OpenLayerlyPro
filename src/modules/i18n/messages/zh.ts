@@ -639,6 +639,8 @@ export const zh = {
       addLink: "添加链接",
       saveSettings: "保存设置",
       appearance: "外观",
+      theme: "主题",
+      themeHelp: "切换公开站点使用的主题，保存后立即生效；各主题的配色分别保存。",
       appearanceDescription:
         "选择公开站点的颜色预设（主题内置，仅影响前台）。明暗模式由访客自行切换。",
       colorPreset: "颜色预设",

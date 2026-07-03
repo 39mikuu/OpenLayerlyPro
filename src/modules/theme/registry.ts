@@ -3,15 +3,17 @@ import "server-only";
 import { cache } from "react";
 
 import { getSetting, setSetting } from "@/modules/site";
+import { blogTheme } from "@/themes/blog";
 import { builtinTheme } from "@/themes/builtin";
 
 import type { Theme, ThemeConfig, ThemeId } from "./types";
 
 export const DEFAULT_THEME_ID: ThemeId = "builtin";
 
-/** 站内已注册主题（本步仅内置主题）。 */
+/** 站内已注册主题（编译期静态注册表；主题均为一等公民代码，无运行时加载面）。 */
 export const themes: Record<ThemeId, Theme> = {
   builtin: builtinTheme,
+  blog: blogTheme,
 };
 
 /** site_settings 中存放活动主题 id 的键。 */
@@ -50,14 +52,31 @@ export function darkClassFromMode(mode: string | null | undefined): "dark" | "" 
   return mode === "dark" ? "dark" : "";
 }
 
+type StoredThemeEntry = { colorPreset?: string; customHue?: number };
+
 /**
- * 读取站点级主题配置：非法预设回落默认，hue 取整并归一化到 [0, 360)。
- * customHue 对具名预设不生效，但保留它可避免管理员切换预设后丢失自定义选择。
+ * 从存储值中取出指定主题的配置条目。
+ * 新形态按主题 id 分键：`{ builtin: {...}, blog: {...} }`；
+ * 旧平铺形态 `{ colorPreset, customHue }` 只可能由单主题时期写入，归属默认主题。
+ */
+function extractThemeEntry(stored: unknown, themeId: ThemeId): StoredThemeEntry | null {
+  if (!stored || typeof stored !== "object") return null;
+  const record = stored as Record<string, unknown>;
+  const nested = record[themeId];
+  if (nested && typeof nested === "object") return nested as StoredThemeEntry;
+  if (themeId === DEFAULT_THEME_ID && typeof record.colorPreset === "string") {
+    return record as StoredThemeEntry;
+  }
+  return null;
+}
+
+/**
+ * 读取站点级主题配置（按主题分键，兼容旧平铺形态）：非法预设回落默认，
+ * hue 取整并归一化到 [0, 360)。customHue 对具名预设不生效，但保留它可避免
+ * 管理员切换预设后丢失自定义选择。
  */
 export const getThemeConfig = cache(async (theme: Theme): Promise<ThemeConfig> => {
-  const stored = await getSetting<{ colorPreset?: string; customHue?: number }>(
-    THEME_CONFIG_SETTING_KEY,
-  );
+  const stored = extractThemeEntry(await getSetting<unknown>(THEME_CONFIG_SETTING_KEY), theme.id);
   const id = stored?.colorPreset;
   const valid =
     id === "custom"
@@ -69,9 +88,25 @@ export const getThemeConfig = cache(async (theme: Theme): Promise<ThemeConfig> =
   };
 });
 
-/** 写入站点级主题配置（管理员）。 */
-export async function setThemeConfig(config: ThemeConfig): Promise<void> {
-  await setSetting(THEME_CONFIG_SETTING_KEY, config);
+/**
+ * 写入指定主题的站点级配置（管理员）。
+ * 始终写回按主题分键的新形态；旧平铺形态在首次写入时迁移到默认主题名下，
+ * 其他主题已有的配置原样保留。
+ */
+export async function setThemeConfig(theme: Theme, config: ThemeConfig): Promise<void> {
+  const stored = await getSetting<unknown>(THEME_CONFIG_SETTING_KEY);
+  const next: Partial<Record<ThemeId, StoredThemeEntry>> = {};
+  for (const id of Object.keys(themes) as ThemeId[]) {
+    const entry = extractThemeEntry(stored, id);
+    if (entry) next[id] = { colorPreset: entry.colorPreset, customHue: entry.customHue };
+  }
+  next[theme.id] = config;
+  await setSetting(THEME_CONFIG_SETTING_KEY, next);
+}
+
+/** 写入活动主题 id（管理员）；读取端 `resolveThemeId` 对未知值回落内置主题。 */
+export async function setActiveTheme(id: ThemeId): Promise<void> {
+  await setSetting(ACTIVE_THEME_SETTING_KEY, id);
 }
 
 /** 把具名预设或 custom 配置解析为最终 hue；neutral / 未知配置不生成覆盖。 */

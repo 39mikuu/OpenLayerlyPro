@@ -7,6 +7,7 @@ export {
   getThemeConfig,
   resolveColorHue,
   resolveThemeId,
+  setActiveTheme,
   setThemeConfig,
   THEME_CONFIG_SETTING_KEY,
   THEME_INIT_SCRIPT,

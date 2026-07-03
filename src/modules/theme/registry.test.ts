@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getSetting } from "@/modules/site";
+import { getSetting, setSetting } from "@/modules/site";
 
 vi.mock("server-only", () => ({}));
 
@@ -13,6 +13,8 @@ import {
   getThemeConfig,
   resolveColorHue,
   resolveThemeId,
+  setThemeConfig,
+  THEME_CONFIG_SETTING_KEY,
   themes,
 } from "./registry";
 
@@ -39,9 +41,32 @@ vi.mock("@/themes/builtin", () => ({
   },
 }));
 
+vi.mock("@/themes/blog", () => ({
+  blogTheme: {
+    id: "blog",
+    name: "博客主题",
+    components: {
+      Chrome: () => null,
+      Home: () => null,
+      PostList: () => null,
+      PostDetail: () => null,
+    },
+    colorPresets: [
+      { id: "ink", name: "墨", hue: null },
+      { id: "indigo", name: "靛蓝", hue: 275 },
+    ],
+    defaultColorPresetId: "ink",
+    colorVarsFromHue: (hue: number) => ({
+      light: { "--primary": `oklch(0.55 0.2 ${hue})` },
+      dark: { "--primary": `oklch(0.7 0.16 ${hue})` },
+    }),
+  },
+}));
+
 vi.mock("@/modules/site", () => ({ getSetting: vi.fn(), setSetting: vi.fn() }));
 
 const mockedGetSetting = vi.mocked(getSetting);
+const mockedSetSetting = vi.mocked(setSetting);
 
 describe("theme registry", () => {
   beforeEach(() => {
@@ -51,6 +76,7 @@ describe("theme registry", () => {
 
   it("resolves known / unknown / empty theme ids to a valid id", () => {
     expect(resolveThemeId("builtin")).toBe("builtin");
+    expect(resolveThemeId("blog")).toBe("blog");
     expect(resolveThemeId(null)).toBe("builtin");
     expect(resolveThemeId("nope")).toBe("builtin");
     expect(DEFAULT_THEME_ID).toBe("builtin");
@@ -126,6 +152,32 @@ describe("theme registry", () => {
     expect(await getThemeConfig(themes.builtin)).toEqual({
       colorPreset: "custom",
       customHue: 256,
+    });
+  });
+
+  it("reads per-theme keyed config and scopes legacy flat config to builtin only", async () => {
+    // 新形态：按主题分键，各读各的。
+    mockedGetSetting.mockResolvedValue({
+      builtin: { colorPreset: "blue" },
+      blog: { colorPreset: "indigo" },
+    });
+    expect((await getThemeConfig(themes.builtin)).colorPreset).toBe("blue");
+    expect((await getThemeConfig(themes.blog)).colorPreset).toBe("indigo");
+
+    // 旧平铺形态只可能由单主题时期写入：归 builtin，blog 回落自身默认。
+    mockedGetSetting.mockResolvedValue({ colorPreset: "blue", customHue: 100 });
+    expect((await getThemeConfig(themes.builtin)).colorPreset).toBe("blue");
+    expect((await getThemeConfig(themes.blog)).colorPreset).toBe("ink");
+  });
+
+  it("setThemeConfig migrates legacy flat config and preserves other themes' entries", async () => {
+    mockedGetSetting.mockResolvedValue({ colorPreset: "blue", customHue: 100 });
+
+    await setThemeConfig(themes.blog, { colorPreset: "indigo", customHue: 275 });
+
+    expect(mockedSetSetting).toHaveBeenCalledWith(THEME_CONFIG_SETTING_KEY, {
+      builtin: { colorPreset: "blue", customHue: 100 },
+      blog: { colorPreset: "indigo", customHue: 275 },
     });
   });
 });

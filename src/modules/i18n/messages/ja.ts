@@ -649,6 +649,9 @@ export const ja: Messages = {
       addLink: "リンクを追加",
       saveSettings: "設定を保存",
       appearance: "外観",
+      theme: "テーマ",
+      themeHelp:
+        "公開サイトのテーマを切り替えます。保存するとすぐに反映され、配色はテーマごとに保存されます。",
       appearanceDescription:
         "公開サイトの組み込みカラープリセットを選択します。ライト・ダークモードは訪問者が選択できます。",
       colorPreset: "カラープリセット",
