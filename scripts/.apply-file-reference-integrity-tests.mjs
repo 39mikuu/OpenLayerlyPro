@@ -25,6 +25,16 @@ replaceOnce(
 );
 replaceOnce(
   "src/modules/file/deletion-references.integration.test.ts",
+  `    purpose: "payment_proof" | "content_image" | "cover" | "payment_qr" = "content_image",`,
+  `    purpose:
+      | "payment_proof"
+      | "content_image"
+      | "cover"
+      | "payment_qr"
+      | "artist_avatar" = "content_image",`,
+);
+replaceOnce(
+  "src/modules/file/deletion-references.integration.test.ts",
   `  it("blocks deletion when a protected site setting references the file", async () => {
     const file = await seedFile("content_image");`,
   `  it("blocks deletion when a protected site setting references the file", async () => {
