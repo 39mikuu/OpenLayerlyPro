@@ -64,7 +64,7 @@ jobs:
           rm scripts/.apply-file-reference-integrity-3.mjs
           rm scripts/.apply-file-reference-integrity-tests.mjs
           rm scripts/.augment-file-reference-migration.mjs
-          rm -f test-failure-tail.log
+          rm -f test-failure-tail.log tsc-failure-tail.log
           rm .github/workflows/apply-file-reference-integrity.yml
       - name: Format changed files
         run: |
@@ -83,7 +83,20 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm check:request-bodies
-      - run: pnpm exec tsc --noEmit
+      - name: Run typecheck with diagnostic capture
+        id: typecheck
+        continue-on-error: true
+        run: pnpm exec tsc --noEmit > tsc-output.log 2>&1
+      - name: Persist typecheck failure diagnostics
+        if: steps.typecheck.outcome == 'failure'
+        run: |
+          tail -n 300 tsc-output.log > tsc-failure-tail.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f tsc-failure-tail.log .github/workflows/apply-file-reference-integrity.yml
+          git commit -m "chore(files): capture bootstrap type failure"
+          git push origin HEAD:fix/file-reference-integrity
+          exit 1
       - run: pnpm db:migrate
       - name: Run tests with diagnostic capture
         id: tests
