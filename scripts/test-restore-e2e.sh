@@ -130,9 +130,9 @@ teardown_projects
 echo "Building source image..."
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" build app
 echo "Tagging source image for restore project..."
-sudo -n docker image inspect "openlayerlypro_s7_source-app:latest" >/dev/null 2>&1 \
+sudo -n docker image inspect "${SOURCE_PROJECT}-app:latest" >/dev/null 2>&1 \
   || fail "source app image was not built"
-sudo -n docker tag openlayerlypro_s7_source-app:latest openlayerlypro_s7_restore-app:latest
+sudo -n docker tag "${SOURCE_PROJECT}-app:latest" "${RESTORE_PROJECT}-app:latest"
 
 echo "Starting source stack on port ${SOURCE_PORT} with UPLOAD_DIR=${NESTED_UPLOAD_DIR}..."
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d postgres
