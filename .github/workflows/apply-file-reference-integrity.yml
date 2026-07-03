@@ -44,11 +44,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: Apply exact source changes
-        run: |
-          node scripts/.apply-file-reference-integrity-1.mjs
-          node scripts/.apply-file-reference-integrity-2.mjs
-          node scripts/.apply-file-reference-integrity-3.mjs
+      - name: Apply schema reference changes
+        run: node scripts/.apply-file-reference-integrity-1.mjs
+      - name: Apply content reference changes
+        run: node scripts/.apply-file-reference-integrity-2.mjs
+      - name: Apply payment and settings reference changes
+        run: node scripts/.apply-file-reference-integrity-3.mjs
       - run: pnpm install --frozen-lockfile
       - name: Generate and augment migration
         run: |
