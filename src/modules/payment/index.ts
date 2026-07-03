@@ -14,6 +14,7 @@ import {
   users,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import { lockFileReferences } from "@/modules/file/references";
 import { logger } from "@/lib/logger";
 import {
   type AdminListPage,
@@ -52,8 +53,12 @@ export async function createPaymentMethod(input: {
   isActive?: boolean;
   sortOrder?: number;
 }): Promise<PaymentMethod> {
-  const [method] = await getDb().insert(paymentMethods).values(input).returning();
-  return method;
+  return getDb().transaction(async (tx) => {
+    if (input.qrFileId) await lockPaymentQrReference(tx, input.qrFileId);
+    const [method] = await tx.insert(paymentMethods).values(input).returning();
+    if (!method) throw new Error("payment method insert failed");
+    return method;
+  });
 }
 
 export async function updatePaymentMethod(
@@ -66,13 +71,16 @@ export async function updatePaymentMethod(
     sortOrder: number;
   }>,
 ): Promise<PaymentMethod> {
-  const [method] = await getDb()
-    .update(paymentMethods)
-    .set({ ...patch, updatedAt: new Date() })
-    .where(eq(paymentMethods.id, id))
-    .returning();
-  if (!method) throw new ApiError(404, "paymentMethodNotFound");
-  return method;
+  return getDb().transaction(async (tx) => {
+    if (patch.qrFileId) await lockPaymentQrReference(tx, patch.qrFileId);
+    const [method] = await tx
+      .update(paymentMethods)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(paymentMethods.id, id))
+      .returning();
+    if (!method) throw new ApiError(404, "paymentMethodNotFound");
+    return method;
+  });
 }
 
 export async function deletePaymentMethod(id: string): Promise<void> {
@@ -97,12 +105,41 @@ export type PaymentRequestDetail = {
   userEmail: string;
 };
 
-/** 校验付款截图文件：必须存在、用途为 payment_proof、且由本人上传 */
-async function assertOwnProofFile(proofFileId: string, userId: string): Promise<void> {
-  const [file] = await getDb().select().from(files).where(eq(files.id, proofFileId)).limit(1);
-  if (!file || file.purpose !== "payment_proof" || file.createdBy !== userId) {
-    throw new ApiError(400, "invalidPaymentProof");
-  }
+async function lockPaymentQrReference(tx: TxClient, fileId: string): Promise<void> {
+  await lockFileReferences(tx, [
+    {
+      fileId,
+      invalid: (reason) =>
+        reason === "quarantined"
+          ? new ApiError(410, "fileQuarantined")
+          : new ApiError(400, "invalidRequest", { field: "qrFileId" }),
+      validate: (record) => {
+        if (record.purpose !== "payment_qr") {
+          throw new ApiError(400, "invalidRequest", { field: "qrFileId" });
+        }
+      },
+    },
+  ]);
+}
+
+/** 锁定并校验付款截图：必须存在、未隔离、用途正确且由本人上传。 */
+async function lockOwnProofReference(
+  tx: TxClient,
+  proofFileId: string,
+  userId: string,
+): Promise<void> {
+  await lockFileReferences(tx, [
+    {
+      fileId: proofFileId,
+      ownerId: userId,
+      invalid: () => new ApiError(400, "invalidPaymentProof"),
+      validate: (record) => {
+        if (record.purpose !== "payment_proof") {
+          throw new ApiError(400, "invalidPaymentProof");
+        }
+      },
+    },
+  ]);
 }
 
 async function assertActivePaymentMethod(paymentMethodId: string): Promise<void> {
@@ -130,10 +167,12 @@ export async function createPaymentRequest(input: {
   if (!tier || !tier.isActive) throw new ApiError(404, "tierNotFound");
   if (!tier.purchaseEnabled) throw new ApiError(400, "tierUnavailable");
   if (input.paymentMethodId) await assertActivePaymentMethod(input.paymentMethodId);
-  if (input.proofFileId) await assertOwnProofFile(input.proofFileId, input.userId);
 
   const request = await db.transaction(async (tx) => {
     await acquirePendingPaymentLock(tx, input.userId);
+    if (input.proofFileId) {
+      await lockOwnProofReference(tx, input.proofFileId, input.userId);
+    }
     // pending uniqueness is serialized by PostgreSQL transactions.
     const [existing] = await tx
       .select()
@@ -287,7 +326,6 @@ export async function resubmitPaymentProof(input: {
   userId: string;
   proofFileId: string;
 }): Promise<PaymentRequest> {
-  await assertOwnProofFile(input.proofFileId, input.userId);
   const correlationId = randomUUID();
   return getDb().transaction(async (tx) => {
     await acquirePendingPaymentLock(tx, input.userId);
@@ -295,8 +333,11 @@ export async function resubmitPaymentProof(input: {
       .select()
       .from(paymentRequests)
       .where(and(eq(paymentRequests.id, input.requestId), eq(paymentRequests.userId, input.userId)))
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (!request) throw new ApiError(404, "paymentRequestNotFound");
+    if (request.status !== "rejected") throw new ApiError(400, "resubmitRejectedOnly");
+    await lockOwnProofReference(tx, input.proofFileId, input.userId);
 
     const [updated] = await tx
       .update(paymentRequests)
@@ -321,18 +362,7 @@ export async function resubmitPaymentProof(input: {
         ),
       )
       .returning();
-    if (!updated) {
-      const [current] = await tx
-        .select({ status: paymentRequests.status })
-        .from(paymentRequests)
-        .where(
-          and(eq(paymentRequests.id, input.requestId), eq(paymentRequests.userId, input.userId)),
-        )
-        .limit(1);
-      if (!current) throw new ApiError(404, "paymentRequestNotFound");
-      if (current.status !== "rejected") throw new ApiError(400, "resubmitRejectedOnly");
-      throw new ApiError(400, "pendingPaymentExists");
-    }
+    if (!updated) throw new ApiError(400, "pendingPaymentExists");
     await recordAudit(tx, {
       entityType: "payment_request",
       entityId: updated.id,

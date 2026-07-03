@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, exists, getTableColumns, inArray, lt, ne, or, sql } from "drizzle-orm";
 
-import { type DbClient, getDb } from "@/db";
+import { type DbClient, getDb, type TxClient } from "@/db";
 import {
   categories,
   type FileRecord,
@@ -19,6 +19,7 @@ import {
   type User,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import { lockFileReferences } from "@/modules/file/references";
 import { isLocale, type Locale } from "@/modules/i18n";
 import { getActiveLevel } from "@/modules/membership";
 import { setPostCategories, setPostTags } from "@/modules/taxonomy";
@@ -53,6 +54,9 @@ export async function createPost(
 ): Promise<Post> {
   await assertValidTier(input);
   return getDb().transaction(async (tx) => {
+    if (input.coverFileId) {
+      await lockPostFileReference(tx, input.coverFileId, "cover");
+    }
     const [post] = await tx
       .insert(posts)
       .values({ ...input, status: "draft" })
@@ -82,6 +86,9 @@ export async function updatePost(
         requiredTierId:
           input.requiredTierId !== undefined ? input.requiredTierId : existing.requiredTierId,
       });
+    }
+    if (input.coverFileId) {
+      await lockPostFileReference(tx, input.coverFileId, "cover");
     }
 
     const contentChanged =
@@ -726,6 +733,24 @@ export async function listPostFiles(postId: string): Promise<PostFileWithFile[]>
     .orderBy(asc(postFiles.sortOrder), asc(postFiles.createdAt));
 }
 
+async function lockPostFileReference(
+  tx: TxClient,
+  fileId: string,
+  kind: PostFile["kind"],
+): Promise<FileRecord> {
+  const locked = await lockFileReferences(tx, [
+    {
+      fileId,
+      invalid: (reason) =>
+        reason === "missing"
+          ? new ApiError(404, "fileNotFound")
+          : new ApiError(410, "fileQuarantined"),
+      validate: (record) => assertPostFilePurpose(kind, record.purpose),
+    },
+  ]);
+  return locked.get(fileId)!;
+}
+
 export async function attachFileToPost(input: {
   postId: string;
   fileId: string;
@@ -746,13 +771,7 @@ export async function attachFileToPost(input: {
     if (!post) throw new ApiError(404, "postNotFound");
     if (post.status !== "draft") throw new ApiError(409, "postNotEditable");
 
-    const [file] = await tx
-      .select({ purpose: files.purpose })
-      .from(files)
-      .where(eq(files.id, input.fileId))
-      .limit(1);
-    if (!file) throw new ApiError(404, "fileNotFound");
-    assertPostFilePurpose(input.kind, file.purpose);
+    await lockPostFileReference(tx, input.fileId, input.kind);
 
     const [link] = await tx
       .insert(postFiles)

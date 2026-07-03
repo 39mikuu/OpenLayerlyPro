@@ -46,7 +46,12 @@ describeWithDatabase("file deletion reference existence checks", () => {
   }
 
   async function seedFile(
-    purpose: "payment_proof" | "content_image" | "cover" | "payment_qr" = "content_image",
+    purpose:
+      | "payment_proof"
+      | "content_image"
+      | "cover"
+      | "payment_qr"
+      | "artist_avatar" = "content_image",
     createdBy?: string,
   ) {
     const [file] = await db
@@ -166,7 +171,7 @@ describeWithDatabase("file deletion reference existence checks", () => {
   });
 
   it("blocks deletion when a protected site setting references the file", async () => {
-    const file = await seedFile("content_image");
+    const file = await seedFile("artist_avatar");
     await db.insert(siteSettings).values({ key: "site_logo_file_id", valueJson: file.id });
 
     await expect(deleteFile(file.id)).rejects.toMatchObject({
