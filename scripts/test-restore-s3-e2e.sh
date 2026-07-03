@@ -136,7 +136,8 @@ fi
 
 teardown_projects() {
   for tp_project in \
-    "$SOURCE_PROJECT" "$RESTORE_PROJECT" "${RESTORE_PROJECT}_fail" "${RESTORE_PROJECT}_autherr"; do
+    "$SOURCE_PROJECT" "$RESTORE_PROJECT" "${RESTORE_PROJECT}_fail" \
+    "${RESTORE_PROJECT}_autherr" "${RESTORE_PROJECT}_secret_mismatch"; do
     sudo -n env \
       COMPOSE_ENV_FILE="$DRILL_ENV" \
       S7_E2E_APP_PORT="${S7_E2E_APP_PORT:-3005}" \
@@ -153,10 +154,12 @@ teardown_projects() {
 cleanup() {
   teardown_projects
   [ "$CREATED_DOT_ENV" = true ] && [ -f .env ] && rm -f .env
-  rm -f \
-    "$DRILL_ENV" \
-    "${AUTH_FAIL_OVERRIDE:-/tmp/openlayerly-s7-s3-autherr-override.yml}" \
-    "${POLICY_JSON:-/tmp/openlayerly-s7-getonly-policy.json}"
+  # Remove only files this run created via mktemp; never touch fixed legacy paths, which
+  # may hold unrelated residue (e.g. a directory auto-created by an old docker -v bind).
+  rm -f "$DRILL_ENV"
+  [ -z "${WRONG_SESSION_ENV:-}" ] || rm -f "$WRONG_SESSION_ENV"
+  [ -z "${AUTH_FAIL_OVERRIDE:-}" ] || rm -f "$AUTH_FAIL_OVERRIDE"
+  [ -z "${POLICY_JSON:-}" ] || rm -f "$POLICY_JSON"
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -171,7 +174,15 @@ S7_E2E_APP_PORT=$SOURCE_PORT S7_S3_MINIO_PORT=$SOURCE_MINIO_PORT \
   compose "$SOURCE_PROJECT" build app
 sudo -n docker image inspect "${SOURCE_PROJECT}-app:latest" >/dev/null 2>&1 \
   || fail "source app image was not built"
-sudo -n docker tag "${SOURCE_PROJECT}-app:latest" "${RESTORE_PROJECT}-app:latest"
+# Tag the freshly built source image for every derived project. Compose only builds when a
+# project's image is absent, so a stale `<project>-app:latest` left by an earlier run would
+# otherwise run outdated restore-tool code (e.g. an old migration journal) in the fail/
+# autherr/mismatch one-off containers and fail at the wrong gate.
+for tp_derived in \
+  "$RESTORE_PROJECT" "${RESTORE_PROJECT}_fail" \
+  "${RESTORE_PROJECT}_autherr" "${RESTORE_PROJECT}_secret_mismatch"; do
+  sudo -n docker tag "${SOURCE_PROJECT}-app:latest" "${tp_derived}-app:latest"
+done
 
 echo "Starting source S3 stack on port ${SOURCE_PORT}..."
 S7_E2E_APP_PORT=$SOURCE_PORT S7_S3_MINIO_PORT=$SOURCE_MINIO_PORT \
@@ -205,6 +216,21 @@ COMPOSE_PROJECT_NAME=$SOURCE_PROJECT S7_E2E_APP_PORT=$SOURCE_PORT S7_S3_MINIO_PO
 ARCHIVE=$(ls -1t "$BACKUP_DIR"/openlayerly-backup-*.tar.gz | head -n 1)
 [ -n "$ARCHIVE" ] || fail "backup archive not found"
 tar -tzf "$ARCHIVE" | grep -q 'UPLOADS_SKIPPED_S3' || fail "S3 backup missing UPLOADS_SKIPPED_S3 marker"
+
+echo "Verifying an external session-secret fingerprint mismatch fails before restore..."
+WRONG_SESSION_ENV=$(mktemp "${TMPDIR:-/tmp}/openlayerly-s7-wrong-session.XXXXXX")
+sed 's/^SESSION_SECRET=.*/SESSION_SECRET=wrong-session-secret-012345678901234/' \
+  "$DRILL_ENV" > "$WRONG_SESSION_ENV"
+if S7_E2E_APP_PORT=$RESTORE_PORT S7_S3_MINIO_PORT=$RESTORE_MINIO_PORT \
+  COMPOSE_PROJECT_NAME="${RESTORE_PROJECT}_secret_mismatch" \
+  COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:docker-compose.s7-s3-e2e.yml" \
+  COMPOSE_ENV_FILE="$WRONG_SESSION_ENV" \
+  ./scripts/restore.sh "$ARCHIVE" --yes >/tmp/openlayerly-s7-secret-mismatch.log 2>&1; then
+  fail "restore unexpectedly accepted a mismatched external SESSION_SECRET"
+fi
+grep -q "does not match the archive fingerprint" /tmp/openlayerly-s7-secret-mismatch.log \
+  || fail "restore did not report the expected session-secret mismatch"
+rm -f /tmp/openlayerly-s7-secret-mismatch.log
 
 echo "Stopping source app before restore target comes online..."
 S7_E2E_APP_PORT=$SOURCE_PORT S7_S3_MINIO_PORT=$SOURCE_MINIO_PORT \
@@ -310,8 +336,11 @@ grep -q 'restore convergence failed' /tmp/openlayerly-s7-s3-fail-restore.log \
 
 echo "Verifying a denied ListObjectsV2 (GetObject allowed) fails closed at convergence..."
 AUTH_FAIL_PROJECT=${RESTORE_PROJECT}_autherr
-AUTH_FAIL_OVERRIDE=/tmp/openlayerly-s7-s3-autherr-override.yml
-POLICY_JSON=/tmp/openlayerly-s7-getonly-policy.json
+# mktemp gives unique regular files: a fixed path could collide with residue from an
+# earlier run — in particular a *directory* auto-created by a docker `-v` bind whose
+# source file was missing — which `cat >` cannot overwrite and `rm -f` cannot remove.
+AUTH_FAIL_OVERRIDE=$(mktemp "${TMPDIR:-/tmp}/openlayerly-s7-s3-autherr-override.XXXXXX")
+POLICY_JSON=$(mktemp "${TMPDIR:-/tmp}/openlayerly-s7-getonly-policy.XXXXXX")
 # A MinIO user that may GetObject (so pre-scan/backfill reads of referenced objects
 # succeed) but is denied s3:ListBucket. This isolates the provider/listing-error case:
 # pre-scan must pass and convergence's ListObjectsV2 must fail closed before app start.
@@ -347,7 +376,10 @@ authfail_compose up -d postgres minio minio-init >/dev/null
 authfail_compose create app >/dev/null
 mirror_bucket "$SOURCE_MINIO_PORT" 9008
 # Create the GetObject-only user/policy on the target MinIO (using its root creds).
-sudo -n docker run --rm --network host -v "$POLICY_JSON:/policy.json:ro" \
+# --mount (unlike -v) fails loudly when the bind source is missing instead of silently
+# creating a directory at the host path.
+sudo -n docker run --rm --network host \
+  --mount "type=bind,source=$POLICY_JSON,target=/policy.json,readonly" \
   --entrypoint /bin/sh minio/mc:latest -c "
     set -eu
     mc alias set adm http://127.0.0.1:9008 ${MINIO_USER} ${MINIO_PASSWORD}

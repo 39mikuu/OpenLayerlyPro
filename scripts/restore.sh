@@ -199,6 +199,55 @@ fi
 
 validate_archive_storage_contract "$WORK_DIR" "$FORMAT_VERSION"
 
+SESSION_SECRET_SOURCE=$(grep '^SESSION_SECRET_SOURCE=' "$WORK_DIR/manifest.env" | cut -d= -f2- | tr -d '\r')
+SESSION_SECRET_SOURCE=${SESSION_SECRET_SOURCE:-legacy}
+case "$SESSION_SECRET_SOURCE" in
+  file)
+    compose run --rm -T --no-deps --entrypoint sh app -c 'test -z "${SESSION_SECRET:-}"' \
+      || fail "file-backed archive requires SESSION_SECRET to be unset on the target"
+    [ -s "$WORK_DIR/secrets/session-secret" ] \
+      || fail "archive declares a file-backed session secret but the file is missing"
+    SESSION_SECRET_ARCHIVE_PATH=$(manifest_value "$WORK_DIR/manifest.env" SESSION_SECRET_ARCHIVE_PATH)
+    [ "$SESSION_SECRET_ARCHIVE_PATH" = "secrets/session-secret" ] \
+      || fail "archive session secret path is unsupported"
+    run_one_off -e '
+      const fs = require("fs");
+      const path = "/restore-work/secrets/session-secret";
+      const metadata = fs.lstatSync(path);
+      if (!metadata.isFile() || metadata.isSymbolicLink()) process.exit(1);
+      const value = fs.readFileSync(path, "utf8").replace(/\r?\n$/, "");
+      if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) {
+        process.exit(1);
+      }
+    ' || fail "archived session secret is invalid"
+    ;;
+  external)
+    EXPECTED_SESSION_SECRET_SHA256=$(manifest_value "$WORK_DIR/manifest.env" SESSION_SECRET_SHA256)
+    ACTUAL_SESSION_SECRET_SHA256=$(
+      compose run --rm -T --no-deps --entrypoint node app -e '
+        const { createHash } = require("crypto");
+        const value = process.env.SESSION_SECRET;
+        if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) {
+          process.exit(1);
+        }
+        process.stdout.write(createHash("sha256").update(value).digest("hex"));
+      '
+    ) || fail "archive requires an explicit externally managed SESSION_SECRET"
+    [ "$ACTUAL_SESSION_SECRET_SHA256" = "$EXPECTED_SESSION_SECRET_SHA256" ] \
+      || fail "externally managed SESSION_SECRET does not match the archive fingerprint"
+    ;;
+  legacy)
+    # Historical archives carry no session-secret manifest fields, so the target must supply
+    # an explicit, strong SESSION_SECRET. Validate it here, before any destructive database
+    # or key work, using the same rule as the runtime resolver; a weak/blank/placeholder
+    # value must abort while the target database is still intact.
+    require_strong_env_session_secret \
+      || fail "historical archive requires an explicit strong SESSION_SECRET"
+    echo "WARNING: historical archive cannot verify whether SESSION_SECRET matches the original" >&2
+    ;;
+  *) fail "unsupported SESSION_SECRET_SOURCE=$SESSION_SECRET_SOURCE" ;;
+esac
+
 if [ "$ASSUME_YES" != true ]; then
   [ -t 0 ] || fail "confirmation requires an interactive terminal; pass --yes for automation"
   echo "This will replace the target Compose project's database and file-backed secrets."
@@ -282,6 +331,13 @@ echo "Preflighting config encryption key restore target before database replacem
 TARGET_CONFIG_KEY_FILE=$(read_container_config_key_file)
 preflight_config_key_restore_target "$TARGET_CONFIG_KEY_FILE"
 
+TARGET_SESSION_SECRET_FILE=""
+if [ "$SESSION_SECRET_SOURCE" = file ]; then
+  echo "Preflighting session secret restore target before database replacement..."
+  TARGET_SESSION_SECRET_FILE=$(read_container_session_secret_file)
+  preflight_session_secret_restore_target "$TARGET_SESSION_SECRET_FILE"
+fi
+
 # Resolve and fully preflight UPLOAD_DIR *before* the destructive dropdb, so an
 # invalid/out-of-mount/read-only upload target aborts the restore while the
 # database is still intact (instead of after it has been replaced).
@@ -310,6 +366,13 @@ compose exec -T postgres sh -c '
 echo "Restoring config encryption key file to $TARGET_CONFIG_KEY_FILE..."
 compose cp "$WORK_DIR/secrets/config-encryption-key" "app:$TARGET_CONFIG_KEY_FILE"
 verify_container_nonempty_file "$TARGET_CONFIG_KEY_FILE"
+
+if [ "$SESSION_SECRET_SOURCE" = file ]; then
+  echo "Restoring session secret file..."
+  compose cp "$WORK_DIR/secrets/session-secret" "app:$TARGET_SESSION_SECRET_FILE"
+  verify_container_session_secret_file "$TARGET_SESSION_SECRET_FILE" \
+    || fail "restored session secret is invalid"
+fi
 
 if [ "$RESTORE_HAS_UPLOADS" = true ]; then
   UPLOAD_DIR=$TARGET_UPLOAD_DIR

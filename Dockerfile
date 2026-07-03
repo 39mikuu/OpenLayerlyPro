@@ -38,6 +38,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-neutralize.mjs ./dis
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-converge.mjs ./dist/restore-converge.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-schema-check.mjs ./dist/restore-schema-check.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/dedupe-pending-payments.mjs ./scripts/dedupe-pending-payments.mjs
+COPY docker/ensure-session-secret.mjs ./docker/ensure-session-secret.mjs
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
   && mkdir -p /app/uploads /app/secrets \

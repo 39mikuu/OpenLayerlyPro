@@ -174,6 +174,30 @@ printf '\nDROP TABLE IF EXISTS drizzle.__drizzle_migrations;\nDROP SCHEMA IF EXI
 V1_UNKNOWN="$BACKUP_DIR/v1-unknown.tar.gz"
 tar -czf "$V1_UNKNOWN" -C "$WORK" .
 
+# True historical (pre-session-secret) archive: strip every session-secret manifest field
+# and ensure no archived session-secret file exists, so restore.sh takes the real `legacy`
+# branch instead of `external`/`file`. Extract from the V1_OK *archive* (its db.sql predates
+# the unknown-schema DROP appended to $WORK/db.sql above).
+echo "Building a true historical (legacy) FORMAT_VERSION=1 fixture..."
+LEGACY_WORK="$WORK/legacy"
+mkdir -p "$LEGACY_WORK"
+tar -xzf "$V1_OK" -C "$LEGACY_WORK"
+grep -vE '^(SESSION_SECRET_SOURCE|SESSION_SECRET_SHA256|SESSION_SECRET_FILE|SESSION_SECRET_ARCHIVE_PATH)=' \
+  "$LEGACY_WORK/manifest.env" > "$LEGACY_WORK/manifest.env.new"
+mv "$LEGACY_WORK/manifest.env.new" "$LEGACY_WORK/manifest.env"
+rm -f "$LEGACY_WORK/secrets/session-secret"
+if grep -q '^SESSION_SECRET' "$LEGACY_WORK/manifest.env"; then
+  fail "legacy fixture still declares session-secret manifest fields"
+fi
+[ ! -e "$LEGACY_WORK/secrets/session-secret" ] \
+  || fail "legacy fixture still contains an archived session secret"
+[ -s "$LEGACY_WORK/db.sql" ] || fail "legacy fixture is missing db.sql"
+[ -s "$LEGACY_WORK/secrets/config-encryption-key" ] \
+  || fail "legacy fixture is missing the config encryption key"
+[ -d "$LEGACY_WORK/uploads" ] || fail "legacy fixture is missing uploads"
+V1_LEGACY="$BACKUP_DIR/v1-legacy.tar.gz"
+tar -czf "$V1_LEGACY" -C "$LEGACY_WORK" .
+
 echo "Stopping source app before restore target comes online..."
 S7_E2E_APP_PORT=$SRC_PORT v1_compose "$SRC_PROJECT" stop app
 
@@ -191,12 +215,106 @@ start_restore_stack() {
 }
 
 run_restore() {
+  run_restore_with_env "$DRILL_ENV" "$@"
+}
+
+# Run restore.sh against the restore stack. RESTORE_EXTRA_COMPOSE_FILE, when set, is appended
+# last to COMPOSE_FILE so a per-case `app.environment` override wins over the fixed
+# `env_file: .env`/drill env. `--env-file` only drives interpolation and CLI env loading; it
+# does not rewrite the service's literal env_file, so the legacy cases must inject
+# SESSION_SECRET through `environment` (which takes precedence over env_file) to reliably
+# control the value the container actually resolves.
+run_restore_with_env() {
+  rrwe_env=$1
+  shift
+  rrwe_files="docker-compose.yml:docker-compose.s7-e2e.yml:$OVERRIDE"
+  if [ -n "${RESTORE_EXTRA_COMPOSE_FILE:-}" ]; then
+    rrwe_files="$rrwe_files:$RESTORE_EXTRA_COMPOSE_FILE"
+  fi
   S7_E2E_APP_PORT=$RST_PORT \
     COMPOSE_PROJECT_NAME=$RST_PROJECT \
-    COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:$OVERRIDE" \
-    COMPOSE_ENV_FILE="$DRILL_ENV" \
+    COMPOSE_FILE="$rrwe_files" \
+    COMPOSE_ENV_FILE="$rrwe_env" \
     READY_URL="http://127.0.0.1:${RST_PORT}/api/ready" \
     ./scripts/restore.sh "$@"
+}
+
+# Write a per-case Compose override that pins the app service's SESSION_SECRET to a literal
+# value. `environment` overrides env_file (including the drill's valid strong secret in
+# .env), so this deterministically controls what the one-off app containers resolve, even
+# for the empty/whitespace shapes. The value is literal (no interpolation), so it does not
+# depend on host env forwarding through sudo.
+write_legacy_override() {
+  wlo_file=$1
+  wlo_value=$2
+  {
+    echo "services:"
+    echo "  app:"
+    echo "    environment:"
+    printf '      SESSION_SECRET: "%s"\n' "$wlo_value"
+  } > "$wlo_file"
+}
+
+# Prove the app container actually resolves the intended SESSION_SECRET shape under the case
+# override, using the same file set restore.sh will use. Emits only a coarse classification,
+# never the secret itself, so the strong value is never printed.
+assert_case_session_secret() {
+  acss_override=$1
+  acss_expected=$2
+  acss_class=$(
+    S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" -f "$acss_override" \
+      run --rm --no-deps -T --entrypoint node app -e '
+        const v = process.env.SESSION_SECRET;
+        if (v === undefined || v === "") process.stdout.write("empty");
+        else if (v === "short") process.stdout.write("short");
+        else if (v === "change-me") process.stdout.write("change-me");
+        else if (v.trim().length === 0) process.stdout.write("whitespace");
+        else if (v.length >= 32) process.stdout.write("strong");
+        else process.stdout.write("weak-other");
+      ' | tr -d '\r'
+  )
+  [ "$acss_class" = "$acss_expected" ] \
+    || fail "legacy case preflight: container resolved SESSION_SECRET class '$acss_class', expected '$acss_expected'"
+}
+
+# Seed a database row and a config-key file sentinel on the restore stack so a rejected
+# legacy restore can be proven non-destructive (DB + key + session-secret target intact).
+seed_legacy_sentinels() {
+  S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" exec -T postgres sh -c '
+    exec psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" \
+      -c "drop table if exists restore_legacy_sentinel;
+          create table restore_legacy_sentinel (value text not null);
+          insert into restore_legacy_sentinel values ('"'"'untouched'"'"');"
+  '
+  S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" run --rm --no-deps -T \
+    --entrypoint sh app -c 'printf legacy-key-untouched > /app/secrets/config-encryption-key'
+}
+
+# Assert the official DB row, config key, and session-secret target were untouched by a
+# rejected legacy restore, that the app never became ready, and no probe DB leaked.
+assert_legacy_sentinels_untouched() {
+  alsu_ctx=$1
+  alsu_db=$(
+    S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" exec -T postgres sh -c '
+      exec psql -At -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" \
+        -c "select value from restore_legacy_sentinel;"
+    ' 2>/dev/null | tr -d '\r'
+  )
+  [ "$alsu_db" = "untouched" ] \
+    || fail "legacy $alsu_ctx changed the official database (sentinel='$alsu_db')"
+  alsu_key=$(
+    S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" run --rm --no-deps -T \
+      --entrypoint sh app -c 'cat /app/secrets/config-encryption-key 2>/dev/null || true' | tr -d '\r'
+  )
+  [ "$alsu_key" = "legacy-key-untouched" ] \
+    || fail "legacy $alsu_ctx changed the official config encryption key"
+  S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" run --rm --no-deps -T \
+    --entrypoint sh app -c '[ ! -e /app/secrets/session-secret ]' \
+    || fail "legacy $alsu_ctx created or modified the session secret target"
+  if curl -fsS "http://127.0.0.1:${RST_PORT}/api/ready" >/dev/null 2>&1; then
+    fail "app became ready after a rejected legacy restore ($alsu_ctx)"
+  fi
+  assert_no_probe_db "legacy $alsu_ctx"
 }
 
 # --- Signal cleanup: interrupt mid-restore and prove the probe DB is not orphaned. ---
@@ -258,7 +376,53 @@ READY_BODY=$(curl -fsS "http://127.0.0.1:${RST_PORT}/api/ready")
 echo "$READY_BODY" | grep -q '"ok":true' || fail "v1 restore ready body was not ok: $READY_BODY"
 assert_no_probe_db "successful v1 restore"
 
+# --- Real historical archive: strict SESSION_SECRET preflight before destructive work. ---
+# SESSION_SECRET is injected per case through an `app.environment` override (which wins over
+# the fixed env_file/.env), and a preflight asserts the container actually resolves the
+# intended shape before restore runs. The legacy secret (32 spaces) is written literally.
+LEGACY_OVERRIDE="$WORK/legacy-override.yml"
+LEGACY_WHITESPACE_VALUE='                                '
+for legacy_case in missing short placeholder whitespace; do
+  echo "TEST: legacy archive rejects a $legacy_case SESSION_SECRET before destructive work..."
+  case "$legacy_case" in
+    missing) case_value=""; case_class="empty" ;;
+    short) case_value="short"; case_class="short" ;;
+    placeholder) case_value="change-me"; case_class="change-me" ;;
+    whitespace) case_value="$LEGACY_WHITESPACE_VALUE"; case_class="whitespace" ;;
+  esac
+  start_restore_stack
+  seed_legacy_sentinels
+  write_legacy_override "$LEGACY_OVERRIDE" "$case_value"
+  assert_case_session_secret "$LEGACY_OVERRIDE" "$case_class"
+  CASE_LOG="/tmp/openlayerly-s7-v1-legacy-$legacy_case.log"
+  if RESTORE_EXTRA_COMPOSE_FILE="$LEGACY_OVERRIDE" \
+      run_restore_with_env "$DRILL_ENV" "$V1_LEGACY" --yes >"$CASE_LOG" 2>&1; then
+    fail "legacy restore unexpectedly accepted a $legacy_case SESSION_SECRET"
+  fi
+  grep -qi 'historical archive requires an explicit strong SESSION_SECRET' "$CASE_LOG" \
+    || fail "legacy $legacy_case failure did not surface the strong-secret requirement"
+  assert_legacy_sentinels_untouched "$legacy_case rejection"
+done
+
+echo "TEST: legacy archive with an explicit strong SESSION_SECRET restores successfully..."
+start_restore_stack
+write_legacy_override "$LEGACY_OVERRIDE" "legacy-explicit-session-secret-0123456789"
+assert_case_session_secret "$LEGACY_OVERRIDE" "strong"
+if ! RESTORE_EXTRA_COMPOSE_FILE="$LEGACY_OVERRIDE" \
+    run_restore_with_env "$DRILL_ENV" "$V1_LEGACY" --yes \
+    >/tmp/openlayerly-s7-v1-legacy-valid.log 2>&1; then
+  fail "legacy restore with a strong SESSION_SECRET failed (see /tmp/openlayerly-s7-v1-legacy-valid.log)"
+fi
+grep -qi 'historical archive cannot verify whether SESSION_SECRET matches the original' \
+  /tmp/openlayerly-s7-v1-legacy-valid.log \
+  || fail "legacy success did not emit the continuity warning"
+LEGACY_READY_BODY=$(curl -fsS "http://127.0.0.1:${RST_PORT}/api/ready")
+echo "$LEGACY_READY_BODY" | grep -q '"ok":true' \
+  || fail "legacy restore ready body was not ok: $LEGACY_READY_BODY"
+assert_no_probe_db "successful legacy restore"
+
 echo "S7 v1 restore E2E drill passed."
 echo "Compatible archive: $V1_OK"
 echo "Unknown archive: $V1_UNKNOWN"
+echo "Legacy (historical) archive: $V1_LEGACY"
 echo "Custom DB user: $PG_USER (URL-reserved password)"

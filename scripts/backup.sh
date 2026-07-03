@@ -99,6 +99,7 @@ ARCHIVE_PATH="$OUTPUT_DIR/openlayerly-backup-$TIMESTAMP.tar.gz"
 ARCHIVE_TMP=$(mktemp "$OUTPUT_DIR/.openlayerly-backup-$TIMESTAMP.XXXXXX")
 APP_RESTART_NEEDED=false
 APP_WAS_ACTIVE=false
+# shellcheck disable=SC2034 # Read by sourced backup-app-state.sh.
 APP_CONTAINER_IDS_TO_RESTART=""
 
 cleanup() {
@@ -133,6 +134,26 @@ fi
 
 CONFIG_KEY_FILE=$(read_container_config_key_file)
 validate_config_key_file_path "$CONFIG_KEY_FILE"
+
+if compose run --rm -T --no-deps --entrypoint sh app -c 'test -n "${SESSION_SECRET:-}"'; then
+  SESSION_SECRET_SOURCE="external"
+  SESSION_SECRET_FILE=""
+  SESSION_SECRET_SHA256=$(
+    compose run --rm -T --no-deps --entrypoint node app -e '
+      const { createHash } = require("crypto");
+      const value = process.env.SESSION_SECRET;
+      if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) {
+        process.exit(1);
+      }
+      process.stdout.write(createHash("sha256").update(value).digest("hex"));
+    '
+  ) || fail "externally managed SESSION_SECRET is missing or invalid"
+else
+  SESSION_SECRET_SOURCE="file"
+  SESSION_SECRET_FILE=$(read_container_session_secret_file)
+  validate_session_secret_file_path "$SESSION_SECRET_FILE"
+  SESSION_SECRET_SHA256=""
+fi
 
 STORAGE_DRIVER=$(compose run --rm -T --no-deps --entrypoint sh app -c \
   'printf %s "${STORAGE_DRIVER:-local}"' | tr -d '\r')
@@ -206,6 +227,30 @@ compose cp "app:$CONFIG_KEY_FILE" "$WORK_DIR/secrets/config-encryption-key"
 fix_workspace_permissions
 chmod 600 "$WORK_DIR/secrets/config-encryption-key" || fail "unable to secure config encryption key in backup workspace"
 
+if [ "$SESSION_SECRET_SOURCE" = file ]; then
+  echo "Backing up session secret file..."
+  compose run --rm -T --no-deps --entrypoint sh app -c '
+    set -eu
+    test -f "$1"
+    test ! -L "$1"
+    [ "$(stat -c %a "$1")" = "600" ]
+    node -e "
+      const fs = require(\"fs\");
+      const value = fs.readFileSync(process.argv[1], \"utf8\").replace(/\\r?\\n$/, \"\");
+      if (!value || value.trim().length === 0 || value === \"change-me\" || value.length < 32) {
+        process.exit(1);
+      }
+    " "$1"
+  ' backup-session-secret "$SESSION_SECRET_FILE" \
+    || fail "session secret file is invalid or has unsafe permissions"
+  compose cp "app:$SESSION_SECRET_FILE" "$WORK_DIR/secrets/session-secret"
+  [ -s "$WORK_DIR/secrets/session-secret" ] || fail "session secret file is missing or empty"
+  fix_workspace_permissions
+  chmod 600 "$WORK_DIR/secrets/session-secret" || fail "unable to secure session secret in backup workspace"
+else
+  echo "SESSION_SECRET is externally managed; recording fingerprint only."
+fi
+
 case "$STORAGE_DRIVER" in
   local)
     echo "Backing up local uploads from $UPLOAD_DIR..."
@@ -234,6 +279,13 @@ fi
   echo "LATEST_MIGRATION_HASH=$LATEST_MIGRATION_HASH"
   echo "MIGRATION_IDENTITIES_JSON=$MIGRATION_IDENTITIES_JSON"
   echo "CONFIG_ENCRYPTION_KEY_FILE=$CONFIG_KEY_FILE"
+  echo "SESSION_SECRET_SOURCE=$SESSION_SECRET_SOURCE"
+  if [ "$SESSION_SECRET_SOURCE" = file ]; then
+    echo "SESSION_SECRET_FILE=$SESSION_SECRET_FILE"
+    echo "SESSION_SECRET_ARCHIVE_PATH=secrets/session-secret"
+  else
+    echo "SESSION_SECRET_SHA256=$SESSION_SECRET_SHA256"
+  fi
   echo "BACKUP_WINDOW_NOTE=$BACKUP_WINDOW_NOTE"
 } > "$WORK_DIR/manifest.env"
 
@@ -280,4 +332,8 @@ else
   echo "Consistency mode: hot backup; use --stop-app to block application writes during capture"
 fi
 echo "Migration identity: $LATEST_MIGRATION_HASH"
-echo "SESSION_SECRET is not included; back it up separately for seamless session recovery"
+if [ "$SESSION_SECRET_SOURCE" = file ]; then
+  echo "Included: file-backed session secret"
+else
+  echo "SESSION_SECRET is externally managed and is not included; preserve the matching value separately"
+fi

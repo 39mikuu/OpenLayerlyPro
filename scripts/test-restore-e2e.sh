@@ -14,6 +14,12 @@ RESTORE_PORT=${RESTORE_PORT:-3004}
 BACKUP_DIR=${BACKUP_DIR:-/tmp/openlayerlypro-s7-e2e-backups}
 DRILL_ENV=${DRILL_ENV:-.env.s7-e2e}
 NESTED_UPLOAD_DIR=${NESTED_UPLOAD_DIR:-/app/uploads/e2e-nested}
+# Deliberately use a *custom* SESSION_SECRET_FILE (not the entrypoint default) so this drill
+# proves docker-compose.yml no longer pins SESSION_SECRET_FILE and honours the operator's
+# .env value end to end: generation, restart/recreate survival, backup, and restore all
+# follow the custom path. DEFAULT_SESSION_SECRET_FILE must never be created in this run.
+CUSTOM_SESSION_SECRET_FILE=${CUSTOM_SESSION_SECRET_FILE:-/app/secrets/custom-session-secret}
+DEFAULT_SESSION_SECRET_FILE=/app/secrets/session-secret
 
 fail() {
   echo "restore-e2e: $*" >&2
@@ -29,6 +35,7 @@ compose() {
     --env-file "$DRILL_ENV" \
     -f docker-compose.yml \
     -f docker-compose.s7-e2e.yml \
+    -f "$SECRET_OVERRIDE" \
     "$@"
 }
 
@@ -64,7 +71,7 @@ cat >"$DRILL_ENV" <<EOF
 APP_URL=http://127.0.0.1:3003
 APP_NAME=OpenLayerlyPro S7 Restore Drill
 NODE_ENV=production
-SESSION_SECRET=s7-restore-e2e-session-secret-0123456789
+SESSION_SECRET_FILE=$CUSTOM_SESSION_SECRET_FILE
 SECURITY_CSP_MODE=auto
 SECURITY_HSTS_ENABLED=false
 CONFIG_ENCRYPTION_KEY=
@@ -73,6 +80,19 @@ DATABASE_URL=postgresql://artist:artist_password@postgres:5432/artist_member
 STORAGE_DRIVER=local
 UPLOAD_DIR=$NESTED_UPLOAD_DIR
 TURNSTILE_ENABLED=false
+EOF
+
+# Pin SESSION_SECRET to empty for every drill container. The app service's fixed
+# `env_file: .env` would otherwise leak an operator-provided SESSION_SECRET into the drill
+# (the drill env deliberately has no SESSION_SECRET line), flipping the entrypoint to the
+# external branch so the custom file-backed secret is never generated. `environment` takes
+# precedence over env_file, and every consumer treats an empty value as unset.
+SECRET_OVERRIDE=$(mktemp "${TMPDIR:-/tmp}/openlayerly-s7-secret-override.XXXXXX")
+cat >"$SECRET_OVERRIDE" <<'EOF'
+services:
+  app:
+    environment:
+      SESSION_SECRET: ""
 EOF
 
 if [ ! -f .env ]; then
@@ -86,7 +106,8 @@ teardown_projects() {
   for tp_project in "$SOURCE_PROJECT" "$RESTORE_PROJECT"; do
     sudo -n env COMPOSE_ENV_FILE="$DRILL_ENV" \
       docker compose -p "$tp_project" --env-file "$DRILL_ENV" \
-      -f docker-compose.yml -f docker-compose.s7-e2e.yml down -v >/dev/null 2>&1 || true
+      -f docker-compose.yml -f docker-compose.s7-e2e.yml -f "$SECRET_OVERRIDE" \
+      down -v >/dev/null 2>&1 || true
   done
 }
 
@@ -95,7 +116,7 @@ teardown_projects() {
 cleanup() {
   teardown_projects
   [ "$CREATED_DOT_ENV" = true ] && [ -f .env ] && rm -f .env
-  rm -f "$DRILL_ENV"
+  rm -f "$DRILL_ENV" "$SECRET_OVERRIDE"
   rm -rf "${CONTRACT_WORK:-}" "${UNSAFE_BACKUP_DIR:-}"
 }
 trap cleanup EXIT
@@ -109,14 +130,72 @@ teardown_projects
 echo "Building source image..."
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" build app
 echo "Tagging source image for restore project..."
-sudo -n docker image inspect "openlayerlypro_s7_source-app:latest" >/dev/null 2>&1 \
+sudo -n docker image inspect "${SOURCE_PROJECT}-app:latest" >/dev/null 2>&1 \
   || fail "source app image was not built"
-sudo -n docker tag openlayerlypro_s7_source-app:latest openlayerlypro_s7_restore-app:latest
+sudo -n docker tag "${SOURCE_PROJECT}-app:latest" "${RESTORE_PROJECT}-app:latest"
 
 echo "Starting source stack on port ${SOURCE_PORT} with UPLOAD_DIR=${NESTED_UPLOAD_DIR}..."
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d postgres
 S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d app
 wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+  sh -c 'test -z "${SESSION_SECRET:-}"' \
+  || fail "app container resolved a non-empty SESSION_SECRET; the drill override failed to neutralise the operator .env"
+SOURCE_SESSION_SECRET=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+    sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
+)
+[ "${#SOURCE_SESSION_SECRET}" -ge 32 ] || fail "source session secret was not generated"
+
+echo "Verifying Compose honours the custom SESSION_SECRET_FILE path (override removed)..."
+RESOLVED_SECRET_FILE=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+    sh -c 'printf %s "${SESSION_SECRET_FILE:-unset}"' | tr -d '\r'
+)
+[ "$RESOLVED_SECRET_FILE" = "$CUSTOM_SESSION_SECRET_FILE" ] \
+  || fail "container SESSION_SECRET_FILE resolved to '$RESOLVED_SECRET_FILE', expected '$CUSTOM_SESSION_SECRET_FILE'"
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app sh -c '
+  set -eu
+  test -f "$1"
+  [ ! -e "$2" ] || { echo "default session secret path was unexpectedly created"; exit 1; }
+' custom-path-check "$CUSTOM_SESSION_SECRET_FILE" "$DEFAULT_SESSION_SECRET_FILE" \
+  || fail "custom SESSION_SECRET_FILE not generated at the operator path, or default path leaked"
+
+echo "Verifying an unset SESSION_SECRET_FILE resolves to the entrypoint default path..."
+DEFAULT_PATH_RESOLVED=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" run --rm --no-deps -T \
+    -e SESSION_SECRET_FILE= --entrypoint sh app -c \
+    'printf %s "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"' | tr -d '\r'
+)
+[ "$DEFAULT_PATH_RESOLVED" = "$DEFAULT_SESSION_SECRET_FILE" ] \
+  || fail "unset SESSION_SECRET_FILE did not fall back to $DEFAULT_SESSION_SECRET_FILE (got '$DEFAULT_PATH_RESOLVED')"
+
+echo "Verifying session secret survives restart and container recreation..."
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" restart app >/dev/null
+wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
+RESTARTED_SESSION_SECRET=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+    sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
+)
+[ "$RESTARTED_SESSION_SECRET" = "$SOURCE_SESSION_SECRET" ] \
+  || fail "session secret changed after restart"
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d --force-recreate app >/dev/null
+wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
+RECREATED_SESSION_SECRET=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+    sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
+)
+[ "$RECREATED_SESSION_SECRET" = "$SOURCE_SESSION_SECRET" ] \
+  || fail "session secret changed after container recreation"
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" down >/dev/null
+S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" up -d postgres app >/dev/null
+wait_ready "$SOURCE_PROJECT" "$SOURCE_PORT"
+RECREATED_STACK_SESSION_SECRET=$(
+  S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T app \
+    sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
+)
+[ "$RECREATED_STACK_SESSION_SECRET" = "$SOURCE_SESSION_SECRET" ] \
+  || fail "session secret changed after compose down/up with retained volumes"
 
 echo "Seeding source data..."
 SEED_JSON=$(
@@ -145,7 +224,7 @@ S7_E2E_APP_PORT=$SOURCE_PORT compose "$SOURCE_PROJECT" exec -T postgres sh -c "
 "
 
 echo "Creating baseline backup in explicit stop/restart consistency mode..."
-export COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml"
+export COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:$SECRET_OVERRIDE"
 export COMPOSE_ENV_FILE="$DRILL_ENV"
 compose "$SOURCE_PROJECT" exec -T app sh -c 'test -z "${CONFIG_ENCRYPTION_KEY:-}"' || fail "source uses direct CONFIG_ENCRYPTION_KEY"
 COMPOSE_PROJECT_NAME=$SOURCE_PROJECT ./scripts/backup.sh --stop-app "$BACKUP_DIR"
@@ -213,7 +292,7 @@ S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" run --rm --no-deps \
   --entrypoint sh app -c \
   'printf contract-key-untouched > /app/secrets/config-encryption-key'
 CONTRACT_WORK=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-s7-contract.XXXXXX")
-for variant in missing both mismatch; do
+for variant in missing both mismatch weak-session-secret; do
   mkdir -p "$CONTRACT_WORK/$variant"
   tar -xzf "$ARCHIVE" -C "$CONTRACT_WORK/$variant"
   case "$variant" in
@@ -228,6 +307,9 @@ for variant in missing both mismatch; do
       rm -rf "$CONTRACT_WORK/$variant/uploads"
       touch "$CONTRACT_WORK/$variant/UPLOADS_SKIPPED_S3"
       ;;
+    weak-session-secret)
+      printf '%32s' '' > "$CONTRACT_WORK/$variant/secrets/session-secret"
+      ;;
   esac
   (
     cd "$CONTRACT_WORK/$variant" || exit 1
@@ -238,7 +320,7 @@ for variant in missing both mismatch; do
   )
   if S7_E2E_APP_PORT=$RESTORE_PORT \
     COMPOSE_PROJECT_NAME=$RESTORE_PROJECT \
-    COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml" \
+    COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:$SECRET_OVERRIDE" \
     COMPOSE_ENV_FILE="$DRILL_ENV" \
     ./scripts/restore.sh "$CONTRACT_WORK/$variant.tar.gz" --yes >/dev/null 2>&1; then
     fail "restore unexpectedly accepted malformed storage contract: $variant"
@@ -257,13 +339,44 @@ for variant in missing both mismatch; do
   [ "$SENTINEL_KEY" = "contract-key-untouched" ] \
     || fail "malformed $variant archive changed official config key"
 done
+
+echo "Verifying session-secret target symlinks fail before database replacement..."
+for symlink_variant in regular dangling; do
+  S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" run --rm --no-deps \
+    --entrypoint sh app -c '
+      set -eu
+      rm -f "$2"
+      if [ "$1" = regular ]; then
+        ln -s /app/secrets/config-encryption-key "$2"
+      else
+        ln -s /app/secrets/missing-session-secret "$2"
+      fi
+    ' restore-symlink "$symlink_variant" "$CUSTOM_SESSION_SECRET_FILE"
+  if S7_E2E_APP_PORT=$RESTORE_PORT \
+    COMPOSE_PROJECT_NAME=$RESTORE_PROJECT \
+    COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:$SECRET_OVERRIDE" \
+    COMPOSE_ENV_FILE="$DRILL_ENV" \
+    ./scripts/restore.sh "$ARCHIVE" --yes >/dev/null 2>&1; then
+    fail "restore unexpectedly accepted a $symlink_variant session-secret target symlink"
+  fi
+  SENTINEL_DB=$(
+    S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T postgres sh -c '
+      exec psql -At -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" \
+        -c "select value from restore_contract_sentinel;"
+    '
+  )
+  [ "$SENTINEL_DB" = "untouched" ] \
+    || fail "$symlink_variant session-secret target symlink changed official database"
+  S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" run --rm --no-deps \
+    --entrypoint sh app -c 'rm -f "$1"' restore-symlink-cleanup "$CUSTOM_SESSION_SECRET_FILE"
+done
 rm -rf "$CONTRACT_WORK"
 CONTRACT_WORK=""
 
 echo "Running hardened restore into ${RESTORE_PROJECT}..."
 S7_E2E_APP_PORT=$RESTORE_PORT \
   COMPOSE_PROJECT_NAME=$RESTORE_PROJECT \
-  COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml" \
+  COMPOSE_FILE="docker-compose.yml:docker-compose.s7-e2e.yml:$SECRET_OVERRIDE" \
   COMPOSE_ENV_FILE="$DRILL_ENV" \
   RESTORE_E2E_INJECT_MISSING=1 \
   RESTORE_E2E_MISSING_OBJECT_KEY="$MISSING_OBJECT_KEY" \
@@ -271,6 +384,18 @@ S7_E2E_APP_PORT=$RESTORE_PORT \
   ./scripts/restore.sh "$ARCHIVE" --yes
 
 echo "Verifying restored content..."
+RESTORED_SESSION_SECRET=$(
+  S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T app \
+    sh -c 'cat "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
+)
+[ "$RESTORED_SESSION_SECRET" = "$SOURCE_SESSION_SECRET" ] \
+  || fail "restored session secret does not match the source"
+S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T app sh -c '
+  set -eu
+  test -f "$1"
+  [ ! -e "$2" ] || { echo "restore created the default session secret path instead of the custom one"; exit 1; }
+' restored-custom-path-check "$CUSTOM_SESSION_SECRET_FILE" "$DEFAULT_SESSION_SECRET_FILE" \
+  || fail "restore did not land the session secret at the custom SESSION_SECRET_FILE path"
 READY_BODY=$(curl -fsS "http://127.0.0.1:${RESTORE_PORT}/api/ready")
 echo "$READY_BODY" | grep -q '"ok":true' || fail "ready body was not ok: $READY_BODY"
 

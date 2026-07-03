@@ -60,7 +60,7 @@ Current status: **v1.0 pre-release final acceptance**. The application includes 
 git clone https://github.com/39mikuu/OpenLayerlyPro.git
 cd OpenLayerlyPro
 cp .env.example .env
-# 编辑 .env：至少修改 SESSION_SECRET，并配置 SMTP
+# 编辑 .env：配置 APP_URL、SMTP 与存储；Compose 会持久化生成 SESSION_SECRET
 
 docker compose up -d
 ```
@@ -135,7 +135,7 @@ docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 | 变量 | 说明 |
 |---|---|
 | `APP_URL` | 站点对外地址 |
-| `SESSION_SECRET` | 生产必须设置为强随机值，否则应用拒绝启动 |
+| `SESSION_SECRET` / `SESSION_SECRET_FILE` | 外部托管值优先；Compose 默认使用 `/app/secrets/session-secret` |
 | `DATABASE_URL` | PostgreSQL 连接串 |
 | `SMTP_HOST` / `SMTP_FROM` 等 | SMTP 邮件配置，粉丝验证码登录必需 |
 | `EMAIL_RETRY_RECHECK_MINUTES` / `EMAIL_DELIVERY_MAX_AGE_HOURS` | 业务邮件待运维修复时的重投间隔与最长待命时间（默认 15 分钟 / 24 小时） |
@@ -155,13 +155,19 @@ Stripe and AI translation provider settings are configured in the admin settings
 
 ### SESSION_SECRET
 
-生产环境必须设置长度足够的随机值：
+Docker Compose 默认可省略 `SESSION_SECRET`。首次启动使用安全随机数生成
+`/app/secrets/session-secret`，权限为 `0600`，并在后续重启和容器重建中复用。
+高级部署可提供长度至少 32 字符的外部值：
 
 ```bash
 openssl rand -base64 32
 ```
 
-`SESSION_SECRET` 不会自动生成。Docker 自动生成的是配置加密根密钥，两者用途不同。
+环境变量优先于 `SESSION_SECRET_FILE`。多主机或不共享 volume 的部署必须通过
+Secret Manager 提供同一个环境变量，或由编排平台挂载同一个文件；本地 named
+volume 不能跨主机共享。删除或替换该 secret 会使现有 session、验证码摘要和
+认证中间任务失效。不要执行 `docker compose down -v`，除非已验证备份可恢复
+secrets volume。
 
 ### Turnstile 与真实 IP
 
@@ -178,7 +184,9 @@ openssl rand -base64 32
 
 Docker 用户可以留空 `CONFIG_ENCRYPTION_KEY`。首次启动时 entrypoint 会生成随机密钥并持久化到 `/app/secrets/config-encryption-key`。
 
-> 迁移服务器或恢复备份时，必须同时备份 PostgreSQL 数据库和配置加密密钥。密钥丢失后，加密配置可能无法恢复。无缝会话恢复还必须单独保留同一个 `SESSION_SECRET`。
+> 迁移服务器或恢复备份时，必须同时保护数据库、配置加密密钥与 session secret。
+> 新归档包含 file-backed session secret；外部 `SESSION_SECRET` 只记录不可逆指纹，
+> 明文仍必须由操作者单独托管。
 
 标准 Docker Compose 部署可用单个归档同时备份数据库、密钥和本地上传文件：
 

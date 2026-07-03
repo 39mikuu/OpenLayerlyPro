@@ -5,10 +5,13 @@ OpenLayerlyPro data is not recoverable from the PostgreSQL dump alone. A recover
 - PostgreSQL database;
 - every local `uploads` object still referenced by `files.storage_driver='local'`;
 - `/app/secrets/config-encryption-key` or the externally managed equivalent;
-- `SESSION_SECRET` when seamless session/in-flight login-task recovery is required;
+- `/app/secrets/session-secret`, or the exact externally managed `SESSION_SECRET`;
 - every S3/R2 object still referenced by the database, protected through provider versions or snapshots.
 
-The config encryption key decrypts admin-managed settings. `SESSION_SECRET` is a separate secret: losing or rotating it invalidates sessions and can make in-flight encrypted login-code tasks undecryptable. The standard archive contains the file-backed config key, not `SESSION_SECRET` or externally managed secrets.
+The config encryption key decrypts admin-managed settings. `SESSION_SECRET` is a separate
+secret: losing or rotating it invalidates sessions and can make in-flight encrypted
+login-code tasks undecryptable. New archives include a file-backed session secret.
+Externally managed values are never archived; only a SHA-256 fingerprint is recorded.
 
 ## Requirements
 
@@ -59,11 +62,15 @@ db.sql
 manifest.env
 checksums.sha256
 secrets/config-encryption-key
+secrets/session-secret            # only for SESSION_SECRET_SOURCE=file
 uploads/                         # included only when container env STORAGE_DRIVER resolves to local
 UPLOADS_SKIPPED_S3               # written only when container env STORAGE_DRIVER resolves to s3
 ```
 
-`manifest.env` records `APP_VERSION`, `STORAGE_DRIVER`, `UPLOADS_INCLUDED`, migration identity (`LATEST_MIGRATION_HASH`, `MIGRATION_IDENTITIES_JSON`), the source container `CONFIG_ENCRYPTION_KEY_FILE` path at backup time, and whether the capture used hot or `--stop-app` consistency mode.
+`manifest.env` records `APP_VERSION`, storage and migration identity, the config-key path,
+capture consistency mode, and `SESSION_SECRET_SOURCE`. File-backed archives record the
+container path and `secrets/session-secret`; external sources record only
+`SESSION_SECRET_SHA256`.
 
 `checksums.sha256` covers every regular-file payload member except the root `./checksums.sha256` manifest itself (nested upload files named `checksums.sha256` remain covered). On v2 archives, `restore.sh` rejects symlinks and special files, verifies checksums, and then enforces a strict bijection: every extracted regular-file payload must appear exactly once in the manifest, and every manifest entry must have a matching payload file. The parser reads the fixed-width GNU checksum prefix, so ordinary filenames containing spaces are preserved exactly.
 
@@ -139,6 +146,7 @@ That flag only relaxes **unknown** v1 history. It cannot bypass confirmed newer/
 validate archive paths
 → verify v2 checksums and manifest/payload bijection (v1 warns and continues)
 → v2 manifest compatibility check, or v1 isolated temporary-DB schema probe
+→ validate external SESSION_SECRET or restore the checksummed file-backed secret
 → import official DB and restore config key to the target CONFIG_ENCRYPTION_KEY_FILE path
 → one-off forward migrator (dist/migrate.mjs)
 → pre-scan missing referenced objects and quarantine them (dist/restore-pre-scan.mjs)
@@ -179,7 +187,14 @@ The script refuses a target that sets `CONFIG_ENCRYPTION_KEY` directly because t
 
 ### SESSION_SECRET semantics
 
-`SESSION_SECRET` is not stored in the archive. Operators must back it up separately. Losing or rotating it invalidates sessions and can make in-flight encrypted login-code tasks undecryptable. Recovery remains possible, but all users must sign in again.
+File-backed secrets are checksummed, restored as a regular file with mode `0600`, and
+validated before app startup. External secrets must be supplied explicitly and match the
+manifest SHA-256 fingerprint. Historical archives have no fingerprint or secret payload:
+restore requires an explicit, strong `SESSION_SECRET` (non-empty after trimming, not
+`change-me`, at least 32 characters). This is validated before any destructive database or
+key work, so a weak or missing value aborts while the target database is still intact, and
+warns that continuity cannot be proven. It never lets entrypoint silently generate a
+replacement during restore.
 
 ### Stripe residual risk
 
