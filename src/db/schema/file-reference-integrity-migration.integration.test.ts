@@ -92,7 +92,7 @@ describeWithDatabase("file reference integrity migration", () => {
     });
   }
 
-  it("removes every legacy site file setting with an invalid purpose and completes 0020", async () => {
+  it("aborts on legacy site file settings with an invalid purpose and preserves rows", async () => {
     const fileId = randomUUID();
     await db`
       insert into files (
@@ -110,36 +110,44 @@ describeWithDatabase("file reference integrity migration", () => {
         ('site_icon_file_id', ${db.json(fileId)})
     `;
 
-    await migrate0020();
+    await expect(migrate0020()).rejects.toMatchObject({
+      code: "23514",
+      message: expect.stringContaining("site_settings key="),
+    });
 
     await expect(db`
-      select key
+      select key, value_json
         from site_settings
        where key in ('artist_avatar_file_id', 'site_logo_file_id', 'site_icon_file_id')
-    `).resolves.toHaveLength(0);
+       order by key
+    `).resolves.toEqual([
+      { key: "artist_avatar_file_id", value_json: fileId },
+      { key: "site_icon_file_id", value_json: fileId },
+      { key: "site_logo_file_id", value_json: fileId },
+    ]);
     await expect(db`
       select exists (
         select 1
           from information_schema.triggers
          where trigger_name = 'site_settings_file_reference_lock'
       ) as installed
-    `).resolves.toMatchObject([{ installed: true }]);
+    `).resolves.toMatchObject([{ installed: false }]);
   });
 
-  it("removes only an invalid legacy site file setting and preserves valid values", async () => {
-    const invalidFileId = randomUUID();
+  it("preserves valid legacy site file settings and completes 0020", async () => {
     const validAvatarId = randomUUID();
+    const validLogoId = randomUUID();
     const validIconId = randomUUID();
     await db`
       insert into files (
         id, storage_driver, object_key, original_name, mime_type, size_bytes, purpose
       ) values
         (
-          ${invalidFileId}, 'local', ${`content_image/${invalidFileId}`}, 'invalid.png',
-          'image/png', 10, 'content_image'
+          ${validAvatarId}, 'local', ${`artist_avatar/${validAvatarId}`}, 'avatar.png',
+          'image/png', 10, 'artist_avatar'
         ),
         (
-          ${validAvatarId}, 'local', ${`artist_avatar/${validAvatarId}`}, 'avatar.png',
+          ${validLogoId}, 'local', ${`artist_avatar/${validLogoId}`}, 'logo.png',
           'image/png', 10, 'artist_avatar'
         ),
         (
@@ -151,7 +159,7 @@ describeWithDatabase("file reference integrity migration", () => {
       insert into site_settings (key, value_json)
       values
         ('artist_avatar_file_id', ${db.json(validAvatarId)}),
-        ('site_logo_file_id', ${db.json(invalidFileId)}),
+        ('site_logo_file_id', ${db.json(validLogoId)}),
         ('site_icon_file_id', ${db.json(validIconId)})
     `;
 
@@ -165,7 +173,15 @@ describeWithDatabase("file reference integrity migration", () => {
     `).resolves.toEqual([
       { key: "artist_avatar_file_id", value_json: validAvatarId },
       { key: "site_icon_file_id", value_json: validIconId },
+      { key: "site_logo_file_id", value_json: validLogoId },
     ]);
+    await expect(db`
+      select exists (
+        select 1
+          from information_schema.triggers
+         where trigger_name = 'site_settings_file_reference_lock'
+      ) as installed
+    `).resolves.toMatchObject([{ installed: true }]);
   });
 
   it("blocks deletion when a site setting stores an uppercase file UUID", async () => {
@@ -190,7 +206,7 @@ describeWithDatabase("file reference integrity migration", () => {
     await expect(db`select id from files where id = ${fileId}`).resolves.toHaveLength(1);
   });
 
-  it("aborts instead of silently keeping a reference written while the migration's lock is queued", async () => {
+  it("aborts instead of silently keeping a reference held before a retry", async () => {
     const fileId = randomUUID();
     const postId = randomUUID();
     await db`
@@ -207,19 +223,9 @@ describeWithDatabase("file reference integrity migration", () => {
       values (${postId}, 'r6 regression post', 'r6-regression-post', 'public', 'draft')
     `;
 
-    // Both the blocker's lock and the injector's write must be acquired BEFORE the
-    // migrator ever starts. PostgreSQL's lock queue is fair: once the migrator's
-    // AccessExclusiveLock request is queued, any later conflicting request (even a
-    // weaker one) queues behind it too. So the attack only works if the injector's
-    // RowExclusiveLock (from its INSERT) is already granted before the migrator's
-    // request exists at all.
-    const blocker = await postgres(databaseUrl, {
-      max: 1,
-      connection: { application_name: "r6_regression_blocker" },
-    }).reserve();
-    await blocker`BEGIN`;
-    await blocker`LOCK TABLE post_files IN ROW SHARE MODE`;
-
+    // The violating write is committed before the migrator can take the
+    // migration-wide NOWAIT lock. A single-attempt migrator must fail loudly
+    // during preflight instead of partially installing 0020.
     const injector = await postgres(databaseUrl, {
       max: 1,
       connection: { application_name: "r6_regression_injector" },
@@ -229,6 +235,8 @@ describeWithDatabase("file reference integrity migration", () => {
       insert into post_files (post_id, file_id, kind, sort_order)
       values (${postId}, ${fileId}, 'inline', 0)
     `;
+    await injector`COMMIT`;
+    await injector.release();
 
     const migrator = spawn("node", ["scripts/migrate.mjs"], {
       cwd: process.cwd(),
@@ -240,34 +248,6 @@ describeWithDatabase("file reference integrity migration", () => {
     });
     let migratorStderr = "";
     migrator.stderr.on("data", (chunk) => (migratorStderr += chunk.toString()));
-
-    // The migrator's single LOCK TABLE statement locks six tables in the order
-    // listed (files, posts, payment_methods, payment_requests, post_files,
-    // site_settings); it only actually contends with the blocker once it reaches
-    // post_files, but check for any ungranted lock rather than pinning to one
-    // relation.
-    let migratorBlocked = false;
-    for (let attempt = 0; attempt < 300; attempt++) {
-      const waiting = await db`
-        select 1
-          from pg_stat_activity a
-          join pg_locks l on l.pid = a.pid
-         where a.application_name = 'r6_regression_migrator' and l.granted = false
-      `;
-      if (waiting.length > 0) {
-        migratorBlocked = true;
-        break;
-      }
-      await sleep(50);
-    }
-    expect(migratorBlocked).toBe(true);
-
-    // The violating write lands now, while the migrator is still queued.
-    await injector`COMMIT`;
-    await injector.release();
-
-    await blocker`COMMIT`;
-    await blocker.release();
 
     const exitCode = await new Promise<number | null>((resolve) => migrator.on("close", resolve));
     expect(exitCode).not.toBe(0);
@@ -286,7 +266,7 @@ describeWithDatabase("file reference integrity migration", () => {
     `).resolves.toHaveLength(1);
   }, 20_000);
 
-  it("aborts instead of silently accepting a file quarantined while the migration's lock is queued", async () => {
+  it("aborts instead of silently accepting a file quarantined before a retry", async () => {
     const fileId = randomUUID();
     const postId = randomUUID();
     await db`
@@ -306,16 +286,9 @@ describeWithDatabase("file reference integrity migration", () => {
       values (${postId}, ${fileId}, 'inline', 0)
     `;
 
-    // Same timing requirement as the reference-injection case above: the
-    // quarantine write must be granted before the migrator's LOCK TABLE request
-    // exists, or it queues behind the migrator instead of landing first.
-    const blocker = await postgres(databaseUrl, {
-      max: 1,
-      connection: { application_name: "r6b_regression_blocker" },
-    }).reserve();
-    await blocker`BEGIN`;
-    await blocker`LOCK TABLE files IN ROW SHARE MODE`;
-
+    // The quarantine is committed before the migrator can take the
+    // migration-wide NOWAIT lock. A single-attempt migrator must fail loudly
+    // during preflight instead of partially installing 0020.
     const injector = await postgres(databaseUrl, {
       max: 1,
       connection: { application_name: "r6b_regression_injector" },
@@ -325,6 +298,8 @@ describeWithDatabase("file reference integrity migration", () => {
       update files set quarantined_at = now(), quarantine_reason = 'r6b-regression'
        where id = ${fileId}
     `;
+    await injector`COMMIT`;
+    await injector.release();
 
     const migrator = spawn("node", ["scripts/migrate.mjs"], {
       cwd: process.cwd(),
@@ -336,29 +311,6 @@ describeWithDatabase("file reference integrity migration", () => {
     });
     let migratorStderr = "";
     migrator.stderr.on("data", (chunk) => (migratorStderr += chunk.toString()));
-
-    let migratorBlocked = false;
-    for (let attempt = 0; attempt < 300; attempt++) {
-      const waiting = await db`
-        select 1
-          from pg_stat_activity a
-          join pg_locks l on l.pid = a.pid
-         where a.application_name = 'r6b_regression_migrator' and l.granted = false
-      `;
-      if (waiting.length > 0) {
-        migratorBlocked = true;
-        break;
-      }
-      await sleep(50);
-    }
-    expect(migratorBlocked).toBe(true);
-
-    // The quarantine lands now, while the migrator is still queued on `files`.
-    await injector`COMMIT`;
-    await injector.release();
-
-    await blocker`COMMIT`;
-    await blocker.release();
 
     const exitCode = await new Promise<number | null>((resolve) => migrator.on("close", resolve));
     expect(exitCode).not.toBe(0);
@@ -375,4 +327,82 @@ describeWithDatabase("file reference integrity migration", () => {
       select 1 from pg_constraint where conname = 'payment_methods_qr_file_id_files_id_fk'
     `).resolves.toHaveLength(1);
   }, 20_000);
+
+  it("fails immediately with NOWAIT while an application transaction holds a conflicting lock, then succeeds after retry", async () => {
+    const blocker = await postgres(databaseUrl, {
+      max: 1,
+      connection: { application_name: "nowait_lock_blocker" },
+    }).reserve();
+    let blockerReleased = false;
+    await blocker`BEGIN`;
+    await blocker`LOCK TABLE posts IN ROW SHARE MODE`;
+
+    try {
+      const blockedMigrator = spawn("node", ["scripts/migrate.mjs"], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          DATABASE_URL: `${databaseUrl}?application_name=nowait_lock_migrator_once`,
+          MIGRATE_MAX_ATTEMPTS: "1",
+        },
+      });
+      let blockedStdout = "";
+      let blockedStderr = "";
+      blockedMigrator.stdout.on("data", (chunk) => (blockedStdout += chunk.toString()));
+      blockedMigrator.stderr.on("data", (chunk) => (blockedStderr += chunk.toString()));
+
+      const blockedExitCode = await new Promise<number | null>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          blockedMigrator.kill("SIGKILL");
+          reject(new Error("NOWAIT migrator did not exit promptly"));
+        }, 1_500);
+        blockedMigrator.on("close", (code) => {
+          clearTimeout(timeout);
+          resolve(code);
+        });
+      });
+      expect(blockedExitCode).not.toBe(0);
+      expect(`${blockedStdout}\n${blockedStderr}`).toMatch(
+        /could not obtain lock|lock_not_available/i,
+      );
+
+      await expect(db`
+        select 1 from pg_constraint where conname = 'payment_methods_qr_file_id_files_id_fk'
+      `).resolves.toHaveLength(0);
+
+      const retryingMigrator = spawn("node", ["scripts/migrate.mjs"], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          DATABASE_URL: `${databaseUrl}?application_name=nowait_lock_migrator_retry`,
+          MIGRATE_MAX_ATTEMPTS: "3",
+        },
+      });
+      let retryStdout = "";
+      let retryStderr = "";
+      retryingMigrator.stdout.on("data", (chunk) => (retryStdout += chunk.toString()));
+      retryingMigrator.stderr.on("data", (chunk) => (retryStderr += chunk.toString()));
+
+      await sleep(500);
+      await blocker`COMMIT`;
+      await blocker.release();
+      blockerReleased = true;
+
+      const retryExitCode = await new Promise<number | null>((resolve) =>
+        retryingMigrator.on("close", resolve),
+      );
+      expect(retryExitCode).toBe(0);
+      expect(retryStdout).toMatch(/数据库暂不可用/);
+      expect(retryStdout).toMatch(/数据库迁移完成/);
+      expect(retryStderr).not.toMatch(/数据库迁移失败|could not obtain lock/i);
+
+      await expect(db`
+        select 1 from pg_constraint where conname = 'payment_methods_qr_file_id_files_id_fk'
+      `).resolves.toHaveLength(1);
+    } finally {
+      if (!blockerReleased) {
+        await blocker.release();
+      }
+    }
+  }, 15_000);
 });

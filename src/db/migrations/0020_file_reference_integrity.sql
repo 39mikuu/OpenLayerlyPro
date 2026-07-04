@@ -1,20 +1,17 @@
--- Order matters here for avoiding deadlocks with in-flight application
--- transactions: update-style paths (updatePost, resubmitPaymentProof,
--- cleanupPaymentProof) lock their domain row FOR UPDATE before locking
--- files, while create-style paths (createPost, createPaymentMethod,
--- createPaymentRequest) lock files first since there is no existing row to
--- lock yet. This order matches the common case (updates on tables that
--- already have file references) and setSetting()'s files-then-site_settings
--- order. It cannot be deadlock-free against every create-style path too,
--- since those use the opposite order for the same table pairs; a rare
--- concurrent create request during this migration's brief lock-acquisition
--- window can be aborted by PostgreSQL's deadlock detector (safely retryable
--- client-side, no data corruption), and scripts/migrate.mjs's own retry
--- loop will re-attempt the migration itself if it is the side picked as the
--- deadlock victim. Accepted as a standard operational risk for a schema
--- migration run under live traffic; deploy during low-traffic windows to
--- minimize the (already small) chance of hitting it.
-LOCK TABLE "posts", "payment_methods", "payment_requests", "post_files", "files", "site_settings" IN ACCESS EXCLUSIVE MODE;
+-- Order matters here for in-flight application transactions: update-style
+-- paths (updatePost, resubmitPaymentProof, cleanupPaymentProof) lock their
+-- domain row FOR UPDATE before locking files, while create-style paths
+-- (createPost, createPaymentMethod, createPaymentRequest) lock files first
+-- since there is no existing row to lock yet. The migration needs one
+-- transaction-wide ACCESS EXCLUSIVE lock over every table whose file-reference
+-- behavior changes, so it uses NOWAIT instead of queuing behind conflicting
+-- application locks. Without NOWAIT, a concurrent create-style request can form
+-- an opposite-order wait cycle and PostgreSQL may abort the business request as
+-- the deadlock victim. With NOWAIT, the migration transaction fails immediately
+-- with lock_not_available, rolls back before entering a deadlock cycle, and
+-- scripts/migrate.mjs's retry loop re-attempts it a few seconds later. That
+-- keeps the retry burden on the migrator instead of killing live requests.
+LOCK TABLE "posts", "payment_methods", "payment_requests", "post_files", "files", "site_settings" IN ACCESS EXCLUSIVE MODE NOWAIT;
 --> statement-breakpoint
 DO $file_reference_preflight$
 DECLARE
@@ -85,25 +82,25 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
-  FOR bad_key IN
-    SELECT s.key
-      FROM site_settings s
-      LEFT JOIN files f
-        ON jsonb_typeof(s.value_json) = 'string'
-       AND (s.value_json #>> '{}') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-       AND f.id = (s.value_json #>> '{}')::uuid
-     WHERE s.key IN ('artist_avatar_file_id', 'site_logo_file_id', 'site_icon_file_id')
-       AND (
-         jsonb_typeof(s.value_json) <> 'string'
-         OR (s.value_json #>> '{}') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-         OR f.id IS NULL
-         OR f.quarantined_at IS NOT NULL
-         OR f.purpose <> 'artist_avatar'
-       )
-  LOOP
-    DELETE FROM site_settings WHERE key = bad_key;
-    RAISE WARNING 'file reference preflight removed invalid site_settings key=%', bad_key;
-  END LOOP;
+  SELECT s.key INTO bad_key
+    FROM site_settings s
+    LEFT JOIN files f
+      ON jsonb_typeof(s.value_json) = 'string'
+     AND (s.value_json #>> '{}') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+     AND f.id = (s.value_json #>> '{}')::uuid
+   WHERE s.key IN ('artist_avatar_file_id', 'site_logo_file_id', 'site_icon_file_id')
+     AND (
+       jsonb_typeof(s.value_json) <> 'string'
+       OR (s.value_json #>> '{}') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+       OR f.id IS NULL
+       OR f.quarantined_at IS NOT NULL
+       OR f.purpose <> 'artist_avatar'
+     )
+   LIMIT 1;
+  IF FOUND THEN
+    RAISE EXCEPTION 'file reference preflight failed: site_settings key=%', bad_key
+      USING ERRCODE = '23514';
+  END IF;
 END
 $file_reference_preflight$;
 --> statement-breakpoint
