@@ -4,8 +4,8 @@ import { cache } from "react";
 import { getDb } from "@/db";
 import { membershipTiers, siteSettings, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
-import { isSiteFileSettingKey, lockSiteFileSettingReferences } from "@/modules/file/references";
 import { hashPassword } from "@/lib/crypto";
+import { isSiteFileSettingKey, lockSiteFileSettingReferences } from "@/modules/file/references";
 import {
   type LegacyFooterStatus,
   parsePublicSecuritySettings,

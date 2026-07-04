@@ -3,7 +3,6 @@ import { and, desc, eq, ne, or, sql } from "drizzle-orm";
 
 import { type DbClient, getDb, type TxClient } from "@/db";
 import {
-  files,
   memberships,
   type MembershipTier,
   membershipTiers,
@@ -14,7 +13,6 @@ import {
   users,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
-import { lockFileReferences } from "@/modules/file/references";
 import { logger } from "@/lib/logger";
 import {
   type AdminListPage,
@@ -23,6 +21,7 @@ import {
   normalizeAdminPageSize,
 } from "@/modules/admin/pagination";
 import { recordAudit } from "@/modules/audit";
+import { lockFileReferences } from "@/modules/file/references";
 import { grantMembership, revokeMembership } from "@/modules/membership";
 import { enqueuePaymentProofCleanup } from "@/modules/payment/proof-lifecycle";
 import { recordEvent } from "@/modules/system/events";
