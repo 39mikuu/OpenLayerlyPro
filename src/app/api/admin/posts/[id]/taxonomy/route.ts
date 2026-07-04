@@ -16,8 +16,8 @@ const bodySchema = z.object({
 
 export async function PUT(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    const taxonomy = await readJsonWithLimit(request, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     await requireAdmin();
+    const taxonomy = await readJsonWithLimit(request, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const { id } = await ctx.params;
     await updatePostTaxonomy(id, taxonomy);
     return jsonOk({ updated: true });

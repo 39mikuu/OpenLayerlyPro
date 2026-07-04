@@ -13,12 +13,12 @@ const bodySchema = z.object({ subscriptionId: z.string().uuid() });
 
 export async function POST(req: NextRequest) {
   try {
+    const user = await requireUser();
     const { subscriptionId } = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
       bodySchema,
     );
-    const user = await requireUser();
     return jsonOk(await cancelMySubscription({ userId: user.id, subscriptionId }));
   } catch (error) {
     return handleApiError(error);

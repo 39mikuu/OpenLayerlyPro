@@ -43,6 +43,21 @@ describe("admin categories API", () => {
     expect(mocks.createCategory).not.toHaveBeenCalled();
   });
 
+  it("returns 401 before parsing a malformed but normally sized unauthenticated JSON body", async () => {
+    mocks.requireAdmin.mockRejectedValue(new ApiError(401, "authRequired"));
+    const response = await POST(
+      new NextRequest("http://localhost/api/admin/categories", {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": "1" },
+        body: "{",
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({ code: "authRequired" });
+    expect(mocks.createCategory).not.toHaveBeenCalled();
+  });
+
   it("creates a category after authentication", async () => {
     const response = await POST(
       new NextRequest("http://localhost/api/admin/categories", {

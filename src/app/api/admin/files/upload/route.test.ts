@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { multipartTransferLimitBytes } from "@/lib/request-body";
+import { neverEndingBodyRequest } from "@/test/never-ending-body";
 
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
@@ -34,6 +35,15 @@ function unreadRequest(): { request: NextRequest; getReader: ReturnType<typeof v
   return { request, getReader };
 }
 
+async function withShortTimeout<T>(promise: Promise<T>): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error("handler did not return before reading body")), 250);
+    }),
+  ]);
+}
+
 describe("buffered admin upload API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -41,7 +51,7 @@ describe("buffered admin upload API", () => {
     mocks.rateLimit.mockReturnValue(true);
   });
 
-  it("returns 413 before auth when the multipart declaration exceeds the cap", async () => {
+  it("returns 413 after the pre-auth bucket and auth when the multipart declaration exceeds the cap", async () => {
     const limit = transferLimit();
     const response = await POST(
       new NextRequest("http://localhost/api/admin/files/upload", {
@@ -55,8 +65,8 @@ describe("buffered admin upload API", () => {
     );
 
     expect(response.status).toBe(413);
-    expect(mocks.rateLimit).not.toHaveBeenCalled();
-    expect(mocks.requireAdmin).not.toHaveBeenCalled();
+    expect(mocks.rateLimit).toHaveBeenCalledOnce();
+    expect(mocks.requireAdmin).toHaveBeenCalledOnce();
     expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
   });
 
@@ -70,6 +80,49 @@ describe("buffered admin upload API", () => {
     expect(mocks.rateLimit).toHaveBeenCalledTimes(1);
     expect(getReader).not.toHaveBeenCalled();
     expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 before pulling a never-ending unauthenticated admin upload body", async () => {
+    const slowBody = neverEndingBodyRequest("http://localhost/api/admin/files/upload", {
+      headers: {
+        "content-type": "multipart/form-data; boundary=bounded-test",
+      },
+    });
+    mocks.requireAdmin.mockRejectedValue(new ApiError(401, "authRequired"));
+
+    try {
+      const pullsBeforeHandler = slowBody.pulls;
+      const response = await withShortTimeout(POST(slowBody.request));
+
+      expect(response.status).toBe(401);
+      expect(mocks.rateLimit).toHaveBeenCalledTimes(1);
+      expect(slowBody.pulls).toBe(pullsBeforeHandler);
+      expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
+    } finally {
+      slowBody.cleanup();
+    }
+  });
+
+  it("returns 429 from the pre-auth upload bucket without auth or body reads", async () => {
+    const slowBody = neverEndingBodyRequest("http://localhost/api/admin/files/upload", {
+      headers: {
+        "content-type": "multipart/form-data; boundary=bounded-test",
+      },
+    });
+    mocks.rateLimit.mockReturnValue(false);
+
+    try {
+      const pullsBeforeHandler = slowBody.pulls;
+      const response = await withShortTimeout(POST(slowBody.request));
+
+      expect(response.status).toBe(429);
+      expect(mocks.rateLimit).toHaveBeenCalledTimes(1);
+      expect(mocks.requireAdmin).not.toHaveBeenCalled();
+      expect(slowBody.pulls).toBe(pullsBeforeHandler);
+      expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
+    } finally {
+      slowBody.cleanup();
+    }
   });
 
   it("rejects a concurrent admin request at the pre-auth bucket before auth or body reads", async () => {

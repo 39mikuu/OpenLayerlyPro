@@ -41,7 +41,7 @@ describe("payment request bounded JSON route", () => {
     expect(mocks.createPaymentRequest).toHaveBeenCalledWith({ userId: "user-1", ...validBody });
   });
 
-  it("returns 413 before auth, business service, or database-backed work", async () => {
+  it("returns 413 after auth but before business service or database-backed work", async () => {
     const response = await POST(
       new Request("http://localhost/api/payment-requests", {
         method: "POST",
@@ -54,11 +54,11 @@ describe("payment request bounded JSON route", () => {
     );
 
     expect(response.status).toBe(413);
-    expect(mocks.requireUser).not.toHaveBeenCalled();
+    expect(mocks.requireUser).toHaveBeenCalledOnce();
     expect(mocks.createPaymentRequest).not.toHaveBeenCalled();
   });
 
-  it("returns a stable 400 for malformed JSON without calling downstream services", async () => {
+  it("returns a stable 400 for malformed JSON after auth without calling downstream services", async () => {
     const response = await POST(
       new Request("http://localhost/api/payment-requests", {
         method: "POST",
@@ -68,7 +68,7 @@ describe("payment request bounded JSON route", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.requireUser).not.toHaveBeenCalled();
+    expect(mocks.requireUser).toHaveBeenCalledOnce();
     expect(mocks.createPaymentRequest).not.toHaveBeenCalled();
   });
 
@@ -83,6 +83,22 @@ describe("payment request bounded JSON route", () => {
     );
 
     expect(response.status).toBe(401);
+    expect(mocks.createPaymentRequest).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 before parsing a malformed but normally sized unauthenticated JSON body", async () => {
+    mocks.requireUser.mockRejectedValue(new ApiError(401, "authRequired"));
+    const response = await POST(
+      new Request("http://localhost/api/payment-requests", {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": "1" },
+        body: "{",
+      }) as NextRequest,
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({ code: "authRequired" });
+    expect(mocks.requireUser).toHaveBeenCalledOnce();
     expect(mocks.createPaymentRequest).not.toHaveBeenCalled();
   });
 });

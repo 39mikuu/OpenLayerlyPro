@@ -19,8 +19,8 @@ const bodySchema = z.object({
 
 export async function PUT(req: NextRequest) {
   try {
-    const body = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const user = await requireUser();
+    const body = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     if (body.enabled) {
       await enableManualRenewalReminder({ userId: user.id, tierId: body.tierId });
     } else {

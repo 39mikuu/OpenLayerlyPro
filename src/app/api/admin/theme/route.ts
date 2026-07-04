@@ -33,12 +33,12 @@ const bodySchema = z.object({
 
 export async function PUT(req: NextRequest) {
   try {
+    await requireAdmin();
     const { colorPreset, customHue } = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
       bodySchema,
     );
-    await requireAdmin();
     const theme = await getActiveTheme();
     const isCustom = colorPreset === "custom";
     const isKnownPreset = theme.colorPresets.some((p) => p.id === colorPreset);

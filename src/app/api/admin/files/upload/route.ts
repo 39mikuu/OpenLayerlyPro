@@ -4,7 +4,6 @@ import { getClientIp, handleApiError, jsonError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
 import {
-  assertContentLengthWithinLimit,
   multipartTransferLimitBytes,
   parseFormDataBody,
   readBoundedRawBody,
@@ -31,7 +30,6 @@ export async function POST(req: NextRequest) {
     const transferLimit = multipartTransferLimitBytes(
       Math.max(50, getEnv().PAYMENT_PROOF_MAX_SIZE_MB),
     );
-    assertContentLengthWithinLimit(req, transferLimit);
 
     const ip = getClientIp(req);
     const preAuthKey = ip ? `admin-upload-preauth-ip:${ip}` : "admin-upload-preauth-unresolved";

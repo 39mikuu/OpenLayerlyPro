@@ -41,6 +41,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm check:request-bodies
+      - run: pnpm check:auth-before-body
       - run: pnpm exec tsc --noEmit
       - run: pnpm db:migrate
       - run: pnpm test

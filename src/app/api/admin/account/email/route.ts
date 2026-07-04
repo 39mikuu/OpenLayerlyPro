@@ -16,8 +16,8 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const user = await requireAdmin();
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     return jsonOk(await changeAdminEmail(user.id, input));
   } catch (error) {
     return handleApiError(error);

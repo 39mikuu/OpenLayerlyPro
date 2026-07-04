@@ -40,6 +40,21 @@ describe("admin Markdown preview API", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("returns 401 before parsing a malformed but normally sized unauthenticated JSON body", async () => {
+    mocks.requireAdmin.mockRejectedValue(new ApiError(401, "authRequired"));
+    const response = await route.POST(
+      new NextRequest("http://localhost/api/admin/posts/preview", {
+        method: "POST",
+        body: "{",
+        headers: { "content-type": "application/json", "content-length": "1" },
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toMatchObject({ code: "authRequired" });
+  });
+
   it("supports POST only and returns the shared sanitized renderer output", async () => {
     expect("GET" in route).toBe(false);
     const markdown = "# Preview\n\n<script>alert(1)</script>";
