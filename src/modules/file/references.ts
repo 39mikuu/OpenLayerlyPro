@@ -1,7 +1,7 @@
 import { asc, inArray } from "drizzle-orm";
 
 import type { TxClient } from "@/db";
-import { files, type FileRecord } from "@/db/schema";
+import { type FileRecord, files } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 
 export type FileReferenceInvalidReason = "missing" | "quarantined" | "owner";
@@ -15,9 +15,8 @@ export type FileReferenceRequirement = {
 
 /**
  * Locks every referenced file in deterministic id order for the lifetime of the
- * caller's transaction. A file delete takes FOR UPDATE on the same row, so the
- * two operations serialize regardless of whether deletion or reference creation
- * arrives first.
+ * caller's transaction. FOR SHARE conflicts with quarantine updates and file
+ * deletion while remaining compatible with other reference creators.
  */
 export async function lockFileReferences(
   tx: TxClient,
@@ -31,7 +30,7 @@ export async function lockFileReferences(
     .from(files)
     .where(inArray(files.id, ids))
     .orderBy(asc(files.id))
-    .for("key share");
+    .for("share");
   const byId = new Map(records.map((record) => [record.id, record]));
 
   for (const requirement of requirements) {

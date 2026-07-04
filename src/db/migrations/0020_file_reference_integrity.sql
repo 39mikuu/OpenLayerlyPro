@@ -67,25 +67,25 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
-  SELECT s.key INTO bad_key
-    FROM site_settings s
-    LEFT JOIN files f
-      ON jsonb_typeof(s.value_json) = 'string'
-     AND (s.value_json #>> '{}') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-     AND f.id = (s.value_json #>> '{}')::uuid
-   WHERE s.key IN ('artist_avatar_file_id', 'site_logo_file_id', 'site_icon_file_id')
-     AND (
-       jsonb_typeof(s.value_json) <> 'string'
-       OR (s.value_json #>> '{}') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-       OR f.id IS NULL
-       OR f.quarantined_at IS NOT NULL
-       OR f.purpose <> 'artist_avatar'
-     )
-   LIMIT 1;
-  IF FOUND THEN
-    RAISE EXCEPTION 'file reference preflight failed: site_settings key=%', bad_key
-      USING ERRCODE = '23514';
-  END IF;
+  FOR bad_key IN
+    SELECT s.key
+      FROM site_settings s
+      LEFT JOIN files f
+        ON jsonb_typeof(s.value_json) = 'string'
+       AND (s.value_json #>> '{}') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+       AND f.id = (s.value_json #>> '{}')::uuid
+     WHERE s.key IN ('artist_avatar_file_id', 'site_logo_file_id', 'site_icon_file_id')
+       AND (
+         jsonb_typeof(s.value_json) <> 'string'
+         OR (s.value_json #>> '{}') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+         OR f.id IS NULL
+         OR f.quarantined_at IS NOT NULL
+         OR f.purpose <> 'artist_avatar'
+       )
+  LOOP
+    DELETE FROM site_settings WHERE key = bad_key;
+    RAISE WARNING 'file reference preflight removed invalid site_settings key=%', bad_key;
+  END LOOP;
 END
 $file_reference_preflight$;
 --> statement-breakpoint
@@ -118,7 +118,7 @@ BEGIN
     INTO referenced_purpose, referenced_quarantined_at
     FROM files
    WHERE id = referenced_id
-   FOR KEY SHARE;
+   FOR SHARE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'site file setting % references missing file %', NEW.key, referenced_id
       USING ERRCODE = '23503';
