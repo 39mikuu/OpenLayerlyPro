@@ -7,6 +7,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
 import {
+  appEvents,
   files,
   membershipTiers,
   paymentMethods,
@@ -20,10 +21,13 @@ import {
 import { getEnv } from "@/lib/env";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { deleteFile } from "@/modules/file";
+import { runFileSafetyBackfill } from "@/modules/file/backfillSafety";
 import { deleteFileRowWithStorageTask } from "@/modules/file/cleanup";
 import { lockFileReferences, lockSiteFileSettingReferences } from "@/modules/file/references";
+import { FILE_SAFETY_REMEDIATION_VERSION } from "@/modules/file/safetyConstants";
 import { resubmitPaymentProof } from "@/modules/payment";
 import { cleanupPaymentProof } from "@/modules/payment/proof-lifecycle";
+import { runRestorePreScan } from "@/modules/restore/preScan";
 import { setSetting } from "@/modules/site";
 import { runTaskHandler } from "@/modules/tasks/handlers";
 
@@ -379,6 +383,103 @@ describeWithDatabase("file deletion reference existence checks", () => {
 
     const [updated] = await db.select().from(files).where(eq(files.id, file.id));
     expect(updated?.quarantinedAt).toBeInstanceOf(Date);
+  });
+
+  it("blocks runRestorePreScan quarantine while a reference transaction holds its file lock", async () => {
+    const file = await seedFile("content_image");
+    const releaseReference = deferred();
+    const referenceLocked = deferred();
+
+    const referenceTransaction = db.transaction(async (tx) => {
+      await lockFileReferences(tx, [
+        {
+          fileId: file.id,
+          invalid: (reason) => new Error(reason),
+        },
+      ]);
+      referenceLocked.resolve();
+      await releaseReference.promise;
+    });
+    await referenceLocked.promise;
+
+    let preScan: Promise<Awaited<ReturnType<typeof runRestorePreScan>>> | undefined;
+    try {
+      preScan = runRestorePreScan();
+      const waiting = await waitForQueryLock('%update "files" set%');
+      expect(waiting.query).toContain("quarantined_at");
+    } finally {
+      releaseReference.resolve();
+      await referenceTransaction;
+    }
+
+    await expect(preScan).resolves.toMatchObject({
+      scanned: 1,
+      quarantined: 1,
+      errors: [],
+    });
+
+    const [updated] = await db.select().from(files).where(eq(files.id, file.id));
+    expect(updated).toMatchObject({
+      quarantineReason: "missing after restore",
+      remediationVersion: FILE_SAFETY_REMEDIATION_VERSION,
+    });
+    expect(updated?.quarantinedAt).toBeInstanceOf(Date);
+  });
+
+  it("blocks runFileSafetyBackfill quarantine while a reference transaction holds its file lock", async () => {
+    const objectKey = `content_image/${randomUUID()}.png`;
+    const fullPath = path.resolve(getEnv().UPLOAD_DIR, objectKey);
+    await mkdir(path.dirname(fullPath), { recursive: true });
+    await writeFile(fullPath, Buffer.from("not a valid raster image"));
+    try {
+      const file = await seedFile("content_image");
+      await db.update(files).set({ objectKey, sizeBytes: 24 }).where(eq(files.id, file.id));
+
+      const releaseReference = deferred();
+      const referenceLocked = deferred();
+
+      const referenceTransaction = db.transaction(async (tx) => {
+        await lockFileReferences(tx, [
+          {
+            fileId: file.id,
+            invalid: (reason) => new Error(reason),
+          },
+        ]);
+        referenceLocked.resolve();
+        await releaseReference.promise;
+      });
+      await referenceLocked.promise;
+
+      let backfill: Promise<Awaited<ReturnType<typeof runFileSafetyBackfill>>> | undefined;
+      try {
+        backfill = runFileSafetyBackfill({ apply: true });
+        const waiting = await waitForQueryLock('%update "files" set%');
+        expect(waiting.query).toContain("quarantined_at");
+      } finally {
+        releaseReference.resolve();
+        await referenceTransaction;
+      }
+
+      await expect(backfill).resolves.toMatchObject({
+        scanned: 1,
+        remediated: 0,
+        quarantined: 1,
+        dryRun: false,
+      });
+
+      const [updated] = await db.select().from(files).where(eq(files.id, file.id));
+      expect(updated).toMatchObject({
+        objectKey,
+        quarantineReason: "unsafe-image:invalid",
+        remediationVersion: FILE_SAFETY_REMEDIATION_VERSION,
+      });
+      expect(updated?.quarantinedAt).toBeInstanceOf(Date);
+      await expect(db.select().from(appEvents)).resolves.toEqual([
+        expect.objectContaining({ type: "file_safety_quarantined" }),
+      ]);
+    } finally {
+      await rm(path.dirname(fullPath), { recursive: true, force: true });
+    }
   });
 
   it("serializes file deletion and reference creation in either arrival order", async () => {
