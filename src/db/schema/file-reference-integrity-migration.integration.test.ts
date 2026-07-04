@@ -92,6 +92,200 @@ describeWithDatabase("file reference integrity migration", () => {
     });
   }
 
+  it("aborts on legacy post cover files with an invalid purpose and preserves rows", async () => {
+    const fileId = randomUUID();
+    const postId = randomUUID();
+    await db`
+      insert into files (
+        id, storage_driver, object_key, original_name, mime_type, size_bytes, purpose
+      ) values (
+        ${fileId}, 'local', ${`payment_proof/${fileId}`}, 'proof.png',
+        'image/png', 10, 'payment_proof'
+      )
+    `;
+    await db`
+      insert into posts (id, title, slug, cover_file_id, visibility, status)
+      values (
+        ${postId}, 'legacy invalid cover post', 'legacy-invalid-cover-post',
+        ${fileId}, 'public', 'draft'
+      )
+    `;
+
+    await expect(migrate0020()).rejects.toMatchObject({
+      code: "23514",
+      message: expect.stringContaining("posts.cover_file_id"),
+    });
+
+    await expect(db`
+      select id, cover_file_id
+        from posts
+       where id = ${postId}
+    `).resolves.toEqual([{ id: postId, cover_file_id: fileId }]);
+    await expect(db`
+      select 1 from pg_constraint where conname = 'posts_cover_file_id_files_id_fk'
+    `).resolves.toHaveLength(0);
+  });
+
+  it("aborts on legacy payment method QR files with an invalid purpose and preserves rows", async () => {
+    const fileId = randomUUID();
+    const methodId = randomUUID();
+    await db`
+      insert into files (
+        id, storage_driver, object_key, original_name, mime_type, size_bytes, purpose
+      ) values (
+        ${fileId}, 'local', ${`content_image/${fileId}`}, 'qr.png',
+        'image/png', 10, 'content_image'
+      )
+    `;
+    await db`
+      insert into payment_methods (id, name, qr_file_id)
+      values (${methodId}, 'Legacy invalid QR method', ${fileId})
+    `;
+
+    await expect(migrate0020()).rejects.toMatchObject({
+      code: "23514",
+      message: expect.stringContaining("payment_methods.qr_file_id"),
+    });
+
+    await expect(db`
+      select id, qr_file_id
+        from payment_methods
+       where id = ${methodId}
+    `).resolves.toEqual([{ id: methodId, qr_file_id: fileId }]);
+    await expect(db`
+      select 1 from pg_constraint where conname = 'payment_methods_qr_file_id_files_id_fk'
+    `).resolves.toHaveLength(0);
+  });
+
+  it("aborts on a legacy payment request proof file with an invalid purpose and preserves rows", async () => {
+    const fileId = randomUUID();
+    const userId = randomUUID();
+    const tierId = randomUUID();
+    const requestId = randomUUID();
+    await db`
+      insert into users (id, email, role)
+      values (${userId}, 'r5-proof-invalid-purpose@example.com', 'member')
+    `;
+    await db`
+      insert into membership_tiers (id, name, slug, price_label, level)
+      values (${tierId}, 'R5 proof purpose tier', 'r5-proof-purpose-tier', '$1', 1)
+    `;
+    await db`
+      insert into files (
+        id, storage_driver, object_key, original_name, mime_type, size_bytes, purpose, created_by
+      ) values (
+        ${fileId}, 'local', ${`content_image/${fileId}`}, 'proof-invalid-purpose.png',
+        'image/png', 10, 'content_image', ${userId}
+      )
+    `;
+    await db`
+      insert into payment_requests (id, user_id, tier_id, status, amount_label, duration_days, proof_file_id)
+      values (${requestId}, ${userId}, ${tierId}, 'rejected', '$1', 31, ${fileId})
+    `;
+
+    await expect(migrate0020()).rejects.toMatchObject({
+      code: "23514",
+      message: expect.stringContaining("payment_requests.proof_file_id"),
+    });
+
+    await expect(db`
+      select id, user_id, proof_file_id
+        from payment_requests
+       where id = ${requestId}
+    `).resolves.toEqual([{ id: requestId, user_id: userId, proof_file_id: fileId }]);
+    await expect(db`
+      select 1 from pg_constraint where conname = 'payment_requests_proof_file_id_files_id_fk'
+    `).resolves.toHaveLength(0);
+  });
+
+  it("aborts on a legacy payment request proof file owned by someone else and preserves rows", async () => {
+    const fileId = randomUUID();
+    const requesterId = randomUUID();
+    const proofOwnerId = randomUUID();
+    const tierId = randomUUID();
+    const requestId = randomUUID();
+    await db`
+      insert into users (id, email, role)
+      values
+        (${requesterId}, 'r5-proof-owner-requester@example.com', 'member'),
+        (${proofOwnerId}, 'r5-proof-owner-actual@example.com', 'member')
+    `;
+    await db`
+      insert into membership_tiers (id, name, slug, price_label, level)
+      values (${tierId}, 'R5 proof owner tier', 'r5-proof-owner-tier', '$1', 1)
+    `;
+    await db`
+      insert into files (
+        id, storage_driver, object_key, original_name, mime_type, size_bytes, purpose, created_by
+      ) values (
+        ${fileId}, 'local', ${`payment_proof/${fileId}`}, 'proof-owner-mismatch.png',
+        'image/png', 10, 'payment_proof', ${proofOwnerId}
+      )
+    `;
+    await db`
+      insert into payment_requests (id, user_id, tier_id, status, amount_label, duration_days, proof_file_id)
+      values (${requestId}, ${requesterId}, ${tierId}, 'rejected', '$1', 31, ${fileId})
+    `;
+
+    await expect(migrate0020()).rejects.toMatchObject({
+      code: "23514",
+      message: expect.stringContaining("payment_requests.proof_file_id"),
+    });
+
+    await expect(db`
+      select id, user_id, proof_file_id
+        from payment_requests
+       where id = ${requestId}
+    `).resolves.toEqual([{ id: requestId, user_id: requesterId, proof_file_id: fileId }]);
+    await expect(db`
+      select 1 from pg_constraint where conname = 'payment_requests_proof_file_id_files_id_fk'
+    `).resolves.toHaveLength(0);
+  });
+
+  it("aborts on legacy post file rows with invalid kind and purpose combinations and preserves rows", async () => {
+    const fileId = randomUUID();
+    const postId = randomUUID();
+    const postFileId = randomUUID();
+    await db`
+      insert into files (
+        id, storage_driver, object_key, original_name, mime_type, size_bytes, purpose
+      ) values (
+        ${fileId}, 'local', ${`content_image/${fileId}`}, 'attachment.png',
+        'image/png', 10, 'content_image'
+      )
+    `;
+    await db`
+      insert into posts (id, title, slug, visibility, status)
+      values (${postId}, 'legacy invalid post file', 'legacy-invalid-post-file', 'public', 'draft')
+    `;
+    await db`
+      insert into post_files (id, post_id, file_id, kind, sort_order)
+      values (${postFileId}, ${postId}, ${fileId}, 'attachment', 0)
+    `;
+
+    await expect(migrate0020()).rejects.toMatchObject({
+      code: "23514",
+      message: expect.stringContaining("post_files.file_id"),
+    });
+
+    await expect(db`
+      select id, post_id, file_id, kind, sort_order
+        from post_files
+       where id = ${postFileId}
+    `).resolves.toEqual([
+      {
+        id: postFileId,
+        post_id: postId,
+        file_id: fileId,
+        kind: "attachment",
+        sort_order: 0,
+      },
+    ]);
+    await expect(db`
+      select 1 from pg_constraint where conname = 'payment_methods_qr_file_id_files_id_fk'
+    `).resolves.toHaveLength(0);
+  });
+
   it("aborts on legacy site file settings with an invalid purpose and preserves rows", async () => {
     const fileId = randomUUID();
     await db`
