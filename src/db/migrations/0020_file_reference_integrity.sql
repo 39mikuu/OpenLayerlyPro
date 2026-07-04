@@ -147,8 +147,12 @@ BEGIN
     SELECT 1
       FROM site_settings
      WHERE key IN ('artist_avatar_file_id', 'site_logo_file_id', 'site_icon_file_id')
-       AND jsonb_typeof(value_json) = 'string'
-       AND value_json #>> '{}' = OLD.id::text
+       AND CASE
+             WHEN jsonb_typeof(value_json) = 'string'
+              AND (value_json #>> '{}') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+             THEN (value_json #>> '{}')::uuid = OLD.id
+             ELSE FALSE
+           END
   ) THEN
     RAISE EXCEPTION 'file % is referenced by site_settings', OLD.id USING ERRCODE = '23503';
   END IF;

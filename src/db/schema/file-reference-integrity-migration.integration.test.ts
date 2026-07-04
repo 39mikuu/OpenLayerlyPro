@@ -132,4 +132,26 @@ describeWithDatabase("file reference integrity migration", () => {
       { key: "site_icon_file_id", value_json: validIconId },
     ]);
   });
+
+  it("blocks deletion when a site setting stores an uppercase file UUID", async () => {
+    const fileId = "A0B1C2D3-E4F5-4A67-8B90-C1D2E3F4A5B6";
+    await migrate0020();
+    await db`
+      insert into files (
+        id, storage_driver, object_key, original_name, mime_type, size_bytes, purpose
+      ) values (
+        ${fileId}, 'local', ${`artist_avatar/${fileId}`}, 'logo.png',
+        'image/png', 10, 'artist_avatar'
+      )
+    `;
+    await db`
+      insert into site_settings (key, value_json)
+      values ('site_logo_file_id', ${db.json(fileId)})
+    `;
+
+    await expect(db`delete from files where id = ${fileId}`).rejects.toMatchObject({
+      code: "23503",
+    });
+    await expect(db`select id from files where id = ${fileId}`).resolves.toHaveLength(1);
+  });
 });
