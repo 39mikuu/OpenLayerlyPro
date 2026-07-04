@@ -33,6 +33,17 @@ async function latestBaselineMigrationWhen(): Promise<number> {
   );
 }
 
+async function migrationWhen(tagPrefix: string): Promise<number> {
+  const journal = JSON.parse(
+    await readFile(path.join(MIGRATIONS_DIR, "meta/_journal.json"), "utf8"),
+  ) as { entries: { tag: string; when: number }[] };
+  const entry = journal.entries.find((candidate) => candidate.tag.startsWith(tagPrefix));
+  if (!entry) {
+    throw new Error(`Missing migration journal entry for ${tagPrefix}`);
+  }
+  return entry.when;
+}
+
 describeWithDatabase("file reference integrity migration", () => {
   const sourceUrl = process.env.DATABASE_URL!;
   const adminUrl = new URL(sourceUrl);
@@ -90,6 +101,52 @@ describeWithDatabase("file reference integrity migration", () => {
         await tx.unsafe(statement);
       }
     });
+  }
+
+  async function fileReferenceIntegrityState(): Promise<{
+    constraints: { conname: string; confdeltype: string }[];
+    functions: { proname: string }[];
+    migrationRows: { count: number }[];
+    triggers: { trigger_name: string }[];
+  }> {
+    const [constraints, functions, migrationRows, triggers] = await Promise.all([
+      db<{ conname: string; confdeltype: string }[]>`
+        select conname, confdeltype
+          from pg_constraint
+         where conname in (
+           'post_files_file_id_files_id_fk',
+           'payment_methods_qr_file_id_files_id_fk',
+           'payment_requests_proof_file_id_files_id_fk',
+           'posts_cover_file_id_files_id_fk'
+         )
+         order by conname
+      `,
+      db<{ proname: string }[]>`
+        select proname
+          from pg_proc
+         where proname in (
+           'lock_site_setting_file_reference',
+           'prevent_site_setting_referenced_file_delete'
+         )
+         order by proname
+      `,
+      db<{ count: number }[]>`
+        select count(*)::int as count
+          from drizzle.__drizzle_migrations
+         where created_at = ${await migrationWhen("0020")}
+      `,
+      db<{ trigger_name: string }[]>`
+        select distinct trigger_name
+          from information_schema.triggers
+         where trigger_name in (
+           'site_settings_file_reference_lock',
+           'files_site_settings_reference_restrict'
+         )
+         order by trigger_name
+      `,
+    ]);
+
+    return { constraints, functions, migrationRows, triggers };
   }
 
   it("aborts on legacy post cover files with an invalid purpose and preserves rows", async () => {
@@ -599,4 +656,143 @@ describeWithDatabase("file reference integrity migration", () => {
       }
     }
   }, 15_000);
+
+  it("rolls back cleanly when the real migrator backend is terminated mid-0020 DDL, then succeeds on rerun", async () => {
+    await db.unsafe(`
+      CREATE OR REPLACE FUNCTION r12_pause_file_reference_ddl()
+      RETURNS event_trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF current_setting('application_name', true) = 'r12_terminated_migrator' THEN
+          PERFORM pg_sleep(10);
+        END IF;
+      END
+      $$;
+    `);
+    await db.unsafe(`
+      CREATE EVENT TRIGGER r12_pause_file_reference_ddl
+      ON ddl_command_start
+      WHEN TAG IN ('CREATE FUNCTION')
+      EXECUTE FUNCTION r12_pause_file_reference_ddl();
+    `);
+
+    try {
+      const terminatedMigrator = spawn("node", ["scripts/migrate.mjs"], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          DATABASE_URL: `${databaseUrl}?application_name=r12_terminated_migrator`,
+          MIGRATE_MAX_ATTEMPTS: "1",
+        },
+      });
+      let terminatedStdout = "";
+      let terminatedStderr = "";
+      terminatedMigrator.stdout.on("data", (chunk) => (terminatedStdout += chunk.toString()));
+      terminatedMigrator.stderr.on("data", (chunk) => (terminatedStderr += chunk.toString()));
+
+      const terminatedBackend = await (async (): Promise<{
+        pid: number;
+        query: string;
+        terminated: boolean;
+      }> => {
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          const rows = await db<
+            {
+              pid: number;
+              query: string;
+              terminated: boolean;
+            }[]
+          >`
+            select pid, query, pg_terminate_backend(pid) as terminated
+              from pg_stat_activity
+             where datname = current_database()
+               and application_name = 'r12_terminated_migrator'
+               and state = 'active'
+               and wait_event_type = 'Timeout'
+               and wait_event = 'PgSleep'
+               and query ~ '^\\s*CREATE( OR REPLACE)? FUNCTION'
+             order by query_start
+             limit 1
+          `;
+          if (rows[0]) {
+            return rows[0];
+          }
+          await sleep(25);
+        }
+        terminatedMigrator.kill("SIGKILL");
+        throw new Error("R12 migrator did not reach paused 0020 DDL before timeout");
+      })();
+
+      // By the time this CREATE FUNCTION statement starts, all five ALTER TABLE
+      // statements (the DROP + four ADD CONSTRAINT) earlier in 0020 have already
+      // executed within this same uncommitted transaction, so terminating here
+      // (rather than on the very first DDL statement) demonstrates a genuine
+      // mid-transaction interruption, not just "nothing had run yet."
+      expect(terminatedBackend.terminated).toBe(true);
+      expect(terminatedBackend.query).toMatch(/^\s*CREATE( OR REPLACE)? FUNCTION/);
+
+      const terminatedExitCode = await new Promise<number | null>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          terminatedMigrator.kill("SIGKILL");
+          reject(new Error("R12 terminated migrator did not exit promptly"));
+        }, 5_000);
+        terminatedMigrator.on("close", (code) => {
+          clearTimeout(timeout);
+          resolve(code);
+        });
+      });
+      expect(terminatedExitCode).not.toBe(0);
+      expect(`${terminatedStdout}\n${terminatedStderr}`).not.toMatch(/数据库迁移完成/);
+    } finally {
+      await db.unsafe(`DROP EVENT TRIGGER IF EXISTS r12_pause_file_reference_ddl`);
+      await db.unsafe(`DROP FUNCTION IF EXISTS r12_pause_file_reference_ddl()`);
+    }
+
+    await expect(fileReferenceIntegrityState()).resolves.toEqual({
+      constraints: [{ conname: "post_files_file_id_files_id_fk", confdeltype: "c" }],
+      functions: [],
+      migrationRows: [{ count: 0 }],
+      triggers: [],
+    });
+
+    const retryingMigrator = spawn("node", ["scripts/migrate.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        DATABASE_URL: `${databaseUrl}?application_name=r12_retry_migrator`,
+        MIGRATE_MAX_ATTEMPTS: "1",
+      },
+    });
+    let retryStdout = "";
+    let retryStderr = "";
+    retryingMigrator.stdout.on("data", (chunk) => (retryStdout += chunk.toString()));
+    retryingMigrator.stderr.on("data", (chunk) => (retryStderr += chunk.toString()));
+
+    const retryExitCode = await new Promise<number | null>((resolve) =>
+      retryingMigrator.on("close", resolve),
+    );
+    expect(retryExitCode).toBe(0);
+    expect(retryStdout).toMatch(/数据库迁移完成/);
+    expect(retryStderr).not.toMatch(/数据库迁移失败/i);
+
+    await expect(fileReferenceIntegrityState()).resolves.toEqual({
+      constraints: [
+        { conname: "payment_methods_qr_file_id_files_id_fk", confdeltype: "r" },
+        { conname: "payment_requests_proof_file_id_files_id_fk", confdeltype: "r" },
+        { conname: "post_files_file_id_files_id_fk", confdeltype: "r" },
+        { conname: "posts_cover_file_id_files_id_fk", confdeltype: "r" },
+      ],
+      functions: [
+        { proname: "lock_site_setting_file_reference" },
+        { proname: "prevent_site_setting_referenced_file_delete" },
+      ],
+      migrationRows: [{ count: 1 }],
+      triggers: [
+        { trigger_name: "files_site_settings_reference_restrict" },
+        { trigger_name: "site_settings_file_reference_lock" },
+      ],
+    });
+  }, 20_000);
 });
