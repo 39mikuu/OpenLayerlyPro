@@ -616,10 +616,10 @@ describeWithDatabase("scheduled publishing integration", () => {
         {
           storageDriver: "local",
           objectKey: `files/${randomUUID()}`,
-          originalName: "latest.txt",
-          mimeType: "text/plain",
+          originalName: "latest.png",
+          mimeType: "image/png",
           sizeBytes: 20,
-          purpose: "content_attachment",
+          purpose: "content_image",
         },
       ])
       .returning();
@@ -635,7 +635,7 @@ describeWithDatabase("scheduled publishing integration", () => {
       body: "Latest body",
       coverFileId: secondFile!.id,
     });
-    await attachFileToPost({ postId: original.id, fileId: secondFile!.id, kind: "attachment" });
+    await attachFileToPost({ postId: original.id, fileId: secondFile!.id, kind: "image" });
     await detachFileFromPost(original.id, firstFile!.id);
     expect(changed.contentUpdatedAt.getTime()).toBeGreaterThan(original.contentUpdatedAt.getTime());
     expect((await getPostById(original.id))!.contentUpdatedAt).toEqual(changed.contentUpdatedAt);

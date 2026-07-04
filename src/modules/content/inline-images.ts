@@ -1,8 +1,9 @@
 import { and, eq, inArray } from "drizzle-orm";
 
-import type { DbClient } from "@/db";
+import type { DbClient, TxClient } from "@/db";
 import { files, type PostFile, postFiles, posts, postTranslations } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import { lockFileReferences } from "@/modules/file/references";
 import { enqueueTask } from "@/modules/tasks";
 
 import { extractInternalImageFileIds } from "./markdown";
@@ -70,21 +71,22 @@ async function referencedInlineIds(tx: DbClient, postId: string): Promise<Set<st
  * Reconciles body-owned inline links. Call only from a content write transaction
  * while the parent post row is locked FOR UPDATE.
  */
-export async function syncInlineImageLinks(tx: DbClient, postId: string): Promise<void> {
+export async function syncInlineImageLinks(tx: TxClient, postId: string): Promise<void> {
   const desiredIds = await referencedInlineIds(tx, postId);
   const desired = [...desiredIds];
 
   if (desired.length > 0) {
-    const records = await tx
-      .select({ id: files.id, purpose: files.purpose })
-      .from(files)
-      .where(inArray(files.id, desired));
-    const byId = new Map(records.map((record) => [record.id, record]));
-    for (const fileId of desired) {
-      const record = byId.get(fileId);
-      if (!record) throw new ApiError(400, "inlineImageNotFound", { fileId });
-      assertPostFilePurpose("inline", record.purpose);
-    }
+    await lockFileReferences(
+      tx,
+      desired.map((fileId) => ({
+        fileId,
+        invalid: (reason) =>
+          reason === "missing"
+            ? new ApiError(400, "inlineImageNotFound", { fileId })
+            : new ApiError(410, "fileQuarantined"),
+        validate: (record) => assertPostFilePurpose("inline", record.purpose),
+      })),
+    );
   }
 
   const current = await tx

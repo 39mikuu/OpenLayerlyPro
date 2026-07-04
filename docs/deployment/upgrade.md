@@ -110,6 +110,35 @@ docker compose run --rm --no-deps --entrypoint node app /app/dist/migrate.mjs
 
 Do not rely on the normal app entrypoint for this step. The app must remain stopped while the next file-safety remediation runs.
 
+### File reference integrity migration (0020)
+
+This migration adds database-enforced integrity between `files` and every
+table that references one (post covers, payment QR/proof images,
+inline post files, and the three site branding settings). It aborts instead of
+applying if it finds a pre-existing reference to a file that is missing,
+quarantined, or has the wrong `purpose` for its usage — including the site
+avatar/logo/icon settings, which previously had no `purpose` enforcement on
+write and could reference e.g. a `content_image`-purpose file. If this
+migration fails, an administrator must inspect and correct the offending
+row(s) (reported in the error) before rerunning; it will not silently delete
+or repair the data for you. It also acquires an exclusive lock across these
+tables for the duration of its preflight check and schema changes (`NOWAIT`,
+so it fails fast and is retried automatically rather than queuing), which is
+why this step requires the application to be fully stopped beforehand.
+
+This preflight check only guarantees a clean state at the moment the
+migration runs. The very next step (file-safety remediation) can still mark
+an already-referenced file as quarantined if it fails the stricter safety
+scan — that's expected, not a regression: quarantine and file-reference
+integrity are independent concerns, and the application has always refused
+to serve quarantined file bytes regardless of whether the file is
+referenced (`authorizeFileAccess` returns `410 fileQuarantined`). A
+newly-quarantined referenced file means the referencing content (a post
+cover, a QR code, etc.) will render without a valid image until an
+administrator replaces or removes the reference — not data corruption or a
+crash. Review the remediation preview's quarantine list with this in mind
+before applying it.
+
 ## 6. Run Mandatory File-Safety Remediation
 
 Preview first:

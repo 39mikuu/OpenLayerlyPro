@@ -183,7 +183,7 @@ export const paymentMethods = pgTable("payment_methods", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   description: text("description"),
-  qrFileId: uuid("qr_file_id"),
+  qrFileId: uuid("qr_file_id").references(() => files.id, { onDelete: "restrict" }),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: createdAt(),
@@ -219,7 +219,7 @@ export const paymentRequests = pgTable(
     grantedMembershipId: uuid("granted_membership_id").references(() => memberships.id),
     amountLabel: text("amount_label").notNull(),
     durationDays: integer("duration_days").notNull(),
-    proofFileId: uuid("proof_file_id"),
+    proofFileId: uuid("proof_file_id").references(() => files.id, { onDelete: "restrict" }),
     note: text("note"),
     reviewNote: text("review_note"),
     reviewedBy: uuid("reviewed_by"),
@@ -324,7 +324,7 @@ export const posts = pgTable(
     summary: text("summary"),
     body: text("body"),
     originalLocale: text("original_locale").notNull().default("zh"),
-    coverFileId: uuid("cover_file_id"),
+    coverFileId: uuid("cover_file_id").references(() => files.id, { onDelete: "restrict" }),
     visibility: text("visibility", { enum: ["public", "login", "member"] }).notNull(),
     requiredTierId: uuid("required_tier_id").references(() => membershipTiers.id),
     status: text("status", { enum: ["draft", "published", "archived"] }).notNull(),
@@ -489,7 +489,7 @@ export const postFiles = pgTable(
       .references(() => posts.id, { onDelete: "cascade" }),
     fileId: uuid("file_id")
       .notNull()
-      .references(() => files.id, { onDelete: "cascade" }),
+      .references(() => files.id, { onDelete: "restrict" }),
     kind: text("kind", {
       enum: ["cover", "image", "attachment", "preview", "thumbnail", "inline"],
     }).notNull(),

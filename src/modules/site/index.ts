@@ -5,6 +5,7 @@ import { getDb } from "@/db";
 import { membershipTiers, siteSettings, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { hashPassword } from "@/lib/crypto";
+import { isSiteFileSettingKey, lockSiteFileSettingReferences } from "@/modules/file/references";
 import {
   type LegacyFooterStatus,
   parsePublicSecuritySettings,
@@ -57,7 +58,22 @@ export async function getSettings(keys: string[]): Promise<Record<string, unknow
 }
 
 export async function setSetting(key: string, value: unknown): Promise<void> {
-  await getDb()
+  const db = getDb();
+  if (isSiteFileSettingKey(key)) {
+    await db.transaction(async (tx) => {
+      await lockSiteFileSettingReferences(tx, { [key]: value });
+      await tx
+        .insert(siteSettings)
+        .values({ key, valueJson: value })
+        .onConflictDoUpdate({
+          target: siteSettings.key,
+          set: { valueJson: value, updatedAt: new Date() },
+        });
+    });
+    return;
+  }
+
+  await db
     .insert(siteSettings)
     .values({ key, valueJson: value })
     .onConflictDoUpdate({
