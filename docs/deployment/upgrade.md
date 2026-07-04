@@ -126,6 +126,19 @@ tables for the duration of its preflight check and schema changes (`NOWAIT`,
 so it fails fast and is retried automatically rather than queuing), which is
 why this step requires the application to be fully stopped beforehand.
 
+This preflight check only guarantees a clean state at the moment the
+migration runs. The very next step (file-safety remediation) can still mark
+an already-referenced file as quarantined if it fails the stricter safety
+scan — that's expected, not a regression: quarantine and file-reference
+integrity are independent concerns, and the application has always refused
+to serve quarantined file bytes regardless of whether the file is
+referenced (`authorizeFileAccess` returns `410 fileQuarantined`). A
+newly-quarantined referenced file means the referencing content (a post
+cover, a QR code, etc.) will render without a valid image until an
+administrator replaces or removes the reference — not data corruption or a
+crash. Review the remediation preview's quarantine list with this in mind
+before applying it.
+
 ## 6. Run Mandatory File-Safety Remediation
 
 Preview first:

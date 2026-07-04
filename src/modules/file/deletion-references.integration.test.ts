@@ -20,6 +20,7 @@ import {
 } from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
+import { attachFileToPost } from "@/modules/content";
 import { deleteFile } from "@/modules/file";
 import { runFileSafetyBackfill } from "@/modules/file/backfillSafety";
 import { deleteFileRowWithStorageTask } from "@/modules/file/cleanup";
@@ -656,6 +657,38 @@ describeWithDatabase("file deletion reference existence checks", () => {
       await txB?.catch(() => {});
       await blocker.release();
     }
+  });
+
+  it("locks a file reference correctly when the caller supplies an uppercase-hex id", async () => {
+    const file = await seedFile("content_image");
+    const upperId = file.id.toUpperCase();
+    expect(upperId).not.toBe(file.id);
+
+    await db.transaction(async (tx) => {
+      const locked = await lockFileReferences(tx, [
+        {
+          fileId: upperId,
+          invalid: (reason) => new Error(`unexpected invalid: ${reason}`),
+        },
+      ]);
+      // Postgres matches uuid columns case-insensitively, so this file must be
+      // found rather than reported as missing; the returned map must be
+      // keyed by the caller's original (uppercase) id, matching how real
+      // callers (e.g. lockPostFileReference) look up their own result.
+      expect(locked.get(upperId)?.id).toBe(file.id);
+    });
+
+    // End-to-end through a real production caller that consumes the returned
+    // map via `locked.get(fileId)!` (content/index.ts's lockPostFileReference).
+    const coverFile = await seedFile("cover");
+    const post = await seedPost();
+    await expect(
+      attachFileToPost({
+        postId: post.id,
+        fileId: coverFile.id.toUpperCase(),
+        kind: "cover",
+      }),
+    ).resolves.toMatchObject({ postId: post.id, fileId: coverFile.id });
   });
 
   it("rolls back file row deletion and storage-delete task enqueue when the caller transaction aborts", async () => {

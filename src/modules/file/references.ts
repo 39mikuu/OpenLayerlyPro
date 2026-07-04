@@ -24,26 +24,36 @@ export async function lockFileReferences(
 ): Promise<Map<string, FileRecord>> {
   if (requirements.length === 0) return new Map();
 
-  const ids = [...new Set(requirements.map((requirement) => requirement.fileId))].sort();
+  const ids = [
+    ...new Set(requirements.map((requirement) => requirement.fileId.toLowerCase())),
+  ].sort();
   const records = await tx
     .select()
     .from(files)
     .where(inArray(files.id, ids))
     .orderBy(asc(files.id))
     .for("share");
-  const byId = new Map(records.map((record) => [record.id, record]));
+  // Postgres compares uuid columns case-insensitively, so a caller-supplied id
+  // with uppercase hex still matches a row here, but the driver always returns
+  // `record.id` in lowercase canonical form. Look records up by normalized
+  // (lowercase) id so an uppercase-hex fileId isn't reported as missing, but
+  // key the returned map by each requirement's original fileId so callers can
+  // reliably look up results with the exact value they passed in.
+  const byNormalizedId = new Map(records.map((record) => [record.id.toLowerCase(), record]));
+  const byRequestedId = new Map<string, FileRecord>();
 
   for (const requirement of requirements) {
-    const record = byId.get(requirement.fileId) ?? null;
+    const record = byNormalizedId.get(requirement.fileId.toLowerCase()) ?? null;
     if (!record) throw requirement.invalid("missing", null);
     if (record.quarantinedAt) throw requirement.invalid("quarantined", record);
     if (requirement.ownerId !== undefined && record.createdBy !== requirement.ownerId) {
       throw requirement.invalid("owner", record);
     }
     requirement.validate?.(record);
+    byRequestedId.set(requirement.fileId, record);
   }
 
-  return byId;
+  return byRequestedId;
 }
 
 export const SITE_FILE_SETTING_KEYS = [
