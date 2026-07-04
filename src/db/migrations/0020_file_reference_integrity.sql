@@ -1,4 +1,20 @@
-LOCK TABLE "posts", "payment_methods", "payment_requests", "post_files", "site_settings" IN ACCESS EXCLUSIVE MODE;
+-- Order matters here for avoiding deadlocks with in-flight application
+-- transactions: update-style paths (updatePost, resubmitPaymentProof,
+-- cleanupPaymentProof) lock their domain row FOR UPDATE before locking
+-- files, while create-style paths (createPost, createPaymentMethod,
+-- createPaymentRequest) lock files first since there is no existing row to
+-- lock yet. This order matches the common case (updates on tables that
+-- already have file references) and setSetting()'s files-then-site_settings
+-- order. It cannot be deadlock-free against every create-style path too,
+-- since those use the opposite order for the same table pairs; a rare
+-- concurrent create request during this migration's brief lock-acquisition
+-- window can be aborted by PostgreSQL's deadlock detector (safely retryable
+-- client-side, no data corruption), and scripts/migrate.mjs's own retry
+-- loop will re-attempt the migration itself if it is the side picked as the
+-- deadlock victim. Accepted as a standard operational risk for a schema
+-- migration run under live traffic; deploy during low-traffic windows to
+-- minimize the (already small) chance of hitting it.
+LOCK TABLE "posts", "payment_methods", "payment_requests", "post_files", "files", "site_settings" IN ACCESS EXCLUSIVE MODE;
 --> statement-breakpoint
 DO $file_reference_preflight$
 DECLARE

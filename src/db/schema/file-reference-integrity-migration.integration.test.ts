@@ -241,10 +241,11 @@ describeWithDatabase("file reference integrity migration", () => {
     let migratorStderr = "";
     migrator.stderr.on("data", (chunk) => (migratorStderr += chunk.toString()));
 
-    // The migrator's single LOCK TABLE statement locks five tables in the order
-    // listed (posts, payment_methods, payment_requests, post_files, site_settings);
-    // it only actually contends with the blocker once it reaches post_files, but
-    // check for any ungranted lock rather than pinning to one relation.
+    // The migrator's single LOCK TABLE statement locks six tables in the order
+    // listed (files, posts, payment_methods, payment_requests, post_files,
+    // site_settings); it only actually contends with the blocker once it reaches
+    // post_files, but check for any ungranted lock rather than pinning to one
+    // relation.
     let migratorBlocked = false;
     for (let attempt = 0; attempt < 300; attempt++) {
       const waiting = await db`
@@ -279,6 +280,96 @@ describeWithDatabase("file reference integrity migration", () => {
 
     // After remediation (removing the bad reference), a clean rerun must succeed.
     await db`delete from post_files where post_id = ${postId} and file_id = ${fileId}`;
+    await migrate0020();
+    await expect(db`
+      select 1 from pg_constraint where conname = 'payment_methods_qr_file_id_files_id_fk'
+    `).resolves.toHaveLength(1);
+  }, 20_000);
+
+  it("aborts instead of silently accepting a file quarantined while the migration's lock is queued", async () => {
+    const fileId = randomUUID();
+    const postId = randomUUID();
+    await db`
+      insert into files (
+        id, storage_driver, object_key, original_name, mime_type, size_bytes, purpose
+      ) values (
+        ${fileId}, 'local', ${`content_image/${fileId}`}, 'inline.png',
+        'image/png', 10, 'content_image'
+      )
+    `;
+    await db`
+      insert into posts (id, title, slug, visibility, status)
+      values (${postId}, 'r6b regression post', 'r6b-regression-post', 'public', 'draft')
+    `;
+    await db`
+      insert into post_files (post_id, file_id, kind, sort_order)
+      values (${postId}, ${fileId}, 'inline', 0)
+    `;
+
+    // Same timing requirement as the reference-injection case above: the
+    // quarantine write must be granted before the migrator's LOCK TABLE request
+    // exists, or it queues behind the migrator instead of landing first.
+    const blocker = await postgres(databaseUrl, {
+      max: 1,
+      connection: { application_name: "r6b_regression_blocker" },
+    }).reserve();
+    await blocker`BEGIN`;
+    await blocker`LOCK TABLE files IN ROW SHARE MODE`;
+
+    const injector = await postgres(databaseUrl, {
+      max: 1,
+      connection: { application_name: "r6b_regression_injector" },
+    }).reserve();
+    await injector`BEGIN`;
+    await injector`
+      update files set quarantined_at = now(), quarantine_reason = 'r6b-regression'
+       where id = ${fileId}
+    `;
+
+    const migrator = spawn("node", ["scripts/migrate.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        DATABASE_URL: `${databaseUrl}?application_name=r6b_regression_migrator`,
+        MIGRATE_MAX_ATTEMPTS: "1",
+      },
+    });
+    let migratorStderr = "";
+    migrator.stderr.on("data", (chunk) => (migratorStderr += chunk.toString()));
+
+    let migratorBlocked = false;
+    for (let attempt = 0; attempt < 300; attempt++) {
+      const waiting = await db`
+        select 1
+          from pg_stat_activity a
+          join pg_locks l on l.pid = a.pid
+         where a.application_name = 'r6b_regression_migrator' and l.granted = false
+      `;
+      if (waiting.length > 0) {
+        migratorBlocked = true;
+        break;
+      }
+      await sleep(50);
+    }
+    expect(migratorBlocked).toBe(true);
+
+    // The quarantine lands now, while the migrator is still queued on `files`.
+    await injector`COMMIT`;
+    await injector.release();
+
+    await blocker`COMMIT`;
+    await blocker.release();
+
+    const exitCode = await new Promise<number | null>((resolve) => migrator.on("close", resolve));
+    expect(exitCode).not.toBe(0);
+    expect(migratorStderr).toMatch(/post_files\.file_id/);
+
+    await expect(db`
+      select 1 from pg_constraint where conname = 'payment_methods_qr_file_id_files_id_fk'
+    `).resolves.toHaveLength(0);
+
+    // After remediation (lifting the quarantine), a clean rerun must succeed.
+    await db`update files set quarantined_at = null, quarantine_reason = null where id = ${fileId}`;
     await migrate0020();
     await expect(db`
       select 1 from pg_constraint where conname = 'payment_methods_qr_file_id_files_id_fk'
