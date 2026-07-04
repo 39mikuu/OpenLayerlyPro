@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import postgres from "postgres";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -19,35 +19,43 @@ async function migrationStatements(fileName: string): Promise<string[]> {
 
 describeWithDatabase("file reference integrity migration", () => {
   const sourceUrl = process.env.DATABASE_URL!;
-  const databaseName = `olp_file_integrity_${randomUUID().replaceAll("-", "")}`;
   const adminUrl = new URL(sourceUrl);
   adminUrl.pathname = "/postgres";
-  const testUrl = new URL(sourceUrl);
-  testUrl.pathname = `/${databaseName}`;
   const admin = postgres(adminUrl.toString(), { max: 1, onnotice: () => {} });
+  let databaseName: string;
   let db: ReturnType<typeof postgres>;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
+    databaseName = `olp_file_integrity_${randomUUID().replaceAll("-", "")}`;
     await admin.unsafe(`create database "${databaseName}"`);
+    const testUrl = new URL(sourceUrl);
+    testUrl.pathname = `/${databaseName}`;
     db = postgres(testUrl.toString(), { max: 1, onnotice: () => {} });
 
-    const migrationFiles = (await import("node:fs/promises"))
-      .readdir(MIGRATIONS_DIR)
-      .then((files) =>
-        files.filter((file) => /^\d{4}_.+\.sql$/.test(file) && file.slice(0, 4) <= "0019").sort(),
-      );
-    for (const fileName of await migrationFiles) {
+    const migrationFiles = (await readdir(MIGRATIONS_DIR))
+      .filter((file) => /^\d{4}_.+\.sql$/.test(file) && file.slice(0, 4) <= "0019")
+      .sort();
+    for (const fileName of migrationFiles) {
       for (const statement of await migrationStatements(fileName)) {
         await db.unsafe(statement);
       }
     }
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     if (db) await db.end({ timeout: 5 });
     await admin.unsafe(`drop database if exists "${databaseName}" with (force)`);
+  });
+
+  afterAll(async () => {
     await admin.end({ timeout: 5 });
   });
+
+  async function migrate0020(): Promise<void> {
+    for (const statement of await migrationStatements("0020_file_reference_integrity.sql")) {
+      await db.unsafe(statement);
+    }
+  }
 
   it("removes every legacy site file setting with an invalid purpose and completes 0020", async () => {
     const fileId = randomUUID();
@@ -67,9 +75,7 @@ describeWithDatabase("file reference integrity migration", () => {
         ('site_icon_file_id', ${db.json(fileId)})
     `;
 
-    for (const statement of await migrationStatements("0020_file_reference_integrity.sql")) {
-      await db.unsafe(statement);
-    }
+    await migrate0020();
 
     await expect(db`
       select key
@@ -83,5 +89,47 @@ describeWithDatabase("file reference integrity migration", () => {
          where trigger_name = 'site_settings_file_reference_lock'
       ) as installed
     `).resolves.toMatchObject([{ installed: true }]);
+  });
+
+  it("removes only an invalid legacy site file setting and preserves valid values", async () => {
+    const invalidFileId = randomUUID();
+    const validAvatarId = randomUUID();
+    const validIconId = randomUUID();
+    await db`
+      insert into files (
+        id, storage_driver, object_key, original_name, mime_type, size_bytes, purpose
+      ) values
+        (
+          ${invalidFileId}, 'local', ${`content_image/${invalidFileId}`}, 'invalid.png',
+          'image/png', 10, 'content_image'
+        ),
+        (
+          ${validAvatarId}, 'local', ${`artist_avatar/${validAvatarId}`}, 'avatar.png',
+          'image/png', 10, 'artist_avatar'
+        ),
+        (
+          ${validIconId}, 'local', ${`artist_avatar/${validIconId}`}, 'icon.png',
+          'image/png', 10, 'artist_avatar'
+        )
+    `;
+    await db`
+      insert into site_settings (key, value_json)
+      values
+        ('artist_avatar_file_id', ${db.json(validAvatarId)}),
+        ('site_logo_file_id', ${db.json(invalidFileId)}),
+        ('site_icon_file_id', ${db.json(validIconId)})
+    `;
+
+    await migrate0020();
+
+    await expect(db`
+      select key, value_json
+        from site_settings
+       where key in ('artist_avatar_file_id', 'site_logo_file_id', 'site_icon_file_id')
+       order by key
+    `).resolves.toEqual([
+      { key: "artist_avatar_file_id", value_json: validAvatarId },
+      { key: "site_icon_file_id", value_json: validIconId },
+    ]);
   });
 });

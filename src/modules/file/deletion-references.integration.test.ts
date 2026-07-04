@@ -267,21 +267,28 @@ describeWithDatabase("file deletion reference existence checks", () => {
     await referenceLocked.promise;
 
     const updater = await raw.reserve();
+    let quarantineUpdate: Promise<unknown> | undefined;
     try {
       await updater`begin`;
       const [{ pid }] = await updater<{ pid: number }[]>`select pg_backend_pid()::integer as pid`;
-      const quarantineUpdate =
+      quarantineUpdate =
         updater`update files set quarantined_at = now(), quarantine_reason = 'test' where id = ${file.id}`.then(
           (rows) => rows,
         );
 
-      await waitForBackendLock(pid!);
-      releaseReference.resolve();
-      await referenceTransaction;
+      try {
+        await waitForBackendLock(pid!);
+      } finally {
+        releaseReference.resolve();
+        await referenceTransaction;
+      }
       await quarantineUpdate;
       await updater`commit`;
     } finally {
+      releaseReference.resolve();
+      await referenceTransaction.catch(() => {});
       await updater`rollback`.catch(() => {});
+      await quarantineUpdate?.catch(() => {});
       await updater.release();
     }
 
@@ -309,7 +316,13 @@ describeWithDatabase("file deletion reference existence checks", () => {
         deletion`select id from files where id = ${referenceFirstFile.id} for update`.then(
           (rows) => rows,
         );
-      await waitForBackendLock(pid!);
+      try {
+        await waitForBackendLock(pid!);
+      } catch (error) {
+        await reference`rollback`;
+        await deleteLock.catch(() => {});
+        throw error;
+      }
       await reference`commit`;
       await deleteLock;
 
@@ -333,7 +346,13 @@ describeWithDatabase("file deletion reference existence checks", () => {
         reference`select id from files where id = ${deletionFirstFile.id} for share`.then(
           (rows) => rows,
         );
-      await waitForBackendLock(referencePid!);
+      try {
+        await waitForBackendLock(referencePid!);
+      } catch (error) {
+        await deletion`rollback`;
+        await referenceLock.catch(() => {});
+        throw error;
+      }
 
       await deletion`delete from files where id = ${deletionFirstFile.id}`;
       await deletion`commit`;
