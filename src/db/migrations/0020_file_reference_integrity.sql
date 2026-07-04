@@ -1,3 +1,5 @@
+LOCK TABLE "posts", "payment_methods", "payment_requests", "post_files", "site_settings" IN ACCESS EXCLUSIVE MODE;
+--> statement-breakpoint
 DO $file_reference_preflight$
 DECLARE
   bad_id uuid;
