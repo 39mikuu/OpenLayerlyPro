@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import postgres from "postgres";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
 import {
@@ -14,18 +15,47 @@ import {
   tasks,
   users,
 } from "@/db/schema";
+import { getEnv } from "@/lib/env";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { deleteFile } from "@/modules/file";
+import { lockFileReferences } from "@/modules/file/references";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
 
 describeWithDatabase("file deletion reference existence checks", () => {
   const db = getDb();
+  const raw = postgres(getEnv().DATABASE_URL, { max: 3, onnotice: () => {} });
 
   beforeEach(async () => {
     await resetDatabase(db);
   });
+
+  afterAll(async () => {
+    await raw.end({ timeout: 5 });
+  });
+
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  async function waitForBackendLock(pid: number): Promise<void> {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const [activity] = await raw<
+        {
+          wait_event_type: string | null;
+        }[]
+      >`select wait_event_type from pg_stat_activity where pid = ${pid}`;
+      if (activity?.wait_event_type === "Lock") return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`backend ${pid} did not enter a PostgreSQL lock wait`);
+  }
 
   async function seedIdentity() {
     const [user] = await db
@@ -217,5 +247,104 @@ describeWithDatabase("file deletion reference existence checks", () => {
     await deleteFile(file.id);
 
     await expect(db.select().from(files).where(eq(files.id, file.id))).resolves.toHaveLength(0);
+  });
+
+  it("blocks a quarantine update while a reference transaction holds its file lock", async () => {
+    const file = await seedFile("content_image");
+    const releaseReference = deferred();
+    const referenceLocked = deferred();
+
+    const referenceTransaction = db.transaction(async (tx) => {
+      await lockFileReferences(tx, [
+        {
+          fileId: file.id,
+          invalid: (reason) => new Error(reason),
+        },
+      ]);
+      referenceLocked.resolve();
+      await releaseReference.promise;
+    });
+    await referenceLocked.promise;
+
+    const updater = await raw.reserve();
+    try {
+      await updater`begin`;
+      const [{ pid }] = await updater<{ pid: number }[]>`select pg_backend_pid()::integer as pid`;
+      const quarantineUpdate =
+        updater`update files set quarantined_at = now(), quarantine_reason = 'test' where id = ${file.id}`.then(
+          (rows) => rows,
+        );
+
+      await waitForBackendLock(pid!);
+      releaseReference.resolve();
+      await referenceTransaction;
+      await quarantineUpdate;
+      await updater`commit`;
+    } finally {
+      await updater`rollback`.catch(() => {});
+      await updater.release();
+    }
+
+    const [updated] = await db.select().from(files).where(eq(files.id, file.id));
+    expect(updated?.quarantinedAt).toBeInstanceOf(Date);
+  });
+
+  it("serializes file deletion and reference creation in either arrival order", async () => {
+    const post = await seedPost();
+
+    const referenceFirstFile = await seedFile("content_image");
+    const reference = await raw.reserve();
+    const deletion = await raw.reserve();
+    try {
+      await reference`begin`;
+      await reference`select id from files where id = ${referenceFirstFile.id} for share`;
+      await reference`
+        insert into post_files (post_id, file_id, kind)
+        values (${post.id}, ${referenceFirstFile.id}, 'image')
+      `;
+
+      await deletion`begin`;
+      const [{ pid }] = await deletion<{ pid: number }[]>`select pg_backend_pid()::integer as pid`;
+      const deleteLock =
+        deletion`select id from files where id = ${referenceFirstFile.id} for update`.then(
+          (rows) => rows,
+        );
+      await waitForBackendLock(pid!);
+      await reference`commit`;
+      await deleteLock;
+
+      const [{ referenced }] = await deletion<{ referenced: boolean }[]>`
+        select exists (
+          select 1 from post_files where file_id = ${referenceFirstFile.id}
+        ) as referenced
+      `;
+      expect(referenced).toBe(true);
+      await deletion`rollback`;
+
+      const deletionFirstFile = await seedFile("content_image");
+      await deletion`begin`;
+      await deletion`select id from files where id = ${deletionFirstFile.id} for update`;
+
+      await reference`begin`;
+      const [{ pid: referencePid }] = await reference<
+        { pid: number }[]
+      >`select pg_backend_pid()::integer as pid`;
+      const referenceLock =
+        reference`select id from files where id = ${deletionFirstFile.id} for share`.then(
+          (rows) => rows,
+        );
+      await waitForBackendLock(referencePid!);
+
+      await deletion`delete from files where id = ${deletionFirstFile.id}`;
+      await deletion`commit`;
+      const lockedRows = await referenceLock;
+      expect(lockedRows).toHaveLength(0);
+      await reference`rollback`;
+    } finally {
+      await reference`rollback`.catch(() => {});
+      await deletion`rollback`.catch(() => {});
+      await reference.release();
+      await deletion.release();
+    }
   });
 });
