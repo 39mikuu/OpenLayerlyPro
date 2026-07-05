@@ -963,7 +963,9 @@ export async function reconcileSubscriptions(): Promise<number> {
     // can neither survive this strict-`<` overwrite nor pass its own
     // `statusEventAt <= providerCreatedAt` gate against an S.999 fence; only a
     // webhook from the next provider second exceeds the fence. A genuinely later
-    // same-second change converges on the next reconcile observation. Webhook-vs-
+    // same-second change converges on a subsequent reconcile observation from a
+    // later provider second (an observation of the SAME second re-normalizes to
+    // the identical S.999 fence, which the strict `<` skips). Webhook-vs-
     // webhook ordering is unaffected (whole-second timestamps, `<=` gate — equal
     // seconds reapply); only reconcile fences carry the fractional end-of-second
     // marker.
