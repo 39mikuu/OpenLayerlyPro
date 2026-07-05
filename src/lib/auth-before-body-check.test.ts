@@ -89,7 +89,7 @@ describe("auth-before-body static check", () => {
     expect(summary.violations).toBe(0);
     expect(summary["needs-manual-review"]).toBe(0);
     expect(summary["unclassified write handlers"]).toBe(0);
-    expect(summary["already compliant protected handlers"]).toBe(
+    expect(summary["currently compliant protected handlers"]).toBe(
       summary["protected body-reading handlers"]! + summary["protected bodyless handlers"]!,
     );
   });
@@ -258,6 +258,22 @@ describe("auth-before-body static check", () => {
     });
   });
 
+  it("classifies a single-argument wrapper outside the transparent allowlist as needs-manual-review", async () => {
+    const root = await createFixture({
+      "wrapped/route.ts": `${imports()}
+        export const POST = unknownWrapper(async (req: Request) => {
+          await requireAdmin();
+          return Response.json({ ok: true });
+        });`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "wrapper function is not on the verified-transparent allowlist",
+      ),
+    });
+  });
+
   it("passes and prints the allowlisted line for an allowlist hit", async () => {
     const root = await createFixture({
       "src/app/api/auth/admin/login/route.ts": `
@@ -341,6 +357,357 @@ describe("auth-before-body static check", () => {
     });
 
     await expect(runCheck(root)).resolves.toMatchObject({ stderr: "" });
+  });
+
+  it("flags request.clone() aliases used for body reads before auth", async () => {
+    const root = await createFixture({
+      "clone/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          const cloned = req.clone();
+          const body = await cloned.json();
+          await requireAdmin();
+          return Response.json(body);
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("violation"),
+    });
+  });
+
+  it("passes request.clone() aliases after auth", async () => {
+    const root = await createFixture({
+      "clone-safe/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          await requireAdmin();
+          const cloned = req.clone();
+          const body = await cloned.json();
+          return Response.json(body);
+        }`,
+    });
+
+    await expect(runCheck(root)).resolves.toMatchObject({ stderr: "" });
+  });
+
+  it("flags body stream aliases read before auth", async () => {
+    const root = await createFixture({
+      "stream/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          const stream = req.body;
+          const reader = stream?.getReader();
+          await requireAdmin();
+          return Response.json({ ok: Boolean(reader) });
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("violation"),
+    });
+  });
+
+  it("passes body stream aliases after auth", async () => {
+    const root = await createFixture({
+      "stream-safe/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          await requireAdmin();
+          const stream = req.body;
+          const reader = stream?.getReader();
+          return Response.json({ ok: Boolean(reader) });
+        }`,
+    });
+
+    await expect(runCheck(root)).resolves.toMatchObject({ stderr: "" });
+  });
+
+  it("flags chained request.clone().arrayBuffer() before auth", async () => {
+    const root = await createFixture({
+      "clone-chain/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          const body = await req.clone().arrayBuffer();
+          await requireAdmin();
+          return Response.json({ ok: body.byteLength });
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("violation"),
+    });
+  });
+
+  it.each([
+    [
+      "conditional request target",
+      "conditional-before/route.ts",
+      'const body = await (flag ? req : new Request("https://example.invalid")).json();',
+    ],
+    [
+      "logical OR request target",
+      "logical-or-before/route.ts",
+      'const body = await (req || new Request("https://example.invalid")).json();',
+    ],
+    [
+      "nullish request target",
+      "nullish-before/route.ts",
+      'const body = await (req ?? new Request("https://example.invalid")).text();',
+    ],
+  ])("flags %s before auth", async (_name, relativePath, bodyRead) => {
+    const root = await createFixture({
+      [relativePath]: `${imports()}
+        export async function POST(req: Request) {
+          ${bodyRead}
+          await requireAdmin();
+          return Response.json(body);
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("violation"),
+    });
+  });
+
+  it.each([
+    [
+      "conditional request target",
+      "conditional-after/route.ts",
+      'const body = await (flag ? req : new Request("https://example.invalid")).json();',
+    ],
+    [
+      "logical OR request target",
+      "logical-or-after/route.ts",
+      'const body = await (req || new Request("https://example.invalid")).json();',
+    ],
+    [
+      "nullish request target",
+      "nullish-after/route.ts",
+      'const body = await (req ?? new Request("https://example.invalid")).text();',
+    ],
+  ])("passes %s after auth", async (_name, relativePath, bodyRead) => {
+    const root = await createFixture({
+      [relativePath]: `${imports()}
+        export async function POST(req: Request) {
+          await requireAdmin();
+          ${bodyRead}
+          return Response.json(body);
+        }`,
+    });
+
+    await expect(runCheck(root)).resolves.toMatchObject({ stderr: "" });
+  });
+
+  it.each([
+    [
+      "variable-held method name",
+      "computed-variable/route.ts",
+      'const method = "json";\n          const body = await req[method]();',
+    ],
+    [
+      "ternary-selected method name",
+      "computed-ternary/route.ts",
+      'const body = await req[flag ? "json" : "text"]();',
+    ],
+  ])("flags %s before auth as manual review", async (_name, relativePath, bodyRead) => {
+    const root = await createFixture({
+      [relativePath]: `${imports()}
+        export async function POST(req: Request) {
+          ${bodyRead}
+          await requireAdmin();
+          return Response.json(body);
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("needs-manual-review"),
+    });
+  });
+
+  it.each([
+    [
+      "destructured body parameter",
+      "destructured-body/route.ts",
+      `export async function POST({ body }: Request) {
+          const reader = body?.getReader();
+          await requireAdmin();
+          return Response.json({ ok: Boolean(reader) });
+        }`,
+    ],
+    [
+      "rest destructured request parameter",
+      "destructured-rest/route.ts",
+      `export async function POST({ ...features }: Request) {
+          const data = await features.json();
+          await requireAdmin();
+          return Response.json(data);
+        }`,
+    ],
+  ])("flags %s as manual review", async (_name, relativePath, handlerSource) => {
+    const root = await createFixture({
+      [relativePath]: `${imports()}
+        ${handlerSource}`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "handler's request parameter uses a non-identifier binding pattern",
+      ),
+    });
+  });
+
+  it.each([
+    [
+      "conditional request escape",
+      "escape-conditional-before/route.ts",
+      'Promise.resolve(flag ? req : new Request("https://example.invalid")).then((r) => r.json())',
+    ],
+    [
+      "cloned request escape",
+      "escape-clone-before/route.ts",
+      "Promise.resolve(req.clone()).then((r) => r.json())",
+    ],
+  ])("flags %s before auth as manual review", async (_name, relativePath, promiseExpression) => {
+    const root = await createFixture({
+      [relativePath]: `${imports()}
+        export async function POST(req: Request) {
+          const p = ${promiseExpression};
+          await requireAdmin();
+          const body = await p;
+          return Response.json(body);
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("needs-manual-review"),
+    });
+  });
+
+  it.each([
+    [
+      "conditional request escape",
+      "escape-conditional-after/route.ts",
+      'Promise.resolve(flag ? req : new Request("https://example.invalid")).then((r) => r.json())',
+    ],
+    [
+      "cloned request escape",
+      "escape-clone-after/route.ts",
+      "Promise.resolve(req.clone()).then((r) => r.json())",
+    ],
+  ])("passes %s after auth", async (_name, relativePath, promiseExpression) => {
+    const root = await createFixture({
+      [relativePath]: `${imports()}
+        export async function POST(req: Request) {
+          await requireAdmin();
+          const p = ${promiseExpression};
+          const body = await p;
+          return Response.json(body);
+        }`,
+    });
+
+    await expect(runCheck(root)).resolves.toMatchObject({ stderr: "" });
+  });
+
+  it("flags same-statement body read before auth in multi-declarator statements", async () => {
+    const root = await createFixture({
+      "same-statement/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          const body = await readJsonWithLimit(req, 1024, schema),
+            admin = await requireAdmin();
+          return Response.json({ body, admin });
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("violation"),
+    });
+  });
+
+  it("fails unclassified write handlers in default mode with visible output", async () => {
+    const root = await createFixture({
+      "unauthenticated-delete/route.ts": `
+        export async function DELETE(_req: Request) {
+          await deleteRecord();
+          return Response.json({ ok: true });
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("unclassified"),
+    });
+  });
+
+  it("does not treat sibling local shadowing of imported requireAdmin as authenticated", async () => {
+    const root = await createFixture({
+      "shadowed/route.ts": `
+        import { readJsonWithLimit } from "@/lib/request-body";
+        import { requireAdmin } from "@/modules/auth/session";
+        export async function POST(req: Request) {
+          const requireAdmin = async () => {};
+          await requireAdmin();
+          const body = await readJsonWithLimit(req, 1024, schema);
+          return Response.json(body);
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("violation"),
+    });
+  });
+
+  it.each([
+    [
+      "clone alias bypass",
+      "clone-mutation/route.ts",
+      () => `${imports()}
+        export async function POST(req: Request) {
+          const cloned = req.clone();
+          const body = await cloned.json();
+          await requireAdmin();
+          return Response.json(body);
+        }`,
+    ],
+    [
+      "body stream alias bypass",
+      "stream-mutation/route.ts",
+      () => `${imports()}
+        export async function POST(req: Request) {
+          const stream = req.body;
+          const reader = stream?.getReader();
+          await requireAdmin();
+          return Response.json({ ok: Boolean(reader) });
+        }`,
+    ],
+    [
+      "unclassified bodyless write bypass",
+      "unclassified-mutation/route.ts",
+      () => `
+        export async function POST(_req: Request) {
+          return Response.json({ ok: true });
+        }`,
+    ],
+    [
+      "same-statement body-before-auth bypass",
+      "same-statement-mutation/route.ts",
+      () => `${imports()}
+        export async function POST(req: Request) {
+          const body = await readJsonWithLimit(req, 1024, schema),
+            admin = await requireAdmin();
+          return Response.json({ body, admin });
+        }`,
+    ],
+    [
+      "destructured body parameter bypass",
+      "destructured-body-mutation/route.ts",
+      () => `${imports()}
+        export async function POST({ body }: Request) {
+          const reader = body?.getReader();
+          await requireAdmin();
+          return Response.json({ ok: Boolean(reader) });
+        }`,
+    ],
+  ])("catches synthetic mutation regression for %s", async (_name, relativePath, sourceFactory) => {
+    const root = await createFixture({ [relativePath]: sourceFactory() });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringMatching(/violation|needs-manual-review|unclassified/),
+    });
   });
 
   it.each([

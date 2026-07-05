@@ -6,8 +6,11 @@ import ts from "typescript";
 
 import {
   collectRequestAliases,
+  collectRequestBodyStreamAliases,
   collectRouteHandlers,
   HTTP_METHODS,
+  isRequestBodyExpression,
+  isRequestCloneExpression,
   unwrapExpression,
 } from "./lib/route-ast.mjs";
 
@@ -26,11 +29,12 @@ const CATEGORY_A_CALLS = new Set([
   "readFormDataWithLimit",
   "readBoundedRawBody",
 ]);
-const DIRECT_BODY_METHODS = new Set(["json", "text", "formData", "arrayBuffer"]);
+const DIRECT_BODY_METHODS = new Set(["json", "text", "formData", "arrayBuffer", "blob"]);
 const CATEGORY_B_CALLS = new Set(["assertContentLengthWithinLimit"]);
 const CATEGORY_C_CALLS = new Set(["parseFormDataBody", "saveUploadedFile", "saveStreamedFile"]);
-const SAFE_CALLS = new Set(["getClientIp"]);
+const SAFE_CALLS = new Set(["getClientIp", "getUserAgent"]);
 const RATE_LIMIT_CALLS = new Set(["rateLimit", "isRateLimited"]);
+const VERIFIED_TRANSPARENT_WRAPPERS = [];
 
 const ALLOWLIST = [
   {
@@ -180,13 +184,66 @@ function declaresName(node, text) {
   return false;
 }
 
+function nodeContainsIdentifier(node, identifier) {
+  let found = false;
+  function visit(current) {
+    if (current === identifier) return;
+    if (declaresName(current, identifier.text)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  }
+  visit(node);
+  return found;
+}
+
+function isBlockScope(node) {
+  return ts.isBlock(node) || ts.isSourceFile(node) || ts.isCaseBlock(node);
+}
+
 function isShadowed(identifier, handler) {
+  let scope = identifier.parent;
+  while (scope && scope !== handler) {
+    if (isBlockScope(scope) && nodeContainsIdentifier(scope, identifier)) return true;
+    scope = scope.parent;
+  }
+
   let current = identifier.parent;
   while (current && current !== handler) {
     if (declaresName(current, identifier.text)) return true;
     current = current.parent;
   }
   return false;
+}
+
+function isBodyMethodCallTarget(expression, aliases) {
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isIdentifier(unwrapped)) {
+    return aliases.has(unwrapped.text) ? unwrapped.text : null;
+  }
+  if (isRequestCloneExpression(unwrapped, aliases)) {
+    const callee = unwrapExpression(unwrapped.expression);
+    const target = unwrapExpression(callee.expression);
+    return ts.isIdentifier(target) ? `${target.text}.clone()` : "request.clone()";
+  }
+  if (ts.isConditionalExpression(unwrapped)) {
+    return (
+      isBodyMethodCallTarget(unwrapped.whenTrue, aliases) ??
+      isBodyMethodCallTarget(unwrapped.whenFalse, aliases)
+    );
+  }
+  if (
+    ts.isBinaryExpression(unwrapped) &&
+    (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+  ) {
+    return (
+      isBodyMethodCallTarget(unwrapped.left, aliases) ??
+      isBodyMethodCallTarget(unwrapped.right, aliases)
+    );
+  }
+  return null;
 }
 
 function resolveCallee(call, importMap, handler) {
@@ -224,16 +281,32 @@ function directBodyRead(call, aliases) {
     if (argument && ts.isStringLiteralLike(argument)) method = argument.text;
   }
 
-  if (!method || !DIRECT_BODY_METHODS.has(method) || !target || !ts.isIdentifier(target))
-    return null;
-  if (!aliases.has(target.text)) return null;
-  return { category: "A", name: `${target.text}.${method}`, node: call };
+  const targetName = target && isBodyMethodCallTarget(target, aliases);
+  if (!method || !DIRECT_BODY_METHODS.has(method) || !targetName) return null;
+  return { category: "A", name: `${targetName}.${method}`, node: call };
 }
 
-function streamReaderRead(call, aliases) {
+function computedBodyMethodReview(call, aliases) {
+  const callee = unwrapExpression(call.expression);
+  if (!ts.isElementAccessExpression(callee)) return null;
+  const target = unwrapExpression(callee.expression);
+  const targetName = isBodyMethodCallTarget(target, aliases);
+  if (!targetName) return null;
+  const argument = callee.argumentExpression && unwrapExpression(callee.argumentExpression);
+  if (argument && ts.isStringLiteralLike(argument)) return null;
+  return {
+    name: `${targetName}[computed]() requires manual review before auth`,
+    node: call,
+  };
+}
+
+function streamReaderRead(call, aliases, bodyStreamAliases) {
   const callee = unwrapExpression(call.expression);
   if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "getReader") return null;
   const target = unwrapExpression(callee.expression);
+  if (ts.isIdentifier(target) && bodyStreamAliases.has(target.text)) {
+    return { category: "A", name: `${target.text}.getReader`, node: call };
+  }
   if (!ts.isPropertyAccessExpression(target) || target.name.text !== "body") return null;
   const request = unwrapExpression(target.expression);
   if (!ts.isIdentifier(request) || !aliases.has(request.text)) return null;
@@ -280,10 +353,10 @@ function manualContentLengthCheck(node, aliases) {
   return { category: "B", name: "content-length", node: parent };
 }
 
-function callCategory(call, importMap, handler, aliases) {
+function callCategory(call, importMap, handler, aliases, bodyStreamAliases) {
   const direct = directBodyRead(call, aliases);
   if (direct) return direct;
-  const reader = streamReaderRead(call, aliases);
+  const reader = streamReaderRead(call, aliases, bodyStreamAliases);
   if (reader) return reader;
   const fromWeb = readableFromWebRead(call, aliases);
   if (fromWeb) return fromWeb;
@@ -325,7 +398,8 @@ function isAuthCallExpression(expression, importMap, handler) {
   }
   if (!ts.isCallExpression(unwrapped)) return null;
   if (!isResolvedCall(unwrapped, importMap, handler, AUTH_MODULE, AUTH_CALLS)) return null;
-  return resolveCallee(unwrapped, importMap, handler);
+  const resolved = resolveCallee(unwrapped, importMap, handler);
+  return resolved ? { ...resolved, node: unwrapped } : null;
 }
 
 function authStatementInfo(statement, importMap, handler, sourceFile) {
@@ -336,6 +410,7 @@ function authStatementInfo(statement, importMap, handler, sourceFile) {
     if (!resolved) return null;
     return {
       statement,
+      node: resolved.node,
       name: resolved.importedName,
       ...statementLineColumn(sourceFile, statement),
     };
@@ -353,6 +428,7 @@ function authStatementInfo(statement, importMap, handler, sourceFile) {
     if (!resolved) continue;
     return {
       statement,
+      node: resolved.node,
       name: resolved.importedName,
       ...statementLineColumn(sourceFile, statement),
     };
@@ -398,13 +474,9 @@ function isInsideNestedFunction(node, handler) {
 
 function expressionPassesRequestAlias(expression, aliases) {
   const unwrapped = unwrapExpression(expression);
-  if (ts.isIdentifier(unwrapped)) return aliases.has(unwrapped.text);
-  if (
-    ts.isPropertyAccessExpression(unwrapped) &&
-    unwrapped.name.text === "body" &&
-    ts.isIdentifier(unwrapExpression(unwrapped.expression))
-  ) {
-    return aliases.has(unwrapExpression(unwrapped.expression).text);
+  if (isBodyMethodCallTarget(unwrapped, aliases)) return true;
+  if (ts.isPropertyAccessExpression(unwrapped) && unwrapped.name.text === "body") {
+    return Boolean(isBodyMethodCallTarget(unwrapped.expression, aliases));
   }
   return false;
 }
@@ -419,8 +491,19 @@ function requestEscape(call, importMap, handler, aliases) {
   return null;
 }
 
+function cloneOrBodyExtractionReview(node, aliases) {
+  if (isRequestCloneExpression(node, aliases)) {
+    return { name: "request.clone() requires manual review before auth", node };
+  }
+  if (isRequestBodyExpression(node, aliases)) {
+    return { name: "request.body extraction requires manual review before auth", node };
+  }
+  return null;
+}
+
 function collectOperations(handler, importMap, sourceFile) {
   const aliases = collectRequestAliases(handler);
+  const bodyStreamAliases = collectRequestBodyStreamAliases(handler, aliases);
   const operations = [];
   const requestEscapes = [];
   const nestedAuthCalls = [];
@@ -446,7 +529,7 @@ function collectOperations(handler, importMap, sourceFile) {
           });
         }
       }
-      const operation = callCategory(node, importMap, handler, aliases);
+      const operation = callCategory(node, importMap, handler, aliases, bodyStreamAliases);
       if (operation) {
         operations.push({
           ...operation,
@@ -455,7 +538,9 @@ function collectOperations(handler, importMap, sourceFile) {
           ...nodeLineColumn(sourceFile, node),
         });
       } else {
-        const escape = requestEscape(node, importMap, handler, aliases);
+        const escape =
+          computedBodyMethodReview(node, aliases) ??
+          requestEscape(node, importMap, handler, aliases);
         if (escape) {
           requestEscapes.push({
             ...escape,
@@ -465,6 +550,16 @@ function collectOperations(handler, importMap, sourceFile) {
           });
         }
       }
+    }
+
+    const cloneOrBodyExtraction = cloneOrBodyExtractionReview(node, aliases);
+    if (cloneOrBodyExtraction) {
+      requestEscapes.push({
+        ...cloneOrBodyExtraction,
+        topLevelStatement: enclosingTopLevelStatement(cloneOrBodyExtraction.node, handler),
+        nested: isInsideNestedFunction(cloneOrBodyExtraction.node, handler),
+        ...nodeLineColumn(sourceFile, cloneOrBodyExtraction.node),
+      });
     }
 
     const manualContentLength = manualContentLengthCheck(node, aliases);
@@ -498,7 +593,17 @@ function declarationMap(sourceFile) {
   return declarations;
 }
 
-function unwrapWrappedHandler(initializer) {
+function isVerifiedTransparentWrapper(call, importMap, handler) {
+  const resolved = resolveCallee(call, importMap, handler);
+  if (!resolved) return false;
+  return VERIFIED_TRANSPARENT_WRAPPERS.some(
+    (wrapper) =>
+      wrapper.moduleSpecifier === resolved.moduleSpecifier &&
+      wrapper.importedName === resolved.importedName,
+  );
+}
+
+function unwrapWrappedHandler(initializer, importMap, handler) {
   const expression = unwrapExpression(initializer);
   if (isFunctionLike(expression)) return { node: expression, pattern: "exported variable handler" };
   if (!ts.isCallExpression(expression)) return null;
@@ -507,12 +612,19 @@ function unwrapWrappedHandler(initializer) {
     isFunctionLike(unwrapExpression(argument)),
   );
   if (expression.arguments.length === 1 && functionArguments.length === 1) {
+    if (!isVerifiedTransparentWrapper(expression, importMap, handler)) {
+      return {
+        manual: true,
+        pattern: "wrapped handler",
+        reason: "wrapper function is not on the verified-transparent allowlist",
+      };
+    }
     return { node: unwrapExpression(functionArguments[0]), pattern: "wrapped handler" };
   }
   return { manual: true, pattern: "wrapped handler" };
 }
 
-function exportedHandlers(sourceFile) {
+function exportedHandlers(sourceFile, importMap) {
   const declarations = declarationMap(sourceFile);
   const handlers = [];
 
@@ -535,7 +647,7 @@ function exportedHandlers(sourceFile) {
         });
         continue;
       }
-      const unwrapped = unwrapWrappedHandler(declaration.initializer);
+      const unwrapped = unwrapWrappedHandler(declaration.initializer, importMap, declaration);
       if (unwrapped?.node) {
         handlers.push({
           method: declaration.name.text,
@@ -547,7 +659,8 @@ function exportedHandlers(sourceFile) {
           method: declaration.name.text,
           node: null,
           pattern: unwrapped?.pattern ?? "exported variable handler",
-          manualReason: "unable to statically extract exported handler function",
+          manualReason:
+            unwrapped?.reason ?? "unable to statically extract exported handler function",
           anchor: declaration,
         });
       }
@@ -576,7 +689,7 @@ function exportedHandlers(sourceFile) {
       if (ts.isFunctionDeclaration(declaration)) {
         handlers.push({ method, node: declaration, pattern: "export re-export" });
       } else if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
-        const unwrapped = unwrapWrappedHandler(declaration.initializer);
+        const unwrapped = unwrapWrappedHandler(declaration.initializer, importMap, declaration);
         if (unwrapped?.node) {
           handlers.push({ method, node: unwrapped.node, pattern: "export re-export" });
         } else {
@@ -584,7 +697,8 @@ function exportedHandlers(sourceFile) {
             method,
             node: null,
             pattern: "export re-export",
-            manualReason: "unable to statically extract re-exported handler function",
+            manualReason:
+              unwrapped?.reason ?? "unable to statically extract re-exported handler function",
             anchor: declaration,
           });
         }
@@ -606,6 +720,14 @@ function categoriesSummary(operations) {
     B: [...new Set(operations.filter((op) => op.category === "B").map((op) => op.name))],
     C: [...new Set(operations.filter((op) => op.category === "C").map((op) => op.name))],
   };
+}
+
+function occursBeforeOperation(operation, auth) {
+  if (!operation.topLevelStatement) return false;
+  if (operation.topLevelStatement === auth.statement) {
+    return operation.node.pos < auth.node.pos;
+  }
+  return operation.topLevelStatement.pos < auth.statement.pos;
 }
 
 function classifyHandler(
@@ -637,6 +759,10 @@ function classifyHandler(
   );
   const allowlistEntry = isAllowed(file, method);
   const hasCategoryA = operations.some((op) => op.category === "A");
+  const firstParameter = node.parameters[0];
+  const hasNonIdentifierFirstParameter = Boolean(
+    firstParameter && !ts.isIdentifier(firstParameter.name),
+  );
 
   const base = {
     file: relativePath(file),
@@ -655,6 +781,17 @@ function classifyHandler(
       verdict: "allowlisted",
       allowlistKind: allowlistEntry.kind,
       allowlistReason: allowlistEntry.reason,
+    };
+  }
+
+  if (hasNonIdentifierFirstParameter) {
+    return {
+      ...base,
+      verdict: "needs-manual-review",
+      reasons: [
+        "handler's request parameter uses a non-identifier binding pattern; static body-read tracking cannot be verified",
+      ],
+      ...nodeLineColumn(sourceFile, firstParameter.name),
     };
   }
 
@@ -692,11 +829,27 @@ function classifyHandler(
         column: op.column,
       };
     }
-    return base;
+    if (requestEscapes.length > 0) {
+      const escape = requestEscapes[0];
+      return {
+        ...base,
+        verdict: "needs-manual-review",
+        reasons: [escape.name],
+        line: escape.line,
+        column: escape.column,
+      };
+    }
+    return {
+      ...base,
+      verdict: WRITE_METHODS.has(method) ? "unclassified" : "no-body-bodyless",
+      reasons: WRITE_METHODS.has(method)
+        ? ["write handler has no resolved auth call and no classified body operation"]
+        : [],
+    };
   }
 
   for (const op of operations) {
-    if (op.topLevelStatement.pos < auth.statement.pos) {
+    if (occursBeforeOperation(op, auth)) {
       return {
         ...base,
         verdict: "violation",
@@ -708,11 +861,7 @@ function classifyHandler(
   }
 
   for (const escape of requestEscapes) {
-    if (
-      escape.nested ||
-      !escape.topLevelStatement ||
-      escape.topLevelStatement.pos < auth.statement.pos
-    ) {
+    if (escape.nested || !escape.topLevelStatement || occursBeforeOperation(escape, auth)) {
       return {
         ...base,
         verdict: "needs-manual-review",
@@ -808,7 +957,7 @@ async function analyzeRouteTree(root) {
     const source = await readFile(file, "utf8");
     const sourceFile = createSourceFile(source, file);
     const importMap = buildImportMap(sourceFile);
-    for (const handler of exportedHandlers(sourceFile)) {
+    for (const handler of exportedHandlers(sourceFile, importMap)) {
       results.push(classifyHandler({ file, ...handler }, sourceFile, importMap));
     }
   }
@@ -849,8 +998,7 @@ function summary(routeFiles, results) {
     "protected body-reading handlers": protectedBodyReadingHandlers.length,
     "protected bodyless handlers": protectedBodylessHandlers.length,
     "public allowlisted body handlers": publicAllowlistedBodyHandlers.length,
-    "already compliant protected handlers": compliantProtectedHandlers.length,
-    "modified protected handlers": violations.length,
+    "currently compliant protected handlers": compliantProtectedHandlers.length,
     "unclassified write handlers": unclassified.length,
     violations: violations.length,
     "needs-manual-review": manual.length,
@@ -865,8 +1013,7 @@ function printSummary(summaryObject) {
     "protected body-reading handlers",
     "protected bodyless handlers",
     "public allowlisted body handlers",
-    "already compliant protected handlers",
-    "modified protected handlers",
+    "currently compliant protected handlers",
     "unclassified write handlers",
     "violations",
     "needs-manual-review",
@@ -889,7 +1036,7 @@ function printDefaultReport(results, allowlistFailures) {
   }
 
   const findings = results.filter((result) =>
-    ["violation", "needs-manual-review"].includes(result.verdict),
+    ["violation", "needs-manual-review", "unclassified"].includes(result.verdict),
   );
   if (findings.length > 0) {
     stderr.push("Protected Route Handlers must authenticate before body reads:");
@@ -923,7 +1070,7 @@ export async function checkAuthBeforeBody(root = "src/app", options = {}) {
     failed:
       analysis.allowlistFailures.length > 0 ||
       analysis.results.some((result) =>
-        ["violation", "needs-manual-review"].includes(result.verdict),
+        ["violation", "needs-manual-review", "unclassified"].includes(result.verdict),
       ),
     stdout,
     stderr,

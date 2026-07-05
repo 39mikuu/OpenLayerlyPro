@@ -1,6 +1,6 @@
 import ts from "typescript";
 
-export const BODY_METHODS = new Set(["json", "text", "formData"]);
+export const BODY_METHODS = new Set(["json", "text", "formData", "arrayBuffer", "blob"]);
 export const HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]);
 
 export function unwrapExpression(node) {
@@ -53,6 +53,37 @@ export function isAliasExpression(expression, aliases) {
   return ts.isIdentifier(unwrapped) && aliases.has(unwrapped.text);
 }
 
+export function isRequestCloneExpression(expression, aliases) {
+  const unwrapped = unwrapExpression(expression);
+  if (!ts.isCallExpression(unwrapped)) return false;
+  const callee = unwrapExpression(unwrapped.expression);
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "clone") return false;
+  const target = unwrapExpression(callee.expression);
+  return ts.isIdentifier(target) && aliases.has(target.text);
+}
+
+export function isRequestBodyExpression(expression, aliases) {
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isPropertyAccessExpression(unwrapped) && unwrapped.name.text === "body") {
+    const target = unwrapExpression(unwrapped.expression);
+    return ts.isIdentifier(target) && aliases.has(target.text);
+  }
+  if (ts.isElementAccessExpression(unwrapped)) {
+    const target = unwrapExpression(unwrapped.expression);
+    const argument = unwrapped.argumentExpression && unwrapExpression(unwrapped.argumentExpression);
+    return (
+      ts.isIdentifier(target) &&
+      aliases.has(target.text) &&
+      Boolean(argument && ts.isStringLiteralLike(argument) && argument.text === "body")
+    );
+  }
+  return false;
+}
+
+function isRequestAliasLikeExpression(expression, aliases) {
+  return isAliasExpression(expression, aliases) || isRequestCloneExpression(expression, aliases);
+}
+
 export function collectRequestAliases(handler) {
   const firstParameter = handler.parameters[0];
   if (!firstParameter || !ts.isIdentifier(firstParameter.name)) return new Set();
@@ -68,7 +99,7 @@ export function collectRequestAliases(handler) {
         ts.isVariableDeclaration(node) &&
         ts.isIdentifier(node.name) &&
         node.initializer &&
-        isAliasExpression(node.initializer, aliases) &&
+        isRequestAliasLikeExpression(node.initializer, aliases) &&
         !aliases.has(node.name.text)
       ) {
         aliases.add(node.name.text);
@@ -79,7 +110,57 @@ export function collectRequestAliases(handler) {
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         ts.isIdentifier(node.left) &&
-        isAliasExpression(node.right, aliases) &&
+        isRequestAliasLikeExpression(node.right, aliases) &&
+        !aliases.has(node.left.text)
+      ) {
+        aliases.add(node.left.text);
+        changed = true;
+      }
+
+      ts.forEachChild(node, visit);
+    }
+
+    if (handler.body) visit(handler.body);
+  }
+
+  return aliases;
+}
+
+export function collectRequestBodyStreamAliases(
+  handler,
+  requestAliases = collectRequestAliases(handler),
+) {
+  const aliases = new Set();
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+
+    function isBodyStreamAliasExpression(expression) {
+      const unwrapped = unwrapExpression(expression);
+      return (
+        isRequestBodyExpression(unwrapped, requestAliases) ||
+        (ts.isIdentifier(unwrapped) && aliases.has(unwrapped.text))
+      );
+    }
+
+    function visit(node) {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer &&
+        isBodyStreamAliasExpression(node.initializer) &&
+        !aliases.has(node.name.text)
+      ) {
+        aliases.add(node.name.text);
+        changed = true;
+      }
+
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isIdentifier(node.left) &&
+        isBodyStreamAliasExpression(node.right) &&
         !aliases.has(node.left.text)
       ) {
         aliases.add(node.left.text);

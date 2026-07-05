@@ -87,6 +87,22 @@ describe("bounded Route Handler static check", () => {
       "export async function POST(input: Request) { let alias: Request; alias = input; await alias.json(); }",
       "json",
     ],
+    [
+      "arrayBuffer",
+      "export async function POST(req: Request) { await req.arrayBuffer(); }",
+      "arrayBuffer",
+    ],
+    [
+      "arrayBuffer element access",
+      'export async function POST(req: Request) { await req["arrayBuffer"](); }',
+      "arrayBuffer",
+    ],
+    [
+      "arrayBuffer through aliased request",
+      "export async function POST(req: Request) { const aliased = req; await aliased.arrayBuffer(); }",
+      "arrayBuffer",
+    ],
+    ["blob", "export async function POST(req: Request) { await req.blob(); }", "blob"],
   ])("rejects %s", async (_name, source, method) => {
     const root = await createFixture({
       "unsafe/route.ts": source,
