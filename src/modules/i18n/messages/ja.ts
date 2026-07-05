@@ -316,6 +316,8 @@ export const ja: Messages = {
       smtp: "SMTP",
       storageDriver: "ストレージドライバー",
       version: "バージョン",
+      sourceCommit: "ソースコミット",
+      buildTimestamp: "ビルド時刻",
       normal: "✅ 正常",
       abnormal: "❌ 異常",
       configured: "✅ 設定済み",

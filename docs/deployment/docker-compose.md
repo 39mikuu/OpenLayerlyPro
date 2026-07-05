@@ -35,6 +35,21 @@ If migrations fail, the app does not start.
 
 See `.env.example` for the full list.
 
+For release builds, pass build identity inline to Compose:
+
+```bash
+OPENLAYERLY_BUILD_VERSION="$(node -p 'require("./package.json").version')" \
+OPENLAYERLY_BUILD_COMMIT="$(git rev-parse HEAD)" \
+OPENLAYERLY_BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+docker compose build app
+docker compose up -d
+```
+
+Do **not** persist `OPENLAYERLY_BUILD_VERSION`, `OPENLAYERLY_BUILD_COMMIT`, or
+`OPENLAYERLY_BUILD_TIMESTAMP` in `.env`; stale values would bake a false identity into
+later rebuilds. Plain `docker compose up -d --build` remains valid and produces an
+explicit `dev`/`dev`/`unknown` build identity.
+
 ## Health Checks
 
 ```bash

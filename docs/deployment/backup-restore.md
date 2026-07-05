@@ -47,9 +47,9 @@ For the strong-consistency path, let the script stop the normal app/dispatcher b
 ./scripts/backup.sh --stop-app /srv/backups/openlayerly
 ```
 
-`--stop-app` resolves the app environment and volume paths through one-off containers, so it also works when the normal app container is already stopped. It inspects every existing app-service container, stops the whole service even when a container is currently `restarting`, and records only containers that were active (`running`, `restarting`, or `paused`) as restart targets. Exit/signal cleanup restarts those exact containers; intentionally stopped or merely created containers remain stopped.
+`--stop-app` resolves the app environment and volume paths from the same app service container whose image provenance is recorded. It inspects every existing app-service container, stops the whole service even when a container is currently `restarting`, and records only containers that were active (`running`, `restarting`, or `paused`) as restart targets. Exit/signal cleanup restarts those exact containers; intentionally stopped or merely created containers remain stopped. If the resolved app container is stopped, backup still works with container-ID-bound `docker cp`; path canonicalization falls back to strict string checks and prints a notice.
 
-New archives use `FORMAT_VERSION=2` and are named like:
+New archives use `FORMAT_VERSION=3` and are named like:
 
 ```text
 openlayerly-backup-20260627-134500.tar.gz
@@ -67,16 +67,36 @@ uploads/                         # included only when container env STORAGE_DRIV
 UPLOADS_SKIPPED_S3               # written only when container env STORAGE_DRIVER resolves to s3
 ```
 
-`manifest.env` records `APP_VERSION`, storage and migration identity, the config-key path,
-capture consistency mode, and `SESSION_SECRET_SOURCE`. File-backed archives record the
-container path and `secrets/session-secret`; external sources record only
-`SESSION_SECRET_SHA256`.
+`manifest.env` records image-authoritative runtime provenance, storage and migration
+identity, the config-key path and fingerprint, capture consistency mode, and
+`SESSION_SECRET_SOURCE`. `RUNTIME_APP_VERSION`, `RUNTIME_SOURCE_COMMIT`,
+`RUNTIME_IMAGE_ID`, and `BUILD_TIMESTAMP` are read from the app image's OCI labels and
+image ID, not from runtime/container environment overrides.
+`BACKUP_TOOL_COMMIT` and `BACKUP_TOOL_SCRIPT_SHA256` describe the checkout and script
+that produced the archive; they are deliberately separate from the runtime image fields.
+`APP_VERSION` is retained for compatibility and mirrors `RUNTIME_APP_VERSION` in v3.
+File-backed archives record the container path and `secrets/session-secret`; external
+sources record only `SESSION_SECRET_SHA256`.
 
-`checksums.sha256` covers every regular-file payload member except the root `./checksums.sha256` manifest itself (nested upload files named `checksums.sha256` remain covered). On v2 archives, `restore.sh` rejects symlinks and special files, verifies checksums, and then enforces a strict bijection: every extracted regular-file payload must appear exactly once in the manifest, and every manifest entry must have a matching payload file. The parser reads the fixed-width GNU checksum prefix, so ordinary filenames containing spaces are preserved exactly.
+For `FORMAT_VERSION=3`, restore treats the runtime provenance, config-key fingerprint,
+and `CONFIG_ENCRYPTION_KEY_FORMAT` fields as required manifest fields. Missing,
+duplicated, empty, control-character-bearing, or malformed values fail before any
+destructive restore step. Legacy v1/v2 archives keep their compatibility defaults and
+warning path. `CONFIG_ENCRYPTION_KEY_FORMAT` is derived from the trimmed archived key
+material: keys beginning with `cek1:` are `v1`; any other non-empty key is `legacy`.
 
-To keep that manifest unambiguous and portable, `backup.sh` rejects path components containing backslashes, ASCII control characters (`U+0000`–`U+001F`), or `DEL` (`U+007F`) before publishing an archive. Ordinary spaces and non-ASCII Unicode names remain supported. The same validation runs on the live local upload tree before copying and on the assembled workspace before checksum/tar creation.
+`CONFIG_ENCRYPTION_KEY_SHA256` is the SHA-256 of the archived config key after trimming
+leading/trailing whitespace, matching the runtime readers' `.trim()` semantics. Restore
+checks this fingerprint and the derived `CONFIG_ENCRYPTION_KEY_FORMAT` before the
+destructive boundary. The fingerprint proves the archived key file still matches the
+manifest; the existing decrypt probe separately proves that key can decrypt archived
+encrypted settings. A whitespace-only archived config key fails closed.
 
-Legacy `FORMAT_VERSION=1` archives remain restorable through the compatibility path below, but they have no checksum protection and emit an explicit warning.
+`checksums.sha256` covers every regular-file payload member except the root `./checksums.sha256` manifest itself (nested upload files named `checksums.sha256` remain covered). On v2/v3 archives, `restore.sh` rejects symlinks and special files, verifies checksums, and then enforces a strict bijection: every extracted regular-file payload must appear exactly once in the manifest, and every manifest entry must have a matching payload file. The parser reads the fixed-width GNU checksum prefix, so ordinary filenames containing spaces are preserved exactly.
+
+To keep that manifest unambiguous and portable, `backup.sh` rejects path components containing backslashes, ASCII control characters (`U+0000`–`U+001F`), or `DEL` (`U+007F`) before publishing an archive. Ordinary spaces and non-ASCII Unicode names remain supported. The validation runs on the assembled workspace before checksum/tar creation, so unsupported upload entries cannot be published.
+
+Legacy `FORMAT_VERSION=1` archives remain restorable through the compatibility path below, but they have no checksum protection and emit an explicit warning. `FORMAT_VERSION=1` and `FORMAT_VERSION=2` archives also warn that they predate image-authoritative provenance; restore may show `unknown` or host-derived runtime fields for those archives.
 
 ### External Config Key
 
@@ -106,7 +126,7 @@ Use the explicit strong-consistency mode for the safest local recovery set:
 ./scripts/backup.sh --stop-app /srv/backups/openlayerly
 ```
 
-The script first resolves and validates the app environment/volume paths using one-off containers, records the initial state of every app-service container, then issues `compose stop app` for every existing service container. Afterward it fails closed if any app container is still `running`, `restarting`, or `paused`. It captures the database, config key, and local uploads while writes and the task dispatcher are stopped. After those inputs are copied into the private backup workspace, it restarts only the containers that were active before the stop; containers that were already stopped or merely created remain stopped. Stop failures are fatal; restart failures make the command fail and are retried by cleanup.
+The script first resolves the single app container, validates its container environment and volume paths, and records the initial state of every app-service container. It then issues `compose stop app` for every existing service container. Afterward it fails closed if any app container is still `running`, `restarting`, or `paused`. It captures the database, config key, and local uploads while writes and the task dispatcher are stopped. Backup copies use `docker cp` bound to the resolved container ID, not a service-name lookup. Before restarting the app, backup verifies the app service still resolves to the same container and image ID that were recorded in the manifest. After those inputs are copied into the private backup workspace, it restarts only the containers that were active before the stop; containers that were already stopped or merely created remain stopped. Stop failures are fatal; restart failures make the command fail and are retried by cleanup.
 
 ### S3 / R2
 
@@ -144,8 +164,12 @@ That flag only relaxes **unknown** v1 history. It cannot bypass confirmed newer/
 
 ```text
 validate archive paths
-→ verify v2 checksums and manifest/payload bijection (v1 warns and continues)
-→ v2 manifest compatibility check, or v1 isolated temporary-DB schema probe
+→ verify v2/v3 checksums and manifest/payload bijection (v1 warns and continues)
+→ warn for v1/v2 image-provenance gaps
+→ strictly validate required v3 provenance and config-key fingerprint/format fields
+→ verify v3 CONFIG_ENCRYPTION_KEY_SHA256 and CONFIG_ENCRYPTION_KEY_FORMAT against the archived trimmed key material
+→ warn, never reject, on archive-vs-target image version/commit/image mismatches
+→ v2/v3 manifest compatibility check, or v1 isolated temporary-DB schema probe
 → validate external SESSION_SECRET or restore the checksummed file-backed secret
 → pre-destructive archive config-key decrypt probe against archived app_settings data
 → import official DB and restore config key to the target CONFIG_ENCRYPTION_KEY_FILE path
@@ -167,11 +191,13 @@ Key invariants:
 - missing objects become quarantine/410, not storage 500;
 - only convergence may re-enqueue deletion for confirmed orphans;
 - any migrator/backfill/neutralization/convergence error prevents normal app startup;
+- v3 `CONFIG_ENCRYPTION_KEY_SHA256` and `CONFIG_ENCRYPTION_KEY_FORMAT` are checked against the archived key file before the official database, secrets, or uploads are replaced. This is complementary to the decrypt probe: fingerprint mismatch means archive integrity failure; decrypt failure means the archived key cannot read archived ciphertext;
+- archive-vs-target runtime app version, source commit, and image ID mismatches are warnings only. Migration identity remains the hard compatibility gate. If an existing target app container sets `APP_VERSION`, `SOURCE_COMMIT`, or `BUILD_TIMESTAMP` to values that conflict with non-`unknown` image labels, backup/restore fails loudly because the container environment is overriding the image build identity;
 - before replacing the official database, restore extracts archived `app_settings` rows into an isolated scratch database and verifies the archived config key can decrypt every encrypted setting. Missing or empty `app_settings` data logs an explicit skip. After convergence, restore runs the same probe against the restored database to verify the active runtime key and fully restored state before app startup;
 - S3 convergence enumerates only controlled application key namespaces (`avatars/`, `payment-qr/`, `payment-proof/`, `content/`, `legacy/`, `remediated/`). Override with comma-separated `RESTORE_S3_ENUM_PREFIXES` when needed;
 - incomplete storage enumeration (truncated listing or converge errors) exits non-zero and prevents app startup;
 - `CONFIG_ENCRYPTION_KEY_FILE` must be a canonical absolute file path under `/app/secrets` (no `..`, no directory path). Restore validates the target path before dropping the official database;
-- `UPLOAD_DIR` is read from the target container at backup/restore time and must stay under `/app/uploads`. Local upload backup and restore use that resolved path for both `compose cp` directions;
+- `UPLOAD_DIR` is read from the resolved app container at backup/restore time and must stay under `/app/uploads`. Local upload backup and restore use `docker cp` bound to the verified container ID rather than service-name copy targets;
 - S3 `files.bucket = NULL` rows are matched against the configured bucket during convergence so referenced objects are not misclassified as orphans.
 
 The target image must contain and be able to execute:
@@ -219,10 +245,35 @@ Only one project can bind host port 3000 with the default Compose file. Stop the
 
 ## Version Boundary
 
-- v2 archives carry migration identity and must be a same-order/hash prefix of the target image journal;
+- v2/v3 archives carry migration identity and must be a same-order/hash prefix of the target image journal;
+- v3 archives additionally carry image-authoritative provenance and a trimmed config-key fingerprint. These fields improve auditability and archive integrity checks, but do not replace migration identity as the compatibility boundary;
+- runtime app version, source commit, build timestamp, and image ID mismatches warn during restore and are surfaced in the confirmation output; they never reject a restore by themselves;
 - v1 archives are imported into an isolated temporary database for Drizzle migration-history comparison before the official DB is replaced;
 - confirmed newer/divergent history is rejected;
 - unknown v1 history fails closed unless `--allow-legacy-v1-unknown-schema` is supplied, and that override cannot bypass confirmed incompatibility.
+
+## Build Provenance
+
+Production Compose builds should pass the same identity fields that backup records:
+
+```bash
+OPENLAYERLY_BUILD_VERSION="$(node -p 'require("./package.json").version')" \
+OPENLAYERLY_BUILD_COMMIT="$(git rev-parse HEAD)" \
+OPENLAYERLY_BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+docker compose build app
+```
+
+Pass these variables inline for each release build. Do **not** persist them in `.env`;
+stale values would bake a false build identity into later images.
+
+The Dockerfile persists these values in `/app/build-info.json`, image environment variables,
+and OCI labels:
+`org.opencontainers.image.version`, `org.opencontainers.image.revision`,
+`org.opencontainers.image.created`, and `org.opencontainers.image.source`. The app reads
+`/app/build-info.json` first and only falls back to environment variables outside the image.
+Backup and restore read the image labels and image ID. Plain `docker compose up -d --build`
+still works and produces an explicit `dev`/`dev`/`unknown` build identity, which is
+intentionally distinguishable from release images.
 
 ## Isolated E2E Drills
 

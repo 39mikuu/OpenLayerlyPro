@@ -310,6 +310,8 @@ export const zh = {
       smtp: "SMTP",
       storageDriver: "存储驱动",
       version: "版本",
+      sourceCommit: "源码提交",
+      buildTimestamp: "构建时间",
       normal: "✅ 正常",
       abnormal: "❌ 异常",
       configured: "✅ 已配置",

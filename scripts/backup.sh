@@ -39,6 +39,22 @@ fix_workspace_permissions() {
   fi
 }
 
+validate_copied_session_secret_file() {
+  session_secret_path=$1
+
+  [ -f "$session_secret_path" ] || fail "session secret file is invalid or has unsafe permissions"
+  [ ! -L "$session_secret_path" ] || fail "session secret file is invalid or has unsafe permissions"
+  [ "$(stat -c %a "$session_secret_path")" = "600" ] \
+    || fail "session secret file is invalid or has unsafe permissions"
+  node -e '
+    const fs = require("fs");
+    const value = fs.readFileSync(process.argv[1], "utf8").replace(/\r?\n$/, "");
+    if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) {
+      process.exit(1);
+    }
+  ' "$session_secret_path" || fail "session secret file is invalid or has unsafe permissions"
+}
+
 compose() {
   project_args=""
   env_args=""
@@ -123,69 +139,30 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-APP_VERSION=$(node -e 'console.log(require("./package.json").version)' 2>/dev/null || echo "unknown")
+# Resolve the exact app container used for provenance before reading runtime configuration.
+# This prevents current compose/.env edits from skewing backup paths or storage mode away
+# from the deployed container being backed up.
+APP_CONTAINER_ID=$(resolve_single_app_container_id)
+read_app_container_provenance "$APP_CONTAINER_ID"
+read_app_container_runtime_config "$APP_CONTAINER_ID"
 
-# Resolve all app environment and volume paths through one-off containers. This keeps
-# backup operable when the normal app/dispatcher is already stopped and avoids requiring
-# compose exec during the strong-consistency window.
-if ! compose run --rm -T --no-deps --entrypoint sh app -c 'test -z "${CONFIG_ENCRYPTION_KEY:-}"'; then
-  fail "CONFIG_ENCRYPTION_KEY is set; back up that externally managed value separately and use the file-backed key for single-archive backups"
+validate_app_container_config_key_file_path "$APP_CONTAINER_ID" "$CONFIG_KEY_FILE"
+if [ "$SESSION_SECRET_SOURCE" = file ]; then
+  validate_app_container_session_secret_file_path "$APP_CONTAINER_ID" "$SESSION_SECRET_FILE"
 fi
-
-CONFIG_KEY_FILE=$(read_container_config_key_file)
-validate_config_key_file_path "$CONFIG_KEY_FILE"
-
-if compose run --rm -T --no-deps --entrypoint sh app -c 'test -n "${SESSION_SECRET:-}"'; then
-  SESSION_SECRET_SOURCE="external"
-  SESSION_SECRET_FILE=""
-  SESSION_SECRET_SHA256=$(
-    compose run --rm -T --no-deps --entrypoint node app -e '
-      const { createHash } = require("crypto");
-      const value = process.env.SESSION_SECRET;
-      if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) {
-        process.exit(1);
-      }
-      process.stdout.write(createHash("sha256").update(value).digest("hex"));
-    '
-  ) || fail "externally managed SESSION_SECRET is missing or invalid"
-else
-  SESSION_SECRET_SOURCE="file"
-  SESSION_SECRET_FILE=$(read_container_session_secret_file)
-  validate_session_secret_file_path "$SESSION_SECRET_FILE"
-  SESSION_SECRET_SHA256=""
-fi
-
-STORAGE_DRIVER=$(compose run --rm -T --no-deps --entrypoint sh app -c \
-  'printf %s "${STORAGE_DRIVER:-local}"' | tr -d '\r')
 case "$STORAGE_DRIVER" in
   local)
-    UPLOAD_DIR=$(read_container_upload_dir)
-    validate_upload_dir_path "$UPLOAD_DIR"
-    UPLOADS_INCLUDED=true
+    validate_app_container_upload_dir_path "$APP_CONTAINER_ID" "$UPLOAD_DIR"
     ;;
   s3)
-    UPLOAD_DIR=""
-    UPLOADS_INCLUDED=false
     ;;
   *)
     fail "unsupported STORAGE_DRIVER value: $STORAGE_DRIVER"
     ;;
 esac
 
-# compose cp targets the service container, which may be stopped or absent. Ensure it
-# exists before entering the optional stop window.
-compose create app >/dev/null
-
 if [ "$STOP_APP" = true ]; then
   backup_stop_app_for_consistent_backup
-fi
-
-if [ "$STORAGE_DRIVER" = local ]; then
-  compose run --rm -T --no-deps \
-    -v "$ROOT_DIR/scripts/validate-backup-tree.mjs:/backup-tools/validate-backup-tree.mjs:ro" \
-    --entrypoint node app \
-    /backup-tools/validate-backup-tree.mjs "$UPLOAD_DIR" "live upload tree" \
-    || fail "live upload tree contains unsupported entries"
 fi
 
 echo "Backing up PostgreSQL database..."
@@ -222,30 +199,25 @@ LATEST_MIGRATION_HASH=$(
 
 echo "Backing up config encryption key file..."
 mkdir -p "$WORK_DIR/secrets"
-compose cp "app:$CONFIG_KEY_FILE" "$WORK_DIR/secrets/config-encryption-key"
+docker_cmd cp "$APP_CONTAINER_ID:$CONFIG_KEY_FILE" "$WORK_DIR/secrets/config-encryption-key"
 [ -s "$WORK_DIR/secrets/config-encryption-key" ] || fail "config encryption key file is missing or empty"
 fix_workspace_permissions
 chmod 600 "$WORK_DIR/secrets/config-encryption-key" || fail "unable to secure config encryption key in backup workspace"
+CONFIG_ENCRYPTION_KEY_SHA256=$(sha256_trimmed_file "$WORK_DIR/secrets/config-encryption-key") \
+  || fail "unable to fingerprint config encryption key"
+CONFIG_ENCRYPTION_KEY_FORMAT=$(config_encryption_key_format_from_file "$WORK_DIR/secrets/config-encryption-key") \
+  || fail "config encryption key is empty after trimming"
 
 if [ "$SESSION_SECRET_SOURCE" = file ]; then
   echo "Backing up session secret file..."
-  compose run --rm -T --no-deps --entrypoint sh app -c '
-    set -eu
-    test -f "$1"
-    test ! -L "$1"
-    [ "$(stat -c %a "$1")" = "600" ]
-    node -e "
-      const fs = require(\"fs\");
-      const value = fs.readFileSync(process.argv[1], \"utf8\").replace(/\\r?\\n$/, \"\");
-      if (!value || value.trim().length === 0 || value === \"change-me\" || value.length < 32) {
-        process.exit(1);
-      }
-    " "$1"
-  ' backup-session-secret "$SESSION_SECRET_FILE" \
+  docker_cmd cp "$APP_CONTAINER_ID:$SESSION_SECRET_FILE" "$WORK_DIR/secrets/session-secret"
+  # docker cp preserves the source file's mode; assert the ORIGINAL permissions were 600
+  # before fix_workspace_permissions rewrites workspace modes and could mask a lax source.
+  [ "$(stat -c %a "$WORK_DIR/secrets/session-secret")" = "600" ] \
     || fail "session secret file is invalid or has unsafe permissions"
-  compose cp "app:$SESSION_SECRET_FILE" "$WORK_DIR/secrets/session-secret"
   [ -s "$WORK_DIR/secrets/session-secret" ] || fail "session secret file is missing or empty"
   fix_workspace_permissions
+  validate_copied_session_secret_file "$WORK_DIR/secrets/session-secret"
   chmod 600 "$WORK_DIR/secrets/session-secret" || fail "unable to secure session secret in backup workspace"
 else
   echo "SESSION_SECRET is externally managed; recording fingerprint only."
@@ -255,7 +227,7 @@ case "$STORAGE_DRIVER" in
   local)
     echo "Backing up local uploads from $UPLOAD_DIR..."
     mkdir -p "$WORK_DIR/uploads"
-    compose cp "app:$UPLOAD_DIR/." "$WORK_DIR/uploads"
+    docker_cmd cp "$APP_CONTAINER_ID:$UPLOAD_DIR/." "$WORK_DIR/uploads"
     fix_workspace_permissions
     ;;
   s3)
@@ -270,15 +242,27 @@ else
   BACKUP_WINDOW_NOTE="hot-backup order pg_dump(T1) then uploads(T2); expect T1-T2 drift; use --stop-app for a self-consistent local snapshot"
 fi
 
+BACKUP_TOOL_COMMIT=$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || echo "unknown")
+BACKUP_TOOL_SCRIPT_SHA256=$(sha256sum "$ROOT_DIR/scripts/backup.sh" | awk '{print $1}') \
+  || fail "unable to fingerprint backup.sh"
+
 {
-  echo "FORMAT_VERSION=2"
+  echo "FORMAT_VERSION=3"
   echo "CREATED_AT_UTC=$CREATED_AT_UTC"
-  echo "APP_VERSION=$APP_VERSION"
+  echo "APP_VERSION=$RUNTIME_APP_VERSION"
+  echo "RUNTIME_APP_VERSION=$RUNTIME_APP_VERSION"
+  echo "RUNTIME_SOURCE_COMMIT=$RUNTIME_SOURCE_COMMIT"
+  echo "RUNTIME_IMAGE_ID=$RUNTIME_IMAGE_ID"
+  echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP"
+  echo "BACKUP_TOOL_COMMIT=$BACKUP_TOOL_COMMIT"
+  echo "BACKUP_TOOL_SCRIPT_SHA256=$BACKUP_TOOL_SCRIPT_SHA256"
   echo "STORAGE_DRIVER=$STORAGE_DRIVER"
   echo "UPLOADS_INCLUDED=$UPLOADS_INCLUDED"
   echo "LATEST_MIGRATION_HASH=$LATEST_MIGRATION_HASH"
   echo "MIGRATION_IDENTITIES_JSON=$MIGRATION_IDENTITIES_JSON"
   echo "CONFIG_ENCRYPTION_KEY_FILE=$CONFIG_KEY_FILE"
+  echo "CONFIG_ENCRYPTION_KEY_SHA256=$CONFIG_ENCRYPTION_KEY_SHA256"
+  echo "CONFIG_ENCRYPTION_KEY_FORMAT=$CONFIG_ENCRYPTION_KEY_FORMAT"
   echo "SESSION_SECRET_SOURCE=$SESSION_SECRET_SOURCE"
   if [ "$SESSION_SECRET_SOURCE" = file ]; then
     echo "SESSION_SECRET_FILE=$SESSION_SECRET_FILE"
@@ -288,6 +272,10 @@ fi
   fi
   echo "BACKUP_WINDOW_NOTE=$BACKUP_WINDOW_NOTE"
 } > "$WORK_DIR/manifest.env"
+
+validate_v3_manifest_file "$WORK_DIR/manifest.env" backup >/dev/null \
+  || fail "backup manifest v3 validation failed"
+verify_app_container_unchanged_for_backup "$APP_CONTAINER_ID" "$RUNTIME_IMAGE_ID"
 
 # The snapshot is now fully copied into the private workspace. End the maintenance
 # window before checksum/tar work; cleanup still retries restart if this explicit restart
@@ -316,7 +304,9 @@ chmod 600 "$ARCHIVE_TMP"
 mv -f "$ARCHIVE_TMP" "$ARCHIVE_PATH"
 
 echo "Backup created: $ARCHIVE_PATH"
-echo "Included: PostgreSQL database, config encryption key, manifest v2, checksums"
+echo "Included: PostgreSQL database, config encryption key, manifest v3, checksums"
+echo "Runtime image: version=$RUNTIME_APP_VERSION commit=$RUNTIME_SOURCE_COMMIT image=$RUNTIME_IMAGE_ID"
+echo "Backup tool: commit=$BACKUP_TOOL_COMMIT script_sha256=$BACKUP_TOOL_SCRIPT_SHA256"
 if [ "$UPLOADS_INCLUDED" = true ]; then
   echo "Included: local uploads"
 else

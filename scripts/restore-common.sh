@@ -95,6 +95,710 @@ manifest_value() {
   printf '%s' "$value"
 }
 
+manifest_value_or_default() {
+  manifest_path=$1
+  key=$2
+  default_value=$3
+  value=$(grep "^${key}=" "$manifest_path" | cut -d= -f2- | tr -d '\r' || true)
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+  else
+    printf '%s' "$default_value"
+  fi
+}
+
+sha256_trimmed_file() {
+  file_path=$1
+  node -e '
+    const { createHash } = require("crypto");
+    const { readFileSync } = require("fs");
+    process.stdout.write(createHash("sha256").update(readFileSync(process.argv[1], "utf8").trim()).digest("hex"));
+  ' "$file_path"
+}
+
+config_encryption_key_format_from_file() {
+  file_path=$1
+  node -e '
+    const { readFileSync } = require("fs");
+    const value = readFileSync(process.argv[1], "utf8").trim();
+    if (value.length === 0) {
+      console.error("config encryption key is empty after trimming");
+      process.exit(1);
+    }
+    process.stdout.write(value.startsWith("cek1:") ? "v1" : "legacy");
+  ' "$file_path"
+}
+
+image_provenance_from_inspect() {
+  image_ref=$1
+
+  docker_cmd image inspect --format '{{json .Config.Labels}} {{json .Id}}' "$image_ref" \
+    | node -e '
+      const input = require("fs").readFileSync(0, "utf8").trim();
+      const separator = input.lastIndexOf(" ");
+      if (separator < 0) process.exit(1);
+      const labels = JSON.parse(input.slice(0, separator)) || {};
+      const imageId = JSON.parse(input.slice(separator + 1));
+      const label = (name) => {
+        const value = labels[name];
+        return typeof value === "string" && value.length > 0 ? value : "unknown";
+      };
+      process.stdout.write(
+        JSON.stringify({
+          appVersion: label("org.opencontainers.image.version"),
+          sourceCommit: label("org.opencontainers.image.revision"),
+          buildTimestamp: label("org.opencontainers.image.created"),
+          imageId: typeof imageId === "string" && imageId.length > 0 ? imageId : "unknown",
+        }),
+      );
+    '
+}
+
+inspect_container_image_ref() {
+  container_id=$1
+
+  docker_cmd inspect --format '{{json .Image}}' "$container_id" \
+    | node -e '
+      const input = require("fs").readFileSync(0, "utf8").trim();
+      const image = JSON.parse(input);
+      if (typeof image !== "string" || image.length === 0) process.exit(1);
+      process.stdout.write(image);
+    '
+}
+
+# The container's effective APP_VERSION/SOURCE_COMMIT/BUILD_TIMESTAMP must be exactly
+# what the image itself declares (same value, or absent in both). Comparing container
+# env against IMAGE env (not labels) also catches empty-string overrides and overrides
+# on images whose labels are absent/"unknown", without false-failing default dev builds
+# where the image ENV legitimately carries "dev"/"unknown".
+check_app_container_env_matches_image() {
+  container_id=$1
+  image_ref=$2
+
+  container_env_json=$(docker_cmd inspect --format '{{json .Config.Env}}' "$container_id") \
+    || fail "unable to inspect app service container environment"
+  image_env_json=$(docker_cmd image inspect --format '{{json .Config.Env}}' "$image_ref") \
+    || fail "unable to inspect app service image environment"
+  node -e '
+    const toMap = (raw) => {
+      const parsed = JSON.parse(raw);
+      const env = new Map();
+      for (const entry of Array.isArray(parsed) ? parsed : []) {
+        const index = entry.indexOf("=");
+        if (index > 0) env.set(entry.slice(0, index), entry.slice(index + 1));
+      }
+      return env;
+    };
+    const containerEnv = toMap(process.argv[1]);
+    const imageEnv = toMap(process.argv[2]);
+    const mismatches = [];
+    for (const name of ["APP_VERSION", "SOURCE_COMMIT", "BUILD_TIMESTAMP"]) {
+      const containerValue = containerEnv.get(name);
+      const imageValue = imageEnv.get(name);
+      if (containerValue !== imageValue) {
+        mismatches.push(
+          `${name}: container=${containerValue === undefined ? "<unset>" : JSON.stringify(containerValue)} image=${imageValue === undefined ? "<unset>" : JSON.stringify(imageValue)}`,
+        );
+      }
+    }
+    if (mismatches.length > 0) {
+      console.error(mismatches.join("; "));
+      process.exit(1);
+    }
+  ' "$container_env_json" "$image_env_json" \
+    || fail "app container environment overrides the image build identity; remove stale APP_VERSION/SOURCE_COMMIT/BUILD_TIMESTAMP overrides (for example in .env) before backup/restore"
+}
+
+inspect_container_env_json() {
+  container_id=$1
+
+  docker_cmd inspect --format '{{json .Config.Env}}' "$container_id" \
+    || fail "unable to inspect app service container environment"
+}
+
+# Matches the previous in-container ${VAR:-default} semantics: an entry that is
+# absent OR present-but-empty resolves to the default.
+container_env_value() {
+  env_json=$1
+  name=$2
+  default_value=$3
+
+  node -e '
+    const parsed = JSON.parse(process.argv[1]);
+    const name = process.argv[2];
+    const fallback = process.argv[3];
+    for (const entry of Array.isArray(parsed) ? parsed : []) {
+      const index = entry.indexOf("=");
+      if (index > 0 && entry.slice(0, index) === name) {
+        const value = entry.slice(index + 1);
+        process.stdout.write(value.length > 0 ? value : fallback);
+        process.exit(0);
+      }
+    }
+    process.stdout.write(fallback);
+  ' "$env_json" "$name" "$default_value"
+}
+
+container_env_value_raw() {
+  env_json=$1
+  name=$2
+
+  node -e '
+    const parsed = JSON.parse(process.argv[1]);
+    const name = process.argv[2];
+    for (const entry of Array.isArray(parsed) ? parsed : []) {
+      const index = entry.indexOf("=");
+      if (index > 0 && entry.slice(0, index) === name) {
+        process.stdout.write(entry.slice(index + 1));
+        process.exit(0);
+      }
+    }
+    process.exit(2);
+  ' "$env_json" "$name"
+}
+
+sha256_secret_value() {
+  secret_value=$1
+
+  SECRET_VALUE=$secret_value node -e '
+    const { createHash } = require("crypto");
+    const value = process.env.SECRET_VALUE;
+    if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) {
+      process.exit(1);
+    }
+    process.stdout.write(createHash("sha256").update(value).digest("hex"));
+  '
+}
+
+app_container_config_encryption_key_is_unset() {
+  container_id=$1
+  env_json=$(inspect_container_env_json "$container_id")
+
+  set +e
+  direct_config_key=$(container_env_value_raw "$env_json" CONFIG_ENCRYPTION_KEY)
+  direct_config_key_status=$?
+  set -e
+  if [ "$direct_config_key_status" -eq 0 ] && [ -n "$direct_config_key" ]; then
+    return 1
+  fi
+  return 0
+}
+
+assert_app_container_config_encryption_key_unset() {
+  container_id=$1
+  app_container_config_encryption_key_is_unset "$container_id" \
+    || fail "CONFIG_ENCRYPTION_KEY is set; back up that externally managed value separately and use the file-backed key for single-archive backups"
+}
+
+read_app_container_runtime_config() {
+  container_id=$1
+  env_json=$(inspect_container_env_json "$container_id")
+
+  assert_app_container_config_encryption_key_unset "$container_id"
+
+  CONFIG_KEY_FILE=$(container_env_value "$env_json" CONFIG_ENCRYPTION_KEY_FILE "/app/secrets/config-encryption-key" | tr -d '\r')
+  SESSION_SECRET_FILE=$(container_env_value "$env_json" SESSION_SECRET_FILE "/app/secrets/session-secret" | tr -d '\r')
+  STORAGE_DRIVER=$(container_env_value "$env_json" STORAGE_DRIVER "local" | tr -d '\r')
+  UPLOAD_DIR=$(container_env_value "$env_json" UPLOAD_DIR "/app/uploads" | tr -d '\r')
+
+  set +e
+  session_secret_value=$(container_env_value_raw "$env_json" SESSION_SECRET)
+  session_secret_status=$?
+  set -e
+  if [ "$session_secret_status" -eq 0 ] && [ -n "$session_secret_value" ]; then
+    SESSION_SECRET_SOURCE="external"
+    SESSION_SECRET_FILE=""
+    SESSION_SECRET_SHA256=$(sha256_secret_value "$session_secret_value") \
+      || fail "externally managed SESSION_SECRET is missing or invalid"
+  else
+    SESSION_SECRET_SOURCE="file"
+    SESSION_SECRET_SHA256=""
+  fi
+
+  case "$STORAGE_DRIVER" in
+    local)
+      UPLOADS_INCLUDED=true
+      ;;
+    s3)
+      UPLOAD_DIR=""
+      UPLOADS_INCLUDED=false
+      ;;
+    *)
+      fail "unsupported STORAGE_DRIVER value: $STORAGE_DRIVER"
+      ;;
+  esac
+
+  : "$CONFIG_KEY_FILE" "$SESSION_SECRET_SOURCE" "$SESSION_SECRET_FILE" \
+    "$SESSION_SECRET_SHA256" "$STORAGE_DRIVER" "$UPLOAD_DIR" "$UPLOADS_INCLUDED"
+}
+
+# Only .State.Status == "running" accepts docker exec. .State.Running is also true
+# for paused (and unreliable for restarting) containers, where exec fails — and the
+# backup state machine deliberately supports paused/restarting containers, recording
+# and restoring their state around the --stop-app window.
+app_container_is_running() {
+  container_id=$1
+  status_json=$(docker_cmd inspect --format '{{json .State.Status}}' "$container_id") \
+    || fail "unable to inspect app service container state"
+  [ "$status_json" = '"running"' ]
+}
+
+canonicalize_app_container_path() {
+  container_id=$1
+  raw_path=$2
+  label=$3
+
+  validate_absolute_container_path "$raw_path" "$label"
+  validate_no_path_traversal "$raw_path" "$label"
+
+  if app_container_is_running "$container_id"; then
+    canonical_path=$(
+      docker_cmd exec "$container_id" sh -c '
+        set -eu
+        if command -v realpath >/dev/null 2>&1; then
+          realpath -m -- "$1"
+        else
+          printf "%s\n" "$1"
+        fi
+      ' backup-path "$raw_path" | tr -d '\r'
+    ) || fail "unable to canonicalize $label"
+    [ -n "$canonical_path" ] || fail "unable to canonicalize $label"
+    validate_absolute_container_path "$canonical_path" "$label"
+    validate_no_path_traversal "$canonical_path" "$label"
+    printf '%s' "$canonical_path"
+  else
+    echo "NOTICE: app service container is stopped; skipping canonical path resolution for $label" >&2
+    printf '%s' "$raw_path"
+  fi
+}
+
+validate_app_container_path_under_mount() {
+  container_id=$1
+  path=$2
+  mount_root=$3
+  label=$4
+
+  canonical_path=$(canonicalize_app_container_path "$container_id" "$path" "$label")
+
+  case "$canonical_path" in
+    "$mount_root") ;;
+    "$mount_root"/*) ;;
+    *) fail "$label must stay under $mount_root (resolved $canonical_path)" ;;
+  esac
+}
+
+validate_app_container_config_key_file_path() {
+  container_id=$1
+  path=$2
+
+  validate_app_container_path_under_mount "$container_id" "$path" "/app/secrets" "CONFIG_ENCRYPTION_KEY_FILE"
+  case "$path" in
+    /app/secrets) fail "CONFIG_ENCRYPTION_KEY_FILE must be a file path, not a directory" ;;
+    */) fail "CONFIG_ENCRYPTION_KEY_FILE must be a file path, not a directory" ;;
+  esac
+}
+
+validate_app_container_session_secret_file_path() {
+  container_id=$1
+  path=$2
+
+  validate_app_container_path_under_mount "$container_id" "$path" "/app/secrets" "SESSION_SECRET_FILE"
+  case "$path" in
+    /app/secrets) fail "SESSION_SECRET_FILE must be a file path, not a directory" ;;
+    */) fail "SESSION_SECRET_FILE must be a file path, not a directory" ;;
+  esac
+}
+
+validate_app_container_upload_dir_path() {
+  container_id=$1
+  path=$2
+
+  validate_app_container_path_under_mount "$container_id" "$path" "/app/uploads" "UPLOAD_DIR"
+  case "$path" in
+    */) fail "UPLOAD_DIR must not end with '/'" ;;
+  esac
+}
+
+verify_app_container_unchanged_for_backup() {
+  expected_container_id=$1
+  expected_image_id=$2
+
+  current_container_id=$(resolve_existing_single_app_container_id) \
+    || fail "app service container changed during backup"
+  [ "$current_container_id" = "$expected_container_id" ] \
+    || fail "app service container changed during backup"
+
+  current_image_ref=$(inspect_container_image_ref "$current_container_id") \
+    || fail "app service container changed during backup"
+  current_image_json=$(image_provenance_from_inspect "$current_image_ref") \
+    || fail "app service container changed during backup"
+  current_image_id=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).imageId)' "$current_image_json") \
+    || fail "app service container changed during backup"
+  [ "$current_image_id" = "$expected_image_id" ] \
+    || fail "app service container changed during backup"
+}
+
+resolve_existing_single_app_container_id() {
+  container_ids=$(compose ps -aq app) || return 3
+  [ -n "$container_ids" ] || return 1
+
+  container_count=$(printf '%s\n' "$container_ids" | sed '/^$/d' | wc -l | tr -d ' ')
+  if [ "$container_count" != "1" ]; then
+    echo "multiple app service containers found; remove stale containers or scale to 1 before backup/restore" >&2
+    return 2
+  fi
+
+  printf '%s' "$container_ids"
+}
+
+resolve_single_app_container_id() {
+  set +e
+  container_id=$(resolve_existing_single_app_container_id)
+  container_status=$?
+  set -e
+  case "$container_status" in
+    0)
+      printf '%s' "$container_id"
+      return
+      ;;
+    1)
+      ;;
+    2)
+      fail "multiple app service containers found; remove stale containers or scale to 1 before backup/restore"
+      ;;
+    *)
+      fail "unable to list app service containers for image provenance"
+      ;;
+  esac
+
+  compose create app >/dev/null || fail "unable to create app service container for image provenance"
+
+  set +e
+  container_id=$(resolve_existing_single_app_container_id)
+  container_status=$?
+  set -e
+  case "$container_status" in
+    0)
+      printf '%s' "$container_id"
+      ;;
+    1)
+      fail "unable to resolve app service container for image provenance"
+      ;;
+    2)
+      fail "multiple app service containers found; remove stale containers or scale to 1 before backup/restore"
+      ;;
+    *)
+      fail "unable to list app service containers for image provenance"
+      ;;
+  esac
+}
+
+read_app_container_provenance() {
+  container_id=$1
+  image_ref=$(inspect_container_image_ref "$container_id") \
+    || fail "unable to inspect app service container image"
+  read_image_provenance "$image_ref"
+  check_app_container_env_matches_image "$container_id" "$image_ref"
+}
+
+try_read_image_provenance() {
+  image_ref=$1
+
+  provenance_json=$(image_provenance_from_inspect "$image_ref") \
+    || return 1
+
+  RUNTIME_APP_VERSION=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).appVersion)' "$provenance_json")
+  RUNTIME_SOURCE_COMMIT=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).sourceCommit)' "$provenance_json")
+  BUILD_TIMESTAMP=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).buildTimestamp)' "$provenance_json")
+  RUNTIME_IMAGE_ID=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).imageId)' "$provenance_json")
+  RUNTIME_PROVENANCE_JSON=$provenance_json
+  : "$RUNTIME_APP_VERSION" "$RUNTIME_SOURCE_COMMIT" "$BUILD_TIMESTAMP" "$RUNTIME_IMAGE_ID" "$RUNTIME_PROVENANCE_JSON"
+}
+
+read_image_provenance() {
+  image_ref=$1
+  try_read_image_provenance "$image_ref" \
+    || fail "unable to inspect app service image provenance"
+}
+
+read_unknown_image_provenance() {
+  RUNTIME_APP_VERSION=unknown
+  RUNTIME_SOURCE_COMMIT=unknown
+  BUILD_TIMESTAMP=unknown
+  RUNTIME_IMAGE_ID=unknown
+  RUNTIME_PROVENANCE_JSON='{"appVersion":"unknown","sourceCommit":"unknown","buildTimestamp":"unknown","imageId":"unknown"}'
+}
+
+resolve_compose_app_image() {
+  compose_images_output=$(compose config --images app) || return 1
+  printf '%s\n' "$compose_images_output" | sed '/^$/d' | head -n 1
+}
+
+read_restore_target_provenance_read_only() {
+  RESTORE_TARGET_CONTAINER_EXISTS=false
+  RESTORE_TARGET_CONTAINER_ID=""
+
+  set +e
+  container_id=$(resolve_existing_single_app_container_id)
+  container_status=$?
+  set -e
+  case "$container_status" in
+    0)
+      read_app_container_provenance "$container_id"
+      # shellcheck disable=SC2034 # consumed by restore.sh after sourcing this helper
+      RESTORE_TARGET_CONTAINER_EXISTS=true
+      # shellcheck disable=SC2034 # consumed by restore.sh after sourcing this helper
+      RESTORE_TARGET_CONTAINER_ID=$container_id
+      return
+      ;;
+    1)
+      ;;
+    2)
+      fail "multiple app service containers found; remove stale containers or scale to 1 before backup/restore"
+      ;;
+    *)
+      fail "unable to list app service containers for image provenance"
+      ;;
+  esac
+
+  image_ref=$(resolve_compose_app_image) \
+    || fail "unable to resolve the target app image from the compose configuration"
+  if [ -z "$image_ref" ]; then
+    read_unknown_image_provenance
+    return
+  fi
+
+  if ! try_read_image_provenance "$image_ref"; then
+    echo "WARNING: target app image $image_ref is not available locally; target provenance is unknown" >&2
+    read_unknown_image_provenance
+  fi
+}
+
+provenance_is_all_unknown() {
+  [ "$1" = "unknown" ] && [ "$2" = "unknown" ] && [ "$3" = "unknown" ] && [ "$4" = "unknown" ]
+}
+
+verify_restore_target_unchanged_after_create() {
+  expected_container_exists=$1
+  expected_container_id=$2
+  expected_app_version=$3
+  expected_source_commit=$4
+  expected_build_timestamp=$5
+  expected_image_id=$6
+  assume_yes=${7:-false}
+
+  actual_container_id=$(resolve_existing_single_app_container_id) \
+    || fail "target app container/image changed after confirmation; re-run restore and confirm against the current target"
+  if [ "$expected_container_exists" = true ] && [ "$actual_container_id" != "$expected_container_id" ]; then
+    fail "target app container/image changed after confirmation; re-run restore and confirm against the current target"
+  fi
+
+  read_app_container_provenance "$actual_container_id"
+  actual_app_version=$RUNTIME_APP_VERSION
+  actual_source_commit=$RUNTIME_SOURCE_COMMIT
+  actual_build_timestamp=$BUILD_TIMESTAMP
+  actual_image_id=$RUNTIME_IMAGE_ID
+
+  if provenance_is_all_unknown "$expected_app_version" "$expected_source_commit" "$expected_build_timestamp" "$expected_image_id"; then
+    # The operator confirmed an all-unknown target; the concrete image resolved after
+    # container creation never appeared in that prompt. Interactive restores must not
+    # silently upgrade unknown into an unconfirmed identity: fail closed so the second
+    # run (container now existing) confirms against the real provenance. Explicit
+    # automation (--yes) accepts and announces the resolved identity instead.
+    echo "Target provenance resolved after container creation: version=$actual_app_version commit=$actual_source_commit image=$actual_image_id build=$actual_build_timestamp"
+    if [ "$assume_yes" != true ]; then
+      fail "target provenance was unknown at confirmation and is now concrete; re-run restore to confirm against the resolved target above"
+    fi
+    TARGET_RUNTIME_APP_VERSION=$actual_app_version
+    TARGET_RUNTIME_SOURCE_COMMIT=$actual_source_commit
+    TARGET_BUILD_TIMESTAMP=$actual_build_timestamp
+    TARGET_RUNTIME_IMAGE_ID=$actual_image_id
+  else
+    if [ "$actual_app_version" != "$expected_app_version" ] \
+      || [ "$actual_source_commit" != "$expected_source_commit" ] \
+      || [ "$actual_build_timestamp" != "$expected_build_timestamp" ] \
+      || [ "$actual_image_id" != "$expected_image_id" ]; then
+      fail "target app container/image changed after confirmation; re-run restore and confirm against the current target"
+    fi
+    TARGET_RUNTIME_APP_VERSION=$actual_app_version
+    TARGET_RUNTIME_SOURCE_COMMIT=$actual_source_commit
+    TARGET_BUILD_TIMESTAMP=$actual_build_timestamp
+    TARGET_RUNTIME_IMAGE_ID=$actual_image_id
+  fi
+
+  RESTORE_APP_CONTAINER_ID=$actual_container_id
+  : "$RESTORE_APP_CONTAINER_ID" "$TARGET_RUNTIME_APP_VERSION" "$TARGET_RUNTIME_SOURCE_COMMIT" \
+    "$TARGET_BUILD_TIMESTAMP" "$TARGET_RUNTIME_IMAGE_ID"
+}
+
+validate_v3_manifest_file() {
+  manifest_path=$1
+  image_id_mode=${2:-restore}
+
+  node -e '
+    const { readFileSync } = require("fs");
+    const manifestPath = process.argv[1];
+    const imageIdMode = process.argv[2];
+    const fail = (message) => {
+      console.error(`manifest: ${message}`);
+      process.exit(1);
+    };
+    const specs = {
+      RUNTIME_APP_VERSION: { validator: "app_version", maxLength: 100 },
+      RUNTIME_SOURCE_COMMIT: { validator: "commit", maxLength: 200 },
+      RUNTIME_IMAGE_ID: { validator: "image_id", maxLength: 200 },
+      BUILD_TIMESTAMP: { validator: "timestamp", maxLength: 200 },
+      BACKUP_TOOL_COMMIT: { validator: "commit", maxLength: 200 },
+      BACKUP_TOOL_SCRIPT_SHA256: { validator: "sha256", maxLength: 200 },
+      CONFIG_ENCRYPTION_KEY_SHA256: { validator: "sha256", maxLength: 200 },
+      CONFIG_ENCRYPTION_KEY_FORMAT: { validator: "key_format", maxLength: 20 },
+    };
+    const values = new Map(Object.keys(specs).map((key) => [key, []]));
+    for (const rawLine of readFileSync(manifestPath, "utf8").split("\n")) {
+      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+      const equals = line.indexOf("=");
+      if (equals <= 0) continue;
+      const key = line.slice(0, equals);
+      if (!values.has(key)) continue;
+      values.get(key).push(line.slice(equals + 1));
+    }
+    const validate = (key, value, spec) => {
+      if (value.length === 0) fail(`FORMAT_VERSION=3 archive manifest has empty ${key}`);
+      if (value.length > spec.maxLength) fail(`FORMAT_VERSION=3 archive manifest ${key} is too long`);
+      if (/[\x00-\x1F\x7F]/.test(value)) fail(`FORMAT_VERSION=3 archive manifest ${key} contains control characters`);
+      switch (spec.validator) {
+        case "sha256":
+          if (!/^[0-9a-f]{64}$/.test(value)) fail(`FORMAT_VERSION=3 archive manifest ${key} must be 64 lowercase hex characters`);
+          break;
+        case "image_id":
+          if (imageIdMode === "backup") {
+            if (!/^sha256:[0-9a-f]{64}$/.test(value)) {
+              fail(`FORMAT_VERSION=3 archive manifest ${key} must be sha256: plus 64 lowercase hex characters for backup archives`);
+            }
+          } else if (value !== "unknown" && !/^sha256:[0-9a-f]{64}$/.test(value)) {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must be sha256: plus 64 lowercase hex characters or unknown`);
+          }
+          break;
+        case "commit":
+          if (value !== "dev" && value !== "unknown" && !/^[0-9a-f]{40}$/.test(value)) {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must be 40 lowercase hex characters, dev, or unknown`);
+          }
+          break;
+        case "timestamp":
+          if (value !== "unknown" && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/.test(value)) {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must be RFC3339 UTC or unknown`);
+          }
+          break;
+        case "app_version":
+          if (!/^[!-~]+$/.test(value)) {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must be printable single-line ASCII without whitespace`);
+          }
+          break;
+        case "key_format":
+          if (value !== "legacy" && value !== "v1") {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must be legacy or v1`);
+          }
+          break;
+        default:
+          fail(`unknown FORMAT_VERSION=3 validator for ${key}`);
+      }
+    };
+    const parsed = {};
+    for (const [key, spec] of Object.entries(specs)) {
+      const matches = values.get(key);
+      if (matches.length !== 1) fail(`FORMAT_VERSION=3 archive manifest must contain ${key} exactly once`);
+      const value = matches[0];
+      validate(key, value, spec);
+      parsed[key] = value;
+    }
+    process.stdout.write(JSON.stringify(parsed));
+  ' "$manifest_path" "$image_id_mode" \
+    || fail "invalid FORMAT_VERSION=3 archive manifest"
+}
+
+read_archive_provenance_v3() {
+  manifest_path=$1
+  provenance_json=$(validate_v3_manifest_file "$manifest_path") \
+    || fail "invalid FORMAT_VERSION=3 archive manifest"
+
+  ARCHIVE_RUNTIME_APP_VERSION=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).RUNTIME_APP_VERSION)' "$provenance_json")
+  ARCHIVE_RUNTIME_SOURCE_COMMIT=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).RUNTIME_SOURCE_COMMIT)' "$provenance_json")
+  ARCHIVE_RUNTIME_IMAGE_ID=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).RUNTIME_IMAGE_ID)' "$provenance_json")
+  ARCHIVE_BUILD_TIMESTAMP=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).BUILD_TIMESTAMP)' "$provenance_json")
+  ARCHIVE_BACKUP_TOOL_COMMIT=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).BACKUP_TOOL_COMMIT)' "$provenance_json")
+  ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).BACKUP_TOOL_SCRIPT_SHA256)' "$provenance_json")
+  ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).CONFIG_ENCRYPTION_KEY_SHA256)' "$provenance_json")
+  ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).CONFIG_ENCRYPTION_KEY_FORMAT)' "$provenance_json")
+  : "$ARCHIVE_RUNTIME_APP_VERSION" "$ARCHIVE_RUNTIME_SOURCE_COMMIT" "$ARCHIVE_RUNTIME_IMAGE_ID" \
+    "$ARCHIVE_BUILD_TIMESTAMP" "$ARCHIVE_BACKUP_TOOL_COMMIT" "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256" \
+    "$ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256" "$ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT"
+}
+
+read_archive_provenance() {
+  manifest_path=$1
+  format_version=$2
+
+  if [ "$format_version" = "3" ]; then
+    read_archive_provenance_v3 "$manifest_path"
+    return
+  fi
+
+  ARCHIVE_RUNTIME_APP_VERSION=$(manifest_value_or_default "$manifest_path" RUNTIME_APP_VERSION "$(manifest_value_or_default "$manifest_path" APP_VERSION "unknown")")
+  ARCHIVE_RUNTIME_SOURCE_COMMIT=$(manifest_value_or_default "$manifest_path" RUNTIME_SOURCE_COMMIT "unknown")
+  ARCHIVE_RUNTIME_IMAGE_ID=$(manifest_value_or_default "$manifest_path" RUNTIME_IMAGE_ID "unknown")
+  ARCHIVE_BUILD_TIMESTAMP=$(manifest_value_or_default "$manifest_path" BUILD_TIMESTAMP "unknown")
+  ARCHIVE_BACKUP_TOOL_COMMIT=$(manifest_value_or_default "$manifest_path" BACKUP_TOOL_COMMIT "unknown")
+  ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256=$(manifest_value_or_default "$manifest_path" BACKUP_TOOL_SCRIPT_SHA256 "unknown")
+  ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256=$(manifest_value_or_default "$manifest_path" CONFIG_ENCRYPTION_KEY_SHA256 "unknown")
+  ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT=""
+  : "$ARCHIVE_RUNTIME_APP_VERSION" "$ARCHIVE_RUNTIME_SOURCE_COMMIT" "$ARCHIVE_RUNTIME_IMAGE_ID" \
+    "$ARCHIVE_BUILD_TIMESTAMP" "$ARCHIVE_BACKUP_TOOL_COMMIT" "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256" \
+    "$ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256" "$ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT"
+}
+
+warn_legacy_provenance_if_needed() {
+  format_version=$1
+  case "$format_version" in
+    1|2)
+      echo "WARNING: FORMAT_VERSION=$format_version archive predates image-authoritative backup provenance; runtime version/commit/image identity may be unavailable or host-derived" >&2
+      ;;
+  esac
+}
+
+verify_archive_config_key_fingerprint() {
+  payload_dir=$1
+  format_version=$2
+
+  if [ "$format_version" = "3" ]; then
+    manifest_json=$(validate_v3_manifest_file "$payload_dir/manifest.env") \
+      || fail "invalid FORMAT_VERSION=3 archive manifest"
+    expected_config_encryption_key_sha256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).CONFIG_ENCRYPTION_KEY_SHA256)' "$manifest_json") \
+      || fail "invalid FORMAT_VERSION=3 archive manifest CONFIG_ENCRYPTION_KEY_SHA256"
+    expected_config_encryption_key_format=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).CONFIG_ENCRYPTION_KEY_FORMAT)' "$manifest_json") \
+      || fail "invalid FORMAT_VERSION=3 archive manifest CONFIG_ENCRYPTION_KEY_FORMAT"
+    actual_config_encryption_key_sha256=$(sha256_trimmed_file "$payload_dir/secrets/config-encryption-key") \
+      || fail "unable to fingerprint archived config encryption key"
+    actual_config_encryption_key_format=$(config_encryption_key_format_from_file "$payload_dir/secrets/config-encryption-key") \
+      || fail "archived config encryption key is empty after trimming"
+    [ "$actual_config_encryption_key_sha256" = "$expected_config_encryption_key_sha256" ] \
+      || fail "archived config encryption key does not match manifest CONFIG_ENCRYPTION_KEY_SHA256"
+    [ "$actual_config_encryption_key_format" = "$expected_config_encryption_key_format" ] \
+      || fail "archived config encryption key format does not match manifest CONFIG_ENCRYPTION_KEY_FORMAT"
+  else
+    echo "WARNING: FORMAT_VERSION=$format_version archive has no CONFIG_ENCRYPTION_KEY_SHA256 fingerprint; relying on decrypt probe only" >&2
+  fi
+}
+
+warn_if_mismatch() {
+  label=$1
+  archive_value=$2
+  target_value=$3
+
+  if [ "$archive_value" != "unknown" ] && [ "$archive_value" != "$target_value" ]; then
+    echo "WARNING: archive $label ($archive_value) differs from target $label ($target_value); migration identity remains the hard compatibility gate" >&2
+  fi
+}
+
 extract_app_settings_copy_block() {
   dump_path=$1
   output_path=$2
@@ -181,7 +885,7 @@ app_settings_scratch_create_table_sql() {
   ' "$copy_path"
 }
 
-# Validate the archive's storage payload and its v2 semantic contract before any
+# Validate the archive's storage payload and its v2/v3 semantic contract before any
 # target service is stopped or official database/key/upload state is replaced.
 validate_archive_storage_contract() {
   payload_dir=$1
@@ -195,7 +899,10 @@ validate_archive_storage_contract() {
     fail "archive must contain exactly one of uploads/ or UPLOADS_SKIPPED_S3"
   fi
 
-  [ "$format_version" = "2" ] || return 0
+  case "$format_version" in
+    2|3) ;;
+    *) return 0 ;;
+  esac
   storage_driver=$(manifest_value "$payload_dir/manifest.env" STORAGE_DRIVER)
   uploads_included=$(manifest_value "$payload_dir/manifest.env" UPLOADS_INCLUDED)
   case "$storage_driver:$uploads_included:$has_uploads:$has_skip_marker" in
@@ -273,29 +980,6 @@ validate_upload_dir_path() {
   esac
 }
 
-read_live_container_upload_dir() {
-  compose exec -T app sh -c 'printf %s "${UPLOAD_DIR:-/app/uploads}"'
-}
-
-read_container_upload_dir() {
-  compose run --rm -T --no-deps --entrypoint sh app -c \
-    'printf %s "${UPLOAD_DIR:-/app/uploads}"'
-}
-
-read_live_container_config_key_file() {
-  compose exec -T app sh -c \
-    'printf %s "${CONFIG_ENCRYPTION_KEY_FILE:-/app/secrets/config-encryption-key}"'
-}
-
-read_container_config_key_file() {
-  compose run --rm -T --no-deps --entrypoint sh app -c \
-    'printf %s "${CONFIG_ENCRYPTION_KEY_FILE:-/app/secrets/config-encryption-key}"'
-}
-
-read_container_session_secret_file() {
-  compose run --rm -T --no-deps --entrypoint sh app -c \
-    'printf %s "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
-}
 
 # Percent-encode a string for safe use in a URL userinfo (user/password) component.
 # RFC 3986 unreserved characters are kept as-is; everything else becomes %XX so raw
@@ -372,7 +1056,7 @@ preflight_config_key_restore_target() {
   validate_config_key_file_path "$target_key_file"
   target_key_dir=${target_key_file%/*}
   # Prepare the parent dir and reject a non-regular file (e.g. a directory) sitting
-  # at the final key path: otherwise `compose cp` would copy the key *inside* it and
+  # at the final key path: otherwise the container-bound copy would place the key inside it and
   # a later `test -s <directory>` could still pass, leaving the app unable to read it.
   run_app_shell '
     set -eu

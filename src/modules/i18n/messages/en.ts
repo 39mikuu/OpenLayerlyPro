@@ -320,6 +320,8 @@ export const en: Messages = {
       smtp: "SMTP",
       storageDriver: "Storage driver",
       version: "Version",
+      sourceCommit: "Source commit",
+      buildTimestamp: "Build timestamp",
       normal: "✅ Healthy",
       abnormal: "❌ Unhealthy",
       configured: "✅ Configured",

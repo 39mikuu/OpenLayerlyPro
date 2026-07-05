@@ -30,6 +30,9 @@ compose() {
   project=$1
   shift
   sudo -n env COMPOSE_ENV_FILE="$DRILL_ENV" \
+    OPENLAYERLY_BUILD_VERSION="${OPENLAYERLY_BUILD_VERSION:-}" \
+    OPENLAYERLY_BUILD_COMMIT="${OPENLAYERLY_BUILD_COMMIT:-}" \
+    OPENLAYERLY_BUILD_TIMESTAMP="${OPENLAYERLY_BUILD_TIMESTAMP:-}" \
     S7_E2E_APP_PORT="${S7_E2E_APP_PORT:-3003}" docker compose \
     -p "$project" \
     --env-file "$DRILL_ENV" \
@@ -66,6 +69,11 @@ PATH=$(dirname "$DOCKER_SUDO_BIN"):$PATH
 export PATH
 
 mkdir -p "$BACKUP_DIR"
+
+OPENLAYERLY_BUILD_VERSION=$(node -p 'require("./package.json").version')
+OPENLAYERLY_BUILD_COMMIT=$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || printf '%s' dev)
+OPENLAYERLY_BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+export OPENLAYERLY_BUILD_VERSION OPENLAYERLY_BUILD_COMMIT OPENLAYERLY_BUILD_TIMESTAMP
 
 cat >"$DRILL_ENV" <<EOF
 APP_URL=http://127.0.0.1:3003
@@ -117,7 +125,7 @@ cleanup() {
   teardown_projects
   [ "$CREATED_DOT_ENV" = true ] && [ -f .env ] && rm -f .env
   rm -f "$DRILL_ENV" "$SECRET_OVERRIDE"
-  rm -rf "${CONTRACT_WORK:-}" "${UNSAFE_BACKUP_DIR:-}"
+  rm -rf "${CONTRACT_WORK:-}" "${UNSAFE_BACKUP_DIR:-}" "${PROVENANCE_WORK:-}"
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -234,6 +242,68 @@ ARCHIVE=$(ls -1t "$BACKUP_DIR"/openlayerly-backup-*.tar.gz | head -n 1)
 [ -n "$ARCHIVE" ] || fail "backup archive not found"
 tar -tzf "$ARCHIVE" | grep -F "./uploads/$SPACE_OBJECT_KEY" >/dev/null \
   || fail "space-bearing referenced upload missing from backup archive"
+
+echo "Verifying build provenance consistency across image metadata and backup manifest..."
+PROVENANCE_WORK=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-s7-provenance.XXXXXX")
+tar -xzf "$ARCHIVE" -C "$PROVENANCE_WORK" ./manifest.env
+IMAGE_REF="${SOURCE_PROJECT}-app:latest"
+IMAGE_ID=$(sudo -n docker image inspect --format '{{json .Id}}' "$IMAGE_REF" \
+  | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")))')
+IMAGE_LABELS_AND_ENV=$(sudo -n docker image inspect --format '{{json .Config.Labels}}
+{{json .Config.Env}}' "$IMAGE_REF")
+BUILD_INFO_JSON=$(sudo -n docker run --rm --entrypoint cat "$IMAGE_REF" /app/build-info.json)
+node -e '
+  const { readFileSync } = require("fs");
+  const [expectedVersion, expectedCommit, expectedTimestamp, imageId, labelsAndEnv, buildInfoRaw, manifestPath] = process.argv.slice(1);
+  const lines = labelsAndEnv.split(/\r?\n/).filter(Boolean);
+  if (lines.length !== 2) throw new Error("image inspect labels/env output was not parseable");
+  const labels = JSON.parse(lines[0]);
+  const envEntries = JSON.parse(lines[1]);
+  const env = new Map(envEntries.map((entry) => {
+    const index = entry.indexOf("=");
+    return [entry.slice(0, index), entry.slice(index + 1)];
+  }));
+  const buildInfo = JSON.parse(buildInfoRaw);
+  const manifest = new Map(
+    readFileSync(manifestPath, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const index = line.indexOf("=");
+        return [line.slice(0, index), line.slice(index + 1)];
+      }),
+  );
+  const checks = [
+    ["build-info appVersion", buildInfo.appVersion, expectedVersion],
+    ["build-info sourceCommit", buildInfo.sourceCommit, expectedCommit],
+    ["build-info buildTimestamp", buildInfo.buildTimestamp, expectedTimestamp],
+    ["image env APP_VERSION", env.get("APP_VERSION"), expectedVersion],
+    ["image env SOURCE_COMMIT", env.get("SOURCE_COMMIT"), expectedCommit],
+    ["image env BUILD_TIMESTAMP", env.get("BUILD_TIMESTAMP"), expectedTimestamp],
+    ["image label version", labels["org.opencontainers.image.version"], expectedVersion],
+    ["image label revision", labels["org.opencontainers.image.revision"], expectedCommit],
+    ["image label created", labels["org.opencontainers.image.created"], expectedTimestamp],
+    ["manifest runtime app version", manifest.get("RUNTIME_APP_VERSION"), expectedVersion],
+    ["manifest runtime source commit", manifest.get("RUNTIME_SOURCE_COMMIT"), expectedCommit],
+    ["manifest build timestamp", manifest.get("BUILD_TIMESTAMP"), expectedTimestamp],
+    ["manifest runtime image id", manifest.get("RUNTIME_IMAGE_ID"), imageId],
+  ];
+  for (const [label, actual, expected] of checks) {
+    if (actual !== expected) {
+      console.error(`${label} mismatch: actual=${JSON.stringify(actual)} expected=${JSON.stringify(expected)}`);
+      process.exit(1);
+    }
+  }
+' \
+  "$OPENLAYERLY_BUILD_VERSION" \
+  "$OPENLAYERLY_BUILD_COMMIT" \
+  "$OPENLAYERLY_BUILD_TIMESTAMP" \
+  "$IMAGE_ID" \
+  "$IMAGE_LABELS_AND_ENV" \
+  "$BUILD_INFO_JSON" \
+  "$PROVENANCE_WORK/manifest.env" \
+  || fail "build provenance did not match across image metadata and backup manifest"
+rm -rf "$PROVENANCE_WORK"
 
 echo "Verifying backup rejects unsupported live upload entries without publishing an archive..."
 UNSAFE_BACKUP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-s7-unsafe-backup.XXXXXX")

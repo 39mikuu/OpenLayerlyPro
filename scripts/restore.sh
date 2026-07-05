@@ -147,12 +147,13 @@ reject_unsafe_payload_tree "$WORK_DIR"
 FORMAT_VERSION=$(grep '^FORMAT_VERSION=' "$WORK_DIR/manifest.env" | cut -d= -f2- | tr -d '\r')
 FORMAT_VERSION=${FORMAT_VERSION:-1}
 case "$FORMAT_VERSION" in
-  1|2) ;;
+  1|2|3) ;;
   *) fail "unsupported FORMAT_VERSION=$FORMAT_VERSION" ;;
 esac
 
-if [ "$FORMAT_VERSION" = "2" ]; then
-  [ -f "$WORK_DIR/checksums.sha256" ] || fail "FORMAT_VERSION=2 archive is missing checksums.sha256"
+case "$FORMAT_VERSION" in
+  2|3)
+  [ -f "$WORK_DIR/checksums.sha256" ] || fail "FORMAT_VERSION=$FORMAT_VERSION archive is missing checksums.sha256"
   echo "Verifying archive checksums..."
   (
     cd "$WORK_DIR" || exit 1
@@ -203,23 +204,79 @@ if [ "$FORMAT_VERSION" = "2" ]; then
     fi
   ) || fail "archive checksum manifest bijection check failed"
   rm -f "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST"
-else
+  ;;
+  1)
   echo "WARNING: FORMAT_VERSION=1 archive has no checksum protection" >&2
-fi
+  ;;
+esac
+
+warn_legacy_provenance_if_needed "$FORMAT_VERSION"
 
 validate_archive_storage_contract "$WORK_DIR" "$FORMAT_VERSION"
+
+read_archive_provenance "$WORK_DIR/manifest.env" "$FORMAT_VERSION"
+verify_archive_config_key_fingerprint "$WORK_DIR" "$FORMAT_VERSION"
+
+read_restore_target_provenance_read_only
+PRECONFIRM_TARGET_CONTAINER_EXISTS=$RESTORE_TARGET_CONTAINER_EXISTS
+PRECONFIRM_TARGET_CONTAINER_ID=$RESTORE_TARGET_CONTAINER_ID
+TARGET_RUNTIME_APP_VERSION=$RUNTIME_APP_VERSION
+TARGET_RUNTIME_SOURCE_COMMIT=$RUNTIME_SOURCE_COMMIT
+TARGET_BUILD_TIMESTAMP=$BUILD_TIMESTAMP
+TARGET_RUNTIME_IMAGE_ID=$RUNTIME_IMAGE_ID
+
+warn_if_mismatch "runtime app version" "$ARCHIVE_RUNTIME_APP_VERSION" "$TARGET_RUNTIME_APP_VERSION"
+warn_if_mismatch "runtime source commit" "$ARCHIVE_RUNTIME_SOURCE_COMMIT" "$TARGET_RUNTIME_SOURCE_COMMIT"
+warn_if_mismatch "runtime image ID" "$ARCHIVE_RUNTIME_IMAGE_ID" "$TARGET_RUNTIME_IMAGE_ID"
 
 SESSION_SECRET_SOURCE=$(grep '^SESSION_SECRET_SOURCE=' "$WORK_DIR/manifest.env" | cut -d= -f2- | tr -d '\r')
 SESSION_SECRET_SOURCE=${SESSION_SECRET_SOURCE:-legacy}
 case "$SESSION_SECRET_SOURCE" in
   file)
-    compose run --rm -T --no-deps --entrypoint sh app -c 'test -z "${SESSION_SECRET:-}"' \
-      || fail "file-backed archive requires SESSION_SECRET to be unset on the target"
     [ -s "$WORK_DIR/secrets/session-secret" ] \
       || fail "archive declares a file-backed session secret but the file is missing"
     SESSION_SECRET_ARCHIVE_PATH=$(manifest_value "$WORK_DIR/manifest.env" SESSION_SECRET_ARCHIVE_PATH)
     [ "$SESSION_SECRET_ARCHIVE_PATH" = "secrets/session-secret" ] \
       || fail "archive session secret path is unsupported"
+    ;;
+  external)
+    EXPECTED_SESSION_SECRET_SHA256=$(manifest_value "$WORK_DIR/manifest.env" SESSION_SECRET_SHA256)
+    ;;
+  legacy)
+    ;;
+  *) fail "unsupported SESSION_SECRET_SOURCE=$SESSION_SECRET_SOURCE" ;;
+esac
+
+if [ "$ASSUME_YES" != true ]; then
+  [ -t 0 ] || fail "confirmation requires an interactive terminal; pass --yes for automation"
+  echo "This will replace the target Compose project's database and file-backed secrets."
+  echo "Local uploads will also be replaced when they are present in the archive."
+  echo "Archive provenance:"
+  echo "  Runtime app version: $ARCHIVE_RUNTIME_APP_VERSION"
+  echo "  Runtime source commit: $ARCHIVE_RUNTIME_SOURCE_COMMIT"
+  echo "  Runtime image ID: $ARCHIVE_RUNTIME_IMAGE_ID"
+  echo "  Build timestamp: $ARCHIVE_BUILD_TIMESTAMP"
+  echo "  Backup tool commit: $ARCHIVE_BACKUP_TOOL_COMMIT"
+  echo "  Backup tool script SHA-256: $ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256"
+  if [ "$FORMAT_VERSION" = "3" ]; then
+    echo "  Config key format: $ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT"
+  fi
+  echo "Target provenance:"
+  echo "  Runtime app version: $TARGET_RUNTIME_APP_VERSION"
+  echo "  Runtime source commit: $TARGET_RUNTIME_SOURCE_COMMIT"
+  echo "  Runtime image ID: $TARGET_RUNTIME_IMAGE_ID"
+  echo "  Build timestamp: $TARGET_BUILD_TIMESTAMP"
+  echo "The hardened restore pipeline will run migrator, pre-scan, file-safety backfill,"
+  echo "task neutralization, and DB/storage convergence before starting the app."
+  printf "Type RESTORE to continue: "
+  read -r answer
+  [ "$answer" = "RESTORE" ] || fail "restore cancelled"
+fi
+
+case "$SESSION_SECRET_SOURCE" in
+  file)
+    compose run --rm -T --no-deps --entrypoint sh app -c 'test -z "${SESSION_SECRET:-}"' \
+      || fail "file-backed archive requires SESSION_SECRET to be unset on the target"
     run_one_off -e '
       const fs = require("fs");
       const path = "/restore-work/secrets/session-secret";
@@ -232,7 +289,6 @@ case "$SESSION_SECRET_SOURCE" in
     ' || fail "archived session secret is invalid"
     ;;
   external)
-    EXPECTED_SESSION_SECRET_SHA256=$(manifest_value "$WORK_DIR/manifest.env" SESSION_SECRET_SHA256)
     ACTUAL_SESSION_SECRET_SHA256=$(
       compose run --rm -T --no-deps --entrypoint node app -e '
         const { createHash } = require("crypto");
@@ -258,17 +314,6 @@ case "$SESSION_SECRET_SOURCE" in
   *) fail "unsupported SESSION_SECRET_SOURCE=$SESSION_SECRET_SOURCE" ;;
 esac
 
-if [ "$ASSUME_YES" != true ]; then
-  [ -t 0 ] || fail "confirmation requires an interactive terminal; pass --yes for automation"
-  echo "This will replace the target Compose project's database and file-backed secrets."
-  echo "Local uploads will also be replaced when they are present in the archive."
-  echo "The hardened restore pipeline will run migrator, pre-scan, file-safety backfill,"
-  echo "task neutralization, and DB/storage convergence before starting the app."
-  printf "Type RESTORE to continue: "
-  read -r answer
-  [ "$answer" = "RESTORE" ] || fail "restore cancelled"
-fi
-
 echo "Starting PostgreSQL for the target Compose project..."
 compose up -d postgres
 
@@ -289,10 +334,18 @@ if [ -n "$(compose ps -q --status running app)" ]; then
   fail "app service is still running after stop; refusing to continue restore"
 fi
 compose create app >/dev/null
+verify_restore_target_unchanged_after_create \
+  "$PRECONFIRM_TARGET_CONTAINER_EXISTS" \
+  "$PRECONFIRM_TARGET_CONTAINER_ID" \
+  "$TARGET_RUNTIME_APP_VERSION" \
+  "$TARGET_RUNTIME_SOURCE_COMMIT" \
+  "$TARGET_BUILD_TIMESTAMP" \
+  "$TARGET_RUNTIME_IMAGE_ID" \
+  "$ASSUME_YES"
+RESTORE_APP_ENV_JSON=$(inspect_container_env_json "$RESTORE_APP_CONTAINER_ID")
 
-if ! compose run --rm -T --no-deps --entrypoint sh app -c 'test -z "${CONFIG_ENCRYPTION_KEY:-}"'; then
-  fail "target defines CONFIG_ENCRYPTION_KEY; unset it or restore the matching externally managed value before continuing"
-fi
+app_container_config_encryption_key_is_unset "$RESTORE_APP_CONTAINER_ID" \
+  || fail "target defines CONFIG_ENCRYPTION_KEY; unset it or restore the matching externally managed value before continuing"
 
 APP_SETTINGS_COPY_SQL="$WORK_DIR/app_settings-copy.sql"
 if extract_app_settings_copy_block "$WORK_DIR/db.sql" "$APP_SETTINGS_COPY_SQL"; then
@@ -383,13 +436,17 @@ if [ "${RESTORE_E2E_INJECT_MISSING:-}" = "1" ]; then
 fi
 
 echo "Preflighting config encryption key restore target before database replacement..."
-TARGET_CONFIG_KEY_FILE=$(read_container_config_key_file)
+TARGET_CONFIG_KEY_FILE=$(
+  container_env_value "$RESTORE_APP_ENV_JSON" CONFIG_ENCRYPTION_KEY_FILE "/app/secrets/config-encryption-key" | tr -d '\r'
+)
 preflight_config_key_restore_target "$TARGET_CONFIG_KEY_FILE"
 
 TARGET_SESSION_SECRET_FILE=""
 if [ "$SESSION_SECRET_SOURCE" = file ]; then
   echo "Preflighting session secret restore target before database replacement..."
-  TARGET_SESSION_SECRET_FILE=$(read_container_session_secret_file)
+  TARGET_SESSION_SECRET_FILE=$(
+    container_env_value "$RESTORE_APP_ENV_JSON" SESSION_SECRET_FILE "/app/secrets/session-secret" | tr -d '\r'
+  )
   preflight_session_secret_restore_target "$TARGET_SESSION_SECRET_FILE"
 fi
 
@@ -401,7 +458,9 @@ TARGET_UPLOAD_DIR=""
 if [ -d "$WORK_DIR/uploads" ]; then
   RESTORE_HAS_UPLOADS=true
   echo "Preflighting local uploads restore target before database replacement..."
-  TARGET_UPLOAD_DIR=$(read_container_upload_dir)
+  TARGET_UPLOAD_DIR=$(
+    container_env_value "$RESTORE_APP_ENV_JSON" UPLOAD_DIR "/app/uploads" | tr -d '\r'
+  )
   preflight_upload_dir_restore_target "$TARGET_UPLOAD_DIR"
 fi
 
@@ -419,12 +478,12 @@ compose exec -T postgres sh -c '
 ' < "$WORK_DIR/db.sql"
 
 echo "Restoring config encryption key file to $TARGET_CONFIG_KEY_FILE..."
-compose cp "$WORK_DIR/secrets/config-encryption-key" "app:$TARGET_CONFIG_KEY_FILE"
+docker_cmd cp "$WORK_DIR/secrets/config-encryption-key" "$RESTORE_APP_CONTAINER_ID:$TARGET_CONFIG_KEY_FILE"
 verify_container_nonempty_file "$TARGET_CONFIG_KEY_FILE"
 
 if [ "$SESSION_SECRET_SOURCE" = file ]; then
   echo "Restoring session secret file..."
-  compose cp "$WORK_DIR/secrets/session-secret" "app:$TARGET_SESSION_SECRET_FILE"
+  docker_cmd cp "$WORK_DIR/secrets/session-secret" "$RESTORE_APP_CONTAINER_ID:$TARGET_SESSION_SECRET_FILE"
   verify_container_session_secret_file "$TARGET_SESSION_SECRET_FILE" \
     || fail "restored session secret is invalid"
 fi
@@ -433,7 +492,7 @@ if [ "$RESTORE_HAS_UPLOADS" = true ]; then
   UPLOAD_DIR=$TARGET_UPLOAD_DIR
   echo "Replacing local uploads at $UPLOAD_DIR..."
   clear_container_directory "$UPLOAD_DIR"
-  compose cp "$WORK_DIR/uploads/." "app:$UPLOAD_DIR"
+  docker_cmd cp "$WORK_DIR/uploads/." "$RESTORE_APP_CONTAINER_ID:$UPLOAD_DIR"
   if [ "${RESTORE_E2E_INJECT_MISSING:-}" = "1" ]; then
     echo "Injecting post-restore storage drift for E2E drill..."
     if [ -n "${RESTORE_E2E_MISSING_OBJECT_KEY:-}" ]; then
@@ -504,4 +563,7 @@ while :; do
 done
 
 echo "Restore completed from: $ARCHIVE_PATH"
+echo "Restored archive provenance: version=$ARCHIVE_RUNTIME_APP_VERSION commit=$ARCHIVE_RUNTIME_SOURCE_COMMIT image=$ARCHIVE_RUNTIME_IMAGE_ID build=$ARCHIVE_BUILD_TIMESTAMP"
+echo "Target image provenance: version=$TARGET_RUNTIME_APP_VERSION commit=$TARGET_RUNTIME_SOURCE_COMMIT image=$TARGET_RUNTIME_IMAGE_ID build=$TARGET_BUILD_TIMESTAMP"
+echo "Backup tool provenance: commit=$ARCHIVE_BACKUP_TOOL_COMMIT script_sha256=$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256"
 echo "Review Stripe/payment state near the archive timestamp and verify convergence output above."

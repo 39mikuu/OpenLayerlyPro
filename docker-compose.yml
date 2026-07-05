@@ -3,6 +3,10 @@ services:
     build:
       context: .
       target: runner
+      args:
+        APP_VERSION: ${OPENLAYERLY_BUILD_VERSION:-dev}
+        SOURCE_COMMIT: ${OPENLAYERLY_BUILD_COMMIT:-dev}
+        BUILD_TIMESTAMP: ${OPENLAYERLY_BUILD_TIMESTAMP:-unknown}
     restart: unless-stopped
     env_file:
       - .env
