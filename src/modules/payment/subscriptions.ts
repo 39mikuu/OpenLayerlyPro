@@ -525,6 +525,11 @@ export async function applySubscriptionReversalOrTombstone(
       (event as ReversalPaymentEvent & { localSubscriptionId?: string }).localSubscriptionId =
         resolved.localSubscriptionId;
     }
+    if (resolved?.providerSubscriptionRef) {
+      (
+        event as ReversalPaymentEvent & { providerSubscriptionRef?: string }
+      ).providerSubscriptionRef = resolved.providerSubscriptionRef;
+    }
   }
   if (!event.providerInvoiceRef) {
     await reverseAutoPayment(provider, event);
@@ -560,13 +565,30 @@ export async function applySubscriptionReversalOrTombstone(
 
   const localSubscriptionId = (event as ReversalPaymentEvent & { localSubscriptionId?: string })
     .localSubscriptionId;
-  const [subscription] = localSubscriptionId
+  const providerSubscriptionRef = (
+    event as ReversalPaymentEvent & { providerSubscriptionRef?: string }
+  ).providerSubscriptionRef;
+  const [subscriptionByLocalId] = localSubscriptionId
     ? await tx
         .select()
         .from(subscriptions)
         .where(eq(subscriptions.id, localSubscriptionId))
         .limit(1)
     : [];
+  const [subscriptionByProviderRef] =
+    !subscriptionByLocalId && providerSubscriptionRef
+      ? await tx
+          .select()
+          .from(subscriptions)
+          .where(
+            and(
+              eq(subscriptions.provider, provider),
+              eq(subscriptions.providerSubscriptionRef, providerSubscriptionRef),
+            ),
+          )
+          .limit(1)
+      : [];
+  const subscription = subscriptionByLocalId ?? subscriptionByProviderRef;
   if (!subscription) throw new ApiError(503, "subscriptionUnresolved");
 
   await tx

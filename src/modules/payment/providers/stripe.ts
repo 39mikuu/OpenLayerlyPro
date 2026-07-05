@@ -10,7 +10,7 @@ import type {
 
 type StripeClient = Pick<
   Stripe,
-  "balance" | "charges" | "checkout" | "invoices" | "subscriptions" | "webhooks"
+  "balance" | "charges" | "checkout" | "invoicePayments" | "invoices" | "subscriptions" | "webhooks"
 >;
 
 function objectId(value: string | { id: string } | null | undefined): string | null {
@@ -23,8 +23,16 @@ function eventCreatedAt(event: Stripe.Event): Date {
 }
 
 function subscriptionCurrentPeriodEnd(subscription: Stripe.Subscription): Date | null {
-  const periodEnd = (subscription as unknown as { current_period_end?: number }).current_period_end;
-  return typeof periodEnd === "number" ? new Date(periodEnd * 1000) : null;
+  // Legacy pre-basil pinned accounts exposed the aggregate period at the subscription top level.
+  const legacyPeriodEnd = (subscription as unknown as { current_period_end?: number | null })
+    .current_period_end;
+  if (typeof legacyPeriodEnd === "number") return new Date(legacyPeriodEnd * 1000);
+
+  const itemPeriodEnds = subscription.items.data
+    .map((item) => item.current_period_end)
+    .filter((periodEnd): periodEnd is number => typeof periodEnd === "number");
+  if (itemPeriodEnds.length === 0) return null;
+  return new Date(Math.max(...itemPeriodEnds) * 1000);
 }
 
 // Raw provider server time from the API response `Date` header. Production
@@ -43,23 +51,66 @@ function subscriptionMetadata(subscription: Stripe.Subscription): Record<string,
   return (subscription.metadata ?? {}) as Record<string, string>;
 }
 
+function firstNonEmptyMetadata(
+  metadata: Stripe.Metadata | null | undefined,
+): Record<string, string> | null {
+  if (!metadata || Object.keys(metadata).length === 0) return null;
+  return metadata as Record<string, string>;
+}
+
 function invoiceMetadata(invoice: Stripe.Invoice): Record<string, string> {
-  return (invoice.metadata ?? {}) as Record<string, string>;
+  const basilMetadata = firstNonEmptyMetadata(invoice.parent?.subscription_details?.metadata);
+  if (basilMetadata) return basilMetadata;
+
+  // Legacy pre-basil pinned accounts exposed subscription details at the invoice top level.
+  const legacyMetadata = firstNonEmptyMetadata(
+    (invoice as unknown as { subscription_details?: { metadata?: Stripe.Metadata | null } })
+      .subscription_details?.metadata,
+  );
+  if (legacyMetadata) return legacyMetadata;
+
+  return firstNonEmptyMetadata(invoice.metadata) ?? {};
+}
+
+function invoicePaymentIntentRef(payment: Stripe.InvoicePayment | null | undefined): string | null {
+  return objectId(payment?.payment.payment_intent);
 }
 
 function invoicePaymentRef(invoice: Stripe.Invoice): string | null {
-  return objectId(
+  // Legacy pre-basil pinned accounts exposed the invoice PaymentIntent at the invoice top level.
+  const legacyPaymentRef = objectId(
     (invoice as unknown as { payment_intent?: string | { id: string } | null }).payment_intent,
   );
+  if (legacyPaymentRef) return legacyPaymentRef;
+
+  const invoicePayments = invoice.payments?.data ?? [];
+  const paidPayment = invoicePayments.find((payment) => {
+    const paymentIntent = payment.payment.payment_intent;
+    return (
+      invoicePaymentIntentRef(payment) &&
+      (payment.status === "paid" ||
+        (typeof paymentIntent === "object" && paymentIntent.status === "succeeded"))
+    );
+  });
+  return invoicePaymentIntentRef(paidPayment ?? invoicePayments.find(invoicePaymentIntentRef));
 }
 
 function invoiceSubscriptionRef(invoice: Stripe.Invoice): string | null {
+  const basilSubscription = invoice.parent?.subscription_details?.subscription;
+  if (basilSubscription) return objectId(basilSubscription);
+
+  // Legacy pre-basil pinned accounts exposed the subscription at the invoice top level.
   return objectId(
     (invoice as unknown as { subscription?: string | { id: string } | null }).subscription,
   );
 }
 
 function linePriceRef(line: Stripe.InvoiceLineItem): string | null {
+  const basilPrice =
+    line.pricing?.type === "price_details" ? line.pricing.price_details?.price : undefined;
+  if (basilPrice) return objectId(basilPrice);
+
+  // Legacy pre-basil pinned accounts exposed the line price at the line-item top level.
   return objectId((line as unknown as { price?: string | { id: string } | null }).price);
 }
 
@@ -250,6 +301,7 @@ export class StripePaymentProvider implements PaymentProvider {
       return {
         type: "refunded",
         paymentRef,
+        // Fast path for pre-basil pinned accounts; subscription reversals resolve nulls by PaymentIntent.
         providerInvoiceRef:
           objectId((charge as unknown as { invoice?: string | { id: string } | null }).invoice) ??
           undefined,
@@ -271,6 +323,7 @@ export class StripePaymentProvider implements PaymentProvider {
       return {
         type: "disputed",
         paymentRef,
+        // Fast path for pre-basil pinned accounts; subscription reversals resolve nulls by PaymentIntent.
         providerInvoiceRef:
           objectId((dispute as unknown as { invoice?: string | { id: string } | null }).invoice) ??
           undefined,
@@ -475,10 +528,22 @@ export class StripePaymentProvider implements PaymentProvider {
   } | null> {
     const charges = await this.client.charges.list({ payment_intent: paymentRef, limit: 1 });
     const charge = charges.data[0];
-    const invoiceId = charge
-      ? objectId((charge as unknown as { invoice?: string | { id: string } | null }).invoice)
+    const legacyInvoiceId = charge
+      ? // Legacy pre-basil pinned accounts exposed the invoice on the Charge.
+        objectId((charge as unknown as { invoice?: string | { id: string } | null }).invoice)
       : null;
+
+    const invoicePayment = legacyInvoiceId
+      ? null
+      : (
+          await this.client.invoicePayments.list({
+            payment: { type: "payment_intent", payment_intent: paymentRef },
+            limit: 1,
+          })
+        ).data[0];
+    const invoiceId = legacyInvoiceId ?? objectId(invoicePayment?.invoice);
     if (!invoiceId) return null;
+
     const invoice = await this.client.invoices.retrieve(invoiceId);
     return {
       providerInvoiceRef: invoiceId,
