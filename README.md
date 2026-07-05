@@ -4,7 +4,7 @@
 
 OpenLayerlyPro helps independent illustrators and creators run their own membership site: publish posts, offer membership tiers through manual review, Stripe hosted one-time checkout, or recurring Stripe subscriptions, and deliver member-only files from a self-hosted deployment.
 
-Current status: **v1.0 pre-release final acceptance**. The application includes the payment, subscription, content, file, theme, translation, S6 security-response-header, and S7 hardened backup/restore feature set. The remaining release gate is #88 real-environment acceptance. Do not create a production `v1.0.0` tag until [the v1.0 acceptance checklist](docs/release-v1.0-checklist.md) is complete. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, payments, and backups.
+Current status: **v1.0.0 release candidate**. The application includes the payment, subscription, content, file, theme, translation, S6 security-response-header, and S7 hardened backup/restore feature set, plus the final-acceptance hardening line through PR #128 (auth-before-body gate, file-reference integrity, atomic secret provisioning, image-authoritative archive v3 provenance, reconcile clock fence); the package version is frozen at 1.0.0. The remaining release gate is #88 real-environment acceptance on the exact release build. Do not create a production `v1.0.0` tag until [the v1.0 acceptance checklist](docs/release-v1.0-checklist.md) is complete. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, payments, and backups.
 
 ## 核心特性
 

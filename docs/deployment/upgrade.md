@@ -37,9 +37,14 @@ Record the archive, current commit/image, and object-storage recovery point:
 git rev-parse HEAD
 ```
 
-Current archives use format v2 checksums and the hardened S7 restore pipeline.
-Use `backup.sh --stop-app` when a self-consistent local snapshot is required, and
-keep the old deployment intact until verification completes.
+Current archives use manifest format v3: v2's checksums and the hardened S7
+restore pipeline plus mandatory image-authoritative runtime provenance,
+backup-tool provenance, and config-key fingerprint/format fields, all validated
+fail-closed before the production database is touched (see
+[backup-restore](backup-restore.md)). v1/v2 archives remain supported only as
+compatibility restore paths and warn that they predate image-authoritative
+provenance. Use `backup.sh --stop-app` when a self-consistent local snapshot is
+required, and keep the old deployment intact until verification completes.
 
 ## 3. Stage the New Version Without Starting It
 

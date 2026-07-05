@@ -73,6 +73,7 @@
 - [ ] `pnpm lint`
 - [ ] `pnpm format:check`
 - [ ] `pnpm check:request-bodies`
+- [ ] `pnpm check:auth-before-body`
 - [ ] `pnpm exec tsc --noEmit`
 - [ ] `RUN_DB_INTEGRATION_TESTS=true pnpm test`
 - [ ] `pnpm build:migrator`，并确认 `dist/migrate.mjs` 可在目标 one-off 容器中启动。
