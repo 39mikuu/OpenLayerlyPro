@@ -37,9 +37,12 @@ COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-pre-scan.mjs ./dist/
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-neutralize.mjs ./dist/restore-neutralize.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-converge.mjs ./dist/restore-converge.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-schema-check.mjs ./dist/restore-schema-check.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-config-key-probe.mjs ./dist/restore-config-key-probe.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/dedupe-pending-payments.mjs ./scripts/dedupe-pending-payments.mjs
+COPY docker/ensure-config-encryption-key.mjs ./docker/ensure-config-encryption-key.mjs
 COPY docker/ensure-session-secret.mjs ./docker/ensure-session-secret.mjs
 COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/entrypoint-secrets.sh /entrypoint-secrets.sh
 RUN chmod +x /entrypoint.sh \
   && mkdir -p /app/uploads /app/secrets \
   && chown nextjs:nodejs /app/uploads /app/secrets

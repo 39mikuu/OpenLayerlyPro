@@ -101,6 +101,103 @@ round_trip=$(run_postgres_shell 'printf "%s" "$1"' "$SPECIAL_COMPONENT")
 [ "$round_trip" = "$SPECIAL_COMPONENT" ] || fail "postgres positional argument did not round-trip"
 [ ! -e "$INJECTION_MARKER" ] || fail "shell wrapper executed injected shell text"
 
+cat > "$TEST_ROOT/db-with-app-settings.sql" <<'SQL'
+--
+COPY public.app_settings (key, value_encrypted, updated_at) FROM stdin;
+smtp	v1:encrypted	2026-01-01 00:00:00+00
+storage	v1:encrypted2	2026-01-01 00:00:00+00
+\.
+--
+SQL
+extract_app_settings_copy_block \
+  "$TEST_ROOT/db-with-app-settings.sql" "$TEST_ROOT/app-settings-copy.sql" \
+  || fail "failed to extract app_settings COPY block"
+grep -F "COPY public.app_settings" "$TEST_ROOT/app-settings-copy.sql" >/dev/null \
+  || fail "extracted app_settings COPY block missing header"
+app_settings_copy_block_has_rows "$TEST_ROOT/app-settings-copy.sql" \
+  || fail "app_settings COPY block with rows was reported empty"
+scratch_sql=$(app_settings_scratch_create_table_sql "$TEST_ROOT/app-settings-copy.sql") \
+  || fail "failed to build current-era app_settings scratch table SQL"
+[ "$scratch_sql" = "create table public.app_settings (key text, value_encrypted text, updated_at text)" ] \
+  || fail "current-era scratch SQL was unexpected: $scratch_sql"
+
+cat > "$TEST_ROOT/db-future-app-settings.sql" <<'SQL'
+COPY public.app_settings (key, value_encrypted, updated_at, future_column) FROM stdin;
+smtp	v1:encrypted	2026-01-01 00:00:00+00	future
+\.
+SQL
+extract_app_settings_copy_block \
+  "$TEST_ROOT/db-future-app-settings.sql" "$TEST_ROOT/future-app-settings-copy.sql" \
+  || fail "failed to extract future app_settings COPY block"
+future_scratch_sql=$(app_settings_scratch_create_table_sql "$TEST_ROOT/future-app-settings-copy.sql") \
+  || fail "failed to build future app_settings scratch table SQL"
+[ "$future_scratch_sql" = "create table public.app_settings (key text, value_encrypted text, updated_at text, future_column text)" ] \
+  || fail "future scratch SQL was unexpected: $future_scratch_sql"
+
+cat > "$TEST_ROOT/db-missing-value-encrypted.sql" <<'SQL'
+COPY public.app_settings (key, updated_at) FROM stdin;
+smtp	2026-01-01 00:00:00+00
+\.
+SQL
+extract_app_settings_copy_block \
+  "$TEST_ROOT/db-missing-value-encrypted.sql" "$TEST_ROOT/missing-value-encrypted-copy.sql" \
+  || fail "failed to extract missing-value app_settings COPY block"
+set +e
+missing_value_output=$(
+  app_settings_scratch_create_table_sql "$TEST_ROOT/missing-value-encrypted-copy.sql" 2>&1
+)
+missing_value_status=$?
+set -e
+[ "$missing_value_status" -ne 0 ] \
+  || fail "missing value_encrypted header unexpectedly produced scratch SQL"
+printf '%s' "$missing_value_output" | grep -F "archive app_settings has no value_encrypted column" >/dev/null \
+  || fail "missing value_encrypted error was not explicit"
+
+cat > "$TEST_ROOT/db-hostile-app-settings.sql" <<'SQL'
+COPY public.app_settings (key, "value_encrypted", updated_at) FROM stdin;
+smtp	v1:encrypted	2026-01-01 00:00:00+00
+\.
+SQL
+extract_app_settings_copy_block \
+  "$TEST_ROOT/db-hostile-app-settings.sql" "$TEST_ROOT/hostile-app-settings-copy.sql" \
+  || fail "failed to extract hostile app_settings COPY block"
+set +e
+hostile_output=$(
+  app_settings_scratch_create_table_sql "$TEST_ROOT/hostile-app-settings-copy.sql" 2>&1
+)
+hostile_status=$?
+set -e
+[ "$hostile_status" -ne 0 ] \
+  || fail "hostile app_settings identifier unexpectedly produced scratch SQL"
+printf '%s' "$hostile_output" | grep -F "archive app_settings contains unsupported column identifier" >/dev/null \
+  || fail "hostile identifier error was not explicit"
+
+cat > "$TEST_ROOT/db-without-app-settings.sql" <<'SQL'
+--
+COPY public.users (id, email) FROM stdin;
+\.
+SQL
+set +e
+extract_app_settings_copy_block \
+  "$TEST_ROOT/db-without-app-settings.sql" "$TEST_ROOT/no-app-settings-copy.sql"
+missing_status=$?
+set -e
+if [ "$missing_status" -eq 0 ]; then
+  fail "extract_app_settings_copy_block unexpectedly found missing table"
+fi
+[ "$missing_status" -eq 1 ] || fail "missing app_settings COPY block returned unexpected status"
+
+cat > "$TEST_ROOT/db-empty-app-settings.sql" <<'SQL'
+COPY public.app_settings (key, value_encrypted, updated_at) FROM stdin;
+\.
+SQL
+extract_app_settings_copy_block \
+  "$TEST_ROOT/db-empty-app-settings.sql" "$TEST_ROOT/empty-app-settings-copy.sql" \
+  || fail "failed to extract empty app_settings COPY block"
+if app_settings_copy_block_has_rows "$TEST_ROOT/empty-app-settings-copy.sql"; then
+  fail "empty app_settings COPY block was reported non-empty"
+fi
+
 if grep -nE 'compose (run|exec).*sh -c "' \
   "$ROOT_DIR/scripts/restore.sh" "$ROOT_DIR/scripts/restore-common.sh" \
   | grep -v 'sh -c "\$script" restore-'; then

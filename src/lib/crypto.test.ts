@@ -21,6 +21,24 @@ describe("encryptSecret / decryptSecret", () => {
     expect(decryptSecret(cipher)).toBe("hello 世界");
   });
 
+  it.each(["legacy-config-key", "cek1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"])(
+    "roundtrips with %s key material",
+    (keyMaterial) => {
+      mockedGetKey.mockReturnValue(keyMaterial);
+      const cipher = encryptSecret("config payload");
+      expect(decryptSecret(cipher)).toBe("config payload");
+    },
+  );
+
+  it("roundtrips legacy whitespace-padded file material after trim-compatible normalization", () => {
+    const originMainKeyMaterial = "  legacy-key-value \n\n".trim();
+    mockedGetKey.mockReturnValue(originMainKeyMaterial);
+    const cipher = encryptSecret("config payload");
+
+    mockedGetKey.mockReturnValue(originMainKeyMaterial);
+    expect(decryptSecret(cipher)).toBe("config payload");
+  });
+
   it("相同明文每次密文不同（随机 iv）", () => {
     mockedGetKey.mockReturnValue("test-root-key");
     expect(encryptSecret("same")).not.toBe(encryptSecret("same"));

@@ -63,6 +63,8 @@ jobs:
         run: sh scripts/test-backup-app-state.sh
       - name: Test restore shell argument boundaries
         run: sh scripts/test-restore-shell-args.sh
+      - name: Test entrypoint secret ownership boundaries
+        run: sh scripts/test-entrypoint-secrets.sh
       - name: Shellcheck restore scripts
         run: |
           sudo apt-get update -qq
@@ -72,6 +74,7 @@ jobs:
             scripts/backup-app-state.sh \
             scripts/backup.sh \
             scripts/restore.sh \
+            scripts/test-entrypoint-secrets.sh \
             scripts/test-backup-app-state.sh \
             scripts/test-restore-shell-args.sh \
             scripts/test-restore-e2e.sh \
