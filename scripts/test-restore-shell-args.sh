@@ -23,8 +23,13 @@ DOCKER_IMAGE_ENV_JSON='["APP_VERSION=image-version","SOURCE_COMMIT=0123456789abc
 DOCKER_INSPECT_CONTAINER_IMAGE_JSON='"sha256:mock-container-image"'
 DOCKER_IMAGE_LABELS_JSON='{"org.opencontainers.image.version":"image-version","org.opencontainers.image.revision":"0123456789abcdef0123456789abcdef01234567","org.opencontainers.image.created":"2026-07-05T00:00:00Z"}'
 DOCKER_IMAGE_ID_JSON='"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+COMPOSE_IMAGE_LABELS_JSON='{"org.opencontainers.image.version":"compose-config-version","org.opencontainers.image.revision":"fedcba9876543210fedcba9876543210fedcba98","org.opencontainers.image.created":"2026-07-06T00:00:00Z"}'
+COMPOSE_IMAGE_ENV_JSON='["APP_VERSION=compose-config-version","SOURCE_COMMIT=fedcba9876543210fedcba9876543210fedcba98","BUILD_TIMESTAMP=2026-07-06T00:00:00Z"]'
+COMPOSE_IMAGE_ID_JSON='"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"'
 COMPOSE_PS_APP_OUTPUT=mock-app-container
+COMPOSE_PS_FAIL=false
 COMPOSE_APP_IMAGE=openlayerlypro:test
+COMPOSE_CREATE_RESULT=mock-app-container
 COMPOSE_MUTATION_LOG="$TEST_ROOT/compose-mutations.log"
 
 docker_cmd() {
@@ -35,6 +40,7 @@ docker_cmd() {
       [ "$1" = "inspect" ] || fail "unexpected mock docker image action: $1"
       shift
       image_inspect_format=""
+      image_inspect_target=""
       while [ "$#" -gt 0 ]; do
         case "$1" in
           --format)
@@ -44,16 +50,26 @@ docker_cmd() {
           *)
             [ "$1" = "sha256:mock-container-image" ] || [ "$1" = "$COMPOSE_APP_IMAGE" ] \
               || fail "mock docker image inspect received unexpected image ref: $1"
+            image_inspect_target=$1
             shift
             ;;
         esac
       done
+      [ -n "$image_inspect_target" ] || fail "mock docker image inspect missing target"
       case "$image_inspect_format" in
         "{{json .Config.Labels}} {{json .Id}}")
-          printf '%s %s\n' "$DOCKER_IMAGE_LABELS_JSON" "$DOCKER_IMAGE_ID_JSON"
+          if [ "$image_inspect_target" = "$COMPOSE_APP_IMAGE" ]; then
+            printf '%s %s\n' "$COMPOSE_IMAGE_LABELS_JSON" "$COMPOSE_IMAGE_ID_JSON"
+          else
+            printf '%s %s\n' "$DOCKER_IMAGE_LABELS_JSON" "$DOCKER_IMAGE_ID_JSON"
+          fi
           ;;
         "{{json .Config.Env}}")
-          printf '%s\n' "$DOCKER_IMAGE_ENV_JSON"
+          if [ "$image_inspect_target" = "$COMPOSE_APP_IMAGE" ]; then
+            printf '%s\n' "$COMPOSE_IMAGE_ENV_JSON"
+          else
+            printf '%s\n' "$DOCKER_IMAGE_ENV_JSON"
+          fi
           ;;
         *)
           fail "unexpected mock docker image inspect format: $image_inspect_format"
@@ -107,9 +123,13 @@ compose() {
     create)
       printf '%s\n' "create app" >> "$COMPOSE_MUTATION_LOG"
       [ "$1" = "app" ] || fail "mock compose create did not receive app service"
+      COMPOSE_PS_APP_OUTPUT=$COMPOSE_CREATE_RESULT
       return
       ;;
     ps)
+      if [ "$COMPOSE_PS_FAIL" = true ]; then
+        return 1
+      fi
       [ "$1" = "-aq" ] || fail "mock compose ps expected -aq"
       [ "$2" = "app" ] || fail "mock compose ps did not receive app service"
       printf '%s\n' "$COMPOSE_PS_APP_OUTPUT"
@@ -205,18 +225,53 @@ round_trip=$(run_postgres_shell 'printf "%s" "$1"' "$SPECIAL_COMPONENT")
 [ "$round_trip" = "$SPECIAL_COMPONENT" ] || fail "postgres positional argument did not round-trip"
 [ ! -e "$INJECTION_MARKER" ] || fail "shell wrapper executed injected shell text"
 
+: > "$COMPOSE_MUTATION_LOG"
 single_container_id=$(resolve_single_app_container_id)
 [ "$single_container_id" = "mock-app-container" ] \
   || fail "single app container id did not resolve from compose ps"
+if grep -E '^(create|up|run) ' "$COMPOSE_MUTATION_LOG" >/dev/null; then
+  fail "existing app container resolution mutated compose state"
+fi
 read_app_container_provenance "$single_container_id"
 [ "$RUNTIME_APP_VERSION" = "image-version" ] \
-  || fail "inspected app version was not read from image labels"
+  || fail "inspected app version was not read from existing container image labels"
 [ "$RUNTIME_SOURCE_COMMIT" = "$VALID_COMMIT" ] \
   || fail "inspected source commit was not read from image labels"
 [ "$BUILD_TIMESTAMP" = "2026-07-05T00:00:00Z" ] \
   || fail "inspected build timestamp was not read from image labels"
 [ "$RUNTIME_IMAGE_ID" = "$VALID_IMAGE_ID" ] \
-  || fail "inspected image ID was not read from the service image"
+  || fail "inspected image ID was not read from the existing container image"
+
+: > "$COMPOSE_MUTATION_LOG"
+COMPOSE_PS_APP_OUTPUT=""
+zero_container_id=$(resolve_single_app_container_id)
+[ "$zero_container_id" = "$COMPOSE_CREATE_RESULT" ] \
+  || fail "zero-container app resolution did not create and resolve the app container"
+create_count=$(grep -c '^create app$' "$COMPOSE_MUTATION_LOG" || true)
+[ "$create_count" = "1" ] \
+  || fail "zero-container app resolution did not call compose create exactly once"
+read_app_container_provenance "$zero_container_id"
+[ "$RUNTIME_APP_VERSION" = "image-version" ] \
+  || fail "zero-container provenance was not read from the created container's image"
+[ "$RUNTIME_IMAGE_ID" = "$VALID_IMAGE_ID" ] \
+  || fail "zero-container image ID was not read from the created container's image"
+COMPOSE_PS_APP_OUTPUT=mock-app-container
+
+: > "$COMPOSE_MUTATION_LOG"
+COMPOSE_PS_FAIL=true
+set +e
+compose_ps_failure_output=$(resolve_single_app_container_id 2>&1)
+compose_ps_failure_status=$?
+set -e
+COMPOSE_PS_FAIL=false
+[ "$compose_ps_failure_status" -ne 0 ] \
+  || fail "compose ps failure unexpectedly degraded to create path"
+printf '%s' "$compose_ps_failure_output" \
+  | grep -F "unable to list app service containers for image provenance" >/dev/null \
+  || fail "compose ps failure error was not explicit"
+if grep -E '^(create|up|run) ' "$COMPOSE_MUTATION_LOG" >/dev/null; then
+  fail "compose ps failure mutated compose state"
+fi
 
 DOCKER_INSPECT_ENV_JSON='["APP_VERSION=stale-env-version","SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567","BUILD_TIMESTAMP=2026-07-05T00:00:00Z"]'
 set +e
@@ -270,6 +325,7 @@ V3_DIR="$TEST_ROOT/v3-archive"
 mkdir -p "$V3_DIR/secrets"
 printf '  config-key-material  \n' > "$V3_DIR/secrets/config-encryption-key"
 CONFIG_KEY_SHA256=$(sha256_trimmed_file "$V3_DIR/secrets/config-encryption-key")
+CONFIG_KEY_FORMAT=$(config_encryption_key_format_from_file "$V3_DIR/secrets/config-encryption-key")
 cat > "$V3_DIR/manifest.env" <<EOF
 FORMAT_VERSION=3
 APP_VERSION=host-checkout-version
@@ -280,8 +336,13 @@ BUILD_TIMESTAMP=2026-07-05T00:00:00Z
 BACKUP_TOOL_COMMIT=$VALID_TOOL_COMMIT
 BACKUP_TOOL_SCRIPT_SHA256=$VALID_TOOL_SHA
 CONFIG_ENCRYPTION_KEY_SHA256=$CONFIG_KEY_SHA256
+CONFIG_ENCRYPTION_KEY_FORMAT=$CONFIG_KEY_FORMAT
 EOF
 
+validate_v3_manifest_file "$V3_DIR/manifest.env" >/dev/null \
+  || fail "valid v3 manifest did not pass shared validator"
+validate_v3_manifest_file "$V3_DIR/manifest.env" backup >/dev/null \
+  || fail "valid backup-side v3 manifest did not pass shared validator"
 read_archive_provenance "$V3_DIR/manifest.env" 3
 [ "$ARCHIVE_RUNTIME_APP_VERSION" = "image-version" ] \
   || fail "v3 provenance did not prefer runtime image app version"
@@ -295,6 +356,8 @@ read_archive_provenance "$V3_DIR/manifest.env" 3
   || fail "v3 provenance did not parse backup tool commit"
 [ "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256" = "$VALID_TOOL_SHA" ] \
   || fail "v3 provenance did not parse backup tool script hash"
+[ "$ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT" = "legacy" ] \
+  || fail "v3 provenance did not parse config encryption key format"
 verify_archive_config_key_fingerprint "$V3_DIR" 3 \
   || fail "v3 config encryption key fingerprint did not match trimmed key material"
 
@@ -309,6 +372,7 @@ BUILD_TIMESTAMP=unknown
 BACKUP_TOOL_COMMIT=dev
 BACKUP_TOOL_SCRIPT_SHA256=$VALID_TOOL_SHA
 CONFIG_ENCRYPTION_KEY_SHA256=$CONFIG_KEY_SHA256
+CONFIG_ENCRYPTION_KEY_FORMAT=legacy
 EOF
 read_archive_provenance "$V3_DEV_DIR/manifest.env" 3
 [ "$ARCHIVE_RUNTIME_APP_VERSION" = "dev" ] \
@@ -332,6 +396,46 @@ set -e
 printf '%s' "$fingerprint_mismatch_output" \
   | grep -F "does not match manifest CONFIG_ENCRYPTION_KEY_SHA256" >/dev/null \
   || fail "v3 fingerprint mismatch error was not explicit"
+
+V3_V1_DIR="$TEST_ROOT/v3-v1-archive"
+mkdir -p "$V3_V1_DIR/secrets"
+printf '  cek1:v1-key-material  \n' > "$V3_V1_DIR/secrets/config-encryption-key"
+V1_CONFIG_KEY_SHA256=$(sha256_trimmed_file "$V3_V1_DIR/secrets/config-encryption-key")
+sed \
+  -e "s/^CONFIG_ENCRYPTION_KEY_SHA256=.*/CONFIG_ENCRYPTION_KEY_SHA256=$V1_CONFIG_KEY_SHA256/" \
+  -e 's/^CONFIG_ENCRYPTION_KEY_FORMAT=.*/CONFIG_ENCRYPTION_KEY_FORMAT=v1/' \
+  "$V3_DIR/manifest.env" > "$V3_V1_DIR/manifest.env"
+verify_archive_config_key_fingerprint "$V3_V1_DIR" 3 \
+  || fail "v3 v1 config encryption key format did not match cek1 key material"
+
+V3_FORMAT_BAD_DIR="$TEST_ROOT/v3-format-bad-archive"
+mkdir -p "$V3_FORMAT_BAD_DIR/secrets"
+cp "$V3_DIR/secrets/config-encryption-key" "$V3_FORMAT_BAD_DIR/secrets/config-encryption-key"
+sed 's/^CONFIG_ENCRYPTION_KEY_FORMAT=.*/CONFIG_ENCRYPTION_KEY_FORMAT=v1/' \
+  "$V3_DIR/manifest.env" > "$V3_FORMAT_BAD_DIR/manifest.env"
+set +e
+format_mismatch_output=$(verify_archive_config_key_fingerprint "$V3_FORMAT_BAD_DIR" 3 2>&1)
+format_mismatch_status=$?
+set -e
+[ "$format_mismatch_status" -ne 0 ] \
+  || fail "v3 config encryption key format mismatch unexpectedly passed"
+printf '%s' "$format_mismatch_output" \
+  | grep -F "does not match manifest CONFIG_ENCRYPTION_KEY_FORMAT" >/dev/null \
+  || fail "v3 format mismatch error was not explicit"
+
+V3_EMPTY_KEY_DIR="$TEST_ROOT/v3-empty-key-archive"
+mkdir -p "$V3_EMPTY_KEY_DIR/secrets"
+printf '   \n' > "$V3_EMPTY_KEY_DIR/secrets/config-encryption-key"
+cp "$V3_DIR/manifest.env" "$V3_EMPTY_KEY_DIR/manifest.env"
+set +e
+empty_key_output=$(verify_archive_config_key_fingerprint "$V3_EMPTY_KEY_DIR" 3 2>&1)
+empty_key_status=$?
+set -e
+[ "$empty_key_status" -ne 0 ] \
+  || fail "v3 whitespace-only config encryption key unexpectedly passed"
+printf '%s' "$empty_key_output" \
+  | grep -F "empty after trimming" >/dev/null \
+  || fail "v3 whitespace-only key error was not explicit"
 
 V3_MISSING_FINGERPRINT_DIR="$TEST_ROOT/v3-missing-fingerprint-archive"
 mkdir -p "$V3_MISSING_FINGERPRINT_DIR/secrets"
@@ -358,7 +462,8 @@ for required_field in \
   BUILD_TIMESTAMP \
   BACKUP_TOOL_COMMIT \
   BACKUP_TOOL_SCRIPT_SHA256 \
-  CONFIG_ENCRYPTION_KEY_SHA256
+  CONFIG_ENCRYPTION_KEY_SHA256 \
+  CONFIG_ENCRYPTION_KEY_FORMAT
 do
   missing_field_manifest="$TEST_ROOT/v3-missing-$required_field.env"
   grep -v "^$required_field=" "$V3_DIR/manifest.env" > "$missing_field_manifest"
@@ -386,6 +491,19 @@ printf '%s' "$duplicate_output" \
   | grep -F "RUNTIME_SOURCE_COMMIT exactly once" >/dev/null \
   || fail "v3 duplicate field error was not explicit"
 
+duplicate_format_manifest="$TEST_ROOT/v3-duplicate-format.env"
+cp "$V3_DIR/manifest.env" "$duplicate_format_manifest"
+printf '%s\n' "CONFIG_ENCRYPTION_KEY_FORMAT=legacy" >> "$duplicate_format_manifest"
+set +e
+duplicate_format_output=$(read_archive_provenance "$duplicate_format_manifest" 3 2>&1)
+duplicate_format_status=$?
+set -e
+[ "$duplicate_format_status" -ne 0 ] \
+  || fail "v3 duplicate config key format unexpectedly passed"
+printf '%s' "$duplicate_format_output" \
+  | grep -F "CONFIG_ENCRYPTION_KEY_FORMAT exactly once" >/dev/null \
+  || fail "v3 duplicate config key format error was not explicit"
+
 bad_hex_manifest="$TEST_ROOT/v3-bad-hex.env"
 sed 's/^BACKUP_TOOL_SCRIPT_SHA256=.*/BACKUP_TOOL_SCRIPT_SHA256=ABCDEF/' \
   "$V3_DIR/manifest.env" > "$bad_hex_manifest"
@@ -407,6 +525,63 @@ set -e
 [ "$bad_image_status" -ne 0 ] || fail "v3 bad image id unexpectedly passed"
 printf '%s' "$bad_image_output" | grep -F "sha256: plus 64 lowercase hex" >/dev/null \
   || fail "v3 bad image id error was not explicit"
+
+backup_unknown_image_manifest="$TEST_ROOT/v3-backup-unknown-image.env"
+sed 's/^RUNTIME_IMAGE_ID=.*/RUNTIME_IMAGE_ID=unknown/' \
+  "$V3_DIR/manifest.env" > "$backup_unknown_image_manifest"
+set +e
+backup_unknown_image_output=$(validate_v3_manifest_file "$backup_unknown_image_manifest" backup 2>&1)
+backup_unknown_image_status=$?
+set -e
+[ "$backup_unknown_image_status" -ne 0 ] \
+  || fail "backup-side v3 manifest with unknown image ID unexpectedly passed"
+printf '%s' "$backup_unknown_image_output" \
+  | grep -F "RUNTIME_IMAGE_ID" >/dev/null \
+  || fail "backup-side unknown image ID error did not name RUNTIME_IMAGE_ID"
+
+bad_timestamp_manifest="$TEST_ROOT/v3-bad-timestamp.env"
+sed 's/^BUILD_TIMESTAMP=.*/BUILD_TIMESTAMP=not-a-timestamp/' \
+  "$V3_DIR/manifest.env" > "$bad_timestamp_manifest"
+set +e
+bad_timestamp_output=$(validate_v3_manifest_file "$bad_timestamp_manifest" 2>&1)
+bad_timestamp_status=$?
+set -e
+[ "$bad_timestamp_status" -ne 0 ] || fail "v3 bad timestamp unexpectedly passed"
+printf '%s' "$bad_timestamp_output" | grep -F "BUILD_TIMESTAMP" >/dev/null \
+  || fail "v3 bad timestamp error did not name BUILD_TIMESTAMP"
+
+bad_commit_manifest="$TEST_ROOT/v3-bad-commit.env"
+sed 's/^RUNTIME_SOURCE_COMMIT=.*/RUNTIME_SOURCE_COMMIT=abc123/' \
+  "$V3_DIR/manifest.env" > "$bad_commit_manifest"
+set +e
+bad_commit_output=$(validate_v3_manifest_file "$bad_commit_manifest" 2>&1)
+bad_commit_status=$?
+set -e
+[ "$bad_commit_status" -ne 0 ] || fail "v3 bad source commit unexpectedly passed"
+printf '%s' "$bad_commit_output" | grep -F "RUNTIME_SOURCE_COMMIT" >/dev/null \
+  || fail "v3 bad source commit error did not name RUNTIME_SOURCE_COMMIT"
+
+bad_format_manifest="$TEST_ROOT/v3-bad-format.env"
+sed 's/^CONFIG_ENCRYPTION_KEY_FORMAT=.*/CONFIG_ENCRYPTION_KEY_FORMAT=v2/' \
+  "$V3_DIR/manifest.env" > "$bad_format_manifest"
+set +e
+bad_format_output=$(read_archive_provenance "$bad_format_manifest" 3 2>&1)
+bad_format_status=$?
+set -e
+[ "$bad_format_status" -ne 0 ] || fail "v3 bad config key format unexpectedly passed"
+printf '%s' "$bad_format_output" | grep -F "CONFIG_ENCRYPTION_KEY_FORMAT must be legacy or v1" >/dev/null \
+  || fail "v3 bad config key format error was not explicit"
+
+empty_format_manifest="$TEST_ROOT/v3-empty-format.env"
+sed 's/^CONFIG_ENCRYPTION_KEY_FORMAT=.*/CONFIG_ENCRYPTION_KEY_FORMAT=/' \
+  "$V3_DIR/manifest.env" > "$empty_format_manifest"
+set +e
+empty_format_output=$(read_archive_provenance "$empty_format_manifest" 3 2>&1)
+empty_format_status=$?
+set -e
+[ "$empty_format_status" -ne 0 ] || fail "v3 empty config key format unexpectedly passed"
+printf '%s' "$empty_format_output" | grep -F "empty CONFIG_ENCRYPTION_KEY_FORMAT" >/dev/null \
+  || fail "v3 empty config key format error was not explicit"
 
 control_manifest="$TEST_ROOT/v3-control.env"
 sed 's/^RUNTIME_APP_VERSION=.*/RUNTIME_APP_VERSION=bad\tversion/' \
@@ -479,6 +654,23 @@ first_destructive_line=$(
 [ "$fingerprint_line" -lt "$first_destructive_line" ] \
   || fail "config key fingerprint check moved after destructive database boundary"
 
+backup_manifest_validation_line=$(
+  awk 'index($0, "validate_v3_manifest_file \"$WORK_DIR/manifest.env\" backup") { print NR; exit }' "$ROOT_DIR/scripts/backup.sh"
+)
+backup_restart_line=$(
+  awk 'index($0, "restart_app_if_needed || fail \"unable to restart app service after consistent backup capture\"") { print NR; exit }' "$ROOT_DIR/scripts/backup.sh"
+)
+backup_checksum_line=$(
+  awk 'index($0, "Generating archive checksums") { print NR; exit }' "$ROOT_DIR/scripts/backup.sh"
+)
+[ -n "$backup_manifest_validation_line" ] || fail "backup.sh does not validate manifest.env after writing it"
+[ -n "$backup_restart_line" ] || fail "backup.sh restart_app_if_needed call was not found"
+[ -n "$backup_checksum_line" ] || fail "backup.sh checksum generation was not found"
+[ "$backup_manifest_validation_line" -lt "$backup_restart_line" ] \
+  || fail "backup manifest validation moved after restart_app_if_needed"
+[ "$backup_manifest_validation_line" -lt "$backup_checksum_line" ] \
+  || fail "backup manifest validation moved after checksum generation"
+
 confirm_line=$(
   awk '/Type RESTORE to continue/ { print NR; exit }' "$ROOT_DIR/scripts/restore.sh"
 )
@@ -493,7 +685,7 @@ preconfirm_create_line=$(
 : > "$COMPOSE_MUTATION_LOG"
 COMPOSE_PS_APP_OUTPUT=""
 read_restore_target_provenance_read_only
-[ "$RUNTIME_APP_VERSION" = "image-version" ] \
+[ "$RUNTIME_APP_VERSION" = "compose-config-version" ] \
   || fail "read-only restore provenance did not inspect compose image labels"
 if grep -E '^(create|up|run) ' "$COMPOSE_MUTATION_LOG" >/dev/null; then
   fail "read-only restore provenance mutated compose state"
@@ -528,6 +720,7 @@ LATEST_MIGRATION_HASH=unused-before-confirmation
 MIGRATION_IDENTITIES_JSON=[]
 CONFIG_ENCRYPTION_KEY_FILE=/app/secrets/config-encryption-key
 CONFIG_ENCRYPTION_KEY_SHA256=$CONFIG_KEY_SHA256
+CONFIG_ENCRYPTION_KEY_FORMAT=legacy
 SESSION_SECRET_SOURCE=external
 SESSION_SECRET_SHA256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 BACKUP_WINDOW_NOTE=restore cancellation fixture
@@ -622,6 +815,8 @@ set -e
 [ "$restore_cancel_status" -ne 0 ] || fail "declined restore unexpectedly succeeded"
 printf '%s' "$restore_cancel_output" | grep -F "restore cancelled" >/dev/null \
   || fail "declined restore did not reach cancellation prompt"
+printf '%s' "$restore_cancel_output" | grep -F "Config key format: legacy" >/dev/null \
+  || fail "declined v3 restore prompt did not show config key format"
 if grep -E '^compose (create|up|run)' "$RESTORE_CANCEL_MUTATION_LOG" >/dev/null; then
   fail "declined restore performed compose create/up/run before confirmation"
 fi

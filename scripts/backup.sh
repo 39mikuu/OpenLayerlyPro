@@ -227,6 +227,8 @@ fix_workspace_permissions
 chmod 600 "$WORK_DIR/secrets/config-encryption-key" || fail "unable to secure config encryption key in backup workspace"
 CONFIG_ENCRYPTION_KEY_SHA256=$(sha256_trimmed_file "$WORK_DIR/secrets/config-encryption-key") \
   || fail "unable to fingerprint config encryption key"
+CONFIG_ENCRYPTION_KEY_FORMAT=$(config_encryption_key_format_from_file "$WORK_DIR/secrets/config-encryption-key") \
+  || fail "config encryption key is empty after trimming"
 
 if [ "$SESSION_SECRET_SOURCE" = file ]; then
   echo "Backing up session secret file..."
@@ -291,6 +293,7 @@ BACKUP_TOOL_SCRIPT_SHA256=$(sha256sum "$ROOT_DIR/scripts/backup.sh" | awk '{prin
   echo "MIGRATION_IDENTITIES_JSON=$MIGRATION_IDENTITIES_JSON"
   echo "CONFIG_ENCRYPTION_KEY_FILE=$CONFIG_KEY_FILE"
   echo "CONFIG_ENCRYPTION_KEY_SHA256=$CONFIG_ENCRYPTION_KEY_SHA256"
+  echo "CONFIG_ENCRYPTION_KEY_FORMAT=$CONFIG_ENCRYPTION_KEY_FORMAT"
   echo "SESSION_SECRET_SOURCE=$SESSION_SECRET_SOURCE"
   if [ "$SESSION_SECRET_SOURCE" = file ]; then
     echo "SESSION_SECRET_FILE=$SESSION_SECRET_FILE"
@@ -300,6 +303,9 @@ BACKUP_TOOL_SCRIPT_SHA256=$(sha256sum "$ROOT_DIR/scripts/backup.sh" | awk '{prin
   fi
   echo "BACKUP_WINDOW_NOTE=$BACKUP_WINDOW_NOTE"
 } > "$WORK_DIR/manifest.env"
+
+validate_v3_manifest_file "$WORK_DIR/manifest.env" backup >/dev/null \
+  || fail "backup manifest v3 validation failed"
 
 # The snapshot is now fully copied into the private workspace. End the maintenance
 # window before checksum/tar work; cleanup still retries restart if this explicit restart

@@ -256,6 +256,9 @@ if [ "$ASSUME_YES" != true ]; then
   echo "  Build timestamp: $ARCHIVE_BUILD_TIMESTAMP"
   echo "  Backup tool commit: $ARCHIVE_BACKUP_TOOL_COMMIT"
   echo "  Backup tool script SHA-256: $ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256"
+  if [ "$FORMAT_VERSION" = "3" ]; then
+    echo "  Config key format: $ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT"
+  fi
   echo "Target provenance:"
   echo "  Runtime app version: $TARGET_RUNTIME_APP_VERSION"
   echo "  Runtime source commit: $TARGET_RUNTIME_SOURCE_COMMIT"

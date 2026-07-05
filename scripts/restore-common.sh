@@ -116,6 +116,19 @@ sha256_trimmed_file() {
   ' "$file_path"
 }
 
+config_encryption_key_format_from_file() {
+  file_path=$1
+  node -e '
+    const { readFileSync } = require("fs");
+    const value = readFileSync(process.argv[1], "utf8").trim();
+    if (value.length === 0) {
+      console.error("config encryption key is empty after trimming");
+      process.exit(1);
+    }
+    process.stdout.write(value.startsWith("cek1:") ? "v1" : "legacy");
+  ' "$file_path"
+}
+
 image_provenance_from_inspect() {
   image_ref=$1
 
@@ -196,18 +209,6 @@ check_app_container_env_matches_image() {
     || fail "app container environment overrides the image build identity; remove stale APP_VERSION/SOURCE_COMMIT/BUILD_TIMESTAMP overrides (for example in .env) before backup/restore"
 }
 
-resolve_single_app_container_id() {
-  compose create app >/dev/null
-  container_ids=$(compose ps -aq app)
-  [ -n "$container_ids" ] || fail "unable to resolve app service container for image provenance"
-
-  container_count=$(printf '%s\n' "$container_ids" | sed '/^$/d' | wc -l | tr -d ' ')
-  [ "$container_count" = "1" ] \
-    || fail "multiple app service containers found; remove stale containers or scale to 1 before backup/restore"
-
-  printf '%s' "$container_ids"
-}
-
 resolve_existing_single_app_container_id() {
   container_ids=$(compose ps -aq app) || return 3
   [ -n "$container_ids" ] || return 1
@@ -219,6 +220,48 @@ resolve_existing_single_app_container_id() {
   fi
 
   printf '%s' "$container_ids"
+}
+
+resolve_single_app_container_id() {
+  set +e
+  container_id=$(resolve_existing_single_app_container_id)
+  container_status=$?
+  set -e
+  case "$container_status" in
+    0)
+      printf '%s' "$container_id"
+      return
+      ;;
+    1)
+      ;;
+    2)
+      fail "multiple app service containers found; remove stale containers or scale to 1 before backup/restore"
+      ;;
+    *)
+      fail "unable to list app service containers for image provenance"
+      ;;
+  esac
+
+  compose create app >/dev/null || fail "unable to create app service container for image provenance"
+
+  set +e
+  container_id=$(resolve_existing_single_app_container_id)
+  container_status=$?
+  set -e
+  case "$container_status" in
+    0)
+      printf '%s' "$container_id"
+      ;;
+    1)
+      fail "unable to resolve app service container for image provenance"
+      ;;
+    2)
+      fail "multiple app service containers found; remove stale containers or scale to 1 before backup/restore"
+      ;;
+    *)
+      fail "unable to list app service containers for image provenance"
+      ;;
+  esac
 }
 
 read_app_container_provenance() {
@@ -269,8 +312,8 @@ read_restore_target_provenance_read_only() {
   set -e
   case "$container_status" in
     0)
-    read_app_container_provenance "$container_id"
-    return
+      read_app_container_provenance "$container_id"
+      return
       ;;
     1)
       ;;
@@ -295,146 +338,95 @@ read_restore_target_provenance_read_only() {
   fi
 }
 
-manifest_v3_required_value() {
+validate_v3_manifest_file() {
   manifest_path=$1
-  key=$2
-  validator=$3
-  max_length=$4
+  image_id_mode=${2:-restore}
 
   node -e '
     const { readFileSync } = require("fs");
     const manifestPath = process.argv[1];
-    const requestedKey = process.argv[2];
-    const requestedValidator = process.argv[3];
-    const requestedMaxLength = Number(process.argv[4]);
+    const imageIdMode = process.argv[2];
     const fail = (message) => {
-      console.error(`restore: ${message}`);
+      console.error(`manifest: ${message}`);
       process.exit(1);
     };
-    const values = [];
+    const specs = {
+      RUNTIME_APP_VERSION: { validator: "app_version", maxLength: 100 },
+      RUNTIME_SOURCE_COMMIT: { validator: "commit", maxLength: 200 },
+      RUNTIME_IMAGE_ID: { validator: "image_id", maxLength: 200 },
+      BUILD_TIMESTAMP: { validator: "timestamp", maxLength: 200 },
+      BACKUP_TOOL_COMMIT: { validator: "commit", maxLength: 200 },
+      BACKUP_TOOL_SCRIPT_SHA256: { validator: "sha256", maxLength: 200 },
+      CONFIG_ENCRYPTION_KEY_SHA256: { validator: "sha256", maxLength: 200 },
+      CONFIG_ENCRYPTION_KEY_FORMAT: { validator: "key_format", maxLength: 20 },
+    };
+    const values = new Map(Object.keys(specs).map((key) => [key, []]));
     for (const rawLine of readFileSync(manifestPath, "utf8").split("\n")) {
       const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-      if (!line.startsWith(`${requestedKey}=`)) continue;
-      values.push(line.slice(requestedKey.length + 1));
+      const equals = line.indexOf("=");
+      if (equals <= 0) continue;
+      const key = line.slice(0, equals);
+      if (!values.has(key)) continue;
+      values.get(key).push(line.slice(equals + 1));
     }
-    if (values.length !== 1) {
-      fail(`FORMAT_VERSION=3 archive manifest must contain ${requestedKey} exactly once`);
+    const validate = (key, value, spec) => {
+      if (value.length === 0) fail(`FORMAT_VERSION=3 archive manifest has empty ${key}`);
+      if (value.length > spec.maxLength) fail(`FORMAT_VERSION=3 archive manifest ${key} is too long`);
+      if (/[\x00-\x1F\x7F]/.test(value)) fail(`FORMAT_VERSION=3 archive manifest ${key} contains control characters`);
+      switch (spec.validator) {
+        case "sha256":
+          if (!/^[0-9a-f]{64}$/.test(value)) fail(`FORMAT_VERSION=3 archive manifest ${key} must be 64 lowercase hex characters`);
+          break;
+        case "image_id":
+          if (imageIdMode === "backup") {
+            if (!/^sha256:[0-9a-f]{64}$/.test(value)) {
+              fail(`FORMAT_VERSION=3 archive manifest ${key} must be sha256: plus 64 lowercase hex characters for backup archives`);
+            }
+          } else if (value !== "unknown" && !/^sha256:[0-9a-f]{64}$/.test(value)) {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must be sha256: plus 64 lowercase hex characters or unknown`);
+          }
+          break;
+        case "commit":
+          if (value !== "dev" && value !== "unknown" && !/^[0-9a-f]{40}$/.test(value)) {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must be 40 lowercase hex characters, dev, or unknown`);
+          }
+          break;
+        case "timestamp":
+          if (value !== "unknown" && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/.test(value)) {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must be RFC3339 UTC or unknown`);
+          }
+          break;
+        case "app_version":
+          if (!/^[!-~]+$/.test(value)) {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must be printable single-line ASCII without whitespace`);
+          }
+          break;
+        case "key_format":
+          if (value !== "legacy" && value !== "v1") {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must be legacy or v1`);
+          }
+          break;
+        default:
+          fail(`unknown FORMAT_VERSION=3 validator for ${key}`);
+      }
+    };
+    const parsed = {};
+    for (const [key, spec] of Object.entries(specs)) {
+      const matches = values.get(key);
+      if (matches.length !== 1) fail(`FORMAT_VERSION=3 archive manifest must contain ${key} exactly once`);
+      const value = matches[0];
+      validate(key, value, spec);
+      parsed[key] = value;
     }
-    const value = values[0];
-    if (value.length === 0) {
-      fail(`FORMAT_VERSION=3 archive manifest has empty ${requestedKey}`);
-    }
-    if (value.length > requestedMaxLength) {
-      fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} is too long`);
-    }
-    if (/[\x00-\x1F\x7F]/.test(value)) {
-      fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} contains control characters`);
-    }
-    switch (requestedValidator) {
-      case "sha256":
-        if (!/^[0-9a-f]{64}$/.test(value)) {
-          fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} must be 64 lowercase hex characters`);
-        }
-        break;
-      case "image_id":
-        if (value !== "unknown" && !/^sha256:[0-9a-f]{64}$/.test(value)) {
-          fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} must be sha256: plus 64 lowercase hex characters or unknown`);
-        }
-        break;
-      case "commit":
-        if (value !== "dev" && value !== "unknown" && !/^[0-9a-f]{40}$/.test(value)) {
-          fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} must be 40 lowercase hex characters, dev, or unknown`);
-        }
-        break;
-      case "timestamp":
-        if (value !== "unknown" && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/.test(value)) {
-          fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} must be RFC3339 UTC or unknown`);
-        }
-        break;
-      case "app_version":
-        if (!/^[!-~]+$/.test(value)) {
-          fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} must be printable single-line ASCII without whitespace`);
-        }
-        break;
-      default:
-        fail(`unknown FORMAT_VERSION=3 validator for ${requestedKey}`);
-    }
-    process.stdout.write(value);
-  ' "$manifest_path" "$key" "$validator" "$max_length" \
-    || fail "invalid FORMAT_VERSION=3 archive manifest $key"
+    process.stdout.write(JSON.stringify(parsed));
+  ' "$manifest_path" "$image_id_mode" \
+    || fail "invalid FORMAT_VERSION=3 archive manifest"
 }
 
 read_archive_provenance_v3() {
   manifest_path=$1
-  provenance_json=$(
-    node -e '
-      const { readFileSync } = require("fs");
-      const manifestPath = process.argv[1];
-      const fail = (message) => {
-        console.error(`restore: ${message}`);
-        process.exit(1);
-      };
-      const specs = {
-        RUNTIME_APP_VERSION: { validator: "app_version", maxLength: 100 },
-        RUNTIME_SOURCE_COMMIT: { validator: "commit", maxLength: 200 },
-        RUNTIME_IMAGE_ID: { validator: "image_id", maxLength: 200 },
-        BUILD_TIMESTAMP: { validator: "timestamp", maxLength: 200 },
-        BACKUP_TOOL_COMMIT: { validator: "commit", maxLength: 200 },
-        BACKUP_TOOL_SCRIPT_SHA256: { validator: "sha256", maxLength: 200 },
-        CONFIG_ENCRYPTION_KEY_SHA256: { validator: "sha256", maxLength: 200 },
-      };
-      const values = new Map(Object.keys(specs).map((key) => [key, []]));
-      for (const rawLine of readFileSync(manifestPath, "utf8").split("\n")) {
-        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-        const equals = line.indexOf("=");
-        if (equals <= 0) continue;
-        const key = line.slice(0, equals);
-        if (!values.has(key)) continue;
-        values.get(key).push(line.slice(equals + 1));
-      }
-      const validate = (key, value, spec) => {
-        if (value.length === 0) fail(`FORMAT_VERSION=3 archive manifest has empty ${key}`);
-        if (value.length > spec.maxLength) fail(`FORMAT_VERSION=3 archive manifest ${key} is too long`);
-        if (/[\x00-\x1F\x7F]/.test(value)) fail(`FORMAT_VERSION=3 archive manifest ${key} contains control characters`);
-        switch (spec.validator) {
-          case "sha256":
-            if (!/^[0-9a-f]{64}$/.test(value)) fail(`FORMAT_VERSION=3 archive manifest ${key} must be 64 lowercase hex characters`);
-            break;
-          case "image_id":
-            if (value !== "unknown" && !/^sha256:[0-9a-f]{64}$/.test(value)) {
-              fail(`FORMAT_VERSION=3 archive manifest ${key} must be sha256: plus 64 lowercase hex characters or unknown`);
-            }
-            break;
-          case "commit":
-            if (value !== "dev" && value !== "unknown" && !/^[0-9a-f]{40}$/.test(value)) {
-              fail(`FORMAT_VERSION=3 archive manifest ${key} must be 40 lowercase hex characters, dev, or unknown`);
-            }
-            break;
-          case "timestamp":
-            if (value !== "unknown" && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/.test(value)) {
-              fail(`FORMAT_VERSION=3 archive manifest ${key} must be RFC3339 UTC or unknown`);
-            }
-            break;
-          case "app_version":
-            if (!/^[!-~]+$/.test(value)) {
-              fail(`FORMAT_VERSION=3 archive manifest ${key} must be printable single-line ASCII without whitespace`);
-            }
-            break;
-          default:
-            fail(`unknown FORMAT_VERSION=3 validator for ${key}`);
-        }
-      };
-      const parsed = {};
-      for (const [key, spec] of Object.entries(specs)) {
-        const matches = values.get(key);
-        if (matches.length !== 1) fail(`FORMAT_VERSION=3 archive manifest must contain ${key} exactly once`);
-        const value = matches[0];
-        validate(key, value, spec);
-        parsed[key] = value;
-      }
-      process.stdout.write(JSON.stringify(parsed));
-    ' "$manifest_path"
-  ) || fail "invalid FORMAT_VERSION=3 archive manifest"
+  provenance_json=$(validate_v3_manifest_file "$manifest_path") \
+    || fail "invalid FORMAT_VERSION=3 archive manifest"
 
   ARCHIVE_RUNTIME_APP_VERSION=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).RUNTIME_APP_VERSION)' "$provenance_json")
   ARCHIVE_RUNTIME_SOURCE_COMMIT=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).RUNTIME_SOURCE_COMMIT)' "$provenance_json")
@@ -443,9 +435,10 @@ read_archive_provenance_v3() {
   ARCHIVE_BACKUP_TOOL_COMMIT=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).BACKUP_TOOL_COMMIT)' "$provenance_json")
   ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).BACKUP_TOOL_SCRIPT_SHA256)' "$provenance_json")
   ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).CONFIG_ENCRYPTION_KEY_SHA256)' "$provenance_json")
+  ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).CONFIG_ENCRYPTION_KEY_FORMAT)' "$provenance_json")
   : "$ARCHIVE_RUNTIME_APP_VERSION" "$ARCHIVE_RUNTIME_SOURCE_COMMIT" "$ARCHIVE_RUNTIME_IMAGE_ID" \
     "$ARCHIVE_BUILD_TIMESTAMP" "$ARCHIVE_BACKUP_TOOL_COMMIT" "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256" \
-    "$ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256"
+    "$ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256" "$ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT"
 }
 
 read_archive_provenance() {
@@ -464,9 +457,10 @@ read_archive_provenance() {
   ARCHIVE_BACKUP_TOOL_COMMIT=$(manifest_value_or_default "$manifest_path" BACKUP_TOOL_COMMIT "unknown")
   ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256=$(manifest_value_or_default "$manifest_path" BACKUP_TOOL_SCRIPT_SHA256 "unknown")
   ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256=$(manifest_value_or_default "$manifest_path" CONFIG_ENCRYPTION_KEY_SHA256 "unknown")
+  ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT=""
   : "$ARCHIVE_RUNTIME_APP_VERSION" "$ARCHIVE_RUNTIME_SOURCE_COMMIT" "$ARCHIVE_RUNTIME_IMAGE_ID" \
     "$ARCHIVE_BUILD_TIMESTAMP" "$ARCHIVE_BACKUP_TOOL_COMMIT" "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256" \
-    "$ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256"
+    "$ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256" "$ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT"
 }
 
 warn_legacy_provenance_if_needed() {
@@ -483,12 +477,20 @@ verify_archive_config_key_fingerprint() {
   format_version=$2
 
   if [ "$format_version" = "3" ]; then
-    expected_config_encryption_key_sha256=$(manifest_v3_required_value "$payload_dir/manifest.env" CONFIG_ENCRYPTION_KEY_SHA256 sha256 200) \
+    manifest_json=$(validate_v3_manifest_file "$payload_dir/manifest.env") \
+      || fail "invalid FORMAT_VERSION=3 archive manifest"
+    expected_config_encryption_key_sha256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).CONFIG_ENCRYPTION_KEY_SHA256)' "$manifest_json") \
       || fail "invalid FORMAT_VERSION=3 archive manifest CONFIG_ENCRYPTION_KEY_SHA256"
+    expected_config_encryption_key_format=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).CONFIG_ENCRYPTION_KEY_FORMAT)' "$manifest_json") \
+      || fail "invalid FORMAT_VERSION=3 archive manifest CONFIG_ENCRYPTION_KEY_FORMAT"
     actual_config_encryption_key_sha256=$(sha256_trimmed_file "$payload_dir/secrets/config-encryption-key") \
       || fail "unable to fingerprint archived config encryption key"
+    actual_config_encryption_key_format=$(config_encryption_key_format_from_file "$payload_dir/secrets/config-encryption-key") \
+      || fail "archived config encryption key is empty after trimming"
     [ "$actual_config_encryption_key_sha256" = "$expected_config_encryption_key_sha256" ] \
       || fail "archived config encryption key does not match manifest CONFIG_ENCRYPTION_KEY_SHA256"
+    [ "$actual_config_encryption_key_format" = "$expected_config_encryption_key_format" ] \
+      || fail "archived config encryption key format does not match manifest CONFIG_ENCRYPTION_KEY_FORMAT"
   else
     echo "WARNING: FORMAT_VERSION=$format_version archive has no CONFIG_ENCRYPTION_KEY_SHA256 fingerprint; relying on decrypt probe only" >&2
   fi

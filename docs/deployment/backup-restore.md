@@ -78,16 +78,19 @@ that produced the archive; they are deliberately separate from the runtime image
 File-backed archives record the container path and `secrets/session-secret`; external
 sources record only `SESSION_SECRET_SHA256`.
 
-For `FORMAT_VERSION=3`, restore treats the runtime provenance and config-key fingerprint
-fields as required manifest fields. Missing, duplicated, empty, control-character-bearing,
-or malformed values fail before any destructive restore step. Legacy v1/v2 archives keep
-their compatibility defaults and warning path.
+For `FORMAT_VERSION=3`, restore treats the runtime provenance, config-key fingerprint,
+and `CONFIG_ENCRYPTION_KEY_FORMAT` fields as required manifest fields. Missing,
+duplicated, empty, control-character-bearing, or malformed values fail before any
+destructive restore step. Legacy v1/v2 archives keep their compatibility defaults and
+warning path. `CONFIG_ENCRYPTION_KEY_FORMAT` is derived from the trimmed archived key
+material: keys beginning with `cek1:` are `v1`; any other non-empty key is `legacy`.
 
 `CONFIG_ENCRYPTION_KEY_SHA256` is the SHA-256 of the archived config key after trimming
 leading/trailing whitespace, matching the runtime readers' `.trim()` semantics. Restore
-checks this fingerprint before the destructive boundary. The fingerprint proves the
-archived key file still matches the manifest; the existing decrypt probe separately
-proves that key can decrypt archived encrypted settings.
+checks this fingerprint and the derived `CONFIG_ENCRYPTION_KEY_FORMAT` before the
+destructive boundary. The fingerprint proves the archived key file still matches the
+manifest; the existing decrypt probe separately proves that key can decrypt archived
+encrypted settings. A whitespace-only archived config key fails closed.
 
 `checksums.sha256` covers every regular-file payload member except the root `./checksums.sha256` manifest itself (nested upload files named `checksums.sha256` remain covered). On v2/v3 archives, `restore.sh` rejects symlinks and special files, verifies checksums, and then enforces a strict bijection: every extracted regular-file payload must appear exactly once in the manifest, and every manifest entry must have a matching payload file. The parser reads the fixed-width GNU checksum prefix, so ordinary filenames containing spaces are preserved exactly.
 
@@ -163,8 +166,8 @@ That flag only relaxes **unknown** v1 history. It cannot bypass confirmed newer/
 validate archive paths
 → verify v2/v3 checksums and manifest/payload bijection (v1 warns and continues)
 → warn for v1/v2 image-provenance gaps
-→ strictly validate required v3 provenance and config-key fingerprint fields
-→ verify v3 CONFIG_ENCRYPTION_KEY_SHA256 against the archived trimmed key material
+→ strictly validate required v3 provenance and config-key fingerprint/format fields
+→ verify v3 CONFIG_ENCRYPTION_KEY_SHA256 and CONFIG_ENCRYPTION_KEY_FORMAT against the archived trimmed key material
 → warn, never reject, on archive-vs-target image version/commit/image mismatches
 → v2/v3 manifest compatibility check, or v1 isolated temporary-DB schema probe
 → validate external SESSION_SECRET or restore the checksummed file-backed secret
@@ -188,7 +191,7 @@ Key invariants:
 - missing objects become quarantine/410, not storage 500;
 - only convergence may re-enqueue deletion for confirmed orphans;
 - any migrator/backfill/neutralization/convergence error prevents normal app startup;
-- v3 `CONFIG_ENCRYPTION_KEY_SHA256` is checked against the archived key file before the official database, secrets, or uploads are replaced. This is complementary to the decrypt probe: fingerprint mismatch means archive integrity failure; decrypt failure means the archived key cannot read archived ciphertext;
+- v3 `CONFIG_ENCRYPTION_KEY_SHA256` and `CONFIG_ENCRYPTION_KEY_FORMAT` are checked against the archived key file before the official database, secrets, or uploads are replaced. This is complementary to the decrypt probe: fingerprint mismatch means archive integrity failure; decrypt failure means the archived key cannot read archived ciphertext;
 - archive-vs-target runtime app version, source commit, and image ID mismatches are warnings only. Migration identity remains the hard compatibility gate. If an existing target app container sets `APP_VERSION`, `SOURCE_COMMIT`, or `BUILD_TIMESTAMP` to values that conflict with non-`unknown` image labels, backup/restore fails loudly because the container environment is overriding the image build identity;
 - before replacing the official database, restore extracts archived `app_settings` rows into an isolated scratch database and verifies the archived config key can decrypt every encrypted setting. Missing or empty `app_settings` data logs an explicit skip. After convergence, restore runs the same probe against the restored database to verify the active runtime key and fully restored state before app startup;
 - S3 convergence enumerates only controlled application key namespaces (`avatars/`, `payment-qr/`, `payment-proof/`, `content/`, `legacy/`, `remediated/`). Override with comma-separated `RESTORE_S3_ENUM_PREFIXES` when needed;
