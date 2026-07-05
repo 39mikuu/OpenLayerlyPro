@@ -51,8 +51,25 @@ function subscriptionMetadata(subscription: Stripe.Subscription): Record<string,
   return (subscription.metadata ?? {}) as Record<string, string>;
 }
 
+function firstNonEmptyMetadata(
+  metadata: Stripe.Metadata | null | undefined,
+): Record<string, string> | null {
+  if (!metadata || Object.keys(metadata).length === 0) return null;
+  return metadata as Record<string, string>;
+}
+
 function invoiceMetadata(invoice: Stripe.Invoice): Record<string, string> {
-  return (invoice.metadata ?? {}) as Record<string, string>;
+  const basilMetadata = firstNonEmptyMetadata(invoice.parent?.subscription_details?.metadata);
+  if (basilMetadata) return basilMetadata;
+
+  // Legacy pre-basil pinned accounts exposed subscription details at the invoice top level.
+  const legacyMetadata = firstNonEmptyMetadata(
+    (invoice as unknown as { subscription_details?: { metadata?: Stripe.Metadata | null } })
+      .subscription_details?.metadata,
+  );
+  if (legacyMetadata) return legacyMetadata;
+
+  return firstNonEmptyMetadata(invoice.metadata) ?? {};
 }
 
 function invoicePaymentIntentRef(payment: Stripe.InvoicePayment | null | undefined): string | null {

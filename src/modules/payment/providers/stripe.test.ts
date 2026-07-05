@@ -523,10 +523,7 @@ describe("Stripe payment provider", () => {
             ],
           },
           currency: "USD",
-          metadata: {
-            subscriptionId: "44444444-4444-4444-8444-444444444444",
-            providerPriceRef: "price_basil",
-          },
+          metadata: {},
           lines: {
             data: [
               {
@@ -556,6 +553,57 @@ describe("Stripe payment provider", () => {
         currency: "usd",
       },
     );
+  });
+
+  it("normalizes legacy subscription-details invoice metadata before root metadata", async () => {
+    const { instance, constructEvent } = provider();
+    constructEvent.mockReturnValue({
+      id: "evt_invoice_legacy_subscription_details",
+      created: 1767225600,
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_legacy_subscription_details",
+          subscription: "sub_legacy_subscription_details",
+          payment_intent: "pi_legacy_subscription_details",
+          currency: "USD",
+          subscription_details: {
+            metadata: {
+              subscriptionId: "77777777-7777-4777-8777-777777777777",
+              providerPriceRef: "price_legacy_details",
+            },
+          },
+          metadata: {
+            subscriptionId: "root-should-not-win",
+            providerPriceRef: "root-price-should-not-win",
+          },
+          lines: {
+            data: [
+              {
+                price: { id: "price_legacy_details" },
+                amount: 900,
+                period: { start: 1767225600, end: 1769904000 },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    await expect(
+      instance.parseWebhook(Buffer.from("invoice-legacy-subscription-details"), "sig"),
+    ).resolves.toMatchObject({
+      type: "subscription_renewed",
+      localSubscriptionId: "77777777-7777-4777-8777-777777777777",
+      providerSubscriptionRef: "sub_legacy_subscription_details",
+      providerInvoiceRef: "in_legacy_subscription_details",
+      providerPaymentRef: "pi_legacy_subscription_details",
+      providerPriceRef: "price_legacy_details",
+      lines: [
+        expect.objectContaining({ providerPriceRef: "price_legacy_details", amountMinor: 900 }),
+      ],
+      currency: "usd",
+    });
   });
 
   it("normalizes ambiguous invoice lines for the application layer to reject by snapshot", async () => {
@@ -664,7 +712,7 @@ describe("Stripe payment provider", () => {
           metadata: { subscriptionId: "66666666-6666-4666-8666-666666666666" },
         },
       },
-      metadata: { subscriptionId: "66666666-6666-4666-8666-666666666666" },
+      metadata: {},
     });
 
     await expect(instance.resolveInvoiceByPaymentIntent("pi_basil_refund")).resolves.toEqual({

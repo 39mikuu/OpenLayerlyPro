@@ -213,25 +213,32 @@ describeWithDatabase("Stripe subscription integration", () => {
     });
   });
 
-  it("keeps a reversal-first invoice tombstone from granting later paid events", async () => {
+  it("keeps a resolver-found basil refund tombstone from granting a later paid invoice", async () => {
     const { user, subscription } = await seedSubscription();
     const event = paidInvoiceEvent({
       localSubscriptionId: subscription.id,
-      providerInvoiceRef: "in_refund_first",
+      providerInvoiceRef: "in_refund_first_basil",
+      providerPaymentRef: "pi_refund_first_basil",
+    });
+    providerMocks.resolveInvoiceByPaymentIntent.mockResolvedValue({
+      providerInvoiceRef: event.providerInvoiceRef,
+      providerSubscriptionRef: subscription.providerSubscriptionRef,
+      localSubscriptionId: subscription.id,
     });
 
     await db.transaction((tx) =>
       applySubscriptionReversalOrTombstone(tx, "stripe", {
         type: "refunded",
-        paymentRef: "pi_refund_first",
-        providerInvoiceRef: event.providerInvoiceRef,
-        providerEventId: "evt_refund_first",
+        paymentRef: event.providerPaymentRef!,
+        providerEventId: "evt_refund_first_basil",
         providerCreatedAt: new Date("2026-01-31T23:59:00.000Z"),
-        localSubscriptionId: subscription.id,
-      } as never),
+      }),
     );
     await db.transaction((tx) => applyPaidInvoice(tx, "stripe", event));
 
+    expect(providerMocks.resolveInvoiceByPaymentIntent).toHaveBeenCalledWith(
+      event.providerPaymentRef,
+    );
     await expect(
       db.select().from(memberships).where(eq(memberships.userId, user.id)),
     ).resolves.toHaveLength(0);
@@ -239,7 +246,46 @@ describeWithDatabase("Stripe subscription integration", () => {
     expect(request).toMatchObject({
       status: "reversed",
       providerInvoiceRef: event.providerInvoiceRef,
-      reversalEventId: "evt_refund_first",
+      subscriptionId: subscription.id,
+      reversalEventId: "evt_refund_first_basil",
+    });
+  });
+
+  it("creates a resolver-found tombstone by provider subscription ref when invoice metadata is missing", async () => {
+    const { user, subscription } = await seedSubscription();
+    const event = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_refund_first_provider_ref",
+      providerPaymentRef: "pi_refund_first_provider_ref",
+    });
+    providerMocks.resolveInvoiceByPaymentIntent.mockResolvedValue({
+      providerInvoiceRef: event.providerInvoiceRef,
+      providerSubscriptionRef: subscription.providerSubscriptionRef,
+      localSubscriptionId: undefined,
+    });
+
+    await db.transaction((tx) =>
+      applySubscriptionReversalOrTombstone(tx, "stripe", {
+        type: "refunded",
+        paymentRef: event.providerPaymentRef!,
+        providerEventId: "evt_refund_first_provider_ref",
+        providerCreatedAt: new Date("2026-01-31T23:59:00.000Z"),
+      }),
+    );
+    await db.transaction((tx) => applyPaidInvoice(tx, "stripe", event));
+
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(0);
+    const [request] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.providerInvoiceRef, event.providerInvoiceRef));
+    expect(request).toMatchObject({
+      status: "reversed",
+      providerInvoiceRef: event.providerInvoiceRef,
+      subscriptionId: subscription.id,
+      reversalEventId: "evt_refund_first_provider_ref",
     });
   });
 
