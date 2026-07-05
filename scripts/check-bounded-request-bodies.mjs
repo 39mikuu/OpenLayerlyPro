@@ -49,6 +49,42 @@ function getBodyRead(call, aliases) {
   return null;
 }
 
+function expressionContainsRequestAlias(expression, aliases) {
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isIdentifier(unwrapped)) return aliases.has(unwrapped.text);
+  if (isRequestCloneExpression(unwrapped, aliases)) return true;
+  if (isRequestConstructionExpression(unwrapped, aliases)) return true;
+  if (ts.isObjectLiteralExpression(unwrapped)) {
+    return unwrapped.properties.some((property) => {
+      if (ts.isPropertyAssignment(property)) {
+        return expressionContainsRequestAlias(property.initializer, aliases);
+      }
+      if (ts.isShorthandPropertyAssignment(property)) {
+        return expressionContainsRequestAlias(property.name, aliases);
+      }
+      if (ts.isSpreadAssignment(property)) {
+        return expressionContainsRequestAlias(property.expression, aliases);
+      }
+      return false;
+    });
+  }
+  if (ts.isArrayLiteralExpression(unwrapped)) {
+    return unwrapped.elements.some((element) => {
+      if (ts.isSpreadElement(element)) {
+        return expressionContainsRequestAlias(element.expression, aliases);
+      }
+      return expressionContainsRequestAlias(element, aliases);
+    });
+  }
+  return false;
+}
+
+function getRequestContainerEscape(node, aliases) {
+  if (!ts.isObjectLiteralExpression(node) && !ts.isArrayLiteralExpression(node)) return null;
+  if (!expressionContainsRequestAlias(node, aliases)) return null;
+  return { requestName: "request container", method: "container" };
+}
+
 export function findDirectBodyReads(source, fileName = "route.ts") {
   const sourceFile = ts.createSourceFile(
     fileName,
@@ -72,6 +108,17 @@ export function findDirectBodyReads(source, fileName = "route.ts") {
             line: position.line + 1,
             column: position.character + 1,
             ...bodyRead,
+          });
+        }
+      }
+      if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) {
+        const containerEscape = getRequestContainerEscape(node, aliases);
+        if (containerEscape) {
+          const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+          violations.push({
+            line: position.line + 1,
+            column: position.character + 1,
+            ...containerEscape,
           });
         }
       }

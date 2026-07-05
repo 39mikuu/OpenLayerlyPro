@@ -707,6 +707,54 @@ describe("auth-before-body static check", () => {
 
   it.each([
     [
+      "object-literal request container",
+      "container-object-before/route.ts",
+      `const box = { request: req };
+          const body = await box.request.json();`,
+    ],
+    [
+      "array-literal request container",
+      "container-array-before/route.ts",
+      `const box = [req];
+          const body = await box[0].json();`,
+    ],
+    [
+      "nested request container",
+      "container-nested-before/route.ts",
+      `const box = { a: [req] };
+          const body = await box.a[0].json();`,
+    ],
+  ])("flags %s before auth as manual review", async (_name, relativePath, containerRead) => {
+    const root = await createFixture({
+      [relativePath]: `${imports()}
+        export async function POST(req: Request) {
+          ${containerRead}
+          await requireAdmin();
+          return Response.json({ body });
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("request stored in a container before auth"),
+    });
+  });
+
+  it("passes request container creation after auth", async () => {
+    const root = await createFixture({
+      "container-object-after/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          await requireAdmin();
+          const box = { request: req };
+          const body = await box.request.json();
+          return Response.json({ body });
+        }`,
+    });
+
+    await expect(runCheck(root)).resolves.toMatchObject({ stderr: "" });
+  });
+
+  it.each([
+    [
       "conditional request escape",
       "escape-conditional-after/route.ts",
       'Promise.resolve(flag ? req : new Request("https://example.invalid")).then((r) => r.json())',
@@ -826,6 +874,17 @@ describe("auth-before-body static check", () => {
           const reader = body?.getReader();
           await requireAdmin();
           return Response.json({ ok: Boolean(reader) });
+        }`,
+    ],
+    [
+      "request container bypass",
+      "container-mutation/route.ts",
+      () => `${imports()}
+        export async function POST(req: Request) {
+          const box = { request: req };
+          const body = await box.request.json();
+          await requireAdmin();
+          return Response.json({ body });
         }`,
     ],
   ])("catches synthetic mutation regression for %s", async (_name, relativePath, sourceFactory) => {

@@ -530,6 +530,12 @@ function requestConstructionEscape(node, aliases) {
   return null;
 }
 
+function requestContainerReview(node, aliases) {
+  if (!ts.isObjectLiteralExpression(node) && !ts.isArrayLiteralExpression(node)) return null;
+  if (!expressionContainsRequestAlias(node, aliases)) return null;
+  return { name: "request stored in a container before auth", node };
+}
+
 function cloneOrBodyExtractionReview(node, aliases) {
   if (isRequestCloneExpression(node, aliases)) {
     return { name: "request.clone() requires manual review before auth", node };
@@ -601,6 +607,16 @@ function collectOperations(handler, importMap, sourceFile) {
         topLevelStatement: enclosingTopLevelStatement(constructorEscape.node, handler),
         nested: isInsideNestedFunction(constructorEscape.node, handler),
         ...nodeLineColumn(sourceFile, constructorEscape.node),
+      });
+    }
+
+    const containerReview = requestContainerReview(node, aliases);
+    if (containerReview) {
+      requestEscapes.push({
+        ...containerReview,
+        topLevelStatement: enclosingTopLevelStatement(containerReview.node, handler),
+        nested: isInsideNestedFunction(containerReview.node, handler),
+        ...nodeLineColumn(sourceFile, containerReview.node),
       });
     }
 

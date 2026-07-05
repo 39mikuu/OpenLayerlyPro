@@ -183,4 +183,27 @@ describe("bounded Route Handler static check", () => {
       stderr: expect.stringContaining(".formData()"),
     });
   });
+
+  it.each([
+    [
+      "object-literal request container",
+      "export async function POST(req: Request) { const box = { request: req }; return box.request.json(); }",
+    ],
+    [
+      "array-literal request container",
+      "export async function POST(req: Request) { const box = [req]; return box[0].json(); }",
+    ],
+    [
+      "nested request container",
+      "export async function POST(req: Request) { const box = { nested: [req.clone()] }; return box.nested[0].json(); }",
+    ],
+  ])("rejects %s", async (_name, source) => {
+    const root = await createFixture({
+      "unsafe/route.ts": source,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("request container.container()"),
+    });
+  });
 });
