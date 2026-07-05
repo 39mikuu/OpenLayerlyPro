@@ -209,6 +209,231 @@ check_app_container_env_matches_image() {
     || fail "app container environment overrides the image build identity; remove stale APP_VERSION/SOURCE_COMMIT/BUILD_TIMESTAMP overrides (for example in .env) before backup/restore"
 }
 
+inspect_container_env_json() {
+  container_id=$1
+
+  docker_cmd inspect --format '{{json .Config.Env}}' "$container_id" \
+    || fail "unable to inspect app service container environment"
+}
+
+# Matches the previous in-container ${VAR:-default} semantics: an entry that is
+# absent OR present-but-empty resolves to the default.
+container_env_value() {
+  env_json=$1
+  name=$2
+  default_value=$3
+
+  node -e '
+    const parsed = JSON.parse(process.argv[1]);
+    const name = process.argv[2];
+    const fallback = process.argv[3];
+    for (const entry of Array.isArray(parsed) ? parsed : []) {
+      const index = entry.indexOf("=");
+      if (index > 0 && entry.slice(0, index) === name) {
+        const value = entry.slice(index + 1);
+        process.stdout.write(value.length > 0 ? value : fallback);
+        process.exit(0);
+      }
+    }
+    process.stdout.write(fallback);
+  ' "$env_json" "$name" "$default_value"
+}
+
+container_env_value_raw() {
+  env_json=$1
+  name=$2
+
+  node -e '
+    const parsed = JSON.parse(process.argv[1]);
+    const name = process.argv[2];
+    for (const entry of Array.isArray(parsed) ? parsed : []) {
+      const index = entry.indexOf("=");
+      if (index > 0 && entry.slice(0, index) === name) {
+        process.stdout.write(entry.slice(index + 1));
+        process.exit(0);
+      }
+    }
+    process.exit(2);
+  ' "$env_json" "$name"
+}
+
+sha256_secret_value() {
+  secret_value=$1
+
+  SECRET_VALUE=$secret_value node -e '
+    const { createHash } = require("crypto");
+    const value = process.env.SECRET_VALUE;
+    if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) {
+      process.exit(1);
+    }
+    process.stdout.write(createHash("sha256").update(value).digest("hex"));
+  '
+}
+
+app_container_config_encryption_key_is_unset() {
+  container_id=$1
+  env_json=$(inspect_container_env_json "$container_id")
+
+  set +e
+  direct_config_key=$(container_env_value_raw "$env_json" CONFIG_ENCRYPTION_KEY)
+  direct_config_key_status=$?
+  set -e
+  if [ "$direct_config_key_status" -eq 0 ] && [ -n "$direct_config_key" ]; then
+    return 1
+  fi
+  return 0
+}
+
+assert_app_container_config_encryption_key_unset() {
+  container_id=$1
+  app_container_config_encryption_key_is_unset "$container_id" \
+    || fail "CONFIG_ENCRYPTION_KEY is set; back up that externally managed value separately and use the file-backed key for single-archive backups"
+}
+
+read_app_container_runtime_config() {
+  container_id=$1
+  env_json=$(inspect_container_env_json "$container_id")
+
+  assert_app_container_config_encryption_key_unset "$container_id"
+
+  CONFIG_KEY_FILE=$(container_env_value "$env_json" CONFIG_ENCRYPTION_KEY_FILE "/app/secrets/config-encryption-key" | tr -d '\r')
+  SESSION_SECRET_FILE=$(container_env_value "$env_json" SESSION_SECRET_FILE "/app/secrets/session-secret" | tr -d '\r')
+  STORAGE_DRIVER=$(container_env_value "$env_json" STORAGE_DRIVER "local" | tr -d '\r')
+  UPLOAD_DIR=$(container_env_value "$env_json" UPLOAD_DIR "/app/uploads" | tr -d '\r')
+
+  set +e
+  session_secret_value=$(container_env_value_raw "$env_json" SESSION_SECRET)
+  session_secret_status=$?
+  set -e
+  if [ "$session_secret_status" -eq 0 ] && [ -n "$session_secret_value" ]; then
+    SESSION_SECRET_SOURCE="external"
+    SESSION_SECRET_FILE=""
+    SESSION_SECRET_SHA256=$(sha256_secret_value "$session_secret_value") \
+      || fail "externally managed SESSION_SECRET is missing or invalid"
+  else
+    SESSION_SECRET_SOURCE="file"
+    SESSION_SECRET_SHA256=""
+  fi
+
+  case "$STORAGE_DRIVER" in
+    local)
+      UPLOADS_INCLUDED=true
+      ;;
+    s3)
+      UPLOAD_DIR=""
+      UPLOADS_INCLUDED=false
+      ;;
+    *)
+      fail "unsupported STORAGE_DRIVER value: $STORAGE_DRIVER"
+      ;;
+  esac
+
+  : "$CONFIG_KEY_FILE" "$SESSION_SECRET_SOURCE" "$SESSION_SECRET_FILE" \
+    "$SESSION_SECRET_SHA256" "$STORAGE_DRIVER" "$UPLOAD_DIR" "$UPLOADS_INCLUDED"
+}
+
+app_container_is_running() {
+  container_id=$1
+  running_json=$(docker_cmd inspect --format '{{json .State.Running}}' "$container_id") \
+    || fail "unable to inspect app service container state"
+  [ "$running_json" = "true" ]
+}
+
+canonicalize_app_container_path() {
+  container_id=$1
+  raw_path=$2
+  label=$3
+
+  validate_absolute_container_path "$raw_path" "$label"
+  validate_no_path_traversal "$raw_path" "$label"
+
+  if app_container_is_running "$container_id"; then
+    canonical_path=$(
+      docker_cmd exec "$container_id" sh -c '
+        set -eu
+        if command -v realpath >/dev/null 2>&1; then
+          realpath -m -- "$1"
+        else
+          printf "%s\n" "$1"
+        fi
+      ' backup-path "$raw_path" | tr -d '\r'
+    ) || fail "unable to canonicalize $label"
+    [ -n "$canonical_path" ] || fail "unable to canonicalize $label"
+    validate_absolute_container_path "$canonical_path" "$label"
+    validate_no_path_traversal "$canonical_path" "$label"
+    printf '%s' "$canonical_path"
+  else
+    echo "NOTICE: app service container is stopped; skipping canonical path resolution for $label" >&2
+    printf '%s' "$raw_path"
+  fi
+}
+
+validate_app_container_path_under_mount() {
+  container_id=$1
+  path=$2
+  mount_root=$3
+  label=$4
+
+  canonical_path=$(canonicalize_app_container_path "$container_id" "$path" "$label")
+
+  case "$canonical_path" in
+    "$mount_root") ;;
+    "$mount_root"/*) ;;
+    *) fail "$label must stay under $mount_root (resolved $canonical_path)" ;;
+  esac
+}
+
+validate_app_container_config_key_file_path() {
+  container_id=$1
+  path=$2
+
+  validate_app_container_path_under_mount "$container_id" "$path" "/app/secrets" "CONFIG_ENCRYPTION_KEY_FILE"
+  case "$path" in
+    /app/secrets) fail "CONFIG_ENCRYPTION_KEY_FILE must be a file path, not a directory" ;;
+    */) fail "CONFIG_ENCRYPTION_KEY_FILE must be a file path, not a directory" ;;
+  esac
+}
+
+validate_app_container_session_secret_file_path() {
+  container_id=$1
+  path=$2
+
+  validate_app_container_path_under_mount "$container_id" "$path" "/app/secrets" "SESSION_SECRET_FILE"
+  case "$path" in
+    /app/secrets) fail "SESSION_SECRET_FILE must be a file path, not a directory" ;;
+    */) fail "SESSION_SECRET_FILE must be a file path, not a directory" ;;
+  esac
+}
+
+validate_app_container_upload_dir_path() {
+  container_id=$1
+  path=$2
+
+  validate_app_container_path_under_mount "$container_id" "$path" "/app/uploads" "UPLOAD_DIR"
+  case "$path" in
+    */) fail "UPLOAD_DIR must not end with '/'" ;;
+  esac
+}
+
+verify_app_container_unchanged_for_backup() {
+  expected_container_id=$1
+  expected_image_id=$2
+
+  current_container_id=$(resolve_existing_single_app_container_id) \
+    || fail "app service container changed during backup"
+  [ "$current_container_id" = "$expected_container_id" ] \
+    || fail "app service container changed during backup"
+
+  current_image_ref=$(inspect_container_image_ref "$current_container_id") \
+    || fail "app service container changed during backup"
+  current_image_json=$(image_provenance_from_inspect "$current_image_ref") \
+    || fail "app service container changed during backup"
+  current_image_id=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).imageId)' "$current_image_json") \
+    || fail "app service container changed during backup"
+  [ "$current_image_id" = "$expected_image_id" ] \
+    || fail "app service container changed during backup"
+}
+
 resolve_existing_single_app_container_id() {
   container_ids=$(compose ps -aq app) || return 3
   [ -n "$container_ids" ] || return 1
@@ -306,6 +531,9 @@ resolve_compose_app_image() {
 }
 
 read_restore_target_provenance_read_only() {
+  RESTORE_TARGET_CONTAINER_EXISTS=false
+  RESTORE_TARGET_CONTAINER_ID=""
+
   set +e
   container_id=$(resolve_existing_single_app_container_id)
   container_status=$?
@@ -313,6 +541,10 @@ read_restore_target_provenance_read_only() {
   case "$container_status" in
     0)
       read_app_container_provenance "$container_id"
+      # shellcheck disable=SC2034 # consumed by restore.sh after sourcing this helper
+      RESTORE_TARGET_CONTAINER_EXISTS=true
+      # shellcheck disable=SC2034 # consumed by restore.sh after sourcing this helper
+      RESTORE_TARGET_CONTAINER_ID=$container_id
       return
       ;;
     1)
@@ -336,6 +568,54 @@ read_restore_target_provenance_read_only() {
     echo "WARNING: target app image $image_ref is not available locally; target provenance is unknown" >&2
     read_unknown_image_provenance
   fi
+}
+
+provenance_is_all_unknown() {
+  [ "$1" = "unknown" ] && [ "$2" = "unknown" ] && [ "$3" = "unknown" ] && [ "$4" = "unknown" ]
+}
+
+verify_restore_target_unchanged_after_create() {
+  expected_container_exists=$1
+  expected_container_id=$2
+  expected_app_version=$3
+  expected_source_commit=$4
+  expected_build_timestamp=$5
+  expected_image_id=$6
+
+  actual_container_id=$(resolve_existing_single_app_container_id) \
+    || fail "target app container/image changed after confirmation; re-run restore and confirm against the current target"
+  if [ "$expected_container_exists" = true ] && [ "$actual_container_id" != "$expected_container_id" ]; then
+    fail "target app container/image changed after confirmation; re-run restore and confirm against the current target"
+  fi
+
+  read_app_container_provenance "$actual_container_id"
+  actual_app_version=$RUNTIME_APP_VERSION
+  actual_source_commit=$RUNTIME_SOURCE_COMMIT
+  actual_build_timestamp=$BUILD_TIMESTAMP
+  actual_image_id=$RUNTIME_IMAGE_ID
+
+  if provenance_is_all_unknown "$expected_app_version" "$expected_source_commit" "$expected_build_timestamp" "$expected_image_id"; then
+    TARGET_RUNTIME_APP_VERSION=$actual_app_version
+    TARGET_RUNTIME_SOURCE_COMMIT=$actual_source_commit
+    TARGET_BUILD_TIMESTAMP=$actual_build_timestamp
+    TARGET_RUNTIME_IMAGE_ID=$actual_image_id
+    echo "Target provenance resolved after container creation: version=$TARGET_RUNTIME_APP_VERSION commit=$TARGET_RUNTIME_SOURCE_COMMIT image=$TARGET_RUNTIME_IMAGE_ID build=$TARGET_BUILD_TIMESTAMP"
+  else
+    if [ "$actual_app_version" != "$expected_app_version" ] \
+      || [ "$actual_source_commit" != "$expected_source_commit" ] \
+      || [ "$actual_build_timestamp" != "$expected_build_timestamp" ] \
+      || [ "$actual_image_id" != "$expected_image_id" ]; then
+      fail "target app container/image changed after confirmation; re-run restore and confirm against the current target"
+    fi
+    TARGET_RUNTIME_APP_VERSION=$actual_app_version
+    TARGET_RUNTIME_SOURCE_COMMIT=$actual_source_commit
+    TARGET_BUILD_TIMESTAMP=$actual_build_timestamp
+    TARGET_RUNTIME_IMAGE_ID=$actual_image_id
+  fi
+
+  RESTORE_APP_CONTAINER_ID=$actual_container_id
+  : "$RESTORE_APP_CONTAINER_ID" "$TARGET_RUNTIME_APP_VERSION" "$TARGET_RUNTIME_SOURCE_COMMIT" \
+    "$TARGET_BUILD_TIMESTAMP" "$TARGET_RUNTIME_IMAGE_ID"
 }
 
 validate_v3_manifest_file() {
@@ -687,29 +967,6 @@ validate_upload_dir_path() {
   esac
 }
 
-read_live_container_upload_dir() {
-  compose exec -T app sh -c 'printf %s "${UPLOAD_DIR:-/app/uploads}"'
-}
-
-read_container_upload_dir() {
-  compose run --rm -T --no-deps --entrypoint sh app -c \
-    'printf %s "${UPLOAD_DIR:-/app/uploads}"'
-}
-
-read_live_container_config_key_file() {
-  compose exec -T app sh -c \
-    'printf %s "${CONFIG_ENCRYPTION_KEY_FILE:-/app/secrets/config-encryption-key}"'
-}
-
-read_container_config_key_file() {
-  compose run --rm -T --no-deps --entrypoint sh app -c \
-    'printf %s "${CONFIG_ENCRYPTION_KEY_FILE:-/app/secrets/config-encryption-key}"'
-}
-
-read_container_session_secret_file() {
-  compose run --rm -T --no-deps --entrypoint sh app -c \
-    'printf %s "${SESSION_SECRET_FILE:-/app/secrets/session-secret}"'
-}
 
 # Percent-encode a string for safe use in a URL userinfo (user/password) component.
 # RFC 3986 unreserved characters are kept as-is; everything else becomes %XX so raw
@@ -786,7 +1043,7 @@ preflight_config_key_restore_target() {
   validate_config_key_file_path "$target_key_file"
   target_key_dir=${target_key_file%/*}
   # Prepare the parent dir and reject a non-regular file (e.g. a directory) sitting
-  # at the final key path: otherwise `compose cp` would copy the key *inside* it and
+  # at the final key path: otherwise the container-bound copy would place the key inside it and
   # a later `test -s <directory>` could still pass, leaving the app unable to read it.
   run_app_shell '
     set -eu

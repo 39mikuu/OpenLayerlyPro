@@ -218,6 +218,8 @@ read_archive_provenance "$WORK_DIR/manifest.env" "$FORMAT_VERSION"
 verify_archive_config_key_fingerprint "$WORK_DIR" "$FORMAT_VERSION"
 
 read_restore_target_provenance_read_only
+PRECONFIRM_TARGET_CONTAINER_EXISTS=$RESTORE_TARGET_CONTAINER_EXISTS
+PRECONFIRM_TARGET_CONTAINER_ID=$RESTORE_TARGET_CONTAINER_ID
 TARGET_RUNTIME_APP_VERSION=$RUNTIME_APP_VERSION
 TARGET_RUNTIME_SOURCE_COMMIT=$RUNTIME_SOURCE_COMMIT
 TARGET_BUILD_TIMESTAMP=$BUILD_TIMESTAMP
@@ -332,10 +334,17 @@ if [ -n "$(compose ps -q --status running app)" ]; then
   fail "app service is still running after stop; refusing to continue restore"
 fi
 compose create app >/dev/null
+verify_restore_target_unchanged_after_create \
+  "$PRECONFIRM_TARGET_CONTAINER_EXISTS" \
+  "$PRECONFIRM_TARGET_CONTAINER_ID" \
+  "$TARGET_RUNTIME_APP_VERSION" \
+  "$TARGET_RUNTIME_SOURCE_COMMIT" \
+  "$TARGET_BUILD_TIMESTAMP" \
+  "$TARGET_RUNTIME_IMAGE_ID"
+RESTORE_APP_ENV_JSON=$(inspect_container_env_json "$RESTORE_APP_CONTAINER_ID")
 
-if ! compose run --rm -T --no-deps --entrypoint sh app -c 'test -z "${CONFIG_ENCRYPTION_KEY:-}"'; then
-  fail "target defines CONFIG_ENCRYPTION_KEY; unset it or restore the matching externally managed value before continuing"
-fi
+app_container_config_encryption_key_is_unset "$RESTORE_APP_CONTAINER_ID" \
+  || fail "target defines CONFIG_ENCRYPTION_KEY; unset it or restore the matching externally managed value before continuing"
 
 APP_SETTINGS_COPY_SQL="$WORK_DIR/app_settings-copy.sql"
 if extract_app_settings_copy_block "$WORK_DIR/db.sql" "$APP_SETTINGS_COPY_SQL"; then
@@ -426,13 +435,17 @@ if [ "${RESTORE_E2E_INJECT_MISSING:-}" = "1" ]; then
 fi
 
 echo "Preflighting config encryption key restore target before database replacement..."
-TARGET_CONFIG_KEY_FILE=$(read_container_config_key_file)
+TARGET_CONFIG_KEY_FILE=$(
+  container_env_value "$RESTORE_APP_ENV_JSON" CONFIG_ENCRYPTION_KEY_FILE "/app/secrets/config-encryption-key" | tr -d '\r'
+)
 preflight_config_key_restore_target "$TARGET_CONFIG_KEY_FILE"
 
 TARGET_SESSION_SECRET_FILE=""
 if [ "$SESSION_SECRET_SOURCE" = file ]; then
   echo "Preflighting session secret restore target before database replacement..."
-  TARGET_SESSION_SECRET_FILE=$(read_container_session_secret_file)
+  TARGET_SESSION_SECRET_FILE=$(
+    container_env_value "$RESTORE_APP_ENV_JSON" SESSION_SECRET_FILE "/app/secrets/session-secret" | tr -d '\r'
+  )
   preflight_session_secret_restore_target "$TARGET_SESSION_SECRET_FILE"
 fi
 
@@ -444,7 +457,9 @@ TARGET_UPLOAD_DIR=""
 if [ -d "$WORK_DIR/uploads" ]; then
   RESTORE_HAS_UPLOADS=true
   echo "Preflighting local uploads restore target before database replacement..."
-  TARGET_UPLOAD_DIR=$(read_container_upload_dir)
+  TARGET_UPLOAD_DIR=$(
+    container_env_value "$RESTORE_APP_ENV_JSON" UPLOAD_DIR "/app/uploads" | tr -d '\r'
+  )
   preflight_upload_dir_restore_target "$TARGET_UPLOAD_DIR"
 fi
 
@@ -462,12 +477,12 @@ compose exec -T postgres sh -c '
 ' < "$WORK_DIR/db.sql"
 
 echo "Restoring config encryption key file to $TARGET_CONFIG_KEY_FILE..."
-compose cp "$WORK_DIR/secrets/config-encryption-key" "app:$TARGET_CONFIG_KEY_FILE"
+docker_cmd cp "$WORK_DIR/secrets/config-encryption-key" "$RESTORE_APP_CONTAINER_ID:$TARGET_CONFIG_KEY_FILE"
 verify_container_nonempty_file "$TARGET_CONFIG_KEY_FILE"
 
 if [ "$SESSION_SECRET_SOURCE" = file ]; then
   echo "Restoring session secret file..."
-  compose cp "$WORK_DIR/secrets/session-secret" "app:$TARGET_SESSION_SECRET_FILE"
+  docker_cmd cp "$WORK_DIR/secrets/session-secret" "$RESTORE_APP_CONTAINER_ID:$TARGET_SESSION_SECRET_FILE"
   verify_container_session_secret_file "$TARGET_SESSION_SECRET_FILE" \
     || fail "restored session secret is invalid"
 fi
@@ -476,7 +491,7 @@ if [ "$RESTORE_HAS_UPLOADS" = true ]; then
   UPLOAD_DIR=$TARGET_UPLOAD_DIR
   echo "Replacing local uploads at $UPLOAD_DIR..."
   clear_container_directory "$UPLOAD_DIR"
-  compose cp "$WORK_DIR/uploads/." "app:$UPLOAD_DIR"
+  docker_cmd cp "$WORK_DIR/uploads/." "$RESTORE_APP_CONTAINER_ID:$UPLOAD_DIR"
   if [ "${RESTORE_E2E_INJECT_MISSING:-}" = "1" ]; then
     echo "Injecting post-restore storage drift for E2E drill..."
     if [ -n "${RESTORE_E2E_MISSING_OBJECT_KEY:-}" ]; then

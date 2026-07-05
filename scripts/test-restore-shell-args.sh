@@ -21,6 +21,7 @@ VALID_TOOL_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 DOCKER_INSPECT_ENV_JSON='["APP_VERSION=image-version","SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567","BUILD_TIMESTAMP=2026-07-05T00:00:00Z"]'
 DOCKER_IMAGE_ENV_JSON='["APP_VERSION=image-version","SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567","BUILD_TIMESTAMP=2026-07-05T00:00:00Z"]'
 DOCKER_INSPECT_CONTAINER_IMAGE_JSON='"sha256:mock-container-image"'
+DOCKER_INSPECT_RUNNING_JSON=true
 DOCKER_IMAGE_LABELS_JSON='{"org.opencontainers.image.version":"image-version","org.opencontainers.image.revision":"0123456789abcdef0123456789abcdef01234567","org.opencontainers.image.created":"2026-07-05T00:00:00Z"}'
 DOCKER_IMAGE_ID_JSON='"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
 COMPOSE_IMAGE_LABELS_JSON='{"org.opencontainers.image.version":"compose-config-version","org.opencontainers.image.revision":"fedcba9876543210fedcba9876543210fedcba98","org.opencontainers.image.created":"2026-07-06T00:00:00Z"}'
@@ -101,6 +102,9 @@ docker_cmd() {
           ;;
         "{{json .Config.Env}}")
           printf '%s\n' "$DOCKER_INSPECT_ENV_JSON"
+          ;;
+        "{{json .State.Running}}")
+          printf '%s\n' "$DOCKER_INSPECT_RUNNING_JSON"
           ;;
         *)
           fail "unexpected mock docker inspect format: $inspect_format"
@@ -307,6 +311,57 @@ printf '%s' "$unset_override_output" \
   || fail "unset env override error was not explicit"
 
 DOCKER_INSPECT_ENV_JSON='["APP_VERSION=image-version","SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567","BUILD_TIMESTAMP=2026-07-05T00:00:00Z"]'
+
+COMPOSE_IMAGE_ENV_JSON='["APP_VERSION=image-version","SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567","BUILD_TIMESTAMP=2026-07-05T00:00:00Z","STORAGE_DRIVER=s3","UPLOAD_DIR=/app/uploads/compose-config"]'
+DOCKER_INSPECT_ENV_JSON='["APP_VERSION=image-version","SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567","BUILD_TIMESTAMP=2026-07-05T00:00:00Z","CONFIG_ENCRYPTION_KEY=","CONFIG_ENCRYPTION_KEY_FILE=/app/secrets/config-encryption-key","SESSION_SECRET=","SESSION_SECRET_FILE=/app/secrets/session-secret","STORAGE_DRIVER=local","UPLOAD_DIR=/app/uploads/container-env"]'
+read_app_container_runtime_config "$single_container_id"
+[ "$STORAGE_DRIVER" = "local" ] \
+  || fail "backup runtime config did not read STORAGE_DRIVER from the app container env"
+[ "$UPLOAD_DIR" = "/app/uploads/container-env" ] \
+  || fail "backup runtime config did not read UPLOAD_DIR from the app container env"
+[ "$UPLOADS_INCLUDED" = true ] \
+  || fail "backup runtime config did not include uploads for container-local storage"
+[ "$SESSION_SECRET_SOURCE" = file ] \
+  || fail "empty SESSION_SECRET in container env did not resolve to file-backed source"
+DOCKER_INSPECT_ENV_JSON='["APP_VERSION=image-version","SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567","BUILD_TIMESTAMP=2026-07-05T00:00:00Z"]'
+COMPOSE_IMAGE_ENV_JSON='["APP_VERSION=compose-config-version","SOURCE_COMMIT=fedcba9876543210fedcba9876543210fedcba98","BUILD_TIMESTAMP=2026-07-06T00:00:00Z"]'
+
+blank_env_json='["SESSION_SECRET_FILE=","CONFIG_ENCRYPTION_KEY_FILE=","STORAGE_DRIVER=","UPLOAD_DIR="]'
+[ "$(container_env_value "$blank_env_json" SESSION_SECRET_FILE /app/secrets/session-secret)" = "/app/secrets/session-secret" ] \
+  || fail "blank SESSION_SECRET_FILE env did not fall back to the default path"
+[ "$(container_env_value "$blank_env_json" CONFIG_ENCRYPTION_KEY_FILE /app/secrets/config-encryption-key)" = "/app/secrets/config-encryption-key" ] \
+  || fail "blank CONFIG_ENCRYPTION_KEY_FILE env did not fall back to the default path"
+[ "$(container_env_value "$blank_env_json" STORAGE_DRIVER local)" = "local" ] \
+  || fail "blank STORAGE_DRIVER env did not fall back to local"
+[ "$(container_env_value "$blank_env_json" UPLOAD_DIR /app/uploads)" = "/app/uploads" ] \
+  || fail "blank UPLOAD_DIR env did not fall back to the default path"
+
+verify_app_container_unchanged_for_backup "$single_container_id" "$VALID_IMAGE_ID" \
+  || fail "backup container identity guard rejected unchanged container"
+
+COMPOSE_PS_APP_OUTPUT=changed-container
+set +e
+backup_changed_id_output=$(verify_app_container_unchanged_for_backup "$single_container_id" "$VALID_IMAGE_ID" 2>&1)
+backup_changed_id_status=$?
+set -e
+COMPOSE_PS_APP_OUTPUT=mock-app-container
+[ "$backup_changed_id_status" -ne 0 ] \
+  || fail "backup container identity guard accepted a changed container id"
+printf '%s' "$backup_changed_id_output" \
+  | grep -F "app service container changed during backup" >/dev/null \
+  || fail "backup changed-container-id error was not explicit"
+
+DOCKER_IMAGE_ID_JSON='"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"'
+set +e
+backup_changed_image_output=$(verify_app_container_unchanged_for_backup "$single_container_id" "$VALID_IMAGE_ID" 2>&1)
+backup_changed_image_status=$?
+set -e
+DOCKER_IMAGE_ID_JSON='"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+[ "$backup_changed_image_status" -ne 0 ] \
+  || fail "backup container identity guard accepted a changed image id"
+printf '%s' "$backup_changed_image_output" \
+  | grep -F "app service container changed during backup" >/dev/null \
+  || fail "backup changed-image-id error was not explicit"
 
 COMPOSE_PS_APP_OUTPUT='first-container
 second-container'
@@ -690,6 +745,53 @@ read_restore_target_provenance_read_only
 if grep -E '^(create|up|run) ' "$COMPOSE_MUTATION_LOG" >/dev/null; then
   fail "read-only restore provenance mutated compose state"
 fi
+COMPOSE_PS_APP_OUTPUT=mock-app-container
+
+verify_restore_target_unchanged_after_create \
+  true \
+  mock-app-container \
+  image-version \
+  "$VALID_COMMIT" \
+  2026-07-05T00:00:00Z \
+  "$VALID_IMAGE_ID" >/dev/null \
+  || fail "restore post-create guard rejected unchanged target"
+[ "$RESTORE_APP_CONTAINER_ID" = "mock-app-container" ] \
+  || fail "restore post-create guard did not store the verified container id"
+
+DOCKER_IMAGE_ID_JSON='"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"'
+set +e
+restore_changed_image_output=$(
+  verify_restore_target_unchanged_after_create \
+    true \
+    mock-app-container \
+    image-version \
+    "$VALID_COMMIT" \
+    2026-07-05T00:00:00Z \
+    "$VALID_IMAGE_ID" 2>&1
+)
+restore_changed_image_status=$?
+set -e
+DOCKER_IMAGE_ID_JSON='"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+[ "$restore_changed_image_status" -ne 0 ] \
+  || fail "restore post-create guard accepted a changed image"
+printf '%s' "$restore_changed_image_output" \
+  | grep -F "target app container/image changed after confirmation" >/dev/null \
+  || fail "restore changed-image error was not explicit"
+
+restore_unknown_output=$(
+  verify_restore_target_unchanged_after_create \
+    false \
+    "" \
+    unknown \
+    unknown \
+    unknown \
+    unknown
+)
+printf '%s' "$restore_unknown_output" \
+  | grep -F "Target provenance resolved after container creation:" >/dev/null \
+  || fail "restore all-unknown post-create path did not announce resolved provenance"
+[ "$TARGET_RUNTIME_IMAGE_ID" = "$VALID_IMAGE_ID" ] \
+  || fail "restore all-unknown post-create path did not replace target image id"
 
 command -v script >/dev/null 2>&1 \
   || fail "script command is required for restore cancellation tty regression test"

@@ -65,7 +65,7 @@
 - [ ] 恢复后抽样核对管理员、会员、付款、订阅、文章、翻译、加密配置、文件和任务状态。
 - [ ] file-backed `SESSION_SECRET` 随 checksum 归档并等值恢复；external secret 不入档且指纹匹配；历史归档缺少显式强 secret 时在破坏数据库前 fail-loud。
 - [ ] `SESSION_SECRET` 与 `CONFIG_ENCRYPTION_KEY` 的托管、恢复和丢失语义已由操作者实际确认。
-- [ ] 发布镜像使用 `--build-arg APP_VERSION=<package version>`、`--build-arg SOURCE_COMMIT=<release SHA>`、`--build-arg BUILD_TIMESTAMP=<UTC ISO timestamp>` 构建；镜像 `/app/build-info.json`、OCI labels、镜像 ID 与备份 manifest v3 中的 runtime provenance 已抽样核对一致，且不存在会覆盖 build identity 的 `.env`/container 环境值。
+- [ ] 发布镜像通过内联 `OPENLAYERLY_BUILD_VERSION=<package version>`、`OPENLAYERLY_BUILD_COMMIT=<release SHA>`、`OPENLAYERLY_BUILD_TIMESTAMP=<UTC ISO timestamp>` 运行 `docker compose build app` 构建；这些变量未持久化到 `.env`，镜像 `/app/build-info.json`、OCI labels、镜像 ID 与备份 manifest v3 中的 runtime provenance 已抽样核对一致，且不存在会覆盖 build identity 的 `.env`/container 环境值。
 
 ## 6. 工程质量
 

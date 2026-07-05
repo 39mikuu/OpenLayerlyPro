@@ -47,7 +47,7 @@ For the strong-consistency path, let the script stop the normal app/dispatcher b
 ./scripts/backup.sh --stop-app /srv/backups/openlayerly
 ```
 
-`--stop-app` resolves the app environment and volume paths through one-off containers, so it also works when the normal app container is already stopped. It inspects every existing app-service container, stops the whole service even when a container is currently `restarting`, and records only containers that were active (`running`, `restarting`, or `paused`) as restart targets. Exit/signal cleanup restarts those exact containers; intentionally stopped or merely created containers remain stopped.
+`--stop-app` resolves the app environment and volume paths from the same app service container whose image provenance is recorded. It inspects every existing app-service container, stops the whole service even when a container is currently `restarting`, and records only containers that were active (`running`, `restarting`, or `paused`) as restart targets. Exit/signal cleanup restarts those exact containers; intentionally stopped or merely created containers remain stopped. If the resolved app container is stopped, backup still works with container-ID-bound `docker cp`; path canonicalization falls back to strict string checks and prints a notice.
 
 New archives use `FORMAT_VERSION=3` and are named like:
 
@@ -94,7 +94,7 @@ encrypted settings. A whitespace-only archived config key fails closed.
 
 `checksums.sha256` covers every regular-file payload member except the root `./checksums.sha256` manifest itself (nested upload files named `checksums.sha256` remain covered). On v2/v3 archives, `restore.sh` rejects symlinks and special files, verifies checksums, and then enforces a strict bijection: every extracted regular-file payload must appear exactly once in the manifest, and every manifest entry must have a matching payload file. The parser reads the fixed-width GNU checksum prefix, so ordinary filenames containing spaces are preserved exactly.
 
-To keep that manifest unambiguous and portable, `backup.sh` rejects path components containing backslashes, ASCII control characters (`U+0000`–`U+001F`), or `DEL` (`U+007F`) before publishing an archive. Ordinary spaces and non-ASCII Unicode names remain supported. The same validation runs on the live local upload tree before copying and on the assembled workspace before checksum/tar creation.
+To keep that manifest unambiguous and portable, `backup.sh` rejects path components containing backslashes, ASCII control characters (`U+0000`–`U+001F`), or `DEL` (`U+007F`) before publishing an archive. Ordinary spaces and non-ASCII Unicode names remain supported. The validation runs on the assembled workspace before checksum/tar creation, so unsupported upload entries cannot be published.
 
 Legacy `FORMAT_VERSION=1` archives remain restorable through the compatibility path below, but they have no checksum protection and emit an explicit warning. `FORMAT_VERSION=1` and `FORMAT_VERSION=2` archives also warn that they predate image-authoritative provenance; restore may show `unknown` or host-derived runtime fields for those archives.
 
@@ -126,7 +126,7 @@ Use the explicit strong-consistency mode for the safest local recovery set:
 ./scripts/backup.sh --stop-app /srv/backups/openlayerly
 ```
 
-The script first resolves and validates the app environment/volume paths using one-off containers, records the initial state of every app-service container, then issues `compose stop app` for every existing service container. Afterward it fails closed if any app container is still `running`, `restarting`, or `paused`. It captures the database, config key, and local uploads while writes and the task dispatcher are stopped. After those inputs are copied into the private backup workspace, it restarts only the containers that were active before the stop; containers that were already stopped or merely created remain stopped. Stop failures are fatal; restart failures make the command fail and are retried by cleanup.
+The script first resolves the single app container, validates its container environment and volume paths, and records the initial state of every app-service container. It then issues `compose stop app` for every existing service container. Afterward it fails closed if any app container is still `running`, `restarting`, or `paused`. It captures the database, config key, and local uploads while writes and the task dispatcher are stopped. Backup copies use `docker cp` bound to the resolved container ID, not a service-name lookup. Before restarting the app, backup verifies the app service still resolves to the same container and image ID that were recorded in the manifest. After those inputs are copied into the private backup workspace, it restarts only the containers that were active before the stop; containers that were already stopped or merely created remain stopped. Stop failures are fatal; restart failures make the command fail and are retried by cleanup.
 
 ### S3 / R2
 
@@ -197,7 +197,7 @@ Key invariants:
 - S3 convergence enumerates only controlled application key namespaces (`avatars/`, `payment-qr/`, `payment-proof/`, `content/`, `legacy/`, `remediated/`). Override with comma-separated `RESTORE_S3_ENUM_PREFIXES` when needed;
 - incomplete storage enumeration (truncated listing or converge errors) exits non-zero and prevents app startup;
 - `CONFIG_ENCRYPTION_KEY_FILE` must be a canonical absolute file path under `/app/secrets` (no `..`, no directory path). Restore validates the target path before dropping the official database;
-- `UPLOAD_DIR` is read from the target container at backup/restore time and must stay under `/app/uploads`. Local upload backup and restore use that resolved path for both `compose cp` directions;
+- `UPLOAD_DIR` is read from the resolved app container at backup/restore time and must stay under `/app/uploads`. Local upload backup and restore use `docker cp` bound to the verified container ID rather than service-name copy targets;
 - S3 `files.bucket = NULL` rows are matched against the configured bucket during convergence so referenced objects are not misclassified as orphans.
 
 The target image must contain and be able to execute:
@@ -254,23 +254,26 @@ Only one project can bind host port 3000 with the default Compose file. Stop the
 
 ## Build Provenance
 
-Production builds should pass the same identity fields that backup records:
+Production Compose builds should pass the same identity fields that backup records:
 
 ```bash
-docker build \
-  --build-arg APP_VERSION="$(node -p 'require("./package.json").version')" \
-  --build-arg SOURCE_COMMIT="$(git rev-parse HEAD)" \
-  --build-arg BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  -t openlayerlypro:release .
+OPENLAYERLY_BUILD_VERSION="$(node -p 'require("./package.json").version')" \
+OPENLAYERLY_BUILD_COMMIT="$(git rev-parse HEAD)" \
+OPENLAYERLY_BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+docker compose build app
 ```
+
+Pass these variables inline for each release build. Do **not** persist them in `.env`;
+stale values would bake a false build identity into later images.
 
 The Dockerfile persists these values in `/app/build-info.json`, image environment variables,
 and OCI labels:
 `org.opencontainers.image.version`, `org.opencontainers.image.revision`,
 `org.opencontainers.image.created`, and `org.opencontainers.image.source`. The app reads
 `/app/build-info.json` first and only falls back to environment variables outside the image.
-Backup and restore read the image labels and image ID. Plain `docker build .` still works
-with `dev`/`unknown` fallbacks, which are intentionally distinguishable from release images.
+Backup and restore read the image labels and image ID. Plain `docker compose up -d --build`
+still works and produces an explicit `dev`/`dev`/`unknown` build identity, which is
+intentionally distinguishable from release images.
 
 ## Isolated E2E Drills
 

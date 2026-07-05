@@ -47,8 +47,16 @@ For source deployments:
 
 ```bash
 git pull --ff-only
+OPENLAYERLY_BUILD_VERSION="$(node -p 'require("./package.json").version')" \
+OPENLAYERLY_BUILD_COMMIT="$(git rev-parse HEAD)" \
+OPENLAYERLY_BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 docker compose build app
 ```
+
+Pass these build identity variables inline for the release build. Do **not** persist them
+in `.env`; stale values would bake a false identity into later images. Plain
+`docker compose up -d --build` remains valid for non-release rebuilds and produces an
+explicit `dev`/`dev`/`unknown` identity.
 
 For image deployments, update to an immutable tag/digest and pull without starting:
 
