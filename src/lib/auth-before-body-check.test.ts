@@ -670,6 +670,42 @@ describe("auth-before-body static check", () => {
   });
 
   it.each([
+    ["object-literal request escape", "escape-object-before/route.ts", "consume({ request: req })"],
+    ["array-literal request escape", "escape-array-before/route.ts", "consume([req])"],
+    [
+      "nested object-literal clone escape",
+      "escape-nested-object-before/route.ts",
+      "consume({ nested: { request: req.clone() } })",
+    ],
+  ])("flags %s before auth as manual review", async (_name, relativePath, escapeExpression) => {
+    const root = await createFixture({
+      [relativePath]: `${imports()}
+        export async function POST(req: Request) {
+          const result = await ${escapeExpression};
+          await requireAdmin();
+          return Response.json(result);
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("needs-manual-review"),
+    });
+  });
+
+  it("passes object-literal request escape after auth", async () => {
+    const root = await createFixture({
+      "escape-object-after/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          await requireAdmin();
+          const result = await consume({ request: req });
+          return Response.json(result);
+        }`,
+    });
+
+    await expect(runCheck(root)).resolves.toMatchObject({ stderr: "" });
+  });
+
+  it.each([
     [
       "conditional request escape",
       "escape-conditional-after/route.ts",

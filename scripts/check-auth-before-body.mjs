@@ -477,11 +477,33 @@ function isInsideNestedFunction(node, handler) {
   return false;
 }
 
-function expressionPassesRequestAlias(expression, aliases) {
+function expressionContainsRequestAlias(expression, aliases) {
   const unwrapped = unwrapExpression(expression);
   if (isBodyMethodCallTarget(unwrapped, aliases)) return true;
   if (ts.isPropertyAccessExpression(unwrapped) && unwrapped.name.text === "body") {
     return Boolean(isBodyMethodCallTarget(unwrapped.expression, aliases));
+  }
+  if (ts.isObjectLiteralExpression(unwrapped)) {
+    return unwrapped.properties.some((property) => {
+      if (ts.isPropertyAssignment(property)) {
+        return expressionContainsRequestAlias(property.initializer, aliases);
+      }
+      if (ts.isShorthandPropertyAssignment(property)) {
+        return expressionContainsRequestAlias(property.name, aliases);
+      }
+      if (ts.isSpreadAssignment(property)) {
+        return expressionContainsRequestAlias(property.expression, aliases);
+      }
+      return false;
+    });
+  }
+  if (ts.isArrayLiteralExpression(unwrapped)) {
+    return unwrapped.elements.some((element) => {
+      if (ts.isSpreadElement(element)) {
+        return expressionContainsRequestAlias(element.expression, aliases);
+      }
+      return expressionContainsRequestAlias(element, aliases);
+    });
   }
   return false;
 }
@@ -489,7 +511,7 @@ function expressionPassesRequestAlias(expression, aliases) {
 function requestEscape(call, importMap, handler, aliases) {
   if (isSafeCall(call, importMap, handler)) return null;
   for (const argument of call.arguments) {
-    if (expressionPassesRequestAlias(argument, aliases)) {
+    if (expressionContainsRequestAlias(argument, aliases)) {
       return { name: "request passed to non-safe-list call", node: call };
     }
   }
@@ -501,7 +523,7 @@ function requestConstructionEscape(node, aliases) {
   const callee = unwrapExpression(node.expression);
   if (ts.isIdentifier(callee) && callee.text === "Request") return null;
   for (const argument of node.arguments ?? []) {
-    if (expressionPassesRequestAlias(argument, aliases)) {
+    if (expressionContainsRequestAlias(argument, aliases)) {
       return { name: "request passed to non-safe-list constructor", node };
     }
   }
