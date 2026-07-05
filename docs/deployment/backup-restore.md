@@ -70,12 +70,18 @@ UPLOADS_SKIPPED_S3               # written only when container env STORAGE_DRIVE
 `manifest.env` records image-authoritative runtime provenance, storage and migration
 identity, the config-key path and fingerprint, capture consistency mode, and
 `SESSION_SECRET_SOURCE`. `RUNTIME_APP_VERSION`, `RUNTIME_SOURCE_COMMIT`,
-`RUNTIME_IMAGE_ID`, and `BUILD_TIMESTAMP` describe the app image being backed up.
+`RUNTIME_IMAGE_ID`, and `BUILD_TIMESTAMP` are read from the app image's OCI labels and
+image ID, not from runtime/container environment overrides.
 `BACKUP_TOOL_COMMIT` and `BACKUP_TOOL_SCRIPT_SHA256` describe the checkout and script
 that produced the archive; they are deliberately separate from the runtime image fields.
 `APP_VERSION` is retained for compatibility and mirrors `RUNTIME_APP_VERSION` in v3.
 File-backed archives record the container path and `secrets/session-secret`; external
 sources record only `SESSION_SECRET_SHA256`.
+
+For `FORMAT_VERSION=3`, restore treats the runtime provenance and config-key fingerprint
+fields as required manifest fields. Missing, duplicated, empty, control-character-bearing,
+or malformed values fail before any destructive restore step. Legacy v1/v2 archives keep
+their compatibility defaults and warning path.
 
 `CONFIG_ENCRYPTION_KEY_SHA256` is the SHA-256 of the archived config key after trimming
 leading/trailing whitespace, matching the runtime readers' `.trim()` semantics. Restore
@@ -157,6 +163,7 @@ That flag only relaxes **unknown** v1 history. It cannot bypass confirmed newer/
 validate archive paths
 → verify v2/v3 checksums and manifest/payload bijection (v1 warns and continues)
 → warn for v1/v2 image-provenance gaps
+→ strictly validate required v3 provenance and config-key fingerprint fields
 → verify v3 CONFIG_ENCRYPTION_KEY_SHA256 against the archived trimmed key material
 → warn, never reject, on archive-vs-target image version/commit/image mismatches
 → v2/v3 manifest compatibility check, or v1 isolated temporary-DB schema probe
@@ -182,7 +189,7 @@ Key invariants:
 - only convergence may re-enqueue deletion for confirmed orphans;
 - any migrator/backfill/neutralization/convergence error prevents normal app startup;
 - v3 `CONFIG_ENCRYPTION_KEY_SHA256` is checked against the archived key file before the official database, secrets, or uploads are replaced. This is complementary to the decrypt probe: fingerprint mismatch means archive integrity failure; decrypt failure means the archived key cannot read archived ciphertext;
-- archive-vs-target runtime app version, source commit, and image ID mismatches are warnings only. Migration identity remains the hard compatibility gate;
+- archive-vs-target runtime app version, source commit, and image ID mismatches are warnings only. Migration identity remains the hard compatibility gate. If an existing target app container sets `APP_VERSION`, `SOURCE_COMMIT`, or `BUILD_TIMESTAMP` to values that conflict with non-`unknown` image labels, backup/restore fails loudly because the container environment is overriding the image build identity;
 - before replacing the official database, restore extracts archived `app_settings` rows into an isolated scratch database and verifies the archived config key can decrypt every encrypted setting. Missing or empty `app_settings` data logs an explicit skip. After convergence, restore runs the same probe against the restored database to verify the active runtime key and fully restored state before app startup;
 - S3 convergence enumerates only controlled application key namespaces (`avatars/`, `payment-qr/`, `payment-proof/`, `content/`, `legacy/`, `remediated/`). Override with comma-separated `RESTORE_S3_ENUM_PREFIXES` when needed;
 - incomplete storage enumeration (truncated listing or converge errors) exits non-zero and prevents app startup;
@@ -254,11 +261,13 @@ docker build \
   -t openlayerlypro:release .
 ```
 
-The Dockerfile persists these values as image environment variables and OCI labels:
+The Dockerfile persists these values in `/app/build-info.json`, image environment variables,
+and OCI labels:
 `org.opencontainers.image.version`, `org.opencontainers.image.revision`,
-`org.opencontainers.image.created`, and `org.opencontainers.image.source`. Plain
-`docker build .` still works with `dev`/`unknown` fallbacks, which are intentionally
-distinguishable from release images.
+`org.opencontainers.image.created`, and `org.opencontainers.image.source`. The app reads
+`/app/build-info.json` first and only falls back to environment variables outside the image.
+Backup and restore read the image labels and image ID. Plain `docker build .` still works
+with `dev`/`unknown` fallbacks, which are intentionally distinguishable from release images.
 
 ## Isolated E2E Drills
 

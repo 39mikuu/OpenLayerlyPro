@@ -116,34 +116,84 @@ sha256_trimmed_file() {
   ' "$file_path"
 }
 
-inspect_app_container_provenance() {
-  container_id=$1
+image_provenance_from_inspect() {
+  image_ref=$1
 
-  docker_cmd inspect --format '{{json .Config.Env}} {{json .Image}}' "$container_id" \
+  docker_cmd image inspect --format '{{json .Config.Labels}} {{json .Id}}' "$image_ref" \
     | node -e '
       const input = require("fs").readFileSync(0, "utf8").trim();
       const separator = input.lastIndexOf(" ");
       if (separator < 0) process.exit(1);
-      const envList = JSON.parse(input.slice(0, separator));
+      const labels = JSON.parse(input.slice(0, separator)) || {};
       const imageId = JSON.parse(input.slice(separator + 1));
-      const env = new Map();
-      for (const entry of Array.isArray(envList) ? envList : []) {
-        const index = entry.indexOf("=");
-        if (index > 0) env.set(entry.slice(0, index), entry.slice(index + 1));
-      }
-      const value = (name) => {
-        const resolved = env.get(name);
-        return resolved && resolved.length > 0 ? resolved : "unknown";
+      const label = (name) => {
+        const value = labels[name];
+        return typeof value === "string" && value.length > 0 ? value : "unknown";
       };
       process.stdout.write(
         JSON.stringify({
-          appVersion: value("APP_VERSION"),
-          sourceCommit: value("SOURCE_COMMIT"),
-          buildTimestamp: value("BUILD_TIMESTAMP"),
-          imageId: imageId && imageId.length > 0 ? imageId : "unknown",
+          appVersion: label("org.opencontainers.image.version"),
+          sourceCommit: label("org.opencontainers.image.revision"),
+          buildTimestamp: label("org.opencontainers.image.created"),
+          imageId: typeof imageId === "string" && imageId.length > 0 ? imageId : "unknown",
         }),
       );
     '
+}
+
+inspect_container_image_ref() {
+  container_id=$1
+
+  docker_cmd inspect --format '{{json .Image}}' "$container_id" \
+    | node -e '
+      const input = require("fs").readFileSync(0, "utf8").trim();
+      const image = JSON.parse(input);
+      if (typeof image !== "string" || image.length === 0) process.exit(1);
+      process.stdout.write(image);
+    '
+}
+
+# The container's effective APP_VERSION/SOURCE_COMMIT/BUILD_TIMESTAMP must be exactly
+# what the image itself declares (same value, or absent in both). Comparing container
+# env against IMAGE env (not labels) also catches empty-string overrides and overrides
+# on images whose labels are absent/"unknown", without false-failing default dev builds
+# where the image ENV legitimately carries "dev"/"unknown".
+check_app_container_env_matches_image() {
+  container_id=$1
+  image_ref=$2
+
+  container_env_json=$(docker_cmd inspect --format '{{json .Config.Env}}' "$container_id") \
+    || fail "unable to inspect app service container environment"
+  image_env_json=$(docker_cmd image inspect --format '{{json .Config.Env}}' "$image_ref") \
+    || fail "unable to inspect app service image environment"
+  node -e '
+    const toMap = (raw) => {
+      const parsed = JSON.parse(raw);
+      const env = new Map();
+      for (const entry of Array.isArray(parsed) ? parsed : []) {
+        const index = entry.indexOf("=");
+        if (index > 0) env.set(entry.slice(0, index), entry.slice(index + 1));
+      }
+      return env;
+    };
+    const containerEnv = toMap(process.argv[1]);
+    const imageEnv = toMap(process.argv[2]);
+    const mismatches = [];
+    for (const name of ["APP_VERSION", "SOURCE_COMMIT", "BUILD_TIMESTAMP"]) {
+      const containerValue = containerEnv.get(name);
+      const imageValue = imageEnv.get(name);
+      if (containerValue !== imageValue) {
+        mismatches.push(
+          `${name}: container=${containerValue === undefined ? "<unset>" : JSON.stringify(containerValue)} image=${imageValue === undefined ? "<unset>" : JSON.stringify(imageValue)}`,
+        );
+      }
+    }
+    if (mismatches.length > 0) {
+      console.error(mismatches.join("; "));
+      process.exit(1);
+    }
+  ' "$container_env_json" "$image_env_json" \
+    || fail "app container environment overrides the image build identity; remove stale APP_VERSION/SOURCE_COMMIT/BUILD_TIMESTAMP overrides (for example in .env) before backup/restore"
 }
 
 resolve_single_app_container_id() {
@@ -158,20 +208,254 @@ resolve_single_app_container_id() {
   printf '%s' "$container_ids"
 }
 
+resolve_existing_single_app_container_id() {
+  container_ids=$(compose ps -aq app) || return 3
+  [ -n "$container_ids" ] || return 1
+
+  container_count=$(printf '%s\n' "$container_ids" | sed '/^$/d' | wc -l | tr -d ' ')
+  if [ "$container_count" != "1" ]; then
+    echo "multiple app service containers found; remove stale containers or scale to 1 before backup/restore" >&2
+    return 2
+  fi
+
+  printf '%s' "$container_ids"
+}
+
 read_app_container_provenance() {
   container_id=$1
-  provenance_json=$(inspect_app_container_provenance "$container_id") \
-    || fail "unable to inspect app service image provenance"
+  image_ref=$(inspect_container_image_ref "$container_id") \
+    || fail "unable to inspect app service container image"
+  read_image_provenance "$image_ref"
+  check_app_container_env_matches_image "$container_id" "$image_ref"
+}
+
+try_read_image_provenance() {
+  image_ref=$1
+
+  provenance_json=$(image_provenance_from_inspect "$image_ref") \
+    || return 1
 
   RUNTIME_APP_VERSION=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).appVersion)' "$provenance_json")
   RUNTIME_SOURCE_COMMIT=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).sourceCommit)' "$provenance_json")
   BUILD_TIMESTAMP=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).buildTimestamp)' "$provenance_json")
   RUNTIME_IMAGE_ID=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).imageId)' "$provenance_json")
-  : "$RUNTIME_APP_VERSION" "$RUNTIME_SOURCE_COMMIT" "$BUILD_TIMESTAMP" "$RUNTIME_IMAGE_ID"
+  RUNTIME_PROVENANCE_JSON=$provenance_json
+  : "$RUNTIME_APP_VERSION" "$RUNTIME_SOURCE_COMMIT" "$BUILD_TIMESTAMP" "$RUNTIME_IMAGE_ID" "$RUNTIME_PROVENANCE_JSON"
+}
+
+read_image_provenance() {
+  image_ref=$1
+  try_read_image_provenance "$image_ref" \
+    || fail "unable to inspect app service image provenance"
+}
+
+read_unknown_image_provenance() {
+  RUNTIME_APP_VERSION=unknown
+  RUNTIME_SOURCE_COMMIT=unknown
+  BUILD_TIMESTAMP=unknown
+  RUNTIME_IMAGE_ID=unknown
+  RUNTIME_PROVENANCE_JSON='{"appVersion":"unknown","sourceCommit":"unknown","buildTimestamp":"unknown","imageId":"unknown"}'
+}
+
+resolve_compose_app_image() {
+  compose_images_output=$(compose config --images app) || return 1
+  printf '%s\n' "$compose_images_output" | sed '/^$/d' | head -n 1
+}
+
+read_restore_target_provenance_read_only() {
+  set +e
+  container_id=$(resolve_existing_single_app_container_id)
+  container_status=$?
+  set -e
+  case "$container_status" in
+    0)
+    read_app_container_provenance "$container_id"
+    return
+      ;;
+    1)
+      ;;
+    2)
+      fail "multiple app service containers found; remove stale containers or scale to 1 before backup/restore"
+      ;;
+    *)
+      fail "unable to list app service containers for image provenance"
+      ;;
+  esac
+
+  image_ref=$(resolve_compose_app_image) \
+    || fail "unable to resolve the target app image from the compose configuration"
+  if [ -z "$image_ref" ]; then
+    read_unknown_image_provenance
+    return
+  fi
+
+  if ! try_read_image_provenance "$image_ref"; then
+    echo "WARNING: target app image $image_ref is not available locally; target provenance is unknown" >&2
+    read_unknown_image_provenance
+  fi
+}
+
+manifest_v3_required_value() {
+  manifest_path=$1
+  key=$2
+  validator=$3
+  max_length=$4
+
+  node -e '
+    const { readFileSync } = require("fs");
+    const manifestPath = process.argv[1];
+    const requestedKey = process.argv[2];
+    const requestedValidator = process.argv[3];
+    const requestedMaxLength = Number(process.argv[4]);
+    const fail = (message) => {
+      console.error(`restore: ${message}`);
+      process.exit(1);
+    };
+    const values = [];
+    for (const rawLine of readFileSync(manifestPath, "utf8").split("\n")) {
+      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+      if (!line.startsWith(`${requestedKey}=`)) continue;
+      values.push(line.slice(requestedKey.length + 1));
+    }
+    if (values.length !== 1) {
+      fail(`FORMAT_VERSION=3 archive manifest must contain ${requestedKey} exactly once`);
+    }
+    const value = values[0];
+    if (value.length === 0) {
+      fail(`FORMAT_VERSION=3 archive manifest has empty ${requestedKey}`);
+    }
+    if (value.length > requestedMaxLength) {
+      fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} is too long`);
+    }
+    if (/[\x00-\x1F\x7F]/.test(value)) {
+      fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} contains control characters`);
+    }
+    switch (requestedValidator) {
+      case "sha256":
+        if (!/^[0-9a-f]{64}$/.test(value)) {
+          fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} must be 64 lowercase hex characters`);
+        }
+        break;
+      case "image_id":
+        if (value !== "unknown" && !/^sha256:[0-9a-f]{64}$/.test(value)) {
+          fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} must be sha256: plus 64 lowercase hex characters or unknown`);
+        }
+        break;
+      case "commit":
+        if (value !== "dev" && value !== "unknown" && !/^[0-9a-f]{40}$/.test(value)) {
+          fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} must be 40 lowercase hex characters, dev, or unknown`);
+        }
+        break;
+      case "timestamp":
+        if (value !== "unknown" && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/.test(value)) {
+          fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} must be RFC3339 UTC or unknown`);
+        }
+        break;
+      case "app_version":
+        if (!/^[!-~]+$/.test(value)) {
+          fail(`FORMAT_VERSION=3 archive manifest ${requestedKey} must be printable single-line ASCII without whitespace`);
+        }
+        break;
+      default:
+        fail(`unknown FORMAT_VERSION=3 validator for ${requestedKey}`);
+    }
+    process.stdout.write(value);
+  ' "$manifest_path" "$key" "$validator" "$max_length" \
+    || fail "invalid FORMAT_VERSION=3 archive manifest $key"
+}
+
+read_archive_provenance_v3() {
+  manifest_path=$1
+  provenance_json=$(
+    node -e '
+      const { readFileSync } = require("fs");
+      const manifestPath = process.argv[1];
+      const fail = (message) => {
+        console.error(`restore: ${message}`);
+        process.exit(1);
+      };
+      const specs = {
+        RUNTIME_APP_VERSION: { validator: "app_version", maxLength: 100 },
+        RUNTIME_SOURCE_COMMIT: { validator: "commit", maxLength: 200 },
+        RUNTIME_IMAGE_ID: { validator: "image_id", maxLength: 200 },
+        BUILD_TIMESTAMP: { validator: "timestamp", maxLength: 200 },
+        BACKUP_TOOL_COMMIT: { validator: "commit", maxLength: 200 },
+        BACKUP_TOOL_SCRIPT_SHA256: { validator: "sha256", maxLength: 200 },
+        CONFIG_ENCRYPTION_KEY_SHA256: { validator: "sha256", maxLength: 200 },
+      };
+      const values = new Map(Object.keys(specs).map((key) => [key, []]));
+      for (const rawLine of readFileSync(manifestPath, "utf8").split("\n")) {
+        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+        const equals = line.indexOf("=");
+        if (equals <= 0) continue;
+        const key = line.slice(0, equals);
+        if (!values.has(key)) continue;
+        values.get(key).push(line.slice(equals + 1));
+      }
+      const validate = (key, value, spec) => {
+        if (value.length === 0) fail(`FORMAT_VERSION=3 archive manifest has empty ${key}`);
+        if (value.length > spec.maxLength) fail(`FORMAT_VERSION=3 archive manifest ${key} is too long`);
+        if (/[\x00-\x1F\x7F]/.test(value)) fail(`FORMAT_VERSION=3 archive manifest ${key} contains control characters`);
+        switch (spec.validator) {
+          case "sha256":
+            if (!/^[0-9a-f]{64}$/.test(value)) fail(`FORMAT_VERSION=3 archive manifest ${key} must be 64 lowercase hex characters`);
+            break;
+          case "image_id":
+            if (value !== "unknown" && !/^sha256:[0-9a-f]{64}$/.test(value)) {
+              fail(`FORMAT_VERSION=3 archive manifest ${key} must be sha256: plus 64 lowercase hex characters or unknown`);
+            }
+            break;
+          case "commit":
+            if (value !== "dev" && value !== "unknown" && !/^[0-9a-f]{40}$/.test(value)) {
+              fail(`FORMAT_VERSION=3 archive manifest ${key} must be 40 lowercase hex characters, dev, or unknown`);
+            }
+            break;
+          case "timestamp":
+            if (value !== "unknown" && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/.test(value)) {
+              fail(`FORMAT_VERSION=3 archive manifest ${key} must be RFC3339 UTC or unknown`);
+            }
+            break;
+          case "app_version":
+            if (!/^[!-~]+$/.test(value)) {
+              fail(`FORMAT_VERSION=3 archive manifest ${key} must be printable single-line ASCII without whitespace`);
+            }
+            break;
+          default:
+            fail(`unknown FORMAT_VERSION=3 validator for ${key}`);
+        }
+      };
+      const parsed = {};
+      for (const [key, spec] of Object.entries(specs)) {
+        const matches = values.get(key);
+        if (matches.length !== 1) fail(`FORMAT_VERSION=3 archive manifest must contain ${key} exactly once`);
+        const value = matches[0];
+        validate(key, value, spec);
+        parsed[key] = value;
+      }
+      process.stdout.write(JSON.stringify(parsed));
+    ' "$manifest_path"
+  ) || fail "invalid FORMAT_VERSION=3 archive manifest"
+
+  ARCHIVE_RUNTIME_APP_VERSION=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).RUNTIME_APP_VERSION)' "$provenance_json")
+  ARCHIVE_RUNTIME_SOURCE_COMMIT=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).RUNTIME_SOURCE_COMMIT)' "$provenance_json")
+  ARCHIVE_RUNTIME_IMAGE_ID=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).RUNTIME_IMAGE_ID)' "$provenance_json")
+  ARCHIVE_BUILD_TIMESTAMP=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).BUILD_TIMESTAMP)' "$provenance_json")
+  ARCHIVE_BACKUP_TOOL_COMMIT=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).BACKUP_TOOL_COMMIT)' "$provenance_json")
+  ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).BACKUP_TOOL_SCRIPT_SHA256)' "$provenance_json")
+  ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).CONFIG_ENCRYPTION_KEY_SHA256)' "$provenance_json")
+  : "$ARCHIVE_RUNTIME_APP_VERSION" "$ARCHIVE_RUNTIME_SOURCE_COMMIT" "$ARCHIVE_RUNTIME_IMAGE_ID" \
+    "$ARCHIVE_BUILD_TIMESTAMP" "$ARCHIVE_BACKUP_TOOL_COMMIT" "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256" \
+    "$ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256"
 }
 
 read_archive_provenance() {
   manifest_path=$1
+  format_version=$2
+
+  if [ "$format_version" = "3" ]; then
+    read_archive_provenance_v3 "$manifest_path"
+    return
+  fi
 
   ARCHIVE_RUNTIME_APP_VERSION=$(manifest_value_or_default "$manifest_path" RUNTIME_APP_VERSION "$(manifest_value_or_default "$manifest_path" APP_VERSION "unknown")")
   ARCHIVE_RUNTIME_SOURCE_COMMIT=$(manifest_value_or_default "$manifest_path" RUNTIME_SOURCE_COMMIT "unknown")
@@ -179,8 +463,10 @@ read_archive_provenance() {
   ARCHIVE_BUILD_TIMESTAMP=$(manifest_value_or_default "$manifest_path" BUILD_TIMESTAMP "unknown")
   ARCHIVE_BACKUP_TOOL_COMMIT=$(manifest_value_or_default "$manifest_path" BACKUP_TOOL_COMMIT "unknown")
   ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256=$(manifest_value_or_default "$manifest_path" BACKUP_TOOL_SCRIPT_SHA256 "unknown")
+  ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256=$(manifest_value_or_default "$manifest_path" CONFIG_ENCRYPTION_KEY_SHA256 "unknown")
   : "$ARCHIVE_RUNTIME_APP_VERSION" "$ARCHIVE_RUNTIME_SOURCE_COMMIT" "$ARCHIVE_RUNTIME_IMAGE_ID" \
-    "$ARCHIVE_BUILD_TIMESTAMP" "$ARCHIVE_BACKUP_TOOL_COMMIT" "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256"
+    "$ARCHIVE_BUILD_TIMESTAMP" "$ARCHIVE_BACKUP_TOOL_COMMIT" "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256" \
+    "$ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256"
 }
 
 warn_legacy_provenance_if_needed() {
@@ -197,7 +483,8 @@ verify_archive_config_key_fingerprint() {
   format_version=$2
 
   if [ "$format_version" = "3" ]; then
-    expected_config_encryption_key_sha256=$(manifest_value "$payload_dir/manifest.env" CONFIG_ENCRYPTION_KEY_SHA256)
+    expected_config_encryption_key_sha256=$(manifest_v3_required_value "$payload_dir/manifest.env" CONFIG_ENCRYPTION_KEY_SHA256 sha256 200) \
+      || fail "invalid FORMAT_VERSION=3 archive manifest CONFIG_ENCRYPTION_KEY_SHA256"
     actual_config_encryption_key_sha256=$(sha256_trimmed_file "$payload_dir/secrets/config-encryption-key") \
       || fail "unable to fingerprint archived config encryption key"
     [ "$actual_config_encryption_key_sha256" = "$expected_config_encryption_key_sha256" ] \

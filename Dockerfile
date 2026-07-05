@@ -52,6 +52,8 @@ RUN chmod +x /entrypoint.sh \
 
 # BUILD_TIMESTAMP intentionally breaks layer caching from this point onward; keep the
 # build identity metadata after file-copy/setup layers to minimize cache damage.
+RUN APP_VERSION="$APP_VERSION" SOURCE_COMMIT="$SOURCE_COMMIT" BUILD_TIMESTAMP="$BUILD_TIMESTAMP" \
+  node -e 'const fs=require("fs"); const data={appVersion:process.env.APP_VERSION||"dev",sourceCommit:process.env.SOURCE_COMMIT||"dev",buildTimestamp:process.env.BUILD_TIMESTAMP||"unknown"}; fs.writeFileSync("/app/build-info.json", JSON.stringify(data) + "\n", { mode: 0o444 });'
 ENV APP_VERSION=$APP_VERSION
 ENV SOURCE_COMMIT=$SOURCE_COMMIT
 ENV BUILD_TIMESTAMP=$BUILD_TIMESTAMP
