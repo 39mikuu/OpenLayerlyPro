@@ -14,6 +14,7 @@ function provider() {
   const listInvoices = vi.fn();
   const retrieveInvoice = vi.fn();
   const listCharges = vi.fn();
+  const listInvoicePayments = vi.fn();
   const constructEvent = vi.fn();
   const instance = new StripePaymentProvider(
     { secretKey: "sk_test_secret", webhookSecret: "whsec_secret" },
@@ -32,6 +33,7 @@ function provider() {
         retrieve: retrieveSubscription,
       },
       invoices: { list: listInvoices, retrieve: retrieveInvoice },
+      invoicePayments: { list: listInvoicePayments },
       charges: { list: listCharges },
       webhooks: { constructEvent },
     } as never,
@@ -49,6 +51,7 @@ function provider() {
     listInvoices,
     retrieveInvoice,
     listCharges,
+    listInvoicePayments,
     constructEvent,
   };
 }
@@ -60,6 +63,7 @@ describe("Stripe payment provider", () => {
       status: "active",
       customer: "cus_obs",
       current_period_end: 1_893_456_000,
+      items: { data: [] },
       cancel_at_period_end: false,
       lastResponse: { headers: date === undefined ? {} : { date } },
     };
@@ -92,6 +96,45 @@ describe("Stripe payment provider", () => {
     const result = await instance.retrieveSubscription("sub_obs");
 
     expect(result.observedAt).toBeNull();
+  });
+
+  it("derives subscription currentPeriodEndsAt from basil subscription items", async () => {
+    const { instance, retrieveSubscription } = provider();
+    retrieveSubscription.mockResolvedValue({
+      id: "sub_items",
+      status: "active",
+      customer: "cus_items",
+      current_period_end: null,
+      cancel_at_period_end: false,
+      items: {
+        data: [
+          { id: "si_short", current_period_end: 1_893_456_000 },
+          { id: "si_long", current_period_end: 1_896_048_000 },
+        ],
+      },
+      lastResponse: { headers: {} },
+    });
+
+    const result = await instance.retrieveSubscription("sub_items");
+
+    expect(result.currentPeriodEndsAt).toEqual(new Date(1_896_048_000 * 1000));
+  });
+
+  it("keeps null subscription currentPeriodEndsAt when neither shape has a period", async () => {
+    const { instance, retrieveSubscription } = provider();
+    retrieveSubscription.mockResolvedValue({
+      id: "sub_without_period",
+      status: "active",
+      customer: "cus_without_period",
+      current_period_end: null,
+      cancel_at_period_end: false,
+      items: { data: [] },
+      lastResponse: { headers: {} },
+    });
+
+    const result = await instance.retrieveSubscription("sub_without_period");
+
+    expect(result.currentPeriodEndsAt).toBeNull();
   });
 
   it("creates a hosted one-time checkout session with ownership metadata", async () => {
@@ -285,6 +328,7 @@ describe("Stripe payment provider", () => {
             amount: 500,
             amount_refunded: 500,
             payment_intent: "pi_refunded",
+            invoice: "in_refunded",
           },
         },
       })
@@ -316,7 +360,7 @@ describe("Stripe payment provider", () => {
     await expect(instance.parseWebhook(Buffer.from("full"), "sig")).resolves.toEqual({
       type: "refunded",
       paymentRef: "pi_refunded",
-      providerInvoiceRef: undefined,
+      providerInvoiceRef: "in_refunded",
       providerEventId: "evt_refund_full",
       providerCreatedAt: new Date(0),
     });
@@ -338,7 +382,7 @@ describe("Stripe payment provider", () => {
       .mockReturnValueOnce({
         id: "evt_dispute",
         type: "charge.dispute.created",
-        data: { object: { payment_intent: { id: "pi_disputed" } } },
+        data: { object: { payment_intent: { id: "pi_disputed" }, invoice: "in_disputed" } },
       })
       .mockReturnValueOnce({
         id: "evt_dispute_legacy",
@@ -349,7 +393,7 @@ describe("Stripe payment provider", () => {
     await expect(instance.parseWebhook(Buffer.from("dispute"), "sig")).resolves.toEqual({
       type: "disputed",
       paymentRef: "pi_disputed",
-      providerInvoiceRef: undefined,
+      providerInvoiceRef: "in_disputed",
       providerEventId: "evt_dispute",
       providerCreatedAt: new Date(0),
     });
@@ -442,6 +486,78 @@ describe("Stripe payment provider", () => {
     });
   });
 
+  it("normalizes basil subscription invoices from parent, payments, and pricing fields", async () => {
+    const { instance, constructEvent } = provider();
+    constructEvent.mockReturnValue({
+      id: "evt_invoice_basil",
+      created: 1767225600,
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_basil",
+          subscription: null,
+          payment_intent: null,
+          parent: {
+            type: "subscription_details",
+            quote_details: null,
+            subscription_details: {
+              subscription: "sub_basil",
+              metadata: {
+                subscriptionId: "44444444-4444-4444-8444-444444444444",
+                providerPriceRef: "price_basil",
+              },
+            },
+          },
+          payments: {
+            data: [
+              {
+                id: "ip_open",
+                status: "open",
+                payment: { type: "payment_intent", payment_intent: "pi_open" },
+              },
+              {
+                id: "ip_paid",
+                status: "paid",
+                payment: { type: "payment_intent", payment_intent: "pi_basil" },
+              },
+            ],
+          },
+          currency: "USD",
+          metadata: {
+            subscriptionId: "44444444-4444-4444-8444-444444444444",
+            providerPriceRef: "price_basil",
+          },
+          lines: {
+            data: [
+              {
+                price: null,
+                pricing: {
+                  type: "price_details",
+                  price_details: { price: "price_basil" },
+                },
+                amount: 1200,
+                period: { start: 1767225600, end: 1769904000 },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    await expect(instance.parseWebhook(Buffer.from("invoice-basil"), "sig")).resolves.toMatchObject(
+      {
+        type: "subscription_renewed",
+        localSubscriptionId: "44444444-4444-4444-8444-444444444444",
+        providerSubscriptionRef: "sub_basil",
+        providerInvoiceRef: "in_basil",
+        providerPaymentRef: "pi_basil",
+        providerPriceRef: "price_basil",
+        lines: [expect.objectContaining({ providerPriceRef: "price_basil", amountMinor: 1200 })],
+        currency: "usd",
+      },
+    );
+  });
+
   it("normalizes ambiguous invoice lines for the application layer to reject by snapshot", async () => {
     const { instance, constructEvent } = provider();
     constructEvent.mockReturnValue({
@@ -515,6 +631,60 @@ describe("Stripe payment provider", () => {
       payment_intent: "pi_owned",
       limit: 1,
     });
+  });
+
+  it("resolves subscription invoices from legacy charge invoice mapping", async () => {
+    const { instance, listCharges, listInvoicePayments, retrieveInvoice } = provider();
+    listCharges.mockResolvedValue({ data: [{ invoice: "in_legacy_refund" }] });
+    retrieveInvoice.mockResolvedValue({
+      id: "in_legacy_refund",
+      subscription: "sub_legacy_refund",
+      metadata: { subscriptionId: "55555555-5555-4555-8555-555555555555" },
+    });
+
+    await expect(instance.resolveInvoiceByPaymentIntent("pi_legacy_refund")).resolves.toEqual({
+      providerInvoiceRef: "in_legacy_refund",
+      providerSubscriptionRef: "sub_legacy_refund",
+      localSubscriptionId: "55555555-5555-4555-8555-555555555555",
+    });
+    expect(listInvoicePayments).not.toHaveBeenCalled();
+  });
+
+  it("resolves subscription invoices from invoice payments when charge.invoice is null", async () => {
+    const { instance, listCharges, listInvoicePayments, retrieveInvoice } = provider();
+    listCharges.mockResolvedValue({ data: [{ invoice: null }] });
+    listInvoicePayments.mockResolvedValue({ data: [{ invoice: "in_basil_refund" }] });
+    retrieveInvoice.mockResolvedValue({
+      id: "in_basil_refund",
+      parent: {
+        type: "subscription_details",
+        quote_details: null,
+        subscription_details: {
+          subscription: "sub_basil_refund",
+          metadata: { subscriptionId: "66666666-6666-4666-8666-666666666666" },
+        },
+      },
+      metadata: { subscriptionId: "66666666-6666-4666-8666-666666666666" },
+    });
+
+    await expect(instance.resolveInvoiceByPaymentIntent("pi_basil_refund")).resolves.toEqual({
+      providerInvoiceRef: "in_basil_refund",
+      providerSubscriptionRef: "sub_basil_refund",
+      localSubscriptionId: "66666666-6666-4666-8666-666666666666",
+    });
+    expect(listInvoicePayments).toHaveBeenCalledWith({
+      payment: { type: "payment_intent", payment_intent: "pi_basil_refund" },
+      limit: 1,
+    });
+  });
+
+  it("returns null when PaymentIntent invoice lookup finds no invoice", async () => {
+    const { instance, listCharges, listInvoicePayments, retrieveInvoice } = provider();
+    listCharges.mockResolvedValue({ data: [{ invoice: null }] });
+    listInvoicePayments.mockResolvedValue({ data: [] });
+
+    await expect(instance.resolveInvoiceByPaymentIntent("pi_missing_invoice")).resolves.toBeNull();
+    expect(retrieveInvoice).not.toHaveBeenCalled();
   });
 
   it("tests credentials with the Stripe balance endpoint", async () => {
