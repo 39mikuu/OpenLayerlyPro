@@ -197,6 +197,18 @@ describe("bounded Route Handler static check", () => {
       "nested request container",
       "export async function POST(req: Request) { const box = { nested: [req.clone()] }; return box.nested[0].json(); }",
     ],
+    [
+      "Array.of request container",
+      "export async function POST(req: Request) { const box = Array.of(req); return box[0].json(); }",
+    ],
+    [
+      "new Array request container",
+      "export async function POST(req: Request) { const box = new Array(req); return box[0].json(); }",
+    ],
+    [
+      "Array.of cloned request container",
+      "export async function POST(req: Request) { const box = Array.of(req.clone()); return box[0].json(); }",
+    ],
   ])("rejects %s", async (_name, source) => {
     const root = await createFixture({
       "unsafe/route.ts": source,
@@ -204,6 +216,22 @@ describe("bounded Route Handler static check", () => {
 
     await expect(runCheck(root)).rejects.toMatchObject({
       stderr: expect.stringContaining("request container.container()"),
+    });
+  });
+
+  it("allows bounded helper calls alongside unrelated array factories", async () => {
+    const root = await createFixture({
+      "safe/route.ts": [
+        'import { readJsonWithLimit } from "@/lib/request-body";',
+        "export async function POST(req: Request) {",
+        "  const values = Array.of('not-a-request');",
+        "  return Response.json({ values, body: await readJsonWithLimit(req, 1024, schema) });",
+        "}",
+      ].join("\n"),
+    });
+
+    await expect(runCheck(root)).resolves.toMatchObject({
+      stdout: expect.stringContaining("Bounded request-body check passed"),
     });
   });
 });

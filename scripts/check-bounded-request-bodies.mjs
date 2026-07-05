@@ -85,6 +85,32 @@ function getRequestContainerEscape(node, aliases) {
   return { requestName: "request container", method: "container" };
 }
 
+function getArrayFactoryContainerEscape(node, aliases) {
+  let args;
+
+  if (ts.isCallExpression(node)) {
+    const callee = unwrapExpression(node.expression);
+    if (
+      !ts.isPropertyAccessExpression(callee) ||
+      callee.name.text !== "of" ||
+      !ts.isIdentifier(callee.expression) ||
+      callee.expression.text !== "Array"
+    ) {
+      return null;
+    }
+    args = node.arguments;
+  } else if (ts.isNewExpression(node)) {
+    const callee = unwrapExpression(node.expression);
+    if (!ts.isIdentifier(callee) || callee.text !== "Array") return null;
+    args = node.arguments ?? [];
+  } else {
+    return null;
+  }
+
+  if (!args.some((argument) => expressionContainsRequestAlias(argument, aliases))) return null;
+  return { requestName: "request container", method: "container" };
+}
+
 export function findDirectBodyReads(source, fileName = "route.ts") {
   const sourceFile = ts.createSourceFile(
     fileName,
@@ -108,6 +134,17 @@ export function findDirectBodyReads(source, fileName = "route.ts") {
             line: position.line + 1,
             column: position.character + 1,
             ...bodyRead,
+          });
+        }
+      }
+      if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+        const factoryEscape = getArrayFactoryContainerEscape(node, aliases);
+        if (factoryEscape) {
+          const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+          violations.push({
+            line: position.line + 1,
+            column: position.character + 1,
+            ...factoryEscape,
           });
         }
       }
