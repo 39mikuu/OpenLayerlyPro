@@ -25,8 +25,8 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const input = await readJsonWithLimit(request, getEnv().REQUEST_JSON_MAX_BYTES, tagSchema);
     await requireAdmin();
+    const input = await readJsonWithLimit(request, getEnv().REQUEST_JSON_MAX_BYTES, tagSchema);
     return jsonOk(await createTag(input));
   } catch (error) {
     return handleApiError(error);

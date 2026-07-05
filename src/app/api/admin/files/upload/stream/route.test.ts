@@ -1,6 +1,9 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/lib/api";
+import { neverEndingBodyRequest } from "@/test/never-ending-body";
+
 const mocks = vi.hoisted(() => ({
   getLimit: vi.fn(),
   parseFileName: vi.fn(),
@@ -16,6 +19,15 @@ vi.mock("@/modules/file", () => ({
 }));
 
 import { POST } from "./route";
+
+async function withShortTimeout<T>(promise: Promise<T>): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error("handler did not return before reading body")), 250);
+    }),
+  ]);
+}
 
 describe("admin streamed upload API", () => {
   beforeEach(() => {
@@ -101,5 +113,29 @@ describe("admin streamed upload API", () => {
 
     expect(response.status).toBe(400);
     expect(mocks.saveStreamedFile).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 before touching a never-ending streamed upload body", async () => {
+    const slowBody = neverEndingBodyRequest("http://localhost/api/admin/files/upload/stream", {
+      headers: {
+        "content-type": "video/mp4",
+        "x-file-name": encodeURIComponent("movie.mp4"),
+        "x-file-purpose": "content_attachment",
+      },
+    });
+    mocks.requireAdmin.mockRejectedValue(new ApiError(401, "authRequired"));
+
+    try {
+      const pullsBeforeHandler = slowBody.pulls;
+      const response = await withShortTimeout(POST(slowBody.request));
+
+      expect(response.status).toBe(401);
+      expect(slowBody.pulls).toBe(pullsBeforeHandler);
+      expect(mocks.getLimit).not.toHaveBeenCalled();
+      expect(mocks.parseFileName).not.toHaveBeenCalled();
+      expect(mocks.saveStreamedFile).not.toHaveBeenCalled();
+    } finally {
+      slowBody.cleanup();
+    }
   });
 });

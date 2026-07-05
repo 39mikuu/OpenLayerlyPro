@@ -61,7 +61,7 @@ describe("subscription checkout route", () => {
     });
   });
 
-  it("rejects oversized JSON before auth", async () => {
+  it("rejects oversized JSON after auth", async () => {
     const response = await POST(
       new Request("http://localhost/api/payments/subscribe", {
         method: "POST",
@@ -71,6 +71,6 @@ describe("subscription checkout route", () => {
     );
 
     expect(response.status).toBe(413);
-    expect(mocks.requireUser).not.toHaveBeenCalled();
+    expect(mocks.requireUser).toHaveBeenCalledOnce();
   });
 });

@@ -15,13 +15,13 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
+    const admin = await requireAdmin();
     const { reviewNote } = await readJsonWithLimitOrDefault(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
       bodySchema,
       {},
     );
-    const admin = await requireAdmin();
     const { id } = await ctx.params;
     const updated = await rejectPaymentRequest(id, admin.id, reviewNote);
     return jsonOk(updated);

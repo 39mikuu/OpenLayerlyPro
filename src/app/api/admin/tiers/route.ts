@@ -55,8 +55,8 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     await requireAdmin();
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const [tier] = await getDb().insert(membershipTiers).values(input).returning();
     return jsonOk(tier);
   } catch (err) {

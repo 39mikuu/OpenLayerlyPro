@@ -44,8 +44,8 @@ const bodySchema = z.object({
 
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    const input = await readJsonWithLimit(req, POST_JSON_MAX_BYTES, bodySchema);
     await requireAdmin();
+    const input = await readJsonWithLimit(req, POST_JSON_MAX_BYTES, bodySchema);
     const { id } = await ctx.params;
     const translation = await upsertDraftTranslation(id, input.locale, {
       title: input.title,

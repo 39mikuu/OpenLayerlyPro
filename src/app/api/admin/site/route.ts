@@ -51,8 +51,8 @@ const bodySchema = z.object({
 
 export async function PUT(req: NextRequest) {
   try {
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     await requireAdmin();
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     if (input.customFooterHtml !== undefined) {
       throw new ApiError(409, "legacyFooterClientRefreshRequired");
     }

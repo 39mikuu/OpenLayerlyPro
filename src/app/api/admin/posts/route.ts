@@ -36,12 +36,12 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    await requireAdmin();
     const { categoryIds, tagIds, ...input } = await readJsonWithLimit(
       req,
       POST_JSON_MAX_BYTES,
       bodySchema,
     );
-    await requireAdmin();
     return jsonOk(await createPost(input, { categoryIds, tagIds }));
   } catch (err) {
     return handleApiError(err);
