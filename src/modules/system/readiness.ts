@@ -65,10 +65,14 @@ export async function getReadiness(options?: {
   // 开发/测试环境允许缺省，但若已配置来源则必须可读取。
   let encryptionKey = false;
   if (config) {
-    if (isConfigEncryptionKeyConfigured()) {
-      encryptionKey = getConfigEncryptionKey() !== null;
-    } else {
-      encryptionKey = !isProduction();
+    try {
+      if (isConfigEncryptionKeyConfigured()) {
+        encryptionKey = getConfigEncryptionKey() !== null;
+      } else {
+        encryptionKey = !isProduction();
+      }
+    } catch {
+      encryptionKey = false;
     }
   }
 

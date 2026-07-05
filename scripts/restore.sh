@@ -430,6 +430,9 @@ fi
 # shellcheck disable=SC2086
 run_one_off /app/dist/restore-converge.mjs $CONVERGE_ARGS || fail "restore convergence failed"
 
+echo "Verifying restored config encryption key against encrypted settings..."
+run_one_off /app/dist/restore-config-key-probe.mjs || fail "restored config encryption key cannot decrypt encrypted settings"
+
 echo "Starting application..."
 compose up -d --force-recreate app
 

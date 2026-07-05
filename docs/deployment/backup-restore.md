@@ -153,6 +153,7 @@ validate archive paths
 → mandatory files-backfill.mjs --apply
 → transactionally neutralize/re-arm tasks and payment-provider events (dist/restore-neutralize.mjs)
 → one-off DB↔storage convergence (dist/restore-converge.mjs)
+→ config encryption key decrypt probe (dist/restore-config-key-probe.mjs)
 → start normal app/dispatcher
 → /api/ready
 ```
@@ -165,6 +166,7 @@ Key invariants:
 - missing objects become quarantine/410, not storage 500;
 - only convergence may re-enqueue deletion for confirmed orphans;
 - any migrator/backfill/neutralization/convergence error prevents normal app startup;
+- after convergence, restore probes the restored database for an encrypted `app_settings` value and verifies the active config encryption key can decrypt it. If no encrypted values exist, the probe logs an explicit skip. If decryption fails, restore exits before app startup;
 - S3 convergence enumerates only controlled application key namespaces (`avatars/`, `payment-qr/`, `payment-proof/`, `content/`, `legacy/`, `remediated/`). Override with comma-separated `RESTORE_S3_ENUM_PREFIXES` when needed;
 - incomplete storage enumeration (truncated listing or converge errors) exits non-zero and prevents app startup;
 - `CONFIG_ENCRYPTION_KEY_FILE` must be a canonical absolute file path under `/app/secrets` (no `..`, no directory path). Restore validates the target path before dropping the official database;
@@ -181,6 +183,7 @@ dist/restore-pre-scan.mjs
 dist/restore-neutralize.mjs
 dist/restore-converge.mjs
 dist/restore-schema-check.mjs
+dist/restore-config-key-probe.mjs
 ```
 
 The script refuses a target that sets `CONFIG_ENCRYPTION_KEY` directly because the env value would override the restored file. Restore the matching external key through the secret manager or remove the override before retrying.

@@ -126,6 +126,17 @@ describe("getReadiness", () => {
     expect(result.checks.database).toBe(false);
   });
 
+  it("is not ready when a configured encryption key source fails loudly", async () => {
+    mockedGetConfigEncryptionKey.mockImplementation(() => {
+      throw new Error("CONFIG_ENCRYPTION_KEY_FILE is unreadable");
+    });
+
+    const result = await getReadiness();
+
+    expect(result.ready).toBe(false);
+    expect(result.checks.encryptionKey).toBe(false);
+  });
+
   it("stays ready and omits integrations if probing throws", async () => {
     mockedGetIntegrationStatuses.mockRejectedValue(new Error("probe failed"));
     const result = await getReadiness({ includeIntegrations: true });
