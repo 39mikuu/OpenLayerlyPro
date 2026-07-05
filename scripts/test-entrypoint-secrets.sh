@@ -25,11 +25,12 @@ reset_fixture() {
   rm -rf "$TEST_ROOT/root"
   mkdir -p "$TEST_ROOT/root/secrets" "$TEST_ROOT/root/uploads"
   : > "$CHOWN_LOG"
-  UPLOAD_DIR="$TEST_ROOT/root/uploads"
+  export UPLOAD_DIR="$TEST_ROOT/root/uploads"
   CONFIG_ENCRYPTION_KEY_FILE="$TEST_ROOT/root/secrets/config-encryption-key"
   SESSION_SECRET_FILE="$TEST_ROOT/root/secrets/session-secret"
   SECRETS_DIR="$(dirname "$CONFIG_ENCRYPTION_KEY_FILE")"
   SESSION_SECRETS_DIR="$(dirname "$SESSION_SECRET_FILE")"
+  export SESSION_SECRETS_DIR
   unset CONFIG_ENCRYPTION_KEY
   unset SESSION_SECRET
 }
@@ -38,7 +39,7 @@ reset_fixture
 printf '%s' "target" > "$TEST_ROOT/root/target"
 ln -s "$TEST_ROOT/root/target" "$CONFIG_ENCRYPTION_KEY_FILE"
 printf '%s' "session-secret-material-0123456789" > "$SESSION_SECRET_FILE"
-CONFIG_ENCRYPTION_KEY=external-key-material
+export CONFIG_ENCRYPTION_KEY=external-key-material
 entrypoint_apply_root_ownership
 if grep -F "$CONFIG_ENCRYPTION_KEY_FILE" "$CHOWN_LOG" >/dev/null; then
   fail "env mode chowned CONFIG_ENCRYPTION_KEY_FILE"
@@ -53,7 +54,7 @@ grep -F "nextjs:nodejs $SESSION_SECRET_FILE" "$CHOWN_LOG" >/dev/null \
 
 reset_fixture
 printf '%s' "config-key-material" > "$CONFIG_ENCRYPTION_KEY_FILE"
-SESSION_SECRET=external-session-secret
+export SESSION_SECRET=external-session-secret
 entrypoint_apply_root_ownership
 grep -F "nextjs:nodejs $CONFIG_ENCRYPTION_KEY_FILE" "$CHOWN_LOG" >/dev/null \
   || fail "file mode did not chown regular config key file"
@@ -71,7 +72,7 @@ grep -F "CONFIG_ENCRYPTION_KEY_FILE must not be a symlink" "$TEST_ROOT/symlink.e
 reset_fixture
 printf '%s' "target" > "$TEST_ROOT/root/target"
 ln -s "$TEST_ROOT/root/target" "$SESSION_SECRET_FILE"
-CONFIG_ENCRYPTION_KEY=external-key-material
+export CONFIG_ENCRYPTION_KEY=external-key-material
 if entrypoint_apply_root_ownership 2>"$TEST_ROOT/session-symlink.err"; then
   fail "file-backed session mode accepted symlinked session secret path"
 fi
