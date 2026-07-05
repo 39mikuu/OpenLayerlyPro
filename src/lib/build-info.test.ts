@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import packageJson from "../../package.json";
+
 const BUILD_ENV_KEYS = ["APP_VERSION", "SOURCE_COMMIT", "BUILD_TIMESTAMP"] as const;
 const MODULE_PATH = "./build-info";
 const originalValues = new Map<(typeof BUILD_ENV_KEYS)[number], string | undefined>(
@@ -66,7 +68,7 @@ describe("getBuildInfo", () => {
     process.env.BUILD_TIMESTAMP = "2026-07-05T00:00:00Z";
 
     await expect(getBuildInfoFresh()).resolves.toEqual({
-      appVersion: "0.2.0",
+      appVersion: packageJson.version,
       sourceCommit: "dev",
       buildTimestamp: "unknown",
     });
@@ -92,7 +94,7 @@ describe("getBuildInfo", () => {
     delete process.env.BUILD_TIMESTAMP;
 
     await expect(getBuildInfoFresh()).resolves.toEqual({
-      appVersion: "0.2.0",
+      appVersion: packageJson.version,
       sourceCommit: "dev",
       buildTimestamp: "unknown",
     });
@@ -105,7 +107,7 @@ describe("getBuildInfo", () => {
     process.env.BUILD_TIMESTAMP = " \t ";
 
     await expect(getBuildInfoFresh()).resolves.toEqual({
-      appVersion: "0.2.0",
+      appVersion: packageJson.version,
       sourceCommit: "dev",
       buildTimestamp: "unknown",
     });
