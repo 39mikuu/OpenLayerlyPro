@@ -65,6 +65,16 @@ run_schema_check() {
   fi
 }
 
+run_restore_config_key_probe_with_archive_key() {
+  database_url=$1
+  compose run --rm --no-deps -T \
+    -v "$WORK_DIR:/restore-work:ro" \
+    -e "DATABASE_URL=$database_url" \
+    -e CONFIG_ENCRYPTION_KEY= \
+    -e CONFIG_ENCRYPTION_KEY_FILE=/restore-work/secrets/config-encryption-key \
+    --entrypoint node app /app/dist/restore-config-key-probe.mjs
+}
+
 ARCHIVE_PATH=""
 ASSUME_YES=false
 ALLOW_LEGACY_V1_UNKNOWN=false
@@ -282,6 +292,51 @@ compose create app >/dev/null
 
 if ! compose run --rm -T --no-deps --entrypoint sh app -c 'test -z "${CONFIG_ENCRYPTION_KEY:-}"'; then
   fail "target defines CONFIG_ENCRYPTION_KEY; unset it or restore the matching externally managed value before continuing"
+fi
+
+APP_SETTINGS_COPY_SQL="$WORK_DIR/app_settings-copy.sql"
+if extract_app_settings_copy_block "$WORK_DIR/db.sql" "$APP_SETTINGS_COPY_SQL"; then
+  if app_settings_copy_block_has_rows "$APP_SETTINGS_COPY_SQL"; then
+    PROBE_DB="openlayerly_restore_probe_$(probe_db_suffix)"
+    echo "Verifying archive config encryption key against encrypted settings in isolated database $PROBE_DB..."
+    PROBE_PG_USER=$(compose exec -T postgres sh -c 'printf %s "${POSTGRES_USER:-artist}"' | tr -d '\r')
+    PROBE_PG_PASSWORD=$(compose exec -T postgres sh -c 'printf %s "${POSTGRES_PASSWORD:-artist_password}"' | tr -d '\r')
+    run_postgres_shell '
+      set -eu
+      createdb -U "${POSTGRES_USER:-artist}" "$1"
+    ' "$PROBE_DB"
+    APP_SETTINGS_CREATE_SQL=$(app_settings_scratch_create_table_sql "$APP_SETTINGS_COPY_SQL") \
+      || fail "archive app_settings COPY header is unsupported"
+    # Create exactly the columns carried by the archive COPY header, all as text.
+    # COPY text format loads original values safely, while avoiding unrelated archive
+    # DDL before the destructive restore boundary.
+    run_postgres_shell '
+      set -eu
+      psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-artist}" -d "$1" \
+        -c "$2"
+    ' "$PROBE_DB" "$APP_SETTINGS_CREATE_SQL"
+    run_postgres_shell '
+      set -eu
+      exec psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-artist}" -d "$1"
+    ' "$PROBE_DB" < "$APP_SETTINGS_COPY_SQL"
+
+    PROBE_DATABASE_URL="postgresql://$(urlencode "$PROBE_PG_USER"):$(urlencode "$PROBE_PG_PASSWORD")@postgres:5432/$PROBE_DB"
+    if ! run_restore_config_key_probe_with_archive_key "$PROBE_DATABASE_URL"; then
+      fail "archive config encryption key cannot decrypt archived encrypted settings"
+    fi
+    run_postgres_shell '
+      set -eu
+      dropdb --if-exists --force -U "${POSTGRES_USER:-artist}" "$1"
+    ' "$PROBE_DB"
+    PROBE_DB=""
+  else
+    echo "Skipping pre-restore config key decrypt check: archive app_settings table is empty."
+  fi
+else
+  extract_status=$?
+  [ "$extract_status" -eq 1 ] \
+    || fail "archive app_settings COPY block is malformed"
+  echo "Skipping pre-restore config key decrypt check: archive has no app_settings table."
 fi
 
 if [ "$FORMAT_VERSION" = "1" ]; then

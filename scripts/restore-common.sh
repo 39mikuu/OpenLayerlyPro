@@ -95,6 +95,92 @@ manifest_value() {
   printf '%s' "$value"
 }
 
+extract_app_settings_copy_block() {
+  dump_path=$1
+  output_path=$2
+
+  awk '
+    /^COPY public\.app_settings[[:space:]]*\(/ {
+      in_block = 1
+      found = 1
+      print
+      next
+    }
+    in_block {
+      print
+      if ($0 == "\\.") {
+        in_block = 0
+      }
+      next
+    }
+    END {
+      if (in_block) exit 2
+      if (!found) exit 1
+    }
+  ' "$dump_path" > "$output_path"
+}
+
+app_settings_copy_block_has_rows() {
+  copy_path=$1
+
+  awk '
+    /^COPY public\.app_settings[[:space:]]*\(/ {
+      in_block = 1
+      next
+    }
+    in_block && $0 == "\\." {
+      exit rows ? 0 : 1
+    }
+    in_block {
+      rows = 1
+    }
+    END {
+      exit rows ? 0 : 1
+    }
+  ' "$copy_path"
+}
+
+app_settings_scratch_create_table_sql() {
+  copy_path=$1
+
+  awk '
+    function fail(message) {
+      print message > "/dev/stderr"
+      exit 1
+    }
+    /^COPY public\.app_settings[[:space:]]*\(/ {
+      header = $0
+      sub(/^COPY public\.app_settings[[:space:]]*\(/, "", header)
+      sub(/\)[[:space:]]+FROM stdin;[[:space:]]*$/, "", header)
+      if (header == $0) fail("archive app_settings COPY header is malformed")
+      count = split(header, raw_columns, /,[[:space:]]*/)
+      if (count < 1) fail("archive app_settings has no columns")
+
+      sql = "create table public.app_settings ("
+      has_key = 0
+      has_value_encrypted = 0
+      for (i = 1; i <= count; i++) {
+        column = raw_columns[i]
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", column)
+        if (column !~ /^[a-z_][a-z0-9_]*$/) {
+          fail("archive app_settings contains unsupported column identifier")
+        }
+        if (column == "key") has_key = 1
+        if (column == "value_encrypted") has_value_encrypted = 1
+        sql = sql (i == 1 ? "" : ", ") column " text"
+      }
+      if (!has_key) fail("archive app_settings has no key column")
+      if (!has_value_encrypted) fail("archive app_settings has no value_encrypted column")
+      print sql ")"
+      found = 1
+      exit 0
+    }
+    END {
+      if (!found) exit 1
+    }
+  ' "$copy_path"
+}
+
 # Validate the archive's storage payload and its v2 semantic contract before any
 # target service is stopped or official database/key/upload state is replaced.
 validate_archive_storage_contract() {
