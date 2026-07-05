@@ -435,6 +435,96 @@ describe("auth-before-body static check", () => {
   });
 
   it.each([
+    ["direct bytes read", "bytes-direct/route.ts", "const body = await req.bytes();"],
+    [
+      "bytes read by element access",
+      "bytes-element/route.ts",
+      'const body = await req["bytes"]();',
+    ],
+    [
+      "bytes read through request alias",
+      "bytes-alias/route.ts",
+      "const alias = req;\n          const body = await alias.bytes();",
+    ],
+    [
+      "bytes read through request clone",
+      "bytes-clone/route.ts",
+      "const body = await req.clone().bytes();",
+    ],
+  ])("flags %s before auth", async (_name, relativePath, bodyRead) => {
+    const root = await createFixture({
+      [relativePath]: `${imports()}
+        export async function POST(req: Request) {
+          ${bodyRead}
+          await requireAdmin();
+          return Response.json({ size: body.byteLength });
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("violation"),
+    });
+  });
+
+  it("flags new Request(req) aliases used for body reads before auth", async () => {
+    const root = await createFixture({
+      "new-request-alias/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          const cloned = new Request(req);
+          const body = await cloned.json();
+          await requireAdmin();
+          return Response.json(body);
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("violation"),
+    });
+  });
+
+  it("passes new Request(req) aliases after auth", async () => {
+    const root = await createFixture({
+      "new-request-alias-safe/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          await requireAdmin();
+          const cloned = new Request(req);
+          const body = await cloned.json();
+          return Response.json(body);
+        }`,
+    });
+
+    await expect(runCheck(root)).resolves.toMatchObject({ stderr: "" });
+  });
+
+  it("flags chained new Request(req).arrayBuffer() before auth", async () => {
+    const root = await createFixture({
+      "new-request-chain/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          const body = await new Request(req).arrayBuffer();
+          await requireAdmin();
+          return Response.json({ size: body.byteLength });
+        }`,
+    });
+
+    await expect(runCheck(root)).rejects.toMatchObject({
+      stderr: expect.stringContaining("violation"),
+    });
+  });
+
+  it("passes chained new Request(req).arrayBuffer() after auth", async () => {
+    const root = await createFixture({
+      "new-request-chain-safe/route.ts": `${imports()}
+        export async function POST(req: Request) {
+          await requireAdmin();
+          const body = await new Request(req).arrayBuffer();
+          return Response.json({ size: body.byteLength });
+        }`,
+    });
+
+    await expect(runCheck(root)).resolves.toMatchObject({ stderr: "" });
+  });
+
+  it.each([
     [
       "conditional request target",
       "conditional-before/route.ts",

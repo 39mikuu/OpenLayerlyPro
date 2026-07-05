@@ -1,6 +1,6 @@
 import ts from "typescript";
 
-export const BODY_METHODS = new Set(["json", "text", "formData", "arrayBuffer", "blob"]);
+export const BODY_METHODS = new Set(["json", "text", "formData", "arrayBuffer", "blob", "bytes"]);
 export const HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]);
 
 export function unwrapExpression(node) {
@@ -62,6 +62,16 @@ export function isRequestCloneExpression(expression, aliases) {
   return ts.isIdentifier(target) && aliases.has(target.text);
 }
 
+export function isRequestConstructionExpression(expression, aliases) {
+  const unwrapped = unwrapExpression(expression);
+  if (!ts.isNewExpression(unwrapped)) return false;
+  const callee = unwrapExpression(unwrapped.expression);
+  if (!ts.isIdentifier(callee) || callee.text !== "Request") return false;
+  const firstArgument = unwrapped.arguments?.[0] && unwrapExpression(unwrapped.arguments[0]);
+  if (!firstArgument) return false;
+  return isRequestAliasLikeExpression(firstArgument, aliases);
+}
+
 export function isRequestBodyExpression(expression, aliases) {
   const unwrapped = unwrapExpression(expression);
   if (ts.isPropertyAccessExpression(unwrapped) && unwrapped.name.text === "body") {
@@ -81,7 +91,28 @@ export function isRequestBodyExpression(expression, aliases) {
 }
 
 function isRequestAliasLikeExpression(expression, aliases) {
-  return isAliasExpression(expression, aliases) || isRequestCloneExpression(expression, aliases);
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isConditionalExpression(unwrapped)) {
+    return (
+      isRequestAliasLikeExpression(unwrapped.whenTrue, aliases) ||
+      isRequestAliasLikeExpression(unwrapped.whenFalse, aliases)
+    );
+  }
+  if (
+    ts.isBinaryExpression(unwrapped) &&
+    (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+  ) {
+    return (
+      isRequestAliasLikeExpression(unwrapped.left, aliases) ||
+      isRequestAliasLikeExpression(unwrapped.right, aliases)
+    );
+  }
+  return (
+    isAliasExpression(unwrapped, aliases) ||
+    isRequestCloneExpression(unwrapped, aliases) ||
+    isRequestConstructionExpression(unwrapped, aliases)
+  );
 }
 
 export function collectRequestAliases(handler) {

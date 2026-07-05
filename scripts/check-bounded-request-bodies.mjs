@@ -8,6 +8,8 @@ import {
   BODY_METHODS,
   collectRequestAliases,
   collectRouteHandlers,
+  isRequestCloneExpression,
+  isRequestConstructionExpression,
   unwrapExpression,
 } from "./lib/route-ast.mjs";
 
@@ -38,9 +40,13 @@ function getBodyRead(call, aliases) {
     if (argument && ts.isStringLiteralLike(argument)) method = argument.text;
   }
 
-  if (!method || !BODY_METHODS.has(method) || !target || !ts.isIdentifier(target)) return null;
-  if (!aliases.has(target.text)) return null;
-  return { requestName: target.text, method };
+  if (!method || !BODY_METHODS.has(method) || !target) return null;
+  if (ts.isIdentifier(target) && aliases.has(target.text))
+    return { requestName: target.text, method };
+  if (isRequestCloneExpression(target, aliases)) return { requestName: "request.clone()", method };
+  if (isRequestConstructionExpression(target, aliases))
+    return { requestName: "new Request", method };
+  return null;
 }
 
 export function findDirectBodyReads(source, fileName = "route.ts") {

@@ -5,12 +5,14 @@ import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
 import {
+  BODY_METHODS,
   collectRequestAliases,
   collectRequestBodyStreamAliases,
   collectRouteHandlers,
   HTTP_METHODS,
   isRequestBodyExpression,
   isRequestCloneExpression,
+  isRequestConstructionExpression,
   unwrapExpression,
 } from "./lib/route-ast.mjs";
 
@@ -29,7 +31,7 @@ const CATEGORY_A_CALLS = new Set([
   "readFormDataWithLimit",
   "readBoundedRawBody",
 ]);
-const DIRECT_BODY_METHODS = new Set(["json", "text", "formData", "arrayBuffer", "blob"]);
+const DIRECT_BODY_METHODS = BODY_METHODS;
 const CATEGORY_B_CALLS = new Set(["assertContentLengthWithinLimit"]);
 const CATEGORY_C_CALLS = new Set(["parseFormDataBody", "saveUploadedFile", "saveStreamedFile"]);
 const SAFE_CALLS = new Set(["getClientIp", "getUserAgent"]);
@@ -226,6 +228,9 @@ function isBodyMethodCallTarget(expression, aliases) {
     const callee = unwrapExpression(unwrapped.expression);
     const target = unwrapExpression(callee.expression);
     return ts.isIdentifier(target) ? `${target.text}.clone()` : "request.clone()";
+  }
+  if (isRequestConstructionExpression(unwrapped, aliases)) {
+    return "new Request";
   }
   if (ts.isConditionalExpression(unwrapped)) {
     return (
@@ -491,9 +496,24 @@ function requestEscape(call, importMap, handler, aliases) {
   return null;
 }
 
+function requestConstructionEscape(node, aliases) {
+  if (!ts.isNewExpression(node)) return null;
+  const callee = unwrapExpression(node.expression);
+  if (ts.isIdentifier(callee) && callee.text === "Request") return null;
+  for (const argument of node.arguments ?? []) {
+    if (expressionPassesRequestAlias(argument, aliases)) {
+      return { name: "request passed to non-safe-list constructor", node };
+    }
+  }
+  return null;
+}
+
 function cloneOrBodyExtractionReview(node, aliases) {
   if (isRequestCloneExpression(node, aliases)) {
     return { name: "request.clone() requires manual review before auth", node };
+  }
+  if (isRequestConstructionExpression(node, aliases)) {
+    return { name: "new Request(request) requires manual review before auth", node };
   }
   if (isRequestBodyExpression(node, aliases)) {
     return { name: "request.body extraction requires manual review before auth", node };
@@ -550,6 +570,16 @@ function collectOperations(handler, importMap, sourceFile) {
           });
         }
       }
+    }
+
+    const constructorEscape = requestConstructionEscape(node, aliases);
+    if (constructorEscape) {
+      requestEscapes.push({
+        ...constructorEscape,
+        topLevelStatement: enclosingTopLevelStatement(constructorEscape.node, handler),
+        nested: isInsideNestedFunction(constructorEscape.node, handler),
+        ...nodeLineColumn(sourceFile, constructorEscape.node),
+      });
     }
 
     const cloneOrBodyExtraction = cloneOrBodyExtractionReview(node, aliases);

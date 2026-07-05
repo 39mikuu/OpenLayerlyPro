@@ -103,6 +103,22 @@ describe("bounded Route Handler static check", () => {
       "arrayBuffer",
     ],
     ["blob", "export async function POST(req: Request) { await req.blob(); }", "blob"],
+    ["bytes", "export async function POST(req: Request) { await req.bytes(); }", "bytes"],
+    [
+      "bytes element access",
+      'export async function POST(req: Request) { await req["bytes"](); }',
+      "bytes",
+    ],
+    [
+      "bytes through aliased request",
+      "export async function POST(req: Request) { const aliased = req; await aliased.bytes(); }",
+      "bytes",
+    ],
+    [
+      "bytes through cloned request",
+      "export async function POST(req: Request) { await req.clone().bytes(); }",
+      "bytes",
+    ],
   ])("rejects %s", async (_name, source, method) => {
     const root = await createFixture({
       "unsafe/route.ts": source,
