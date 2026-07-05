@@ -2,20 +2,22 @@ import { and, count, eq, gt, lte, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { downloadLogs, files, memberships, paymentRequests, posts, users } from "@/db/schema";
+import { getBuildInfo } from "@/lib/build-info";
 import { getEnv } from "@/lib/env";
 import { getIntegrationStatuses, type IntegrationStatus } from "@/modules/integration";
-
-import packageJson from "../../../package.json";
 
 export type SystemStatus = {
   appUrl: string;
   version: string;
+  sourceCommit: string;
+  buildTimestamp: string;
   databaseOk: boolean;
   integrations: IntegrationStatus[];
 };
 
 export async function getSystemStatus(): Promise<SystemStatus> {
   const env = getEnv();
+  const buildInfo = getBuildInfo();
   const [databaseOk, integrations] = await Promise.all([
     (async () => {
       try {
@@ -30,7 +32,9 @@ export async function getSystemStatus(): Promise<SystemStatus> {
 
   return {
     appUrl: env.APP_URL,
-    version: packageJson.version,
+    version: buildInfo.appVersion,
+    sourceCommit: buildInfo.sourceCommit,
+    buildTimestamp: buildInfo.buildTimestamp,
     databaseOk,
     integrations,
   };

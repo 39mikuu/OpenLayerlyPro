@@ -78,6 +78,8 @@ export default async function AdminHomePage() {
           <p>
             {t("admin.overview.version")}：{status.version}
           </p>
+          <p>Source commit：{status.sourceCommit}</p>
+          <p>Build timestamp：{status.buildTimestamp}</p>
         </CardContent>
       </Card>
     </div>

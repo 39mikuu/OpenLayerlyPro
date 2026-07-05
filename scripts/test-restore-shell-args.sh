@@ -14,6 +14,34 @@ fail() {
   exit 1
 }
 
+DOCKER_INSPECT_ENV_JSON='["APP_VERSION=inspect-version","SOURCE_COMMIT=commit=with=equals","BUILD_TIMESTAMP=2026-07-05T00:00:00Z"]'
+DOCKER_INSPECT_IMAGE_JSON='"sha256:inspect-image"'
+COMPOSE_PS_APP_OUTPUT=mock-app-container
+
+docker_cmd() {
+  action=$1
+  shift
+  case "$action" in
+    inspect)
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --format)
+            shift 2
+            ;;
+          *)
+            [ "$1" = "mock-app-container" ] || fail "mock docker inspect received unexpected container id: $1"
+            shift
+            ;;
+        esac
+      done
+      printf '%s %s\n' "$DOCKER_INSPECT_ENV_JSON" "$DOCKER_INSPECT_IMAGE_JSON"
+      ;;
+    *)
+      fail "unexpected mock docker action: $action"
+      ;;
+  esac
+}
+
 # Execute the container shell argv locally. This preserves the sh -c boundary:
 # the command text is one argument, the fixed argv[0] sentinel is next, and all
 # dynamic values follow as positional parameters.
@@ -21,6 +49,16 @@ compose() {
   action=$1
   shift
   case "$action" in
+    create)
+      [ "$1" = "app" ] || fail "mock compose create did not receive app service"
+      return
+      ;;
+    ps)
+      [ "$1" = "-aq" ] || fail "mock compose ps expected -aq"
+      [ "$2" = "app" ] || fail "mock compose ps did not receive app service"
+      printf '%s\n' "$COMPOSE_PS_APP_OUTPUT"
+      return
+      ;;
     run)
       while [ "$#" -gt 0 ] && [ "$1" != "app" ]; do
         shift
@@ -100,6 +138,146 @@ round_trip=$(run_app_shell 'printf "%s" "$1"' "$SPECIAL_COMPONENT")
 round_trip=$(run_postgres_shell 'printf "%s" "$1"' "$SPECIAL_COMPONENT")
 [ "$round_trip" = "$SPECIAL_COMPONENT" ] || fail "postgres positional argument did not round-trip"
 [ ! -e "$INJECTION_MARKER" ] || fail "shell wrapper executed injected shell text"
+
+single_container_id=$(resolve_single_app_container_id)
+[ "$single_container_id" = "mock-app-container" ] \
+  || fail "single app container id did not resolve from compose ps"
+read_app_container_provenance "$single_container_id"
+[ "$RUNTIME_APP_VERSION" = "inspect-version" ] \
+  || fail "inspected app version was not read from the service container"
+[ "$RUNTIME_SOURCE_COMMIT" = "commit=with=equals" ] \
+  || fail "inspected source commit did not preserve '=' characters"
+[ "$BUILD_TIMESTAMP" = "2026-07-05T00:00:00Z" ] \
+  || fail "inspected build timestamp was not read from the service container"
+[ "$RUNTIME_IMAGE_ID" = "sha256:inspect-image" ] \
+  || fail "inspected image ID was not read from the same service container"
+
+COMPOSE_PS_APP_OUTPUT='first-container
+second-container'
+set +e
+multiple_container_output=$(resolve_single_app_container_id 2>&1)
+multiple_container_status=$?
+set -e
+[ "$multiple_container_status" -ne 0 ] \
+  || fail "multiple app service containers unexpectedly passed provenance resolution"
+printf '%s' "$multiple_container_output" \
+  | grep -F "multiple app service containers found; remove stale containers or scale to 1 before backup/restore" >/dev/null \
+  || fail "multiple app service containers error was not explicit"
+COMPOSE_PS_APP_OUTPUT=mock-app-container
+
+V3_DIR="$TEST_ROOT/v3-archive"
+mkdir -p "$V3_DIR/secrets"
+printf '  config-key-material  \n' > "$V3_DIR/secrets/config-encryption-key"
+CONFIG_KEY_SHA256=$(sha256_trimmed_file "$V3_DIR/secrets/config-encryption-key")
+cat > "$V3_DIR/manifest.env" <<EOF
+FORMAT_VERSION=3
+APP_VERSION=host-checkout-version
+RUNTIME_APP_VERSION=image-version
+RUNTIME_SOURCE_COMMIT=image-commit
+RUNTIME_IMAGE_ID=sha256:image-id
+BUILD_TIMESTAMP=2026-07-05T00:00:00Z
+BACKUP_TOOL_COMMIT=tool-commit
+BACKUP_TOOL_SCRIPT_SHA256=tool-script-sha
+CONFIG_ENCRYPTION_KEY_SHA256=$CONFIG_KEY_SHA256
+EOF
+
+read_archive_provenance "$V3_DIR/manifest.env"
+[ "$ARCHIVE_RUNTIME_APP_VERSION" = "image-version" ] \
+  || fail "v3 provenance did not prefer runtime image app version"
+[ "$ARCHIVE_RUNTIME_SOURCE_COMMIT" = "image-commit" ] \
+  || fail "v3 provenance did not parse runtime source commit"
+[ "$ARCHIVE_RUNTIME_IMAGE_ID" = "sha256:image-id" ] \
+  || fail "v3 provenance did not parse runtime image ID"
+[ "$ARCHIVE_BUILD_TIMESTAMP" = "2026-07-05T00:00:00Z" ] \
+  || fail "v3 provenance did not parse build timestamp"
+[ "$ARCHIVE_BACKUP_TOOL_COMMIT" = "tool-commit" ] \
+  || fail "v3 provenance did not parse backup tool commit"
+[ "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256" = "tool-script-sha" ] \
+  || fail "v3 provenance did not parse backup tool script hash"
+verify_archive_config_key_fingerprint "$V3_DIR" 3 \
+  || fail "v3 config encryption key fingerprint did not match trimmed key material"
+
+V3_BAD_DIR="$TEST_ROOT/v3-bad-archive"
+mkdir -p "$V3_BAD_DIR/secrets"
+cp "$V3_DIR/secrets/config-encryption-key" "$V3_BAD_DIR/secrets/config-encryption-key"
+sed "s/^CONFIG_ENCRYPTION_KEY_SHA256=.*/CONFIG_ENCRYPTION_KEY_SHA256=000000/" \
+  "$V3_DIR/manifest.env" > "$V3_BAD_DIR/manifest.env"
+set +e
+fingerprint_mismatch_output=$(verify_archive_config_key_fingerprint "$V3_BAD_DIR" 3 2>&1)
+fingerprint_mismatch_status=$?
+set -e
+[ "$fingerprint_mismatch_status" -ne 0 ] \
+  || fail "v3 config encryption key fingerprint mismatch unexpectedly passed"
+printf '%s' "$fingerprint_mismatch_output" \
+  | grep -F "CONFIG_ENCRYPTION_KEY_SHA256" >/dev/null \
+  || fail "v3 fingerprint mismatch error was not explicit"
+
+V3_MISSING_FINGERPRINT_DIR="$TEST_ROOT/v3-missing-fingerprint-archive"
+mkdir -p "$V3_MISSING_FINGERPRINT_DIR/secrets"
+cp "$V3_DIR/secrets/config-encryption-key" \
+  "$V3_MISSING_FINGERPRINT_DIR/secrets/config-encryption-key"
+grep -v '^CONFIG_ENCRYPTION_KEY_SHA256=' "$V3_DIR/manifest.env" \
+  > "$V3_MISSING_FINGERPRINT_DIR/manifest.env"
+set +e
+missing_fingerprint_output=$(
+  verify_archive_config_key_fingerprint "$V3_MISSING_FINGERPRINT_DIR" 3 2>&1
+)
+missing_fingerprint_status=$?
+set -e
+[ "$missing_fingerprint_status" -ne 0 ] \
+  || fail "v3 missing config encryption key fingerprint unexpectedly passed"
+printf '%s' "$missing_fingerprint_output" \
+  | grep -F "archive manifest is missing CONFIG_ENCRYPTION_KEY_SHA256" >/dev/null \
+  || fail "v3 missing fingerprint error was not explicit"
+
+for legacy_format in 1 2; do
+  set +e
+  legacy_warning=$(warn_legacy_provenance_if_needed "$legacy_format" 2>&1)
+  legacy_warning_status=$?
+  set -e
+  [ "$legacy_warning_status" -eq 0 ] \
+    || fail "legacy provenance warning failed for FORMAT_VERSION=$legacy_format"
+  printf '%s' "$legacy_warning" \
+    | grep -F "predates image-authoritative backup provenance" >/dev/null \
+    || fail "legacy provenance warning missing for FORMAT_VERSION=$legacy_format"
+
+  set +e
+  fingerprint_warning=$(verify_archive_config_key_fingerprint "$V3_DIR" "$legacy_format" 2>&1)
+  fingerprint_warning_status=$?
+  set -e
+  [ "$fingerprint_warning_status" -eq 0 ] \
+    || fail "legacy fingerprint warning failed for FORMAT_VERSION=$legacy_format"
+  printf '%s' "$fingerprint_warning" \
+    | grep -F "has no CONFIG_ENCRYPTION_KEY_SHA256 fingerprint" >/dev/null \
+    || fail "legacy fingerprint warning missing for FORMAT_VERSION=$legacy_format"
+done
+
+set +e
+v3_legacy_warning=$(warn_legacy_provenance_if_needed 3 2>&1)
+v3_legacy_warning_status=$?
+set -e
+[ "$v3_legacy_warning_status" -eq 0 ] || fail "v3 provenance warning helper failed"
+[ -z "$v3_legacy_warning" ] || fail "v3 emitted a legacy provenance warning"
+
+set +e
+provenance_mismatch_warning=$(warn_if_mismatch "runtime source commit" "image-commit" "target-commit" 2>&1)
+provenance_mismatch_status=$?
+set -e
+[ "$provenance_mismatch_status" -eq 0 ] || fail "provenance mismatch warning failed"
+printf '%s' "$provenance_mismatch_warning" \
+  | grep -F "migration identity remains the hard compatibility gate" >/dev/null \
+  || fail "provenance mismatch warning did not preserve migration hard-gate language"
+
+fingerprint_line=$(
+  awk '/verify_archive_config_key_fingerprint/ { print NR; exit }' "$ROOT_DIR/scripts/restore.sh"
+)
+first_destructive_line=$(
+  awk '/Replacing PostgreSQL database/ { print NR; exit }' "$ROOT_DIR/scripts/restore.sh"
+)
+[ -n "$fingerprint_line" ] || fail "restore.sh does not call verify_archive_config_key_fingerprint"
+[ -n "$first_destructive_line" ] || fail "restore.sh destructive database boundary was not found"
+[ "$fingerprint_line" -lt "$first_destructive_line" ] \
+  || fail "config key fingerprint check moved after destructive database boundary"
 
 cat > "$TEST_ROOT/db-with-app-settings.sql" <<'SQL'
 --

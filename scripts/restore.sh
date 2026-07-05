@@ -147,12 +147,13 @@ reject_unsafe_payload_tree "$WORK_DIR"
 FORMAT_VERSION=$(grep '^FORMAT_VERSION=' "$WORK_DIR/manifest.env" | cut -d= -f2- | tr -d '\r')
 FORMAT_VERSION=${FORMAT_VERSION:-1}
 case "$FORMAT_VERSION" in
-  1|2) ;;
+  1|2|3) ;;
   *) fail "unsupported FORMAT_VERSION=$FORMAT_VERSION" ;;
 esac
 
-if [ "$FORMAT_VERSION" = "2" ]; then
-  [ -f "$WORK_DIR/checksums.sha256" ] || fail "FORMAT_VERSION=2 archive is missing checksums.sha256"
+case "$FORMAT_VERSION" in
+  2|3)
+  [ -f "$WORK_DIR/checksums.sha256" ] || fail "FORMAT_VERSION=$FORMAT_VERSION archive is missing checksums.sha256"
   echo "Verifying archive checksums..."
   (
     cd "$WORK_DIR" || exit 1
@@ -203,11 +204,29 @@ if [ "$FORMAT_VERSION" = "2" ]; then
     fi
   ) || fail "archive checksum manifest bijection check failed"
   rm -f "$PAYLOAD_FILE_LIST" "$CHECKSUM_FILE_LIST"
-else
+  ;;
+  1)
   echo "WARNING: FORMAT_VERSION=1 archive has no checksum protection" >&2
-fi
+  ;;
+esac
+
+warn_legacy_provenance_if_needed "$FORMAT_VERSION"
 
 validate_archive_storage_contract "$WORK_DIR" "$FORMAT_VERSION"
+
+read_archive_provenance "$WORK_DIR/manifest.env"
+verify_archive_config_key_fingerprint "$WORK_DIR" "$FORMAT_VERSION"
+
+TARGET_APP_CONTAINER_ID=$(resolve_single_app_container_id)
+read_app_container_provenance "$TARGET_APP_CONTAINER_ID"
+TARGET_RUNTIME_APP_VERSION=$RUNTIME_APP_VERSION
+TARGET_RUNTIME_SOURCE_COMMIT=$RUNTIME_SOURCE_COMMIT
+TARGET_BUILD_TIMESTAMP=$BUILD_TIMESTAMP
+TARGET_RUNTIME_IMAGE_ID=$RUNTIME_IMAGE_ID
+
+warn_if_mismatch "runtime app version" "$ARCHIVE_RUNTIME_APP_VERSION" "$TARGET_RUNTIME_APP_VERSION"
+warn_if_mismatch "runtime source commit" "$ARCHIVE_RUNTIME_SOURCE_COMMIT" "$TARGET_RUNTIME_SOURCE_COMMIT"
+warn_if_mismatch "runtime image ID" "$ARCHIVE_RUNTIME_IMAGE_ID" "$TARGET_RUNTIME_IMAGE_ID"
 
 SESSION_SECRET_SOURCE=$(grep '^SESSION_SECRET_SOURCE=' "$WORK_DIR/manifest.env" | cut -d= -f2- | tr -d '\r')
 SESSION_SECRET_SOURCE=${SESSION_SECRET_SOURCE:-legacy}
@@ -262,6 +281,18 @@ if [ "$ASSUME_YES" != true ]; then
   [ -t 0 ] || fail "confirmation requires an interactive terminal; pass --yes for automation"
   echo "This will replace the target Compose project's database and file-backed secrets."
   echo "Local uploads will also be replaced when they are present in the archive."
+  echo "Archive provenance:"
+  echo "  Runtime app version: $ARCHIVE_RUNTIME_APP_VERSION"
+  echo "  Runtime source commit: $ARCHIVE_RUNTIME_SOURCE_COMMIT"
+  echo "  Runtime image ID: $ARCHIVE_RUNTIME_IMAGE_ID"
+  echo "  Build timestamp: $ARCHIVE_BUILD_TIMESTAMP"
+  echo "  Backup tool commit: $ARCHIVE_BACKUP_TOOL_COMMIT"
+  echo "  Backup tool script SHA-256: $ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256"
+  echo "Target provenance:"
+  echo "  Runtime app version: $TARGET_RUNTIME_APP_VERSION"
+  echo "  Runtime source commit: $TARGET_RUNTIME_SOURCE_COMMIT"
+  echo "  Runtime image ID: $TARGET_RUNTIME_IMAGE_ID"
+  echo "  Build timestamp: $TARGET_BUILD_TIMESTAMP"
   echo "The hardened restore pipeline will run migrator, pre-scan, file-safety backfill,"
   echo "task neutralization, and DB/storage convergence before starting the app."
   printf "Type RESTORE to continue: "
@@ -504,4 +535,7 @@ while :; do
 done
 
 echo "Restore completed from: $ARCHIVE_PATH"
+echo "Restored archive provenance: version=$ARCHIVE_RUNTIME_APP_VERSION commit=$ARCHIVE_RUNTIME_SOURCE_COMMIT image=$ARCHIVE_RUNTIME_IMAGE_ID build=$ARCHIVE_BUILD_TIMESTAMP"
+echo "Target image provenance: version=$TARGET_RUNTIME_APP_VERSION commit=$TARGET_RUNTIME_SOURCE_COMMIT image=$TARGET_RUNTIME_IMAGE_ID build=$TARGET_BUILD_TIMESTAMP"
+echo "Backup tool provenance: commit=$ARCHIVE_BACKUP_TOOL_COMMIT script_sha256=$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256"
 echo "Review Stripe/payment state near the archive timestamp and verify convergence output above."

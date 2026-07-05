@@ -123,8 +123,6 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-APP_VERSION=$(node -e 'console.log(require("./package.json").version)' 2>/dev/null || echo "unknown")
-
 # Resolve all app environment and volume paths through one-off containers. This keeps
 # backup operable when the normal app/dispatcher is already stopped and avoids requiring
 # compose exec during the strong-consistency window.
@@ -174,7 +172,8 @@ esac
 
 # compose cp targets the service container, which may be stopped or absent. Ensure it
 # exists before entering the optional stop window.
-compose create app >/dev/null
+APP_CONTAINER_ID=$(resolve_single_app_container_id)
+read_app_container_provenance "$APP_CONTAINER_ID"
 
 if [ "$STOP_APP" = true ]; then
   backup_stop_app_for_consistent_backup
@@ -226,6 +225,8 @@ compose cp "app:$CONFIG_KEY_FILE" "$WORK_DIR/secrets/config-encryption-key"
 [ -s "$WORK_DIR/secrets/config-encryption-key" ] || fail "config encryption key file is missing or empty"
 fix_workspace_permissions
 chmod 600 "$WORK_DIR/secrets/config-encryption-key" || fail "unable to secure config encryption key in backup workspace"
+CONFIG_ENCRYPTION_KEY_SHA256=$(sha256_trimmed_file "$WORK_DIR/secrets/config-encryption-key") \
+  || fail "unable to fingerprint config encryption key"
 
 if [ "$SESSION_SECRET_SOURCE" = file ]; then
   echo "Backing up session secret file..."
@@ -270,15 +271,26 @@ else
   BACKUP_WINDOW_NOTE="hot-backup order pg_dump(T1) then uploads(T2); expect T1-T2 drift; use --stop-app for a self-consistent local snapshot"
 fi
 
+BACKUP_TOOL_COMMIT=$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || echo "unknown")
+BACKUP_TOOL_SCRIPT_SHA256=$(sha256sum "$ROOT_DIR/scripts/backup.sh" | awk '{print $1}') \
+  || fail "unable to fingerprint backup.sh"
+
 {
-  echo "FORMAT_VERSION=2"
+  echo "FORMAT_VERSION=3"
   echo "CREATED_AT_UTC=$CREATED_AT_UTC"
-  echo "APP_VERSION=$APP_VERSION"
+  echo "APP_VERSION=$RUNTIME_APP_VERSION"
+  echo "RUNTIME_APP_VERSION=$RUNTIME_APP_VERSION"
+  echo "RUNTIME_SOURCE_COMMIT=$RUNTIME_SOURCE_COMMIT"
+  echo "RUNTIME_IMAGE_ID=$RUNTIME_IMAGE_ID"
+  echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP"
+  echo "BACKUP_TOOL_COMMIT=$BACKUP_TOOL_COMMIT"
+  echo "BACKUP_TOOL_SCRIPT_SHA256=$BACKUP_TOOL_SCRIPT_SHA256"
   echo "STORAGE_DRIVER=$STORAGE_DRIVER"
   echo "UPLOADS_INCLUDED=$UPLOADS_INCLUDED"
   echo "LATEST_MIGRATION_HASH=$LATEST_MIGRATION_HASH"
   echo "MIGRATION_IDENTITIES_JSON=$MIGRATION_IDENTITIES_JSON"
   echo "CONFIG_ENCRYPTION_KEY_FILE=$CONFIG_KEY_FILE"
+  echo "CONFIG_ENCRYPTION_KEY_SHA256=$CONFIG_ENCRYPTION_KEY_SHA256"
   echo "SESSION_SECRET_SOURCE=$SESSION_SECRET_SOURCE"
   if [ "$SESSION_SECRET_SOURCE" = file ]; then
     echo "SESSION_SECRET_FILE=$SESSION_SECRET_FILE"
@@ -316,7 +328,9 @@ chmod 600 "$ARCHIVE_TMP"
 mv -f "$ARCHIVE_TMP" "$ARCHIVE_PATH"
 
 echo "Backup created: $ARCHIVE_PATH"
-echo "Included: PostgreSQL database, config encryption key, manifest v2, checksums"
+echo "Included: PostgreSQL database, config encryption key, manifest v3, checksums"
+echo "Runtime image: version=$RUNTIME_APP_VERSION commit=$RUNTIME_SOURCE_COMMIT image=$RUNTIME_IMAGE_ID"
+echo "Backup tool: commit=$BACKUP_TOOL_COMMIT script_sha256=$BACKUP_TOOL_SCRIPT_SHA256"
 if [ "$UPLOADS_INCLUDED" = true ]; then
   echo "Included: local uploads"
 else

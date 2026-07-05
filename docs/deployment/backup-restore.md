@@ -49,7 +49,7 @@ For the strong-consistency path, let the script stop the normal app/dispatcher b
 
 `--stop-app` resolves the app environment and volume paths through one-off containers, so it also works when the normal app container is already stopped. It inspects every existing app-service container, stops the whole service even when a container is currently `restarting`, and records only containers that were active (`running`, `restarting`, or `paused`) as restart targets. Exit/signal cleanup restarts those exact containers; intentionally stopped or merely created containers remain stopped.
 
-New archives use `FORMAT_VERSION=2` and are named like:
+New archives use `FORMAT_VERSION=3` and are named like:
 
 ```text
 openlayerly-backup-20260627-134500.tar.gz
@@ -67,16 +67,27 @@ uploads/                         # included only when container env STORAGE_DRIV
 UPLOADS_SKIPPED_S3               # written only when container env STORAGE_DRIVER resolves to s3
 ```
 
-`manifest.env` records `APP_VERSION`, storage and migration identity, the config-key path,
-capture consistency mode, and `SESSION_SECRET_SOURCE`. File-backed archives record the
-container path and `secrets/session-secret`; external sources record only
-`SESSION_SECRET_SHA256`.
+`manifest.env` records image-authoritative runtime provenance, storage and migration
+identity, the config-key path and fingerprint, capture consistency mode, and
+`SESSION_SECRET_SOURCE`. `RUNTIME_APP_VERSION`, `RUNTIME_SOURCE_COMMIT`,
+`RUNTIME_IMAGE_ID`, and `BUILD_TIMESTAMP` describe the app image being backed up.
+`BACKUP_TOOL_COMMIT` and `BACKUP_TOOL_SCRIPT_SHA256` describe the checkout and script
+that produced the archive; they are deliberately separate from the runtime image fields.
+`APP_VERSION` is retained for compatibility and mirrors `RUNTIME_APP_VERSION` in v3.
+File-backed archives record the container path and `secrets/session-secret`; external
+sources record only `SESSION_SECRET_SHA256`.
 
-`checksums.sha256` covers every regular-file payload member except the root `./checksums.sha256` manifest itself (nested upload files named `checksums.sha256` remain covered). On v2 archives, `restore.sh` rejects symlinks and special files, verifies checksums, and then enforces a strict bijection: every extracted regular-file payload must appear exactly once in the manifest, and every manifest entry must have a matching payload file. The parser reads the fixed-width GNU checksum prefix, so ordinary filenames containing spaces are preserved exactly.
+`CONFIG_ENCRYPTION_KEY_SHA256` is the SHA-256 of the archived config key after trimming
+leading/trailing whitespace, matching the runtime readers' `.trim()` semantics. Restore
+checks this fingerprint before the destructive boundary. The fingerprint proves the
+archived key file still matches the manifest; the existing decrypt probe separately
+proves that key can decrypt archived encrypted settings.
+
+`checksums.sha256` covers every regular-file payload member except the root `./checksums.sha256` manifest itself (nested upload files named `checksums.sha256` remain covered). On v2/v3 archives, `restore.sh` rejects symlinks and special files, verifies checksums, and then enforces a strict bijection: every extracted regular-file payload must appear exactly once in the manifest, and every manifest entry must have a matching payload file. The parser reads the fixed-width GNU checksum prefix, so ordinary filenames containing spaces are preserved exactly.
 
 To keep that manifest unambiguous and portable, `backup.sh` rejects path components containing backslashes, ASCII control characters (`U+0000`–`U+001F`), or `DEL` (`U+007F`) before publishing an archive. Ordinary spaces and non-ASCII Unicode names remain supported. The same validation runs on the live local upload tree before copying and on the assembled workspace before checksum/tar creation.
 
-Legacy `FORMAT_VERSION=1` archives remain restorable through the compatibility path below, but they have no checksum protection and emit an explicit warning.
+Legacy `FORMAT_VERSION=1` archives remain restorable through the compatibility path below, but they have no checksum protection and emit an explicit warning. `FORMAT_VERSION=1` and `FORMAT_VERSION=2` archives also warn that they predate image-authoritative provenance; restore may show `unknown` or host-derived runtime fields for those archives.
 
 ### External Config Key
 
@@ -144,8 +155,11 @@ That flag only relaxes **unknown** v1 history. It cannot bypass confirmed newer/
 
 ```text
 validate archive paths
-→ verify v2 checksums and manifest/payload bijection (v1 warns and continues)
-→ v2 manifest compatibility check, or v1 isolated temporary-DB schema probe
+→ verify v2/v3 checksums and manifest/payload bijection (v1 warns and continues)
+→ warn for v1/v2 image-provenance gaps
+→ verify v3 CONFIG_ENCRYPTION_KEY_SHA256 against the archived trimmed key material
+→ warn, never reject, on archive-vs-target image version/commit/image mismatches
+→ v2/v3 manifest compatibility check, or v1 isolated temporary-DB schema probe
 → validate external SESSION_SECRET or restore the checksummed file-backed secret
 → pre-destructive archive config-key decrypt probe against archived app_settings data
 → import official DB and restore config key to the target CONFIG_ENCRYPTION_KEY_FILE path
@@ -167,6 +181,8 @@ Key invariants:
 - missing objects become quarantine/410, not storage 500;
 - only convergence may re-enqueue deletion for confirmed orphans;
 - any migrator/backfill/neutralization/convergence error prevents normal app startup;
+- v3 `CONFIG_ENCRYPTION_KEY_SHA256` is checked against the archived key file before the official database, secrets, or uploads are replaced. This is complementary to the decrypt probe: fingerprint mismatch means archive integrity failure; decrypt failure means the archived key cannot read archived ciphertext;
+- archive-vs-target runtime app version, source commit, and image ID mismatches are warnings only. Migration identity remains the hard compatibility gate;
 - before replacing the official database, restore extracts archived `app_settings` rows into an isolated scratch database and verifies the archived config key can decrypt every encrypted setting. Missing or empty `app_settings` data logs an explicit skip. After convergence, restore runs the same probe against the restored database to verify the active runtime key and fully restored state before app startup;
 - S3 convergence enumerates only controlled application key namespaces (`avatars/`, `payment-qr/`, `payment-proof/`, `content/`, `legacy/`, `remediated/`). Override with comma-separated `RESTORE_S3_ENUM_PREFIXES` when needed;
 - incomplete storage enumeration (truncated listing or converge errors) exits non-zero and prevents app startup;
@@ -219,10 +235,30 @@ Only one project can bind host port 3000 with the default Compose file. Stop the
 
 ## Version Boundary
 
-- v2 archives carry migration identity and must be a same-order/hash prefix of the target image journal;
+- v2/v3 archives carry migration identity and must be a same-order/hash prefix of the target image journal;
+- v3 archives additionally carry image-authoritative provenance and a trimmed config-key fingerprint. These fields improve auditability and archive integrity checks, but do not replace migration identity as the compatibility boundary;
+- runtime app version, source commit, build timestamp, and image ID mismatches warn during restore and are surfaced in the confirmation output; they never reject a restore by themselves;
 - v1 archives are imported into an isolated temporary database for Drizzle migration-history comparison before the official DB is replaced;
 - confirmed newer/divergent history is rejected;
 - unknown v1 history fails closed unless `--allow-legacy-v1-unknown-schema` is supplied, and that override cannot bypass confirmed incompatibility.
+
+## Build Provenance
+
+Production builds should pass the same identity fields that backup records:
+
+```bash
+docker build \
+  --build-arg APP_VERSION="$(node -p 'require("./package.json").version')" \
+  --build-arg SOURCE_COMMIT="$(git rev-parse HEAD)" \
+  --build-arg BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -t openlayerlypro:release .
+```
+
+The Dockerfile persists these values as image environment variables and OCI labels:
+`org.opencontainers.image.version`, `org.opencontainers.image.revision`,
+`org.opencontainers.image.created`, and `org.opencontainers.image.source`. Plain
+`docker build .` still works with `dev`/`unknown` fallbacks, which are intentionally
+distinguishable from release images.
 
 ## Isolated E2E Drills
 

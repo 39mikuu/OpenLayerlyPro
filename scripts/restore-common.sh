@@ -95,6 +95,128 @@ manifest_value() {
   printf '%s' "$value"
 }
 
+manifest_value_or_default() {
+  manifest_path=$1
+  key=$2
+  default_value=$3
+  value=$(grep "^${key}=" "$manifest_path" | cut -d= -f2- | tr -d '\r' || true)
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+  else
+    printf '%s' "$default_value"
+  fi
+}
+
+sha256_trimmed_file() {
+  file_path=$1
+  node -e '
+    const { createHash } = require("crypto");
+    const { readFileSync } = require("fs");
+    process.stdout.write(createHash("sha256").update(readFileSync(process.argv[1], "utf8").trim()).digest("hex"));
+  ' "$file_path"
+}
+
+inspect_app_container_provenance() {
+  container_id=$1
+
+  docker_cmd inspect --format '{{json .Config.Env}} {{json .Image}}' "$container_id" \
+    | node -e '
+      const input = require("fs").readFileSync(0, "utf8").trim();
+      const separator = input.lastIndexOf(" ");
+      if (separator < 0) process.exit(1);
+      const envList = JSON.parse(input.slice(0, separator));
+      const imageId = JSON.parse(input.slice(separator + 1));
+      const env = new Map();
+      for (const entry of Array.isArray(envList) ? envList : []) {
+        const index = entry.indexOf("=");
+        if (index > 0) env.set(entry.slice(0, index), entry.slice(index + 1));
+      }
+      const value = (name) => {
+        const resolved = env.get(name);
+        return resolved && resolved.length > 0 ? resolved : "unknown";
+      };
+      process.stdout.write(
+        JSON.stringify({
+          appVersion: value("APP_VERSION"),
+          sourceCommit: value("SOURCE_COMMIT"),
+          buildTimestamp: value("BUILD_TIMESTAMP"),
+          imageId: imageId && imageId.length > 0 ? imageId : "unknown",
+        }),
+      );
+    '
+}
+
+resolve_single_app_container_id() {
+  compose create app >/dev/null
+  container_ids=$(compose ps -aq app)
+  [ -n "$container_ids" ] || fail "unable to resolve app service container for image provenance"
+
+  container_count=$(printf '%s\n' "$container_ids" | sed '/^$/d' | wc -l | tr -d ' ')
+  [ "$container_count" = "1" ] \
+    || fail "multiple app service containers found; remove stale containers or scale to 1 before backup/restore"
+
+  printf '%s' "$container_ids"
+}
+
+read_app_container_provenance() {
+  container_id=$1
+  provenance_json=$(inspect_app_container_provenance "$container_id") \
+    || fail "unable to inspect app service image provenance"
+
+  RUNTIME_APP_VERSION=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).appVersion)' "$provenance_json")
+  RUNTIME_SOURCE_COMMIT=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).sourceCommit)' "$provenance_json")
+  BUILD_TIMESTAMP=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).buildTimestamp)' "$provenance_json")
+  RUNTIME_IMAGE_ID=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).imageId)' "$provenance_json")
+  : "$RUNTIME_APP_VERSION" "$RUNTIME_SOURCE_COMMIT" "$BUILD_TIMESTAMP" "$RUNTIME_IMAGE_ID"
+}
+
+read_archive_provenance() {
+  manifest_path=$1
+
+  ARCHIVE_RUNTIME_APP_VERSION=$(manifest_value_or_default "$manifest_path" RUNTIME_APP_VERSION "$(manifest_value_or_default "$manifest_path" APP_VERSION "unknown")")
+  ARCHIVE_RUNTIME_SOURCE_COMMIT=$(manifest_value_or_default "$manifest_path" RUNTIME_SOURCE_COMMIT "unknown")
+  ARCHIVE_RUNTIME_IMAGE_ID=$(manifest_value_or_default "$manifest_path" RUNTIME_IMAGE_ID "unknown")
+  ARCHIVE_BUILD_TIMESTAMP=$(manifest_value_or_default "$manifest_path" BUILD_TIMESTAMP "unknown")
+  ARCHIVE_BACKUP_TOOL_COMMIT=$(manifest_value_or_default "$manifest_path" BACKUP_TOOL_COMMIT "unknown")
+  ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256=$(manifest_value_or_default "$manifest_path" BACKUP_TOOL_SCRIPT_SHA256 "unknown")
+  : "$ARCHIVE_RUNTIME_APP_VERSION" "$ARCHIVE_RUNTIME_SOURCE_COMMIT" "$ARCHIVE_RUNTIME_IMAGE_ID" \
+    "$ARCHIVE_BUILD_TIMESTAMP" "$ARCHIVE_BACKUP_TOOL_COMMIT" "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256"
+}
+
+warn_legacy_provenance_if_needed() {
+  format_version=$1
+  case "$format_version" in
+    1|2)
+      echo "WARNING: FORMAT_VERSION=$format_version archive predates image-authoritative backup provenance; runtime version/commit/image identity may be unavailable or host-derived" >&2
+      ;;
+  esac
+}
+
+verify_archive_config_key_fingerprint() {
+  payload_dir=$1
+  format_version=$2
+
+  if [ "$format_version" = "3" ]; then
+    expected_config_encryption_key_sha256=$(manifest_value "$payload_dir/manifest.env" CONFIG_ENCRYPTION_KEY_SHA256)
+    actual_config_encryption_key_sha256=$(sha256_trimmed_file "$payload_dir/secrets/config-encryption-key") \
+      || fail "unable to fingerprint archived config encryption key"
+    [ "$actual_config_encryption_key_sha256" = "$expected_config_encryption_key_sha256" ] \
+      || fail "archived config encryption key does not match manifest CONFIG_ENCRYPTION_KEY_SHA256"
+  else
+    echo "WARNING: FORMAT_VERSION=$format_version archive has no CONFIG_ENCRYPTION_KEY_SHA256 fingerprint; relying on decrypt probe only" >&2
+  fi
+}
+
+warn_if_mismatch() {
+  label=$1
+  archive_value=$2
+  target_value=$3
+
+  if [ "$archive_value" != "unknown" ] && [ "$archive_value" != "$target_value" ]; then
+    echo "WARNING: archive $label ($archive_value) differs from target $label ($target_value); migration identity remains the hard compatibility gate" >&2
+  fi
+}
+
 extract_app_settings_copy_block() {
   dump_path=$1
   output_path=$2
@@ -181,7 +303,7 @@ app_settings_scratch_create_table_sql() {
   ' "$copy_path"
 }
 
-# Validate the archive's storage payload and its v2 semantic contract before any
+# Validate the archive's storage payload and its v2/v3 semantic contract before any
 # target service is stopped or official database/key/upload state is replaced.
 validate_archive_storage_contract() {
   payload_dir=$1
@@ -195,7 +317,10 @@ validate_archive_storage_contract() {
     fail "archive must contain exactly one of uploads/ or UPLOADS_SKIPPED_S3"
   fi
 
-  [ "$format_version" = "2" ] || return 0
+  case "$format_version" in
+    2|3) ;;
+    *) return 0 ;;
+  esac
   storage_driver=$(manifest_value "$payload_dir/manifest.env" STORAGE_DRIVER)
   uploads_included=$(manifest_value "$payload_dir/manifest.env" UPLOADS_INCLUDED)
   case "$storage_driver:$uploads_included:$has_uploads:$has_skip_marker" in

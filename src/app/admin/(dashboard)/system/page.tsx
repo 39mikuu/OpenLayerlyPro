@@ -61,6 +61,8 @@ export default async function AdminSystemPage() {
           <p>
             {t("admin.overview.version")}：{status.version}
           </p>
+          <p>Source commit：{status.sourceCommit}</p>
+          <p>Build timestamp：{status.buildTimestamp}</p>
           <p>
             {t("admin.system.database")}：
             {t(status.databaseOk ? "admin.overview.normal" : "admin.overview.abnormal")}

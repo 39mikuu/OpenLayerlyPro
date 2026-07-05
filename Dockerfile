@@ -17,6 +17,9 @@ RUN pnpm build && pnpm build:migrator && pnpm build:files-backfill && pnpm build
 # ---- 运行 ----
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
+ARG APP_VERSION=dev
+ARG SOURCE_COMMIT=dev
+ARG BUILD_TIMESTAMP=unknown
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
@@ -46,6 +49,16 @@ COPY docker/entrypoint-secrets.sh /entrypoint-secrets.sh
 RUN chmod +x /entrypoint.sh \
   && mkdir -p /app/uploads /app/secrets \
   && chown nextjs:nodejs /app/uploads /app/secrets
+
+# BUILD_TIMESTAMP intentionally breaks layer caching from this point onward; keep the
+# build identity metadata after file-copy/setup layers to minimize cache damage.
+ENV APP_VERSION=$APP_VERSION
+ENV SOURCE_COMMIT=$SOURCE_COMMIT
+ENV BUILD_TIMESTAMP=$BUILD_TIMESTAMP
+LABEL org.opencontainers.image.version=$APP_VERSION
+LABEL org.opencontainers.image.revision=$SOURCE_COMMIT
+LABEL org.opencontainers.image.created=$BUILD_TIMESTAMP
+LABEL org.opencontainers.image.source="https://github.com/39mikuu/OpenLayerlyPro"
 
 EXPOSE 3000
 ENTRYPOINT ["/entrypoint.sh"]

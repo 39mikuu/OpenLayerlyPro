@@ -54,7 +54,9 @@
 - [ ] 首次初始化前，实例、Cloudflare Tunnel 与反向代理保持非公开；确认首次 setup 已完成（`initialized=true`）、`/admin/setup` 已关闭后再对公网暴露。setup 端点在初始化前对未认证访问者开放，第一个完成 setup 的调用者即成为管理员——并发不会造成部分初始化或重复管理员（见 `docs/audit/issue-103-concurrent-setup.md`），但公开暴露窗口仍须由运维在暴露前关闭。
 - [ ] 从受支持旧版本升级时，先解决 pending-payment 冲突，再运行 migrator 与 mandatory file-safety backfill，最后启动 app。
 - [ ] archive v2 包含 manifest 与完整 SHA-256；任一 payload 被篡改时在破坏正式数据库前失败。
+- [ ] archive v3 包含 image-authoritative runtime provenance（`RUNTIME_APP_VERSION`、`RUNTIME_SOURCE_COMMIT`、`RUNTIME_IMAGE_ID`、`BUILD_TIMESTAMP`）、独立 backup tool provenance（`BACKUP_TOOL_COMMIT`、`BACKUP_TOOL_SCRIPT_SHA256`）与 `CONFIG_ENCRYPTION_KEY_SHA256`；任一 payload 或 config-key fingerprint 被篡改时在破坏正式数据库前失败。
 - [ ] v1 legacy archive 的 migration prefix、更新、分叉、unknown 和显式 override 矩阵符合 fail-closed 规则。
+- [ ] v1/v2 archive 恢复路径明确 warning 其早于 image-authoritative provenance；版本/commit/image mismatch 仅 warning，不替代 migration identity hard gate。
 - [ ] v1 schema probe 的随机临时数据库在成功、失败和信号退出后均被清理；兼容检查前正式数据库未被 drop。
 - [ ] 恢复旧于 S1a 的数据时，缺失对象先 quarantine，随后 mandatory file-safety backfill 能重编码安全 raster 并隔离旧 SVG/HTML/非 raster。
 - [ ] 恢复时全部 `storage.delete_object` task（包括 terminal 行）被中和，最终收敛只为真实孤儿重新入队。
@@ -63,6 +65,7 @@
 - [ ] 恢复后抽样核对管理员、会员、付款、订阅、文章、翻译、加密配置、文件和任务状态。
 - [ ] file-backed `SESSION_SECRET` 随 checksum 归档并等值恢复；external secret 不入档且指纹匹配；历史归档缺少显式强 secret 时在破坏数据库前 fail-loud。
 - [ ] `SESSION_SECRET` 与 `CONFIG_ENCRYPTION_KEY` 的托管、恢复和丢失语义已由操作者实际确认。
+- [ ] 发布镜像使用 `--build-arg APP_VERSION=<package version>`、`--build-arg SOURCE_COMMIT=<release SHA>`、`--build-arg BUILD_TIMESTAMP=<UTC ISO timestamp>` 构建；镜像 `ENV`、OCI labels 与备份 manifest v3 中的 runtime provenance 已抽样核对一致。
 
 ## 6. 工程质量
 
