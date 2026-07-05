@@ -210,6 +210,17 @@ S7_E2E_APP_PORT=$SRC_PORT v1_compose "$SRC_PROJECT" stop app
 # then restoring with it is exactly such a drift.
 start_restore_stack() {
   srs_extra=${1:-}
+  # If the previous case signalled restore.sh while one of its `compose run --rm`
+  # helpers was alive, that one-off container survives (the --rm cleanup is
+  # client-side) and `down -v` neither removes it nor the network it holds open.
+  # A stale one-off then makes restore.sh's single-app-container guard count two
+  # targets and fail closed. Force-remove all project containers first so `down -v`
+  # can fully reset and the target created below is the only app container.
+  srs_stale=$(sudo -n docker ps -aq --filter "label=com.docker.compose.project=$RST_PROJECT")
+  if [ -n "$srs_stale" ]; then
+    # shellcheck disable=SC2086 # word-splitting the ID list is intended
+    sudo -n docker rm -f $srs_stale >/dev/null 2>&1 || true
+  fi
   S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" down -v >/dev/null 2>&1 || true
   S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" up -d postgres
   attempt=0
