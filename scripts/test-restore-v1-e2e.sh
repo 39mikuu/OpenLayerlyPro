@@ -201,7 +201,15 @@ tar -czf "$V1_LEGACY" -C "$LEGACY_WORK" .
 echo "Stopping source app before restore target comes online..."
 S7_E2E_APP_PORT=$SRC_PORT v1_compose "$SRC_PROJECT" stop app
 
+# Optional $1: an extra per-case compose override that the upcoming restore.sh invocation
+# will also use (appended last, matching run_restore_with_env's COMPOSE_FILE order). The
+# target app container must be created with the *same* effective service config restore.sh
+# resolves: restore.sh binds to the confirmed container and refuses to continue if its own
+# `compose create app` recreates the target (config drift after confirmation, the #127
+# fail-closed target-binding guard). Creating the target here without the case override and
+# then restoring with it is exactly such a drift.
 start_restore_stack() {
+  srs_extra=${1:-}
   S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" down -v >/dev/null 2>&1 || true
   S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" up -d postgres
   attempt=0
@@ -211,7 +219,11 @@ start_restore_stack() {
     [ "$attempt" -lt 60 ] || fail "restore postgres did not become ready"
     sleep 2
   done
-  S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" create app >/dev/null
+  if [ -n "$srs_extra" ]; then
+    S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" -f "$srs_extra" create app >/dev/null
+  else
+    S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" create app >/dev/null
+  fi
 }
 
 run_restore() {
@@ -390,9 +402,9 @@ for legacy_case in missing short placeholder whitespace; do
     placeholder) case_value="change-me"; case_class="change-me" ;;
     whitespace) case_value="$LEGACY_WHITESPACE_VALUE"; case_class="whitespace" ;;
   esac
-  start_restore_stack
-  seed_legacy_sentinels
   write_legacy_override "$LEGACY_OVERRIDE" "$case_value"
+  start_restore_stack "$LEGACY_OVERRIDE"
+  seed_legacy_sentinels
   assert_case_session_secret "$LEGACY_OVERRIDE" "$case_class"
   CASE_LOG="/tmp/openlayerly-s7-v1-legacy-$legacy_case.log"
   if RESTORE_EXTRA_COMPOSE_FILE="$LEGACY_OVERRIDE" \
@@ -405,8 +417,8 @@ for legacy_case in missing short placeholder whitespace; do
 done
 
 echo "TEST: legacy archive with an explicit strong SESSION_SECRET restores successfully..."
-start_restore_stack
 write_legacy_override "$LEGACY_OVERRIDE" "legacy-explicit-session-secret-0123456789"
+start_restore_stack "$LEGACY_OVERRIDE"
 assert_case_session_secret "$LEGACY_OVERRIDE" "strong"
 if ! RESTORE_EXTRA_COMPOSE_FILE="$LEGACY_OVERRIDE" \
     run_restore_with_env "$DRILL_ENV" "$V1_LEGACY" --yes \
