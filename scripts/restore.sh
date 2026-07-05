@@ -340,7 +340,8 @@ verify_restore_target_unchanged_after_create \
   "$TARGET_RUNTIME_APP_VERSION" \
   "$TARGET_RUNTIME_SOURCE_COMMIT" \
   "$TARGET_BUILD_TIMESTAMP" \
-  "$TARGET_RUNTIME_IMAGE_ID"
+  "$TARGET_RUNTIME_IMAGE_ID" \
+  "$ASSUME_YES"
 RESTORE_APP_ENV_JSON=$(inspect_container_env_json "$RESTORE_APP_CONTAINER_ID")
 
 app_container_config_encryption_key_is_unset "$RESTORE_APP_CONTAINER_ID" \

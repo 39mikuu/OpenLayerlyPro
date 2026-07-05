@@ -332,11 +332,15 @@ read_app_container_runtime_config() {
     "$SESSION_SECRET_SHA256" "$STORAGE_DRIVER" "$UPLOAD_DIR" "$UPLOADS_INCLUDED"
 }
 
+# Only .State.Status == "running" accepts docker exec. .State.Running is also true
+# for paused (and unreliable for restarting) containers, where exec fails — and the
+# backup state machine deliberately supports paused/restarting containers, recording
+# and restoring their state around the --stop-app window.
 app_container_is_running() {
   container_id=$1
-  running_json=$(docker_cmd inspect --format '{{json .State.Running}}' "$container_id") \
+  status_json=$(docker_cmd inspect --format '{{json .State.Status}}' "$container_id") \
     || fail "unable to inspect app service container state"
-  [ "$running_json" = "true" ]
+  [ "$status_json" = '"running"' ]
 }
 
 canonicalize_app_container_path() {
@@ -581,6 +585,7 @@ verify_restore_target_unchanged_after_create() {
   expected_source_commit=$4
   expected_build_timestamp=$5
   expected_image_id=$6
+  assume_yes=${7:-false}
 
   actual_container_id=$(resolve_existing_single_app_container_id) \
     || fail "target app container/image changed after confirmation; re-run restore and confirm against the current target"
@@ -595,11 +600,19 @@ verify_restore_target_unchanged_after_create() {
   actual_image_id=$RUNTIME_IMAGE_ID
 
   if provenance_is_all_unknown "$expected_app_version" "$expected_source_commit" "$expected_build_timestamp" "$expected_image_id"; then
+    # The operator confirmed an all-unknown target; the concrete image resolved after
+    # container creation never appeared in that prompt. Interactive restores must not
+    # silently upgrade unknown into an unconfirmed identity: fail closed so the second
+    # run (container now existing) confirms against the real provenance. Explicit
+    # automation (--yes) accepts and announces the resolved identity instead.
+    echo "Target provenance resolved after container creation: version=$actual_app_version commit=$actual_source_commit image=$actual_image_id build=$actual_build_timestamp"
+    if [ "$assume_yes" != true ]; then
+      fail "target provenance was unknown at confirmation and is now concrete; re-run restore to confirm against the resolved target above"
+    fi
     TARGET_RUNTIME_APP_VERSION=$actual_app_version
     TARGET_RUNTIME_SOURCE_COMMIT=$actual_source_commit
     TARGET_BUILD_TIMESTAMP=$actual_build_timestamp
     TARGET_RUNTIME_IMAGE_ID=$actual_image_id
-    echo "Target provenance resolved after container creation: version=$TARGET_RUNTIME_APP_VERSION commit=$TARGET_RUNTIME_SOURCE_COMMIT image=$TARGET_RUNTIME_IMAGE_ID build=$TARGET_BUILD_TIMESTAMP"
   else
     if [ "$actual_app_version" != "$expected_app_version" ] \
       || [ "$actual_source_commit" != "$expected_source_commit" ] \

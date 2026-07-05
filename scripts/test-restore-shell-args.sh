@@ -21,7 +21,7 @@ VALID_TOOL_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 DOCKER_INSPECT_ENV_JSON='["APP_VERSION=image-version","SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567","BUILD_TIMESTAMP=2026-07-05T00:00:00Z"]'
 DOCKER_IMAGE_ENV_JSON='["APP_VERSION=image-version","SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567","BUILD_TIMESTAMP=2026-07-05T00:00:00Z"]'
 DOCKER_INSPECT_CONTAINER_IMAGE_JSON='"sha256:mock-container-image"'
-DOCKER_INSPECT_RUNNING_JSON=true
+DOCKER_INSPECT_STATUS_JSON='"running"'
 DOCKER_IMAGE_LABELS_JSON='{"org.opencontainers.image.version":"image-version","org.opencontainers.image.revision":"0123456789abcdef0123456789abcdef01234567","org.opencontainers.image.created":"2026-07-05T00:00:00Z"}'
 DOCKER_IMAGE_ID_JSON='"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
 COMPOSE_IMAGE_LABELS_JSON='{"org.opencontainers.image.version":"compose-config-version","org.opencontainers.image.revision":"fedcba9876543210fedcba9876543210fedcba98","org.opencontainers.image.created":"2026-07-06T00:00:00Z"}'
@@ -103,8 +103,8 @@ docker_cmd() {
         "{{json .Config.Env}}")
           printf '%s\n' "$DOCKER_INSPECT_ENV_JSON"
           ;;
-        "{{json .State.Running}}")
-          printf '%s\n' "$DOCKER_INSPECT_RUNNING_JSON"
+        "{{json .State.Status}}")
+          printf '%s\n' "$DOCKER_INSPECT_STATUS_JSON"
           ;;
         *)
           fail "unexpected mock docker inspect format: $inspect_format"
@@ -335,6 +335,27 @@ blank_env_json='["SESSION_SECRET_FILE=","CONFIG_ENCRYPTION_KEY_FILE=","STORAGE_D
   || fail "blank STORAGE_DRIVER env did not fall back to local"
 [ "$(container_env_value "$blank_env_json" UPLOAD_DIR /app/uploads)" = "/app/uploads" ] \
   || fail "blank UPLOAD_DIR env did not fall back to the default path"
+
+# paused/restarting containers cannot accept docker exec: canonicalization must take
+# the stopped-container fallback (the mock docker_cmd has no exec branch, so any exec
+# attempt fails the test) and emit the notice.
+for non_exec_status in '"paused"' '"restarting"' '"exited"'; do
+  DOCKER_INSPECT_STATUS_JSON=$non_exec_status
+  set +e
+  paused_canonical_output=$(
+    canonicalize_app_container_path "$single_container_id" /app/uploads/sub "UPLOAD_DIR" 2>&1
+  )
+  paused_canonical_status=$?
+  set -e
+  [ "$paused_canonical_status" -eq 0 ] \
+    || fail "canonicalization did not fall back for container status $non_exec_status"
+  printf '%s' "$paused_canonical_output" | grep -F "/app/uploads/sub" >/dev/null \
+    || fail "fallback canonicalization did not preserve the raw path for $non_exec_status"
+  printf '%s' "$paused_canonical_output" \
+    | grep -F "skipping canonical path resolution" >/dev/null \
+    || fail "fallback canonicalization notice missing for $non_exec_status"
+done
+DOCKER_INSPECT_STATUS_JSON='"running"'
 
 verify_app_container_unchanged_for_backup "$single_container_id" "$VALID_IMAGE_ID" \
   || fail "backup container identity guard rejected unchanged container"
@@ -778,20 +799,42 @@ printf '%s' "$restore_changed_image_output" \
   | grep -F "target app container/image changed after confirmation" >/dev/null \
   || fail "restore changed-image error was not explicit"
 
-restore_unknown_output=$(
+set +e
+restore_unknown_interactive_output=$(
   verify_restore_target_unchanged_after_create \
     false \
     "" \
     unknown \
     unknown \
     unknown \
-    unknown
+    unknown 2>&1
 )
-printf '%s' "$restore_unknown_output" \
+restore_unknown_interactive_status=$?
+set -e
+[ "$restore_unknown_interactive_status" -ne 0 ] \
+  || fail "interactive all-unknown post-create path did not fail closed"
+printf '%s' "$restore_unknown_interactive_output" \
   | grep -F "Target provenance resolved after container creation:" >/dev/null \
-  || fail "restore all-unknown post-create path did not announce resolved provenance"
+  || fail "interactive all-unknown failure did not print the resolved provenance"
+printf '%s' "$restore_unknown_interactive_output" \
+  | grep -F "re-run restore to confirm against the resolved target" >/dev/null \
+  || fail "interactive all-unknown failure message was not explicit"
+
+restore_unknown_yes_output=$(
+  verify_restore_target_unchanged_after_create \
+    false \
+    "" \
+    unknown \
+    unknown \
+    unknown \
+    unknown \
+    true
+)
+printf '%s' "$restore_unknown_yes_output" \
+  | grep -F "Target provenance resolved after container creation:" >/dev/null \
+  || fail "--yes all-unknown post-create path did not announce resolved provenance"
 [ "$TARGET_RUNTIME_IMAGE_ID" = "$VALID_IMAGE_ID" ] \
-  || fail "restore all-unknown post-create path did not replace target image id"
+  || fail "--yes all-unknown post-create path did not replace target image id"
 
 command -v script >/dev/null 2>&1 \
   || fail "script command is required for restore cancellation tty regression test"
