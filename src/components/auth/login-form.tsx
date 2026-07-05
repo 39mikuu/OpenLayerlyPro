@@ -167,9 +167,12 @@ export function LoginForm({
         />
       )}
 
+      {/* The Button base class carries `shrink-0`, so two `w-full` buttons in the
+          `sm:` row would each keep 100% width and push past the card edge;
+          `sm:flex-1` (basis 0 + grow) makes them share the row instead. */}
       <div className="flex flex-col gap-2 sm:flex-row">
         <Button
-          className="w-full"
+          className="w-full sm:flex-1"
           variant={codeSent ? "outline" : "default"}
           disabled={loading || !email || (Boolean(turnstileSiteKey) && !turnstileToken)}
           onClick={() =>
@@ -196,7 +199,7 @@ export function LoginForm({
         </Button>
         {codeSent && (
           <Button
-            className="w-full"
+            className="w-full sm:flex-1"
             disabled={loading || !codeComplete}
             onClick={() =>
               run(async () => {
