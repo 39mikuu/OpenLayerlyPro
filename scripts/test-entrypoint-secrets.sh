@@ -49,14 +49,14 @@ if grep -F "$TEST_ROOT/root/target" "$CHOWN_LOG" >/dev/null; then
 fi
 grep -F "nextjs:nodejs $SECRETS_DIR" "$CHOWN_LOG" >/dev/null \
   || fail "env mode did not chown shared secrets dir for file-backed session secret"
-grep -F "nextjs:nodejs $SESSION_SECRET_FILE" "$CHOWN_LOG" >/dev/null \
+grep -F -- "-h nextjs:nodejs $SESSION_SECRET_FILE" "$CHOWN_LOG" >/dev/null \
   || fail "env mode did not chown file-backed session secret"
 
 reset_fixture
 printf '%s' "config-key-material" > "$CONFIG_ENCRYPTION_KEY_FILE"
 export SESSION_SECRET=external-session-secret
 entrypoint_apply_root_ownership
-grep -F "nextjs:nodejs $CONFIG_ENCRYPTION_KEY_FILE" "$CHOWN_LOG" >/dev/null \
+grep -F -- "-h nextjs:nodejs $CONFIG_ENCRYPTION_KEY_FILE" "$CHOWN_LOG" >/dev/null \
   || fail "file mode did not chown regular config key file"
 
 reset_fixture

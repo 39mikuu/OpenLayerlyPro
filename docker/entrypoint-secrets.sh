@@ -33,7 +33,9 @@ entrypoint_chown_regular_file_or_fail() {
     return 1
   fi
   if [ -f "$target" ]; then
-    chown nextjs:nodejs "$target"
+    # The symlink check above gives a clear honest-path diagnostic; chown -h is the
+    # race-safety mechanism, so a swapped-in symlink re-owns only the link itself.
+    chown -h nextjs:nodejs "$target"
   fi
 }
 

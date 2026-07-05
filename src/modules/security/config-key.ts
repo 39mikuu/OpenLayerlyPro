@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync } from "fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "fs";
 
 import { getEnv } from "@/lib/env";
 
@@ -26,21 +26,23 @@ function normalizeConfigEncryptionKeyFileContent(content: string): string {
 }
 
 function readConfigEncryptionKeyFile(path: string): string {
-  let metadata;
+  let descriptor: number;
   try {
-    metadata = lstatSync(path);
-  } catch {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ELOOP") {
+      invalidConfigEncryptionKeyFile();
+    }
     throw new Error("CONFIG_ENCRYPTION_KEY_FILE is unreadable");
   }
-  if (!metadata.isFile() || metadata.isSymbolicLink()) invalidConfigEncryptionKeyFile();
 
-  let content: string;
   try {
-    content = readFileSync(path, "utf8");
-  } catch {
-    throw new Error("CONFIG_ENCRYPTION_KEY_FILE is unreadable");
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile()) invalidConfigEncryptionKeyFile();
+    return normalizeConfigEncryptionKeyFileContent(readFileSync(descriptor, "utf8"));
+  } finally {
+    closeSync(descriptor);
   }
-  return normalizeConfigEncryptionKeyFileContent(content);
 }
 
 /**

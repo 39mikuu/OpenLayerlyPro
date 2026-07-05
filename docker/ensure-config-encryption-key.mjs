@@ -1,11 +1,11 @@
 import { randomBytes } from "crypto";
 import {
-  chmodSync,
   closeSync,
   constants,
+  fchmodSync,
+  fstatSync,
   fsyncSync,
   linkSync,
-  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -69,26 +69,26 @@ export function generateConfigEncryptionKey(randomBytesFn = randomBytes) {
 }
 
 export function readConfigEncryptionKeyTarget(target) {
-  let metadata;
+  let descriptor;
   try {
-    metadata = lstatSync(target);
+    descriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if (isErrnoCode(error, "ENOENT")) {
       throw new Error("config encryption key file is missing");
     }
+    if (isErrnoCode(error, "ELOOP")) invalidConfigEncryptionKeyFile();
     throw new Error("config encryption key file is unreadable");
   }
-  if (!metadata.isFile() || metadata.isSymbolicLink()) invalidConfigEncryptionKeyFile();
 
-  let value;
   try {
-    value = readFileSync(target, "utf8");
-  } catch {
-    throw new Error("config encryption key file is unreadable");
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile()) invalidConfigEncryptionKeyFile();
+    const value = normalizeConfigEncryptionKeyFileContent(readFileSync(descriptor, "utf8"));
+    fchmodSync(descriptor, 0o600);
+    return value;
+  } finally {
+    closeSync(descriptor);
   }
-  value = normalizeConfigEncryptionKeyFileContent(value);
-  chmodSync(target, 0o600);
-  return value;
 }
 
 export function ensureConfigEncryptionKeyFile(

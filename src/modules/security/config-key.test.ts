@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { execFileSync } from "child_process";
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -38,6 +39,18 @@ describe("config encryption key resolver", () => {
     process.env.CONFIG_ENCRYPTION_KEY_FILE = file;
     const { getConfigEncryptionKey } = await loadConfigKey();
     expect(getConfigEncryptionKey()).toBe("legacy-config-key");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("loads a regular file through the descriptor-bound path", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "olp-config-key-"));
+    const file = path.join(dir, "key");
+    writeFileSync(file, "descriptor-bound-config-key", { mode: 0o600 });
+    delete process.env.CONFIG_ENCRYPTION_KEY;
+    process.env.CONFIG_ENCRYPTION_KEY_FILE = file;
+    const { getConfigEncryptionKey } = await loadConfigKey();
+    expect(getConfigEncryptionKey()).toBe("descriptor-bound-config-key");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -117,6 +130,30 @@ describe("config encryption key resolver", () => {
     symlinkSync(linked, symlink);
     process.env.CONFIG_ENCRYPTION_KEY_FILE = symlink;
     configKeyModule = await loadConfigKey();
+    expect(() => configKeyModule.getConfigEncryptionKey()).toThrow(
+      "CONFIG_ENCRYPTION_KEY_FILE is missing or invalid",
+    );
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects a FIFO target without blocking", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "olp-config-key-"));
+    const fifo = path.join(dir, "fifo");
+    try {
+      execFileSync("mkfifo", [fifo]);
+    } catch (error) {
+      // Some sandboxes disallow mknod/mkfifo even on Linux. Keep the real FIFO
+      // regression active where permitted, and skip only when fixture creation is blocked.
+      if (error && typeof error === "object" && "code" in error && error.code === "EPERM") {
+        console.warn("Skipping FIFO rejection regression: mkfifo is not permitted here");
+        rmSync(dir, { recursive: true, force: true });
+        return;
+      }
+      throw error;
+    }
+    delete process.env.CONFIG_ENCRYPTION_KEY;
+    process.env.CONFIG_ENCRYPTION_KEY_FILE = fifo;
+    const configKeyModule = await loadConfigKey();
     expect(() => configKeyModule.getConfigEncryptionKey()).toThrow(
       "CONFIG_ENCRYPTION_KEY_FILE is missing or invalid",
     );

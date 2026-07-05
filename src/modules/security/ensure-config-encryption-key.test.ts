@@ -1,4 +1,4 @@
-import { execFile } from "child_process";
+import { execFile, execFileSync } from "child_process";
 import {
   chmodSync,
   mkdirSync,
@@ -87,6 +87,19 @@ describe("persistent config encryption key creation", () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
+  it("loads a regular file through the descriptor-bound path and fchmods it to 0600", () => {
+    const { file } = fixture();
+    writeFileSync(file, "descriptor-bound-config-key", { mode: 0o644 });
+
+    ensureConfigEncryptionKeyFile(file, {
+      environment: fileEnvironment(),
+      log() {},
+    });
+
+    expect(readFileSync(file, "utf8")).toBe("descriptor-bound-config-key");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
   it("normalizes legacy file whitespace with origin/main trim semantics", async () => {
     const { file } = fixture();
     writeFileSync(file, "  legacy-key-value \n\n", { mode: 0o600 });
@@ -168,13 +181,30 @@ describe("persistent config encryption key creation", () => {
     expect(statSync(file).isDirectory()).toBe(true);
   });
 
+  it("rejects an existing FIFO target without blocking", async () => {
+    const { file } = fixture();
+    try {
+      execFileSync("mkfifo", [file]);
+    } catch (error) {
+      // Some sandboxes disallow mknod/mkfifo even on Linux. Keep the real FIFO
+      // regression active where permitted, and skip only when fixture creation is blocked.
+      if (error && typeof error === "object" && "code" in error && error.code === "EPERM") {
+        console.warn("Skipping FIFO rejection regression: mkfifo is not permitted here");
+        return;
+      }
+      throw error;
+    }
+
+    await expect(run(file)).rejects.toThrow("CONFIG_ENCRYPTION_KEY_FILE is missing or invalid");
+  });
+
   it("rejects an existing symlink target", async () => {
     const { dir, file } = fixture();
     const linked = path.join(dir, "linked");
     writeFileSync(linked, "legacy-config-key", { mode: 0o600 });
     symlinkSync(linked, file);
 
-    await expect(run(file)).rejects.toThrow();
+    await expect(run(file)).rejects.toThrow("CONFIG_ENCRYPTION_KEY_FILE is missing or invalid");
     expect(readFileSync(linked, "utf8")).toBe("legacy-config-key");
   });
 
