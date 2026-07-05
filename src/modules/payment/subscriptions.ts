@@ -941,20 +941,34 @@ export async function reconcileSubscriptions(): Promise<number> {
     if (!providerSubscriptionRef || !subscription.providerPriceRef) continue;
 
     const remote = await provider.retrieveSubscription(providerSubscriptionRef);
-    // Advance the ordering fence to the provider-clock instant at which this state
-    // was observed (`observedAt`), in the same clock domain as webhook
-    // `providerCreatedAt` (issue #112 / reproduced in #102).
+    // Advance the ordering fence to the provider-clock observation fence
+    // (`observedAt`), in the same clock domain as webhook `providerCreatedAt`
+    // (issue #112 / reproduced in #102). Both sides are second-granularity Stripe
+    // timestamps, anchored at opposite ends of their second: webhook
+    // `providerCreatedAt` is `event.created * 1000`, the START of its second
+    // (S.000), while `observedAt` arrives here already normalized by
+    // `getPaymentProvider()` to the END of the observed second (S.999, see
+    // `providerObservationFence`).
     //
     // The guard is a STRICT `<` evaluated against the live row at update time, which
     // both orders the external-I/O race and defines the tie policy without a version
     // CAS:
-    //   - a webhook that committed with providerCreatedAt >= observedAt (newer, or
-    //     equal to the observed second) leaves statusEventAt not-strictly-below
-    //     observedAt, so reconcile skips and the real event wins;
-    //   - a webhook that committed with providerCreatedAt < observedAt is already
-    //     reflected in this observation, so reconcile (strictly newer) wins.
-    // Provider ordering therefore governs, not commit timing. On an equal
-    // provider-second timestamp the webhook wins (webhooks gate on `<=`).
+    //   - a webhook that committed from a LATER provider second ((S+1).000 > S.999)
+    //     leaves statusEventAt not-strictly-below observedAt, so reconcile skips and
+    //     the newer event wins;
+    //   - a webhook that committed from the observed second or earlier (at most
+    //     S.000, strictly below the S.999 fence) is superseded, so reconcile wins.
+    // Provider ordering therefore governs, not commit timing. Within one provider
+    // second the OBSERVATION wins, by construction: a same-second webhook's S.000
+    // can neither survive this strict-`<` overwrite nor pass its own
+    // `statusEventAt <= providerCreatedAt` gate against an S.999 fence; only a
+    // webhook from the next provider second exceeds the fence. A genuinely later
+    // same-second change converges on a subsequent reconcile observation from a
+    // later provider second (an observation of the SAME second re-normalizes to
+    // the identical S.999 fence, which the strict `<` skips). Webhook-vs-
+    // webhook ordering is unaffected (whole-second timestamps, `<=` gate — equal
+    // seconds reapply); only reconcile fences carry the fractional end-of-second
+    // marker.
     //
     // Fail closed if the provider gives no observation timestamp: skip the
     // status/fence write rather than fall back to local time (which would mix clock
