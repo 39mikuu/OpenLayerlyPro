@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { ApiError } from "@/lib/api";
+
 import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
 
 export const TRANSLATION_GROUP = "translation";
@@ -40,6 +42,39 @@ function nonEmpty(value: string | undefined): string | undefined {
 
 function normalizeEndpoint(value: string | undefined): string | undefined {
   return nonEmpty(value)?.replace(/\/+$/, "");
+}
+
+const LOOPBACK_OR_PRIVATE_HOST =
+  /^(localhost|127(\.\d{1,3}){3}|\[::1\]|10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|[^.]+\.(localhost|local|internal|lan|home\.arpa))$/i;
+
+// Strict validation runs only on the save path. Read paths keep the lenient
+// normalizeEndpoint so a legacy stored value can never make config reads throw;
+// the translation call itself still refuses redirects at fetch time.
+export function validateTranslationEndpoint(value: string | undefined): string | undefined {
+  const normalized = normalizeEndpoint(value);
+  if (normalized === undefined) return undefined;
+
+  let url: URL;
+  try {
+    url = new URL(normalized);
+  } catch {
+    throw new ApiError(400, "translationEndpointInvalid");
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new ApiError(400, "translationEndpointInvalid");
+  }
+  if (url.username || url.password || url.hash) {
+    throw new ApiError(400, "translationEndpointInvalid");
+  }
+  if (url.protocol === "http:" && !LOOPBACK_OR_PRIVATE_HOST.test(url.hostname)) {
+    // Deliberate policy: plain-HTTP self-hosted endpoints (Ollama/LiteLLM on a
+    // LAN) stay allowed, but a public-host HTTP endpoint sends the Bearer API
+    // key in cleartext — surface it in the server log without blocking.
+    console.warn(
+      `translation endpoint uses plain HTTP on a public host (${url.hostname}); the API key will be sent unencrypted`,
+    );
+  }
+  return normalized;
 }
 
 function preserveOrNormalize(
@@ -87,7 +122,10 @@ export async function saveTranslationConfig(input: TranslationConfigInput): Prom
     provider: input.provider ?? existing.provider ?? "openai-compatible",
     apiKey: nonEmpty(input.apiKey) ?? nonEmpty(existing.apiKey),
     model: preserveOrNormalize(input.model, existing.model),
-    endpoint: preserveOrNormalize(input.endpoint, existing.endpoint, normalizeEndpoint),
+    endpoint:
+      input.endpoint === undefined
+        ? normalizeEndpoint(existing.endpoint)
+        : validateTranslationEndpoint(input.endpoint),
     monthlyCharLimit:
       input.monthlyCharLimit === undefined ? existing.monthlyCharLimit : input.monthlyCharLimit,
     directPublishEnabled: input.directPublishEnabled ?? existing.directPublishEnabled ?? false,

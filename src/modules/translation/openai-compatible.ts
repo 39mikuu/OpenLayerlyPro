@@ -34,6 +34,8 @@ export function createOpenAiCompatibleProvider(
 
       const response = await fetcher(`${config.endpoint}/chat/completions`, {
         method: "POST",
+        // The Bearer key must never follow a redirect off the configured host.
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${config.apiKey}`,
           "Content-Type": "application/json",

@@ -84,6 +84,67 @@ describe("translation config", () => {
     });
   });
 
+  it.each([
+    ["not a URL", "not a url"],
+    ["a non-http(s) scheme", "ftp://files.example.com/v1"],
+    ["a file scheme", "file:///etc/passwd"],
+    ["embedded userinfo", "https://user:pass@api.example.com/v1"],
+    ["a fragment", "https://api.example.com/v1#frag"],
+  ])("rejects an endpoint with %s", async (_label, endpoint) => {
+    mockedGet.mockResolvedValue(null);
+    const { saveTranslationConfig } = await import("./translation");
+
+    await expect(saveTranslationConfig({ endpoint })).rejects.toMatchObject({
+      status: 400,
+      code: "translationEndpointInvalid",
+    });
+    expect(mockedSet).not.toHaveBeenCalled();
+  });
+
+  it("allows plain-HTTP endpoints on loopback and private hosts without warning", async () => {
+    mockedGet.mockResolvedValue(null);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { saveTranslationConfig } = await import("./translation");
+
+    for (const endpoint of [
+      "http://localhost:11434/v1",
+      "http://127.0.0.1:4000/v1",
+      "http://192.168.1.20:11434/v1",
+      "http://10.0.0.5/v1",
+      "http://172.16.0.9/v1",
+      "http://ollama.internal/v1",
+    ]) {
+      await saveTranslationConfig({ endpoint });
+    }
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(mockedSet).toHaveBeenCalledTimes(6);
+    warn.mockRestore();
+  });
+
+  it("warns (but still saves) when a public host is reached over plain HTTP", async () => {
+    mockedGet.mockResolvedValue(null);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { saveTranslationConfig } = await import("./translation");
+
+    await saveTranslationConfig({ endpoint: "http://api.example.com/v1" });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(mockedSet).toHaveBeenCalledWith(
+      "translation",
+      expect.objectContaining({ endpoint: "http://api.example.com/v1" }),
+    );
+    warn.mockRestore();
+  });
+
+  it("keeps a legacy stored endpoint readable and re-savable when the input omits it", async () => {
+    mockedGet.mockResolvedValue({ endpoint: "not a url" });
+    const { getTranslationConfig, saveTranslationConfig } = await import("./translation");
+
+    await expect(getTranslationConfig()).resolves.toMatchObject({ endpoint: "not a url" });
+    await expect(saveTranslationConfig({ enabled: true })).resolves.toBeUndefined();
+  });
+
   it("clears the database override", async () => {
     const { clearTranslationConfig } = await import("./translation");
     await clearTranslationConfig();

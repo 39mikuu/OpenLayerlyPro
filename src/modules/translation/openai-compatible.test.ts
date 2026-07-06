@@ -48,6 +48,7 @@ describe("OpenAI-compatible translation provider", () => {
       "https://api.example.com/v1/chat/completions",
       expect.objectContaining({
         method: "POST",
+        redirect: "error",
         headers: expect.objectContaining({
           Authorization: "Bearer provider-secret",
         }),
