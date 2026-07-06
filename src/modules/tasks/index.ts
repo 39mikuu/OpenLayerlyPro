@@ -423,26 +423,40 @@ export async function retryTask(id: string): Promise<TaskAdminView> {
       if (!task) throw new ApiError(409, "taskNotRetryable");
 
       if (eventRowId) {
-        const [event] = await tx
-          .update(paymentProviderEvents)
-          .set({
-            status: "received",
-            // Manual admin retry intentionally restarts both failed and dead inbox rows.
-            attempts: 0,
-            lockedBy: null,
-            leaseUntil: null,
-            processedAt: null,
-            error: null,
-            updatedAt: sql`now()`,
-          })
-          .where(
-            and(
-              eq(paymentProviderEvents.id, eventRowId),
-              inArray(paymentProviderEvents.status, ["dead", "failed"]),
-            ),
-          )
-          .returning({ id: paymentProviderEvents.id });
-        if (!event) throw new ApiError(409, "taskNotRetryable");
+        const [eventState] = await tx
+          .select({ status: paymentProviderEvents.status })
+          .from(paymentProviderEvents)
+          .where(eq(paymentProviderEvents.id, eventRowId))
+          .limit(1);
+        if (!eventState) throw new ApiError(409, "taskNotRetryable");
+
+        if (eventState.status === "processing") {
+          // Do not steal processing rows, even with expired final-attempt leases: the next claim
+          // safely terminalizes exhausted processing events, then a second admin retry can revive them.
+        }
+
+        if (eventState.status === "failed" || eventState.status === "dead") {
+          const [event] = await tx
+            .update(paymentProviderEvents)
+            .set({
+              status: "received",
+              // Manual admin retry intentionally restarts both failed and dead inbox rows.
+              attempts: 0,
+              lockedBy: null,
+              leaseUntil: null,
+              processedAt: null,
+              error: null,
+              updatedAt: sql`now()`,
+            })
+            .where(
+              and(
+                eq(paymentProviderEvents.id, eventRowId),
+                inArray(paymentProviderEvents.status, ["dead", "failed"]),
+              ),
+            )
+            .returning({ id: paymentProviderEvents.id });
+          if (!event) throw new ApiError(409, "taskNotRetryable");
+        }
       }
 
       return task;

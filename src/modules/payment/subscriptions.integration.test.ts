@@ -506,6 +506,329 @@ describeWithDatabase("Stripe subscription integration", () => {
     });
   });
 
+  it("recovers a dead dispatch task when its provider event is still received", async () => {
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_retry_received_event",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_retry_received_event",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "received",
+        attempts: 0,
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + eventRow!.id,
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "dead",
+        attempts: 5,
+        lastError: "handler crashed before provider event claim",
+      })
+      .returning();
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+
+    const [claimableEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(claimableEvent).toMatchObject({ status: "received", attempts: 0, lockedBy: null });
+
+    const [claimedTask] = await claimDueTasks(1, { lockToken: "retry-received-task" });
+    expect(claimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(claimedTask!);
+
+    const [processedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [succeededTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(processedEvent).toMatchObject({ status: "processed", attempts: 1, lockedBy: null });
+    expect(succeededTask).toMatchObject({ status: "succeeded", attempts: 1, lockedBy: null });
+  });
+
+  it("recovers a dead dispatch task when its provider event has an expired processing lease", async () => {
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_retry_expired_processing_event",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_retry_expired_processing_event",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "processing",
+        attempts: 1,
+        lockedBy: "crashed-provider-worker",
+        leaseUntil: new Date(Date.now() - 60_000),
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + eventRow!.id,
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "dead",
+        attempts: 5,
+        lastError: "task final attempt crashed after provider claim",
+      })
+      .returning();
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+
+    const [untouchedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(untouchedEvent).toMatchObject({
+      status: "processing",
+      attempts: 1,
+      lockedBy: "crashed-provider-worker",
+    });
+
+    const [claimedTask] = await claimDueTasks(1, { lockToken: "retry-expired-task" });
+    expect(claimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(claimedTask!);
+
+    const [processedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [succeededTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(processedEvent).toMatchObject({ status: "processed", attempts: 2, lockedBy: null });
+    expect(succeededTask).toMatchObject({ status: "succeeded", attempts: 1, lockedBy: null });
+  });
+
+  it("recovers a dead dispatch task for an already processed event without duplicate side effects", async () => {
+    const { user, subscription } = await seedSubscription();
+    const event = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_processed_retry",
+      providerPaymentRef: "pi_processed_retry",
+      providerEventId: "evt_processed_retry",
+    });
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+    await dispatchPaymentProviderEvent(eventRow!.id);
+    const [task] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.dedupeKey, "payment-provider-event:" + eventRow!.id));
+    await db
+      .update(tasks)
+      .set({ status: "dead", attempts: 5, lastError: "worker crashed before task success" })
+      .where(eq(tasks.id, task!.id));
+
+    const sideEffectsBefore = {
+      memberships: await db.select().from(memberships).where(eq(memberships.userId, user.id)),
+      requests: await db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.providerInvoiceRef, event.providerInvoiceRef)),
+      audits: await db.select().from(auditEvents),
+      emails: (await db.select().from(tasks)).filter((row) => row.kind === "email"),
+    };
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+    const claimedTasks = await claimDueTasks(10, { lockToken: "retry-processed-task" });
+    const claimedTask = claimedTasks.find((row) => row.id === task!.id);
+    expect(claimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(claimedTask!);
+
+    const sideEffectsAfter = {
+      memberships: await db.select().from(memberships).where(eq(memberships.userId, user.id)),
+      requests: await db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.providerInvoiceRef, event.providerInvoiceRef)),
+      audits: await db.select().from(auditEvents),
+      emails: (await db.select().from(tasks)).filter((row) => row.kind === "email"),
+    };
+    const [processedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [succeededTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+
+    expect(processedEvent).toMatchObject({ status: "processed", attempts: 1 });
+    expect(succeededTask).toMatchObject({ status: "succeeded", attempts: 1, lockedBy: null });
+    expect(sideEffectsAfter.memberships).toHaveLength(sideEffectsBefore.memberships.length);
+    expect(sideEffectsAfter.requests).toHaveLength(sideEffectsBefore.requests.length);
+    expect(sideEffectsAfter.audits).toHaveLength(sideEffectsBefore.audits.length);
+    expect(sideEffectsAfter.emails).toHaveLength(sideEffectsBefore.emails.length);
+  });
+
+  it("recovers a dead dispatch task for a live busy provider event by deferring without stealing", async () => {
+    const futureLease = new Date(Date.now() + 60_000);
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_retry_live_processing_event",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_retry_live_processing_event",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "processing",
+        attempts: 1,
+        lockedBy: "active-provider-worker",
+        leaseUntil: futureLease,
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + eventRow!.id,
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "dead",
+        attempts: 5,
+        lastError: "task exhausted while provider worker still owns event",
+      })
+      .returning();
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+    const [claimedTask] = await claimDueTasks(1, { lockToken: "retry-live-busy-task" });
+    expect(claimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(claimedTask!);
+
+    const [busyEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [deferredTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(busyEvent).toMatchObject({
+      status: "processing",
+      attempts: 1,
+      lockedBy: "active-provider-worker",
+    });
+    expect(busyEvent!.leaseUntil!.getTime()).toBe(futureLease.getTime());
+    expect(deferredTask).toMatchObject({ status: "pending", attempts: 0, lastError: null });
+    expect(deferredTask!.runAfter.getTime()).toBeGreaterThanOrEqual(futureLease.getTime());
+  });
+
+  it("rejects retry atomically when the linked provider event row is missing", async () => {
+    const missingEventId = "550e8400-e29b-41d4-a716-446655440000";
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + missingEventId,
+        payloadJson: { eventRowId: missingEventId },
+        status: "dead",
+        attempts: 5,
+        lastError: "provider event disappeared",
+      })
+      .returning();
+
+    await expect(retryTask(task!.id)).rejects.toThrow("taskNotRetryable");
+
+    const [stillDead] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(stillDead).toMatchObject({
+      status: "dead",
+      attempts: 5,
+      lastError: "provider event disappeared",
+    });
+  });
+
+  it("converges exhausted expired processing events through dead before admin retry revival", async () => {
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_retry_exhausted_processing_event",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_retry_exhausted_processing_event",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "processing",
+        attempts: 5,
+        maxAttempts: 5,
+        lockedBy: "crashed-final-provider-worker",
+        leaseUntil: new Date(Date.now() - 60_000),
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + eventRow!.id,
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "dead",
+        attempts: 5,
+        lastError: "task crashed during final provider event attempt",
+      })
+      .returning();
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+
+    const [firstClaimedTask] = await claimDueTasks(1, { lockToken: "retry-exhausted-task" });
+    expect(firstClaimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(firstClaimedTask!);
+
+    const [deadEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [deadTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(0);
+    await expect(db.select().from(memberships)).resolves.toHaveLength(0);
+    await expect(db.select().from(auditEvents)).resolves.toHaveLength(0);
+    expect(deadEvent).toMatchObject({
+      status: "dead",
+      attempts: 5,
+      lockedBy: null,
+      error: "Payment provider event lease expired after the final execution attempt",
+    });
+    expect(deadTask).toMatchObject({
+      status: "dead",
+      attempts: 1,
+      lockedBy: null,
+      lastError: "Payment provider event lease expired after the final execution attempt",
+    });
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+    const [resetEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(resetEvent).toMatchObject({ status: "received", attempts: 0, lockedBy: null });
+
+    const [secondClaimedTask] = await claimDueTasks(1, { lockToken: "retry-revived-task" });
+    expect(secondClaimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(secondClaimedTask!);
+
+    const [processedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [succeededTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(processedEvent).toMatchObject({ status: "processed", attempts: 1, lockedBy: null });
+    expect(succeededTask).toMatchObject({ status: "succeeded", attempts: 1, lockedBy: null });
+  });
+
   it("defers an actively leased provider event without failing the dispatch task", async () => {
     const futureLease = new Date(Date.now() + 60_000);
     const [eventRow] = await db
