@@ -56,12 +56,18 @@ describe("OpenAI-compatible translation provider", () => {
     );
   });
 
-  it("refuses to call a legacy endpoint that is not a valid URL", async () => {
+  it.each([
+    ["not a valid URL", "not a url"],
+    ["a query string", "https://api.example.com/v1?tenant=abc"],
+    ["embedded userinfo", "https://user:pass@api.example.com/v1"],
+    ["a fragment", "https://api.example.com/v1#frag"],
+    ["a non-http(s) scheme", "ftp://files.example.com/v1"],
+  ])("refuses to call a legacy endpoint with %s", async (_label, endpoint) => {
     const fetcher = vi.fn() as unknown as typeof fetch;
     const provider = createOpenAiCompatibleProvider(
       {
         apiKey: "provider-secret",
-        endpoint: "not a url",
+        endpoint,
         model: "translation-model",
       },
       fetcher,

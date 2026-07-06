@@ -32,12 +32,26 @@ export function createOpenAiCompatibleProvider(
         throw new ApiError(400, "translationConfigIncomplete");
       }
 
+      // Parse the endpoint on its own before appending the path: a legacy
+      // stored value with a query string would otherwise swallow the appended
+      // path, and nothing may reach fetch with the Bearer key until the
+      // endpoint has passed the same shape checks the save path enforces.
       let requestUrl: URL;
       try {
-        requestUrl = new URL(`${config.endpoint.replace(/\/+$/, "")}/chat/completions`);
+        requestUrl = new URL(config.endpoint);
       } catch {
         throw new ApiError(400, "translationEndpointInvalid");
       }
+      if (
+        (requestUrl.protocol !== "https:" && requestUrl.protocol !== "http:") ||
+        requestUrl.username ||
+        requestUrl.password ||
+        requestUrl.search ||
+        requestUrl.hash
+      ) {
+        throw new ApiError(400, "translationEndpointInvalid");
+      }
+      requestUrl.pathname = `${requestUrl.pathname.replace(/\/+$/, "")}/chat/completions`;
 
       const response = await fetcher(requestUrl.toString(), {
         method: "POST",
