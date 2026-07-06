@@ -696,6 +696,7 @@ export const en: Messages = {
       apiKeySet: "Already set; leave blank to keep it",
       apiKeyMissing: "Enter an API key",
       monthlyCharLimit: "Monthly character limit (optional)",
+      monthlyCharLimitHint: "For record-keeping only — usage above the limit is not blocked.",
       invalidLimit: "The monthly character limit must be a positive integer",
       directPublish: "Allow AI translations to publish immediately",
       directPublishWarning: "High-risk policy: skips human review. Disabled by default.",
