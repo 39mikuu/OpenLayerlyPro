@@ -91,8 +91,10 @@ autonomous publication is allowed until #88 passes.
 - Confirmed port `5433` is occupied by prior S6 work; S7 will use `5434`/`3003`.
 - Created isolated S7 worktree and branch from `origin/main`.
 - Read `docs/handoff/harden-s7-backup-consistency.md` and inspected baseline
-  `scripts/backup.sh` / `scripts/restore.sh` (currently `FORMAT_VERSION=1`,
-  no checksums, no task neutralization, no pre-start convergence).
+  `scripts/backup.sh` / `scripts/restore.sh` (historical snapshot: at that time
+  `FORMAT_VERSION=1`, no checksums, no task neutralization, no pre-start
+  convergence; current archives are `FORMAT_VERSION=3` — see
+  `docs/deployment/backup-restore.md`).
 
 ### S6 (complete — merged)
 
