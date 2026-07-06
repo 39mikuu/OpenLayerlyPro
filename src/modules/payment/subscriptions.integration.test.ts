@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const providerMocks = vi.hoisted(() => ({
@@ -9,6 +9,7 @@ const providerMocks = vi.hoisted(() => ({
   retrieveSubscription: vi.fn(),
   listPaidSubscriptionInvoices: vi.fn(),
   resolveInvoiceByPaymentIntent: vi.fn(),
+  resolveCheckoutByPaymentIntent: vi.fn(),
   getPaymentProvider: vi.fn(),
 }));
 
@@ -32,10 +33,10 @@ import {
 } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { getActiveMembership, grantMembershipForPeriod } from "@/modules/membership";
+import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
 
 import {
   applyPaidInvoice,
-  applySubscriptionReversalOrTombstone,
   createSubscriptionCheckout,
   dispatchPaymentProviderEvent,
   persistPaymentProviderEvent,
@@ -59,6 +60,7 @@ describeWithDatabase("Stripe subscription integration", () => {
       retrieveSubscription: providerMocks.retrieveSubscription,
       listPaidSubscriptionInvoices: providerMocks.listPaidSubscriptionInvoices,
       resolveInvoiceByPaymentIntent: providerMocks.resolveInvoiceByPaymentIntent,
+      resolveCheckoutByPaymentIntent: providerMocks.resolveCheckoutByPaymentIntent,
     });
     providerMocks.createSubscriptionCheckout.mockResolvedValue({
       redirectUrl: "https://checkout.stripe.test/subscription",
@@ -69,6 +71,7 @@ describeWithDatabase("Stripe subscription integration", () => {
       redirectUrl: "https://checkout.stripe.test/existing",
       providerSubscriptionRef: null,
     });
+    providerMocks.resolveCheckoutByPaymentIntent.mockResolvedValue(null);
   });
 
   afterAll(async () => {
@@ -226,14 +229,17 @@ describeWithDatabase("Stripe subscription integration", () => {
       localSubscriptionId: subscription.id,
     });
 
-    await db.transaction((tx) =>
-      applySubscriptionReversalOrTombstone(tx, "stripe", {
-        type: "refunded",
-        paymentRef: event.providerPaymentRef!,
-        providerEventId: "evt_refund_first_basil",
-        providerCreatedAt: new Date("2026-01-31T23:59:00.000Z"),
-      }),
-    );
+    await persistPaymentProviderEvent("stripe", {
+      type: "refunded",
+      paymentRef: event.providerPaymentRef!,
+      providerEventId: "evt_refund_first_basil",
+      providerCreatedAt: new Date("2026-01-31T23:59:00.000Z"),
+    });
+    const [refundRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_refund_first_basil"));
+    await dispatchPaymentProviderEvent(refundRow!.id);
     await db.transaction((tx) => applyPaidInvoice(tx, "stripe", event));
 
     expect(providerMocks.resolveInvoiceByPaymentIntent).toHaveBeenCalledWith(
@@ -264,14 +270,17 @@ describeWithDatabase("Stripe subscription integration", () => {
       localSubscriptionId: undefined,
     });
 
-    await db.transaction((tx) =>
-      applySubscriptionReversalOrTombstone(tx, "stripe", {
-        type: "refunded",
-        paymentRef: event.providerPaymentRef!,
-        providerEventId: "evt_refund_first_provider_ref",
-        providerCreatedAt: new Date("2026-01-31T23:59:00.000Z"),
-      }),
-    );
+    await persistPaymentProviderEvent("stripe", {
+      type: "refunded",
+      paymentRef: event.providerPaymentRef!,
+      providerEventId: "evt_refund_first_provider_ref",
+      providerCreatedAt: new Date("2026-01-31T23:59:00.000Z"),
+    });
+    const [refundRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_refund_first_provider_ref"));
+    await dispatchPaymentProviderEvent(refundRow!.id);
     await db.transaction((tx) => applyPaidInvoice(tx, "stripe", event));
 
     await expect(
@@ -368,6 +377,291 @@ describeWithDatabase("Stripe subscription integration", () => {
       status: "processed",
       attempts: 1,
     });
+  });
+
+  it("dead-letters final-attempt provider events and their durable dispatch task", async () => {
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_final_attempt_dead",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_final_attempt_dead",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "processing",
+        attempts: 5,
+        maxAttempts: 5,
+        lockedBy: "crashed-provider-worker",
+        leaseUntil: new Date(Date.now() - 60_000),
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "processing",
+        attempts: 1,
+        lockedBy: "task-worker",
+        leaseUntil: new Date(Date.now() + 60_000),
+      })
+      .returning();
+
+    await dispatchClaimedTask(task!);
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [storedTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(storedEvent).toMatchObject({
+      status: "dead",
+      lockedBy: null,
+      error: "Payment provider event lease expired after the final execution attempt",
+    });
+    expect(storedTask).toMatchObject({
+      status: "dead",
+      lockedBy: null,
+      lastError: "Payment provider event lease expired after the final execution attempt",
+    });
+  });
+
+  it("rolls back paid invoice business changes when provider-event fencing fails", async () => {
+    const { user, subscription } = await seedSubscription();
+    const event = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_stale_worker",
+      providerPaymentRef: "pi_stale_worker",
+      providerEventId: "evt_stale_worker",
+    });
+    await persistPaymentProviderEvent("stripe", event);
+    const [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+    await db.execute(
+      sql.raw(`
+        create function steal_provider_event_lock_on_invoice_insert() returns trigger as $$
+        begin
+          if new.provider_invoice_ref = 'in_stale_worker' then
+            update payment_provider_events
+            set locked_by = 'worker-b'
+            where id = '${row!.id}';
+          end if;
+          return new;
+        end;
+        $$ language plpgsql;
+        create trigger steal_provider_event_lock_on_invoice_insert_trigger
+        after insert on payment_requests
+        for each row execute function steal_provider_event_lock_on_invoice_insert();
+      `),
+    );
+    try {
+      await expect(dispatchPaymentProviderEvent(row!.id)).rejects.toThrow(
+        "Payment provider event fencing failed",
+      );
+    } finally {
+      await db.execute(
+        sql.raw(`
+          drop trigger if exists steal_provider_event_lock_on_invoice_insert_trigger on payment_requests;
+          drop function if exists steal_provider_event_lock_on_invoice_insert();
+        `),
+      );
+    }
+
+    const [eventAfterStaleCommit] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, row!.id));
+    const requests = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.providerInvoiceRef, event.providerInvoiceRef));
+    const grants = await db.select().from(memberships).where(eq(memberships.userId, user.id));
+    expect(eventAfterStaleCommit).toMatchObject({ status: "failed", lockedBy: null });
+    expect(requests).toHaveLength(0);
+    expect(grants).toHaveLength(0);
+  });
+
+  it("rolls back subscription reversal when the fenced commit fails", async () => {
+    const { user, subscription } = await seedSubscription();
+    const paid = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_reversal_rollback",
+      providerPaymentRef: "pi_reversal_rollback",
+    });
+    await db.transaction((tx) => applyPaidInvoice(tx, "stripe", paid));
+    providerMocks.resolveInvoiceByPaymentIntent.mockResolvedValue({
+      providerInvoiceRef: paid.providerInvoiceRef,
+      providerSubscriptionRef: subscription.providerSubscriptionRef,
+      localSubscriptionId: subscription.id,
+    });
+    await persistPaymentProviderEvent("stripe", {
+      type: "refunded",
+      paymentRef: paid.providerPaymentRef!,
+      providerEventId: "evt_reversal_rollback",
+      providerCreatedAt: new Date("2026-02-02T00:00:00.000Z"),
+    });
+    const [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_reversal_rollback"));
+    await db.execute(
+      sql.raw(`
+        create function steal_provider_event_lock_on_reversal_update() returns trigger as $$
+        begin
+          if new.reversal_event_id = 'evt_reversal_rollback' then
+            update payment_provider_events
+            set locked_by = 'worker-b'
+            where id = '${row!.id}';
+          end if;
+          return new;
+        end;
+        $$ language plpgsql;
+        create trigger steal_provider_event_lock_on_reversal_update_trigger
+        after update on payment_requests
+        for each row execute function steal_provider_event_lock_on_reversal_update();
+      `),
+    );
+    try {
+      await expect(dispatchPaymentProviderEvent(row!.id)).rejects.toThrow(
+        "Payment provider event fencing failed",
+      );
+    } finally {
+      await db.execute(
+        sql.raw(`
+          drop trigger if exists steal_provider_event_lock_on_reversal_update_trigger on payment_requests;
+          drop function if exists steal_provider_event_lock_on_reversal_update();
+        `),
+      );
+    }
+
+    const [request] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.providerInvoiceRef, paid.providerInvoiceRef));
+    const [membership] = await db.select().from(memberships).where(eq(memberships.userId, user.id));
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, row!.id));
+    expect(request).toMatchObject({ status: "approved", reversalEventId: null });
+    expect(membership).toMatchObject({ status: "active" });
+    expect(eventRow).toMatchObject({ status: "failed", lockedBy: null });
+  });
+
+  it("rolls back legacy one-time paid work when the fenced commit fails", async () => {
+    const { user, tier } = await seed();
+    const [request] = await db
+      .insert(paymentRequests)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        flow: "auto",
+        status: "pending_payment",
+        provider: "stripe",
+        providerRef: "cs_paid_rollback",
+        amountMinor: 900,
+        currency: "usd",
+        amountLabel: "$9",
+        durationDays: 31,
+      })
+      .returning();
+    await persistPaymentProviderEvent("stripe", {
+      type: "paid",
+      providerRef: "cs_paid_rollback",
+      paymentRef: "pi_paid_rollback",
+      requestId: request!.id,
+      providerEventId: "evt_paid_rollback",
+      amountMinor: 900,
+      currency: "usd",
+    });
+    const [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_paid_rollback"));
+    await db.execute(
+      sql.raw(`
+        create function steal_provider_event_lock_on_paid_update() returns trigger as $$
+        begin
+          if new.provider_event_id = 'evt_paid_rollback' then
+            update payment_provider_events
+            set locked_by = 'worker-b'
+            where id = '${row!.id}';
+          end if;
+          return new;
+        end;
+        $$ language plpgsql;
+        create trigger steal_provider_event_lock_on_paid_update_trigger
+        after update on payment_requests
+        for each row execute function steal_provider_event_lock_on_paid_update();
+      `),
+    );
+    try {
+      await expect(dispatchPaymentProviderEvent(row!.id)).rejects.toThrow(
+        "Payment provider event fencing failed",
+      );
+    } finally {
+      await db.execute(
+        sql.raw(`
+          drop trigger if exists steal_provider_event_lock_on_paid_update_trigger on payment_requests;
+          drop function if exists steal_provider_event_lock_on_paid_update();
+        `),
+      );
+    }
+
+    const [stored] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, request!.id));
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, row!.id));
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(0);
+    expect(stored).toMatchObject({
+      status: "pending_payment",
+      providerEventId: null,
+      providerPaymentRef: null,
+      grantedMembershipId: null,
+    });
+    expect(eventRow).toMatchObject({ status: "failed", lockedBy: null });
+  });
+
+  it("keeps resolution failures retryable with no business commit", async () => {
+    const { user, subscription } = await seedSubscription();
+    await persistPaymentProviderEvent("stripe", {
+      type: "refunded",
+      paymentRef: "pi_resolution_failure",
+      providerEventId: "evt_resolution_failure",
+      providerCreatedAt: new Date("2026-02-02T00:00:00.000Z"),
+    });
+    const [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_resolution_failure"));
+    providerMocks.resolveInvoiceByPaymentIntent.mockRejectedValue(new Error("stripe unavailable"));
+
+    await expect(dispatchPaymentProviderEvent(row!.id)).rejects.toThrow("stripe unavailable");
+
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, row!.id));
+    expect(eventRow).toMatchObject({ status: "failed", attempts: 1, lockedBy: null });
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(subscriptions).where(eq(subscriptions.id, subscription.id)),
+    ).resolves.toHaveLength(1);
   });
 
   it("recovers a missing pending subscription through its checkout and paid invoice", async () => {

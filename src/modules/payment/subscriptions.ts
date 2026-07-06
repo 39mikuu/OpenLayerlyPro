@@ -17,7 +17,7 @@ import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { recordAudit } from "@/modules/audit";
 import { grantMembershipForPeriod, revokeMembership } from "@/modules/membership";
-import { enqueueTask } from "@/modules/tasks";
+import { enqueueTask, PermanentTaskError } from "@/modules/tasks";
 
 import { confirmAutoPayment, expireAutoPayment, reverseAutoPayment } from ".";
 import {
@@ -40,6 +40,28 @@ type SubscriptionCheckoutInput = {
   successUrl: string;
   cancelUrl: string;
 };
+
+type ResolvedCheckoutByPaymentIntent = Awaited<
+  ReturnType<
+    NonNullable<Awaited<ReturnType<typeof getPaymentProvider>>>["resolveCheckoutByPaymentIntent"]
+  >
+>;
+
+type ResolvedProviderEvent =
+  | { event: Exclude<NormalizedPaymentEvent, ReversalPaymentEvent>; oneTimeCheckout: null }
+  | {
+      event: ReversalPaymentEvent & {
+        providerInvoiceRef?: string;
+        providerSubscriptionRef?: string | null;
+        localSubscriptionId?: string;
+      };
+      oneTimeCheckout: ResolvedCheckoutByPaymentIntent;
+    };
+
+type ClaimProviderEventResult =
+  | { kind: "claimed"; event: PaymentProviderEvent }
+  | { kind: "already-processed" }
+  | { kind: "dead"; reason: string };
 
 export async function getCurrentStripeSubscription(userId: string): Promise<{
   subscription: Subscription;
@@ -81,7 +103,8 @@ function providerEventObjectRef(event: NormalizedPaymentEvent): string | null {
 }
 
 function revivePaymentEvent(payload: unknown): NormalizedPaymentEvent {
-  const event = payload as NormalizedPaymentEvent;
+  const raw = payload as NormalizedPaymentEvent;
+  const event = { ...raw } as NormalizedPaymentEvent;
   if ("providerCreatedAt" in event && event.providerCreatedAt) {
     event.providerCreatedAt = new Date(event.providerCreatedAt);
   }
@@ -168,15 +191,17 @@ export async function persistPaymentProviderEvent(
 async function claimProviderEvent(
   eventRowId: string,
   lockToken: string,
-): Promise<PaymentProviderEvent | null> {
+): Promise<ClaimProviderEventResult> {
   return getDb().transaction(async (tx) => {
-    await tx
+    const finalAttemptReason =
+      "Payment provider event lease expired after the final execution attempt";
+    const [dead] = await tx
       .update(paymentProviderEvents)
       .set({
         status: "dead",
         lockedBy: null,
         leaseUntil: null,
-        error: "Payment provider event lease expired after the final execution attempt",
+        error: finalAttemptReason,
         updatedAt: sql`now()`,
       })
       .where(
@@ -186,7 +211,9 @@ async function claimProviderEvent(
           sql`${paymentProviderEvents.leaseUntil} < now()`,
           sql`${paymentProviderEvents.attempts} >= ${paymentProviderEvents.maxAttempts}`,
         ),
-      );
+      )
+      .returning({ id: paymentProviderEvents.id });
+    if (dead) return { kind: "dead", reason: finalAttemptReason };
 
     const [claimed] = await tx
       .update(paymentProviderEvents)
@@ -212,8 +239,53 @@ async function claimProviderEvent(
         ),
       )
       .returning();
-    return claimed ?? null;
+    if (claimed) return { kind: "claimed", event: claimed };
+
+    const [event] = await tx
+      .select({
+        status: paymentProviderEvents.status,
+        error: paymentProviderEvents.error,
+      })
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRowId))
+      .limit(1);
+    if (event?.status === "dead") {
+      return { kind: "dead", reason: event.error ?? "Payment provider event is dead" };
+    }
+    return { kind: "already-processed" };
   });
+}
+
+async function resolveProviderEvent(
+  provider: string,
+  event: NormalizedPaymentEvent,
+): Promise<ResolvedProviderEvent> {
+  if (event.type !== "refunded" && event.type !== "disputed") {
+    return { event, oneTimeCheckout: null };
+  }
+
+  if (event.providerInvoiceRef) return { event: { ...event }, oneTimeCheckout: null };
+
+  const providerClient = await getPaymentProvider(provider);
+  const invoice = await providerClient?.resolveInvoiceByPaymentIntent?.(event.paymentRef);
+  if (invoice?.providerInvoiceRef) {
+    return {
+      event: {
+        ...event,
+        providerInvoiceRef: invoice.providerInvoiceRef,
+        ...(invoice.providerSubscriptionRef
+          ? { providerSubscriptionRef: invoice.providerSubscriptionRef }
+          : {}),
+        ...(invoice.localSubscriptionId
+          ? { localSubscriptionId: invoice.localSubscriptionId }
+          : {}),
+      },
+      oneTimeCheckout: null,
+    };
+  }
+
+  const checkout = await providerClient?.resolveCheckoutByPaymentIntent?.(event.paymentRef);
+  return { event: { ...event }, oneTimeCheckout: checkout ?? null };
 }
 
 async function markProviderEventFailed(
@@ -251,23 +323,19 @@ async function markProviderEventFailed(
 
 export async function dispatchPaymentProviderEvent(eventRowId: string): Promise<void> {
   const lockToken = randomUUID();
-  const claimed = await claimProviderEvent(eventRowId, lockToken);
-  if (!claimed) return;
+  const claim = await claimProviderEvent(eventRowId, lockToken);
+  if (claim.kind === "already-processed") return;
+  if (claim.kind === "dead") throw new PermanentTaskError(claim.reason);
+  const claimed = claim.event;
 
   try {
-    const event = revivePaymentEvent(claimed.payloadJson);
-    const isLegacyOneTimeEvent = event.type === "paid" || event.type === "expired";
-
-    if (isLegacyOneTimeEvent) {
-      if (event.type === "paid") await confirmAutoPayment(claimed.provider, event);
-      else if (event.type === "expired") await expireAutoPayment(claimed.provider, event);
-      else await reverseAutoPayment(claimed.provider, event);
-    }
+    const resolved = await resolveProviderEvent(
+      claimed.provider,
+      revivePaymentEvent(claimed.payloadJson),
+    );
 
     await getDb().transaction(async (tx) => {
-      if (!isLegacyOneTimeEvent) {
-        await applyProviderEventInTransaction(tx, claimed.provider, event);
-      }
+      await applyProviderEventInTransaction(tx, claimed.provider, resolved);
       const [processed] = await tx
         .update(paymentProviderEvents)
         .set({
@@ -515,26 +583,12 @@ async function applySubscriptionReversal(
 export async function applySubscriptionReversalOrTombstone(
   tx: TxClient,
   provider: string,
-  event: ReversalPaymentEvent,
+  event: ReversalPaymentEvent & {
+    providerSubscriptionRef?: string | null;
+    localSubscriptionId?: string;
+  },
 ): Promise<void> {
-  if (!event.providerInvoiceRef) {
-    const providerClient = await getPaymentProvider(provider);
-    const resolved = await providerClient?.resolveInvoiceByPaymentIntent?.(event.paymentRef);
-    event.providerInvoiceRef = resolved?.providerInvoiceRef;
-    if (resolved?.localSubscriptionId) {
-      (event as ReversalPaymentEvent & { localSubscriptionId?: string }).localSubscriptionId =
-        resolved.localSubscriptionId;
-    }
-    if (resolved?.providerSubscriptionRef) {
-      (
-        event as ReversalPaymentEvent & { providerSubscriptionRef?: string }
-      ).providerSubscriptionRef = resolved.providerSubscriptionRef;
-    }
-  }
-  if (!event.providerInvoiceRef) {
-    await reverseAutoPayment(provider, event);
-    return;
-  }
+  if (!event.providerInvoiceRef) throw new ApiError(503, "subscriptionReversalInvoiceUnresolved");
 
   const [existing] = await tx
     .select()
@@ -563,11 +617,8 @@ export async function applySubscriptionReversalOrTombstone(
   }
   if (existing) return;
 
-  const localSubscriptionId = (event as ReversalPaymentEvent & { localSubscriptionId?: string })
-    .localSubscriptionId;
-  const providerSubscriptionRef = (
-    event as ReversalPaymentEvent & { providerSubscriptionRef?: string }
-  ).providerSubscriptionRef;
+  const localSubscriptionId = event.localSubscriptionId;
+  const providerSubscriptionRef = event.providerSubscriptionRef;
   const [subscriptionByLocalId] = localSubscriptionId
     ? await tx
         .select()
@@ -696,18 +747,23 @@ async function applySubscriptionCanceled(
 async function applyProviderEventInTransaction(
   tx: TxClient,
   provider: string,
-  event: NormalizedPaymentEvent,
+  resolved: ResolvedProviderEvent,
 ): Promise<void> {
+  const event = resolved.event;
   switch (event.type) {
     case "paid":
-      await confirmAutoPayment(provider, event);
+      await confirmAutoPayment(provider, event, tx);
       return;
     case "expired":
-      await expireAutoPayment(provider, event);
+      await expireAutoPayment(provider, event, tx);
       return;
     case "refunded":
     case "disputed":
-      await applySubscriptionReversalOrTombstone(tx, provider, event);
+      if (event.providerInvoiceRef) {
+        await applySubscriptionReversalOrTombstone(tx, provider, event);
+      } else {
+        await reverseAutoPayment(provider, event, tx, resolved.oneTimeCheckout);
+      }
       return;
     case "subscription_renewed":
       await applyPaidInvoice(tx, provider, event);
