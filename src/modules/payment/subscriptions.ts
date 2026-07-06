@@ -58,10 +58,12 @@ type ResolvedProviderEvent =
       oneTimeCheckout: ResolvedCheckoutByPaymentIntent;
     };
 
-type ClaimProviderEventResult =
+export type ClaimProviderEventResult =
   | { kind: "claimed"; event: PaymentProviderEvent }
-  | { kind: "already-processed" }
-  | { kind: "dead"; reason: string };
+  | { kind: "processed" }
+  | { kind: "busy"; leaseUntil: Date }
+  | { kind: "dead"; reason: string }
+  | { kind: "missing"; reason: string };
 
 export async function getCurrentStripeSubscription(userId: string): Promise<{
   subscription: Subscription;
@@ -244,15 +246,53 @@ async function claimProviderEvent(
     const [event] = await tx
       .select({
         status: paymentProviderEvents.status,
+        attempts: paymentProviderEvents.attempts,
+        maxAttempts: paymentProviderEvents.maxAttempts,
         error: paymentProviderEvents.error,
+        leaseUntil: paymentProviderEvents.leaseUntil,
+        busy: sql<boolean>`coalesce(${paymentProviderEvents.status} = 'processing' and ${paymentProviderEvents.leaseUntil} >= now(), false)`,
       })
       .from(paymentProviderEvents)
       .where(eq(paymentProviderEvents.id, eventRowId))
       .limit(1);
-    if (event?.status === "dead") {
+    if (!event) {
+      return { kind: "missing", reason: "Payment provider event is missing" };
+    }
+    if (event.status === "dead") {
       return { kind: "dead", reason: event.error ?? "Payment provider event is dead" };
     }
-    return { kind: "already-processed" };
+    if (event.status === "processed") return { kind: "processed" };
+    if (event.status === "processing" && event.leaseUntil && event.busy) {
+      return { kind: "busy", leaseUntil: event.leaseUntil };
+    }
+    if (
+      (event.status === "received" || event.status === "failed") &&
+      event.attempts >= event.maxAttempts
+    ) {
+      const exhaustedReason = "Payment provider event exhausted before claim";
+      const [exhausted] = await tx
+        .update(paymentProviderEvents)
+        .set({
+          status: "dead",
+          lockedBy: null,
+          leaseUntil: null,
+          error: exhaustedReason,
+          updatedAt: sql`now()`,
+        })
+        .where(
+          and(
+            eq(paymentProviderEvents.id, eventRowId),
+            inArray(paymentProviderEvents.status, ["received", "failed"]),
+            sql`${paymentProviderEvents.attempts} >= ${paymentProviderEvents.maxAttempts}`,
+          ),
+        )
+        .returning({ id: paymentProviderEvents.id });
+      if (exhausted) return { kind: "dead", reason: exhaustedReason };
+    }
+    return {
+      kind: "missing",
+      reason: `Payment provider event is ${event.status} and could not be claimed`,
+    };
   });
 }
 
@@ -324,8 +364,14 @@ async function markProviderEventFailed(
 export async function dispatchPaymentProviderEvent(eventRowId: string): Promise<void> {
   const lockToken = randomUUID();
   const claim = await claimProviderEvent(eventRowId, lockToken);
-  if (claim.kind === "already-processed") return;
+  if (claim.kind === "processed") return;
+  if (claim.kind === "busy") {
+    throw new ApiError(503, "paymentProviderEventBusy", {
+      leaseUntil: claim.leaseUntil.toISOString(),
+    });
+  }
   if (claim.kind === "dead") throw new PermanentTaskError(claim.reason);
+  if (claim.kind === "missing") throw new PermanentTaskError(claim.reason);
   const claimed = claim.event;
 
   try {
