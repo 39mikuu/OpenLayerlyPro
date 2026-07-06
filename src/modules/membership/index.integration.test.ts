@@ -234,6 +234,36 @@ describeWithDatabase("membership lifecycle integration", () => {
     expect(history).toHaveLength(5);
   });
 
+  it("falls back to the default limit when given a non-finite limit", async () => {
+    const { user, tier } = await seed();
+    const { membership } = await grantMembership({
+      userId: user.id,
+      tierId: tier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    await insertSyntheticMembershipAuditEvents(membership.id, 150);
+
+    const history = await listMembershipHistory(membership.id, NaN);
+
+    expect(history).toHaveLength(100);
+  });
+
+  it("truncates a fractional limit before clamping", async () => {
+    const { user, tier } = await seed();
+    const { membership } = await grantMembership({
+      userId: user.id,
+      tierId: tier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    await insertSyntheticMembershipAuditEvents(membership.id, 10);
+
+    const history = await listMembershipHistory(membership.id, 5.9);
+
+    expect(history).toHaveLength(5);
+  });
+
   it("rejects duplicate state commands and stale extension retries", async () => {
     const { admin, user, tier } = await seed();
     const { membership } = await grantMembership({

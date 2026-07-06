@@ -517,7 +517,7 @@ export async function listMembershipHistory(
   limit = 100,
   dbc: DbClient = getDb(),
 ): Promise<AuditEvent[]> {
-  const safeLimit = Math.min(Math.max(limit, 1), 200);
+  const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(Math.trunc(limit), 1), 200) : 100;
   return dbc
     .select()
     .from(auditEvents)
