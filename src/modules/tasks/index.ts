@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, asc, desc, eq, inArray, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, lte, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { paymentProviderEvents, type Task, tasks } from "@/db/schema";
@@ -33,7 +33,7 @@ export type MailTaskFailureCounts = {
   loginCodeEmail: { failed: number; dead: number };
 };
 
-type DeadLetterTask = Pick<Task, "id" | "kind" | "attempts" | "payloadJson">;
+export type DeadLetterTask = Pick<Task, "id" | "kind" | "attempts" | "payloadJson">;
 
 function isMailTaskKind(kind: string): boolean {
   return kind === "email" || kind === "auth.login_code_email";
@@ -69,25 +69,15 @@ function safeFailureMessage(kind: string, error: unknown): string {
 type ClaimOptions = { lockToken?: string; leaseMs?: number };
 type ClaimInternalOptions = ClaimOptions & { now?: Date };
 
-async function claimDueTasksInternal(
-  limit: number,
-  options: ClaimInternalOptions,
-): Promise<Task[]> {
-  if (!Number.isInteger(limit) || limit <= 0) return [];
-  const lockToken = options.lockToken ?? randomUUID();
-  const leaseMs = options.leaseMs ?? TASK_LEASE_MS;
+async function sweepExpiredFinalAttemptTasksInternal(options: {
+  now?: Date;
+}): Promise<DeadLetterTask[]> {
   const clock = options.now;
   const updatedAt = clock ?? sql<Date>`now()`;
-  const leaseUntil = clock
-    ? new Date(clock.getTime() + leaseMs)
-    : sql<Date>`now() + (${leaseMs} * interval '1 millisecond')`;
   const leaseExpired = clock ? lt(tasks.leaseUntil, clock) : sql`${tasks.leaseUntil} < now()`;
-  const dueToRun = clock ? lte(tasks.runAfter, clock) : sql`${tasks.runAfter} <= now()`;
 
-  const outcome = await getDb().transaction(async (tx) => {
-    // A crashed worker consumed its attempt when it claimed the task. Once the
-    // final lease expires, recovery must not create an execution over the limit.
-    const swept = await tx
+  const swept = await getDb().transaction(async (tx) =>
+    tx
       .update(tasks)
       .set({
         status: "dead",
@@ -109,24 +99,78 @@ async function claimDueTasksInternal(
         kind: tasks.kind,
         attempts: tasks.attempts,
         payloadJson: tasks.payloadJson,
-      });
+      }),
+  );
 
-    const due = await tx
-      .select({ id: tasks.id })
+  for (const task of swept) {
+    warnMailTaskDeadLettered(task, "lease_expired");
+  }
+  return swept;
+}
+
+export async function sweepExpiredFinalAttemptTasks(): Promise<DeadLetterTask[]> {
+  return sweepExpiredFinalAttemptTasksInternal({});
+}
+
+export async function sweepExpiredFinalAttemptTasksAt(now: Date): Promise<DeadLetterTask[]> {
+  return sweepExpiredFinalAttemptTasksInternal({ now });
+}
+
+async function claimDueTasksInternal(
+  limit: number,
+  options: ClaimInternalOptions,
+): Promise<Task[]> {
+  if (!Number.isInteger(limit) || limit <= 0) return [];
+  const lockToken = options.lockToken ?? randomUUID();
+  const leaseMs = options.leaseMs ?? TASK_LEASE_MS;
+  const clock = options.now;
+  const updatedAt = clock ?? sql<Date>`now()`;
+  const leaseUntil = clock
+    ? new Date(clock.getTime() + leaseMs)
+    : sql<Date>`now() + (${leaseMs} * interval '1 millisecond')`;
+  const leaseExpired = clock ? lt(tasks.leaseUntil, clock) : sql`${tasks.leaseUntil} < now()`;
+  const dueToRun = clock ? lte(tasks.runAfter, clock) : sql`${tasks.runAfter} <= now()`;
+
+  return getDb().transaction(async (tx) => {
+    const staleProcessing = await tx
+      .select({ id: tasks.id, runAfter: tasks.runAfter })
       .from(tasks)
       .where(
         and(
           sql`${tasks.attempts} < ${tasks.maxAttempts}`,
-          or(
-            and(inArray(tasks.status, ["pending", "failed"]), dueToRun),
-            and(eq(tasks.status, "processing"), leaseExpired),
-          ),
+          eq(tasks.status, "processing"),
+          leaseExpired,
         ),
       )
       .orderBy(asc(tasks.runAfter))
       .limit(limit)
       .for("update", { skipLocked: true });
-    if (due.length === 0) return { claimed: [] as Task[], swept };
+
+    const remaining = limit - staleProcessing.length;
+    const pendingOrFailed =
+      remaining > 0
+        ? await tx
+            .select({ id: tasks.id, runAfter: tasks.runAfter })
+            .from(tasks)
+            .where(
+              and(
+                sql`${tasks.attempts} < ${tasks.maxAttempts}`,
+                inArray(tasks.status, ["pending", "failed"]),
+                dueToRun,
+              ),
+            )
+            .orderBy(asc(tasks.runAfter))
+            .limit(remaining)
+            .for("update", { skipLocked: true })
+        : [];
+
+    // Branch priority is intentional: reclaim stale processing rows first,
+    // then fill any remaining budget with due pending/failed rows. run_after
+    // order is preserved within each branch, but not globally across branches.
+    const selectedIds = Array.from(
+      new Set([...staleProcessing, ...pendingOrFailed].map((row) => row.id)),
+    );
+    if (selectedIds.length === 0) return [];
 
     const claimed = await tx
       .update(tasks)
@@ -138,20 +182,12 @@ async function claimDueTasksInternal(
         leaseUntil,
         updatedAt,
       })
-      .where(
-        inArray(
-          tasks.id,
-          due.map((row) => row.id),
-        ),
-      )
+      .where(inArray(tasks.id, selectedIds))
       .returning();
-    return { claimed, swept };
-  });
 
-  for (const task of outcome.swept) {
-    warnMailTaskDeadLettered(task, "lease_expired");
-  }
-  return outcome.claimed;
+    const order = new Map(selectedIds.map((id, index) => [id, index]));
+    return claimed.sort((left, right) => order.get(left.id)! - order.get(right.id)!);
+  });
 }
 
 /** Production claim path. All due, lease and lock timestamps come from PostgreSQL. */
@@ -431,8 +467,9 @@ export async function retryTask(id: string): Promise<TaskAdminView> {
         if (!eventState) throw new ApiError(409, "taskNotRetryable");
 
         if (eventState.status === "processing") {
-          // Do not steal processing rows, even with expired final-attempt leases: the next claim
-          // safely terminalizes exhausted processing events, then a second admin retry can revive them.
+          // Do not steal processing rows, even with expired final-attempt leases: the next
+          // dispatch execution safely terminalizes exhausted processing events, then a
+          // second admin retry can revive them.
         }
 
         if (eventState.status === "failed" || eventState.status === "dead") {

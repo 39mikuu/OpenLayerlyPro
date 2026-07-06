@@ -1,0 +1,2 @@
+CREATE INDEX "tasks_claimable_idx" ON "tasks" USING btree ("run_after") WHERE "tasks"."status" in ('pending', 'failed');--> statement-breakpoint
+CREATE INDEX "tasks_stale_lease_idx" ON "tasks" USING btree ("lease_until") WHERE "tasks"."status" = 'processing';
