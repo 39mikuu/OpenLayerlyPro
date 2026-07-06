@@ -70,7 +70,7 @@
 - [ ] File-backed `SESSION_SECRET` is present in the checksummed archive, or the external value matches the recorded fingerprint.
 - [ ] `docker compose down -v` is prohibited unless the secrets volume has a tested recovery point.
 - [ ] An archive plus separately protected storage components has been restored in an isolated Compose project.
-- [ ] Before v1.0 release, verify the merged S7 checksums, legacy schema probing, storage inventory/convergence, file-safety backfill and task/payment-event neutralization in isolated local and S3 drills.
+- [ ] For your deployment, verify the S7 checksums, legacy schema probing, storage inventory/convergence, file-safety backfill and task/payment-event neutralization in isolated local and S3 restore drills.
 
 ## Current hardening status
 
