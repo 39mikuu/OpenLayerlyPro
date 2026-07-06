@@ -678,9 +678,9 @@ export async function createAutoCheckout(input: {
 export async function confirmAutoPayment(
   providerId: string,
   event: PaidPaymentEvent,
+  tx?: TxClient,
 ): Promise<void> {
-  const db = getDb();
-  await db.transaction(async (tx) => {
+  const apply = async (tx: TxClient) => {
     const [processed] = await tx
       .select({ id: paymentRequests.id })
       .from(paymentRequests)
@@ -785,15 +785,20 @@ export async function confirmAutoPayment(
       correlationId,
       causationId: paymentEvent.id,
     });
-  });
+  };
+  if (tx) {
+    await apply(tx);
+    return;
+  }
+  await getDb().transaction(apply);
 }
 
 export async function expireAutoPayment(
   providerId: string,
   event: ExpiredPaymentEvent,
+  tx?: TxClient,
 ): Promise<void> {
-  const db = getDb();
-  await db.transaction(async (tx) => {
+  const apply = async (tx: TxClient) => {
     const [processed] = await tx
       .select({ id: paymentRequests.id })
       .from(paymentRequests)
@@ -844,7 +849,12 @@ export async function expireAutoPayment(
       },
       correlationId,
     });
-  });
+  };
+  if (tx) {
+    await apply(tx);
+    return;
+  }
+  await getDb().transaction(apply);
 }
 
 export async function rejectPaymentRequest(
@@ -979,31 +989,47 @@ async function applyApprovedPaymentReversal(
 export async function reverseAutoPayment(
   providerId: string,
   event: ReversalPaymentEvent,
-): Promise<void> {
-  const db = getDb();
-  const [mappedPayment] = await db
-    .select({ id: paymentRequests.id })
-    .from(paymentRequests)
-    .where(
-      and(
-        eq(paymentRequests.provider, providerId),
-        eq(paymentRequests.providerPaymentRef, event.paymentRef),
-      ),
-    )
-    .limit(1);
-
-  let checkout: Awaited<
+  tx?: TxClient,
+  checkout?: Awaited<
     ReturnType<
       NonNullable<Awaited<ReturnType<typeof getPaymentProvider>>>["resolveCheckoutByPaymentIntent"]
     >
-  > = null;
-  if (!mappedPayment) {
-    const provider = await getPaymentProvider(providerId);
-    if (!provider) throw new ApiError(400, "paymentProviderUnsupported");
-    checkout = await provider.resolveCheckoutByPaymentIntent(event.paymentRef);
-  }
+  >,
+): Promise<void> {
+  const db = getDb();
+  const resolvedCheckout =
+    checkout === undefined && !tx
+      ? await (async () => {
+          const [mappedPayment] = await db
+            .select({ id: paymentRequests.id })
+            .from(paymentRequests)
+            .where(
+              and(
+                eq(paymentRequests.provider, providerId),
+                eq(paymentRequests.providerPaymentRef, event.paymentRef),
+              ),
+            )
+            .limit(1);
 
-  await db.transaction(async (tx) => {
+          if (mappedPayment) return null;
+          const provider = await getPaymentProvider(providerId);
+          if (!provider) throw new ApiError(400, "paymentProviderUnsupported");
+          return provider.resolveCheckoutByPaymentIntent(event.paymentRef);
+        })()
+      : (checkout ?? null);
+
+  const apply = async (tx: TxClient) => {
+    const [mappedPayment] = await tx
+      .select({ id: paymentRequests.id })
+      .from(paymentRequests)
+      .where(
+        and(
+          eq(paymentRequests.provider, providerId),
+          eq(paymentRequests.providerPaymentRef, event.paymentRef),
+        ),
+      )
+      .limit(1);
+
     const [processed] = await tx
       .select({ id: paymentRequests.id })
       .from(paymentRequests)
@@ -1028,14 +1054,14 @@ export async function reverseAutoPayment(
       .limit(1)
       .for("update");
 
-    if (!request && checkout) {
+    if (!request && resolvedCheckout) {
       [request] = await tx
         .select()
         .from(paymentRequests)
         .where(
           and(
             eq(paymentRequests.provider, providerId),
-            eq(paymentRequests.providerRef, checkout.providerRef),
+            eq(paymentRequests.providerRef, resolvedCheckout.providerRef),
           ),
         )
         .limit(1)
@@ -1043,7 +1069,7 @@ export async function reverseAutoPayment(
     }
 
     if (!request) {
-      if (mappedPayment || checkout?.owned) {
+      if (mappedPayment || resolvedCheckout?.owned) {
         logger.error("Payment reversal target unavailable", {
           providerId,
           category: "owned_target_missing",
@@ -1052,19 +1078,23 @@ export async function reverseAutoPayment(
       }
       logger.warn("Payment reversal ignored", {
         providerId,
-        category: checkout ? "external_checkout" : "checkout_not_found",
+        category: resolvedCheckout ? "external_checkout" : "checkout_not_found",
       });
       return;
     }
 
-    if (checkout?.owned && checkout.requestId && checkout.requestId !== request.id) {
+    if (
+      resolvedCheckout?.owned &&
+      resolvedCheckout.requestId &&
+      resolvedCheckout.requestId !== request.id
+    ) {
       throw new ApiError(409, "paymentReferenceMismatch");
     }
     if (
-      checkout &&
+      resolvedCheckout &&
       request.providerRef &&
       !request.providerRef.startsWith("creating:") &&
-      request.providerRef !== checkout.providerRef
+      request.providerRef !== resolvedCheckout.providerRef
     ) {
       throw new ApiError(409, "paymentReferenceMismatch");
     }
@@ -1139,7 +1169,13 @@ export async function reverseAutoPayment(
       auditAfterExtra,
       notifyMember: true,
     });
-  });
+  };
+
+  if (tx) {
+    await apply(tx);
+    return;
+  }
+  await db.transaction(apply);
 }
 
 export async function reversePaymentApproval(
