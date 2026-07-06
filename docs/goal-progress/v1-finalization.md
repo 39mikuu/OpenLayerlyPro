@@ -1,5 +1,10 @@
 # v1.0 Finalization Progress
 
+> **Historical snapshot.** This progress log ends at the pre-release stage; the
+> `v1.0.0` tag has since been created and the GitHub Release published after
+> the #88 acceptance checklist passed on the exact release build. Nothing
+> below is a current gate or instruction.
+
 Last updated: 2026-07-05 (Asia/Singapore)
 
 ## Current stage
