@@ -90,6 +90,7 @@ describe("translation config", () => {
     ["a file scheme", "file:///etc/passwd"],
     ["embedded userinfo", "https://user:pass@api.example.com/v1"],
     ["a fragment", "https://api.example.com/v1#frag"],
+    ["a query string", "https://api.example.com/v1?tenant=abc"],
   ])("rejects an endpoint with %s", async (_label, endpoint) => {
     mockedGet.mockResolvedValue(null);
     const { saveTranslationConfig } = await import("./translation");
@@ -143,6 +144,31 @@ describe("translation config", () => {
 
     await expect(getTranslationConfig()).resolves.toMatchObject({ endpoint: "not a url" });
     await expect(saveTranslationConfig({ enabled: true })).resolves.toBeUndefined();
+  });
+
+  it("accepts the admin form resubmitting an unchanged legacy endpoint alongside other edits", async () => {
+    // The real form always sends the endpoint field, even when the admin only
+    // toggled another switch — an unchanged value must not fail validation.
+    mockedGet.mockResolvedValue({ endpoint: "not a url", enabled: false });
+    const { saveTranslationConfig } = await import("./translation");
+
+    await saveTranslationConfig({ endpoint: "not a url", enabled: true });
+
+    expect(mockedSet).toHaveBeenCalledWith(
+      "translation",
+      expect.objectContaining({ endpoint: "not a url", enabled: true }),
+    );
+  });
+
+  it("validates strictly when a legacy endpoint is actually edited", async () => {
+    mockedGet.mockResolvedValue({ endpoint: "not a url" });
+    const { saveTranslationConfig } = await import("./translation");
+
+    await expect(saveTranslationConfig({ endpoint: "still not a url" })).rejects.toMatchObject({
+      status: 400,
+      code: "translationEndpointInvalid",
+    });
+    expect(mockedSet).not.toHaveBeenCalled();
   });
 
   it("clears the database override", async () => {

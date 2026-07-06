@@ -32,7 +32,14 @@ export function createOpenAiCompatibleProvider(
         throw new ApiError(400, "translationConfigIncomplete");
       }
 
-      const response = await fetcher(`${config.endpoint}/chat/completions`, {
+      let requestUrl: URL;
+      try {
+        requestUrl = new URL(`${config.endpoint.replace(/\/+$/, "")}/chat/completions`);
+      } catch {
+        throw new ApiError(400, "translationEndpointInvalid");
+      }
+
+      const response = await fetcher(requestUrl.toString(), {
         method: "POST",
         // The Bearer key must never follow a redirect off the configured host.
         redirect: "error",

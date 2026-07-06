@@ -63,7 +63,9 @@ export function validateTranslationEndpoint(value: string | undefined): string |
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw new ApiError(400, "translationEndpointInvalid");
   }
-  if (url.username || url.password || url.hash) {
+  if (url.username || url.password || url.hash || url.search) {
+    // The endpoint is a base URL that gets /chat/completions appended; a
+    // query string would swallow the appended path into its last value.
     throw new ApiError(400, "translationEndpointInvalid");
   }
   if (url.protocol === "http:" && !LOOPBACK_OR_PRIVATE_HOST.test(url.hostname)) {
@@ -115,6 +117,23 @@ export async function getTranslationAdminView(): Promise<TranslationAdminView> {
   };
 }
 
+// The admin form always resubmits the endpoint field, even when only other
+// switches changed. A resubmitted value identical to what is already stored
+// counts as unchanged and is preserved as-is (so a pre-validation legacy value
+// can't block unrelated settings); strict validation runs only on real edits.
+function resolveEndpointForSave(
+  input: string | undefined,
+  existing: string | undefined,
+): string | undefined {
+  if (input === undefined) return normalizeEndpoint(existing);
+  const normalizedInput = normalizeEndpoint(input);
+  const normalizedExisting = normalizeEndpoint(existing);
+  if (normalizedInput !== undefined && normalizedInput === normalizedExisting) {
+    return normalizedExisting;
+  }
+  return validateTranslationEndpoint(input);
+}
+
 export async function saveTranslationConfig(input: TranslationConfigInput): Promise<void> {
   const existing = (await getStoredGroup<TranslationConfigInput>(TRANSLATION_GROUP)) ?? {};
   const next: TranslationConfigInput = {
@@ -122,10 +141,7 @@ export async function saveTranslationConfig(input: TranslationConfigInput): Prom
     provider: input.provider ?? existing.provider ?? "openai-compatible",
     apiKey: nonEmpty(input.apiKey) ?? nonEmpty(existing.apiKey),
     model: preserveOrNormalize(input.model, existing.model),
-    endpoint:
-      input.endpoint === undefined
-        ? normalizeEndpoint(existing.endpoint)
-        : validateTranslationEndpoint(input.endpoint),
+    endpoint: resolveEndpointForSave(input.endpoint, existing.endpoint),
     monthlyCharLimit:
       input.monthlyCharLimit === undefined ? existing.monthlyCharLimit : input.monthlyCharLimit,
     directPublishEnabled: input.directPublishEnabled ?? existing.directPublishEnabled ?? false,

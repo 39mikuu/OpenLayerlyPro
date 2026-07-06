@@ -56,6 +56,23 @@ describe("OpenAI-compatible translation provider", () => {
     );
   });
 
+  it("refuses to call a legacy endpoint that is not a valid URL", async () => {
+    const fetcher = vi.fn() as unknown as typeof fetch;
+    const provider = createOpenAiCompatibleProvider(
+      {
+        apiKey: "provider-secret",
+        endpoint: "not a url",
+        model: "translation-model",
+      },
+      fetcher,
+    );
+
+    await expect(
+      provider.translate({ text: "正文", sourceLocale: "zh", targetLocale: "ja" }),
+    ).rejects.toMatchObject({ status: 400, code: "translationEndpointInvalid" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("does not leak the api key when the provider fails", async () => {
     const fetcher = vi.fn(async () => ({
       ok: false,
