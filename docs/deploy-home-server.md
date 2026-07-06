@@ -84,4 +84,4 @@ entrypoint 会准备目录与配置加密密钥、运行 forward migration，然
 7. 预览并执行 `files-backfill.mjs --apply`；
 8. 只有所有步骤成功后才启动新 app，并验证 `/api/ready`、登录、付款和样本文件。
 
-v1.0 的 S7 #87 还会把 archive 校验、旧 schema probe、恢复任务中和、DB-aware storage inventory 和 DB↔存储收敛加入正式恢复流程；发布验收以 [v1.0 清单](release-v1.0-checklist.md)为准。
+S7 #87 已把 archive 校验、旧 schema probe、恢复任务中和、DB-aware storage inventory 和 DB↔存储收敛纳入正式恢复流程（见[备份与恢复](deployment/backup-restore.md)）；真实环境的恢复演练属于 #88 发布验收，以 [v1.0 清单](release-v1.0-checklist.md)为准。
