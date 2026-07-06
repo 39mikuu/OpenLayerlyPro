@@ -15,6 +15,7 @@ import {
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
+import { logger } from "@/lib/logger";
 import { recordAudit } from "@/modules/audit";
 import { grantMembershipForPeriod, revokeMembership } from "@/modules/membership";
 import { enqueueTask, PermanentTaskError } from "@/modules/tasks";
@@ -46,6 +47,11 @@ type ResolvedCheckoutByPaymentIntent = Awaited<
     NonNullable<Awaited<ReturnType<typeof getPaymentProvider>>>["resolveCheckoutByPaymentIntent"]
   >
 >;
+
+type SubscriptionOwnershipResolution =
+  | { kind: "owned-resolved"; subscriptionId: string }
+  | { kind: "owned-unresolved"; reason: string }
+  | { kind: "foreign"; reason: string };
 
 type ResolvedProviderEvent =
   | { event: Exclude<NormalizedPaymentEvent, ReversalPaymentEvent>; oneTimeCheckout: null }
@@ -296,10 +302,177 @@ async function claimProviderEvent(
   });
 }
 
+function isUuid(value: string | undefined): value is string {
+  return Boolean(
+    value?.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
+  );
+}
+
+type OwnedSubscriptionLookup =
+  | { kind: "resolved"; subscriptionId: string }
+  | { kind: "unresolved"; reason: string }
+  | { kind: "not-found" };
+
+type SubscriptionOwnershipCandidate = Pick<Subscription, "id" | "providerSubscriptionRef">;
+
+function resolveOwnedSubscriptionCandidates(input: {
+  localSubscriptionId?: string;
+  providerSubscriptionRef?: string | null;
+  idHit?: SubscriptionOwnershipCandidate;
+  refHit?: SubscriptionOwnershipCandidate;
+}): OwnedSubscriptionLookup {
+  const { providerSubscriptionRef, idHit, refHit } = input;
+
+  if (idHit && refHit && idHit.id !== refHit.id) {
+    return {
+      kind: "unresolved",
+      reason: "subscription ownership evidence points to different rows",
+    };
+  }
+
+  if (
+    idHit?.providerSubscriptionRef &&
+    providerSubscriptionRef &&
+    idHit.providerSubscriptionRef !== providerSubscriptionRef
+  ) {
+    return { kind: "unresolved", reason: "subscription metadata id conflicts with provider ref" };
+  }
+
+  if (idHit) return { kind: "resolved", subscriptionId: idHit.id };
+  if (refHit) return { kind: "resolved", subscriptionId: refHit.id };
+  return { kind: "not-found" };
+}
+
+async function findOwnedSubscription(input: {
+  provider: string;
+  localSubscriptionId?: string;
+  providerSubscriptionRef?: string | null;
+}): Promise<OwnedSubscriptionLookup> {
+  const [idHit, refHit] = await Promise.all([
+    input.localSubscriptionId
+      ? getDb()
+          .select({
+            id: subscriptions.id,
+            providerSubscriptionRef: subscriptions.providerSubscriptionRef,
+          })
+          .from(subscriptions)
+          .where(eq(subscriptions.id, input.localSubscriptionId))
+          .limit(1)
+          .then((rows) => rows[0])
+      : Promise.resolve(undefined),
+    input.providerSubscriptionRef
+      ? getDb()
+          .select({
+            id: subscriptions.id,
+            providerSubscriptionRef: subscriptions.providerSubscriptionRef,
+          })
+          .from(subscriptions)
+          .where(
+            and(
+              eq(subscriptions.provider, input.provider),
+              eq(subscriptions.providerSubscriptionRef, input.providerSubscriptionRef),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0])
+      : Promise.resolve(undefined),
+  ]);
+
+  return resolveOwnedSubscriptionCandidates({
+    localSubscriptionId: input.localSubscriptionId,
+    providerSubscriptionRef: input.providerSubscriptionRef,
+    idHit,
+    refHit,
+  });
+}
+
+async function resolveSubscriptionOwnership(
+  provider: string,
+  event: SubscriptionRenewedPaymentEvent,
+): Promise<SubscriptionOwnershipResolution> {
+  const localSubscriptionId = isUuid(event.localSubscriptionId)
+    ? event.localSubscriptionId
+    : undefined;
+  const providerSubscriptionRef = event.providerSubscriptionRef;
+  const localMatch = await findOwnedSubscription({
+    provider,
+    localSubscriptionId,
+    providerSubscriptionRef,
+  });
+  if (localMatch.kind === "resolved") {
+    return { kind: "owned-resolved", subscriptionId: localMatch.subscriptionId };
+  }
+  if (localMatch.kind === "unresolved") {
+    return { kind: "owned-unresolved", reason: localMatch.reason };
+  }
+  if (localSubscriptionId) {
+    return { kind: "owned-unresolved", reason: "local subscription metadata is not yet local" };
+  }
+
+  const providerClient = await getPaymentProvider(provider);
+  if (!providerClient?.retrieveSubscription) {
+    return { kind: "owned-unresolved", reason: "subscription ownership cannot be retrieved" };
+  }
+
+  let remote: Awaited<ReturnType<NonNullable<typeof providerClient.retrieveSubscription>>>;
+  try {
+    remote = await providerClient.retrieveSubscription(providerSubscriptionRef);
+  } catch {
+    return { kind: "owned-unresolved", reason: "subscription ownership retrieve failed" };
+  }
+
+  const remoteMetadata = remote.metadata ?? {};
+  const remoteSubscriptionId = isUuid(remoteMetadata.subscriptionId)
+    ? remoteMetadata.subscriptionId
+    : undefined;
+  const remoteMatch = await findOwnedSubscription({
+    provider,
+    localSubscriptionId: remoteSubscriptionId,
+    providerSubscriptionRef: remote.providerSubscriptionRef,
+  });
+  if (remoteMatch.kind === "resolved") {
+    return { kind: "owned-resolved", subscriptionId: remoteMatch.subscriptionId };
+  }
+  if (remoteMatch.kind === "unresolved") {
+    return { kind: "owned-unresolved", reason: remoteMatch.reason };
+  }
+  if (remoteSubscriptionId) {
+    return { kind: "owned-unresolved", reason: "owned subscription is not yet local" };
+  }
+  if (remoteMetadata.app === "openlayerlypro") {
+    return { kind: "owned-unresolved", reason: "app-owned subscription is not yet local" };
+  }
+  if (event.appOwned) {
+    return { kind: "owned-unresolved", reason: "app-owned invoice subscription is not yet local" };
+  }
+  return { kind: "foreign", reason: "subscription has no local ownership metadata" };
+}
+
 async function resolveProviderEvent(
   provider: string,
   event: NormalizedPaymentEvent,
 ): Promise<ResolvedProviderEvent> {
+  if (event.type === "subscription_renewed") {
+    const ownership = await resolveSubscriptionOwnership(provider, event);
+    if (ownership.kind === "foreign") {
+      return {
+        event: {
+          type: "ignored",
+          providerEventId: event.providerEventId,
+          providerCreatedAt: event.providerCreatedAt,
+        },
+        oneTimeCheckout: null,
+      };
+    }
+    if (ownership.kind === "owned-unresolved") {
+      throw new ApiError(503, "subscriptionUnresolved");
+    }
+    return {
+      event: { ...event, localSubscriptionId: ownership.subscriptionId },
+      oneTimeCheckout: null,
+    };
+  }
+
   if (event.type !== "refunded" && event.type !== "disputed") {
     return { event, oneTimeCheckout: null };
   }
@@ -326,6 +499,47 @@ async function resolveProviderEvent(
 
   const checkout = await providerClient?.resolveCheckoutByPaymentIntent?.(event.paymentRef);
   return { event: { ...event }, oneTimeCheckout: checkout ?? null };
+}
+
+async function expirePendingSubscriptionWithProviderFence(
+  subscription: Pick<Subscription, "id">,
+  observedAt: Date | null,
+  source: "checkout-retry" | "reconcile",
+): Promise<boolean> {
+  if (!observedAt) {
+    logger.warn("Subscription checkout expiry skipped without provider observation timestamp", {
+      subscriptionId: subscription.id,
+      source,
+    });
+    return false;
+  }
+
+  // Checkout-expiry observations are fenced to the end of the provider second
+  // (S.999) and use a strict `< observedAt` guard, but only while the row is still
+  // pending. A real webhook that commits first and moves the row out of pending
+  // wins through the status CAS; if the expiry observation commits first, its
+  // S.999 fence blocks same-second S.000 webhooks until a later provider second
+  // advances the row.
+  const [updated] = await getDb()
+    .update(subscriptions)
+    .set({
+      status: "expired",
+      statusEventAt: observedAt,
+      updatedAt: sql`now()`,
+      version: sql`${subscriptions.version} + 1`,
+    })
+    .where(
+      and(
+        eq(subscriptions.id, subscription.id),
+        eq(subscriptions.status, "pending"),
+        or(
+          sql`${subscriptions.statusEventAt} is null`,
+          lt(subscriptions.statusEventAt, observedAt),
+        ),
+      ),
+    )
+    .returning({ id: subscriptions.id });
+  return Boolean(updated);
 }
 
 async function markProviderEventFailed(
@@ -410,20 +624,39 @@ export async function dispatchPaymentProviderEvent(eventRowId: string): Promise<
 
 async function getSubscriptionForPaidInvoice(
   tx: TxClient,
+  provider: string,
   event: SubscriptionRenewedPaymentEvent,
 ): Promise<Subscription> {
-  const conditions = [];
-  if (event.localSubscriptionId) conditions.push(eq(subscriptions.id, event.localSubscriptionId));
-  conditions.push(eq(subscriptions.providerSubscriptionRef, event.providerSubscriptionRef));
-
-  const [subscription] = await tx
+  const [idHit] = event.localSubscriptionId
+    ? await tx
+        .select()
+        .from(subscriptions)
+        .where(eq(subscriptions.id, event.localSubscriptionId))
+        .limit(1)
+        .for("update")
+    : [];
+  const [refHit] = await tx
     .select()
     .from(subscriptions)
-    .where(or(...conditions))
+    .where(
+      and(
+        eq(subscriptions.provider, provider),
+        eq(subscriptions.providerSubscriptionRef, event.providerSubscriptionRef),
+      ),
+    )
     .limit(1)
     .for("update");
-  if (!subscription) throw new ApiError(503, "subscriptionUnresolved");
-  return subscription;
+
+  const lookup = resolveOwnedSubscriptionCandidates({
+    localSubscriptionId: event.localSubscriptionId,
+    providerSubscriptionRef: event.providerSubscriptionRef,
+    idHit,
+    refHit,
+  });
+  if (lookup.kind !== "resolved") throw new ApiError(503, "subscriptionUnresolved");
+  if (idHit?.id === lookup.subscriptionId) return idHit;
+  if (refHit?.id === lookup.subscriptionId) return refHit;
+  throw new ApiError(503, "subscriptionUnresolved");
 }
 
 async function updateSubscriptionFromPaidInvoice(
@@ -470,7 +703,7 @@ export async function applyPaidInvoice(
   provider: string,
   event: SubscriptionRenewedPaymentEvent,
 ): Promise<PaymentRequest | null> {
-  const subscription = await getSubscriptionForPaidInvoice(tx, event);
+  const subscription = await getSubscriptionForPaidInvoice(tx, provider, event);
   const invoiceLine = selectInvoiceLineForSubscription(subscription, event);
   if (
     subscription.expectedAmountMinor !== invoiceLine.amountMinor ||
@@ -710,16 +943,57 @@ export async function applySubscriptionReversalOrTombstone(
     });
 }
 
+async function getSubscriptionForStatusEvent(
+  tx: TxClient,
+  provider: string,
+  input: {
+    localSubscriptionId?: string;
+    providerSubscriptionRef?: string | null;
+  },
+): Promise<Subscription | null> {
+  const [idHit] = input.localSubscriptionId
+    ? await tx
+        .select()
+        .from(subscriptions)
+        .where(eq(subscriptions.id, input.localSubscriptionId))
+        .limit(1)
+        .for("update")
+    : [];
+  const [refHit] = input.providerSubscriptionRef
+    ? await tx
+        .select()
+        .from(subscriptions)
+        .where(
+          and(
+            eq(subscriptions.provider, provider),
+            eq(subscriptions.providerSubscriptionRef, input.providerSubscriptionRef),
+          ),
+        )
+        .limit(1)
+        .for("update")
+    : [];
+
+  const lookup = resolveOwnedSubscriptionCandidates({
+    localSubscriptionId: input.localSubscriptionId,
+    providerSubscriptionRef: input.providerSubscriptionRef,
+    idHit,
+    refHit,
+  });
+  if (lookup.kind !== "resolved") return null;
+  if (idHit?.id === lookup.subscriptionId) return idHit;
+  if (refHit?.id === lookup.subscriptionId) return refHit;
+  return null;
+}
+
 async function applySubscriptionActivated(
   tx: TxClient,
   provider: string,
   event: Extract<NormalizedPaymentEvent, { type: "subscription_activated" }>,
 ): Promise<void> {
-  const eventAt = event.providerCreatedAt;
-  const conditions = [];
-  if (event.localSubscriptionId) conditions.push(eq(subscriptions.id, event.localSubscriptionId));
-  conditions.push(eq(subscriptions.providerSubscriptionRef, event.providerSubscriptionRef));
+  const subscription = await getSubscriptionForStatusEvent(tx, provider, event);
+  if (!subscription) return;
 
+  const eventAt = event.providerCreatedAt;
   await tx
     .update(subscriptions)
     .set({
@@ -735,7 +1009,7 @@ async function applySubscriptionActivated(
     })
     .where(
       and(
-        or(...conditions),
+        eq(subscriptions.id, subscription.id),
         or(sql`${subscriptions.statusEventAt} is null`, lte(subscriptions.statusEventAt, eventAt)),
       ),
     );
@@ -743,15 +1017,14 @@ async function applySubscriptionActivated(
 
 async function applySubscriptionPaymentFailed(
   tx: TxClient,
+  provider: string,
   event: SubscriptionPaymentFailedEvent,
 ): Promise<void> {
   if (!event.localSubscriptionId && !event.providerSubscriptionRef) return;
+  const subscription = await getSubscriptionForStatusEvent(tx, provider, event);
+  if (!subscription) return;
+
   const eventAt = event.providerCreatedAt;
-  const conditions = [];
-  if (event.localSubscriptionId) conditions.push(eq(subscriptions.id, event.localSubscriptionId));
-  if (event.providerSubscriptionRef) {
-    conditions.push(eq(subscriptions.providerSubscriptionRef, event.providerSubscriptionRef));
-  }
   await tx
     .update(subscriptions)
     .set({
@@ -762,7 +1035,7 @@ async function applySubscriptionPaymentFailed(
     })
     .where(
       and(
-        or(...conditions),
+        eq(subscriptions.id, subscription.id),
         or(sql`${subscriptions.statusEventAt} is null`, lte(subscriptions.statusEventAt, eventAt)),
       ),
     );
@@ -770,8 +1043,12 @@ async function applySubscriptionPaymentFailed(
 
 async function applySubscriptionCanceled(
   tx: TxClient,
+  provider: string,
   event: SubscriptionCanceledPaymentEvent,
 ): Promise<void> {
+  const subscription = await getSubscriptionForStatusEvent(tx, provider, event);
+  if (!subscription) return;
+
   const eventAt = event.providerCreatedAt;
   await tx
     .update(subscriptions)
@@ -784,7 +1061,7 @@ async function applySubscriptionCanceled(
     })
     .where(
       and(
-        eq(subscriptions.providerSubscriptionRef, event.providerSubscriptionRef),
+        eq(subscriptions.id, subscription.id),
         or(sql`${subscriptions.statusEventAt} is null`, lte(subscriptions.statusEventAt, eventAt)),
       ),
     );
@@ -818,10 +1095,10 @@ async function applyProviderEventInTransaction(
       await applySubscriptionActivated(tx, provider, event);
       return;
     case "subscription_payment_failed":
-      await applySubscriptionPaymentFailed(tx, event);
+      await applySubscriptionPaymentFailed(tx, provider, event);
       return;
     case "subscription_canceled":
-      await applySubscriptionCanceled(tx, event);
+      await applySubscriptionCanceled(tx, provider, event);
       return;
     case "ignored":
       return;
@@ -942,10 +1219,12 @@ export async function createSubscriptionCheckout(
     if (checkout.status === "open" && checkout.redirectUrl)
       return { redirectUrl: checkout.redirectUrl };
     if (checkout.providerSubscriptionRef) throw new ApiError(400, "subscriptionAlreadyActive");
-    await db
-      .update(subscriptions)
-      .set({ status: "expired", updatedAt: new Date() })
-      .where(and(eq(subscriptions.id, claim.subscription.id), eq(subscriptions.status, "pending")));
+    const expired = await expirePendingSubscriptionWithProviderFence(
+      claim.subscription,
+      checkout.observedAt,
+      "checkout-retry",
+    );
+    if (!expired) throw new ApiError(503, "subscriptionCheckoutExpiryUnobserved");
     return createSubscriptionCheckout(input);
   }
 
@@ -1047,10 +1326,11 @@ export async function reconcileSubscriptions(): Promise<number> {
         subscription.providerCheckoutRef,
       );
       if (checkout.status === "expired") {
-        await getDb()
-          .update(subscriptions)
-          .set({ status: "expired", updatedAt: new Date() })
-          .where(and(eq(subscriptions.id, subscription.id), eq(subscriptions.status, "pending")));
+        await expirePendingSubscriptionWithProviderFence(
+          subscription,
+          checkout.observedAt,
+          "reconcile",
+        );
         processed += 1;
         continue;
       }
@@ -1074,25 +1354,12 @@ export async function reconcileSubscriptions(): Promise<number> {
     // `getPaymentProvider()` to the END of the observed second (S.999, see
     // `providerObservationFence`).
     //
-    // The guard is a STRICT `<` evaluated against the live row at update time, which
-    // both orders the external-I/O race and defines the tie policy without a version
-    // CAS:
-    //   - a webhook that committed from a LATER provider second ((S+1).000 > S.999)
-    //     leaves statusEventAt not-strictly-below observedAt, so reconcile skips and
-    //     the newer event wins;
-    //   - a webhook that committed from the observed second or earlier (at most
-    //     S.000, strictly below the S.999 fence) is superseded, so reconcile wins.
-    // Provider ordering therefore governs, not commit timing. Within one provider
-    // second the OBSERVATION wins, by construction: a same-second webhook's S.000
-    // can neither survive this strict-`<` overwrite nor pass its own
-    // `statusEventAt <= providerCreatedAt` gate against an S.999 fence; only a
-    // webhook from the next provider second exceeds the fence. A genuinely later
-    // same-second change converges on a subsequent reconcile observation from a
-    // later provider second (an observation of the SAME second re-normalizes to
-    // the identical S.999 fence, which the strict `<` skips). Webhook-vs-
-    // webhook ordering is unaffected (whole-second timestamps, `<=` gate — equal
-    // seconds reapply); only reconcile fences carry the fractional end-of-second
-    // marker.
+    // The guard is a STRICT `<` evaluated against the live row at update time, but
+    // it is subordinate to each state-machine transition. Webhooks that move a row
+    // out of a guarded state first can make later observations ineligible through
+    // the status CAS. If an observation commits first, its S.999 fence blocks
+    // same-second S.000 webhooks; only a later provider second can cross it. The
+    // timestamp predicate does not make observations unconditional.
     //
     // Fail closed if the provider gives no observation timestamp: skip the
     // status/fence write rather than fall back to local time (which would mix clock
@@ -1107,6 +1374,7 @@ export async function reconcileSubscriptions(): Promise<number> {
           cancelAtPeriodEnd: remote.cancelAtPeriodEnd,
           statusEventAt: remote.observedAt,
           updatedAt: new Date(),
+          version: sql`${subscriptions.version} + 1`,
         })
         .where(
           and(
