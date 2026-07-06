@@ -6,6 +6,7 @@ import {
   markTaskFailed,
   markTaskSucceeded,
   renewTaskLease,
+  sweepExpiredFinalAttemptTasks,
   TASK_BATCH_SIZE,
   TASK_LEASE_MS,
   TASK_POLL_INTERVAL_MS,
@@ -21,6 +22,7 @@ type DispatcherDependencies = {
   dead: typeof markTaskDead;
   defer: typeof deferTask;
   renew: typeof renewTaskLease;
+  sweep: typeof sweepExpiredFinalAttemptTasks;
 };
 
 const defaultDependencies: DispatcherDependencies = {
@@ -31,6 +33,7 @@ const defaultDependencies: DispatcherDependencies = {
   dead: markTaskDead,
   defer: deferTask,
   renew: renewTaskLease,
+  sweep: sweepExpiredFinalAttemptTasks,
 };
 
 export async function dispatchClaimedTask(
@@ -87,6 +90,8 @@ export async function dispatchClaimedTask(
 export async function dispatchTaskBatch(
   dependencies: DispatcherDependencies = defaultDependencies,
 ): Promise<number> {
+  await dependencies.sweep();
+
   let processed = 0;
   for (; processed < TASK_BATCH_SIZE; processed += 1) {
     const [task] = await dependencies.claim(1);

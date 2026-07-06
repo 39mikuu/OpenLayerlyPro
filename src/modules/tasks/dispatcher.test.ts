@@ -39,6 +39,7 @@ describe("task dispatcher", () => {
       dead: vi.fn(),
       defer: vi.fn(),
       renew: vi.fn().mockResolvedValue(true),
+      sweep: vi.fn().mockResolvedValue([]),
     };
   }
 
@@ -54,6 +55,7 @@ describe("task dispatcher", () => {
     deps.succeed.mockResolvedValue(true);
 
     await expect(dispatchTaskBatch(deps)).resolves.toBe(2);
+    expect(deps.sweep).toHaveBeenCalledTimes(1);
     expect(deps.claim).toHaveBeenCalledTimes(3);
     expect(deps.claim).toHaveBeenNthCalledWith(1, 1);
     expect(deps.claim).toHaveBeenNthCalledWith(2, 1);
@@ -69,6 +71,34 @@ describe("task dispatcher", () => {
       second.lockedBy,
       "SMTP not configured",
     );
+  });
+
+  it("sweeps expired final-attempt leases once before the first claim", async () => {
+    const first = task("11111111-1111-4111-8111-111111111111");
+    const second = task("22222222-2222-4222-8222-222222222222");
+    const calls: string[] = [];
+    const deps = dependencies();
+    deps.sweep.mockImplementation(async () => {
+      calls.push("sweep");
+      return [];
+    });
+    deps.claim.mockImplementation(async () => {
+      calls.push("claim");
+      if (deps.claim.mock.calls.length === 1) return [first];
+      if (deps.claim.mock.calls.length === 2) return [second];
+      return [];
+    });
+    deps.run.mockImplementation(async (claimed: Task) => {
+      calls.push("run:" + claimed.id);
+      return {};
+    });
+    deps.succeed.mockResolvedValue(true);
+
+    await expect(dispatchTaskBatch(deps)).resolves.toBe(2);
+
+    expect(deps.sweep).toHaveBeenCalledTimes(1);
+    expect(deps.claim).toHaveBeenCalledTimes(3);
+    expect(calls.slice(0, 2)).toEqual(["sweep", "claim"]);
   });
 
   it("processes at most the configured batch size", async () => {

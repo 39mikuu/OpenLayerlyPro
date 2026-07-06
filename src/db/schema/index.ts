@@ -568,6 +568,12 @@ export const tasks = pgTable(
   (table) => [
     uniqueIndex("tasks_dedupe_key_unique").on(table.dedupeKey),
     index("tasks_claim_idx").on(table.status, table.runAfter),
+    index("tasks_claimable_idx")
+      .on(table.runAfter)
+      .where(sql`${table.status} in ('pending', 'failed')`),
+    index("tasks_stale_lease_idx")
+      .on(table.leaseUntil)
+      .where(sql`${table.status} = 'processing'`),
   ],
 );
 
