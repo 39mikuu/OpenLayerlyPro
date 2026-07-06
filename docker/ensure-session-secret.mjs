@@ -1,11 +1,11 @@
 import { createHash, randomBytes } from "crypto";
 import {
-  chmodSync,
   closeSync,
   constants,
+  fchmodSync,
+  fstatSync,
   fsyncSync,
   linkSync,
-  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -55,27 +55,45 @@ export function fsyncDirectory(path) {
   }
 }
 
-export function readSessionSecretTarget(target) {
-  let metadata;
+export function readSessionSecretTarget(target, { afterValidateHook = () => {} } = {}) {
+  let descriptor;
   try {
-    metadata = lstatSync(target);
+    descriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
   } catch (error) {
     if (isErrnoCode(error, "ENOENT")) {
       throw new Error("session secret file is missing");
     }
+    if (isErrnoCode(error, "ELOOP")) invalidSecret();
     throw new Error("session secret file is unreadable");
   }
-  if (!metadata.isFile() || metadata.isSymbolicLink()) invalidSecret();
 
-  let value;
   try {
-    value = stripSingleTrailingLineEnding(readFileSync(target, "utf8"));
-  } catch {
-    throw new Error("session secret file is unreadable");
+    let metadata;
+    try {
+      metadata = fstatSync(descriptor);
+    } catch {
+      throw new Error("session secret file is unreadable");
+    }
+    if (!metadata.isFile()) invalidSecret();
+
+    afterValidateHook();
+
+    let value;
+    try {
+      value = stripSingleTrailingLineEnding(readFileSync(descriptor, "utf8"));
+    } catch {
+      throw new Error("session secret file is unreadable");
+    }
+    validateStrongSessionSecret(value);
+    try {
+      fchmodSync(descriptor, 0o600);
+    } catch {
+      throw new Error("session secret file is unreadable");
+    }
+    return value;
+  } finally {
+    closeSync(descriptor);
   }
-  validateStrongSessionSecret(value);
-  chmodSync(target, 0o600);
-  return value;
 }
 
 export function ensureSessionSecretFile(
@@ -85,6 +103,7 @@ export function ensureSessionSecretFile(
     randomBytesFn = randomBytes,
     fsyncDirectoryFn = fsyncDirectory,
     log = console.log,
+    afterValidateHook = () => {},
   } = {},
 ) {
   if (!target) throw new Error("session secret file path is required");
@@ -100,7 +119,7 @@ export function ensureSessionSecretFile(
   mkdirSync(parent, { recursive: true, mode: 0o700 });
 
   try {
-    readSessionSecretTarget(target);
+    readSessionSecretTarget(target, { afterValidateHook });
     log("Loaded persistent session secret");
     return "loaded";
   } catch (error) {
@@ -134,7 +153,7 @@ export function ensureSessionSecretFile(
         log("Generated persistent session secret");
       } catch (linkError) {
         if (!isErrnoCode(linkError, "EEXIST")) throw linkError;
-        readSessionSecretTarget(target);
+        readSessionSecretTarget(target, { afterValidateHook });
         log("Loaded persistent session secret");
       }
     } finally {

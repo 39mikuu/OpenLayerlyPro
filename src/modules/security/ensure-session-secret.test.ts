@@ -1,12 +1,15 @@
 import { execFile } from "child_process";
 import {
   chmodSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
@@ -14,7 +17,11 @@ import path from "path";
 import { promisify } from "util";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ensureSessionSecretFile, fsyncDirectory } from "../../../docker/ensure-session-secret.mjs";
+import {
+  ensureSessionSecretFile,
+  fsyncDirectory,
+  readSessionSecretTarget,
+} from "../../../docker/ensure-session-secret.mjs";
 
 const execFileAsync = promisify(execFile);
 const script = path.resolve("docker/ensure-session-secret.mjs");
@@ -161,6 +168,45 @@ describe("persistent session secret creation", () => {
     expect(value).toHaveLength(43);
     expect(results.every((result) => !result.stdout.includes(value))).toBe(true);
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("rejects a pre-existing symlink target via ELOOP mapping without replacing it", async () => {
+    const { dir, file } = fixture();
+    const attacker = path.join(dir, "attacker-secret");
+    const attackerSecret = "attacker-controlled-session-secret-012345678901234";
+    writeFileSync(attacker, attackerSecret, { mode: 0o644 });
+    symlinkSync(attacker, file);
+
+    // A pre-existing symlink exercises the O_NOFOLLOW ELOOP mapping; the race
+    // regression below proves the descriptor, not the path, determines the read.
+    await expect(run(file)).rejects.toThrow();
+
+    expect(lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(readFileSync(attacker, "utf8")).toBe(attackerSecret);
+    expect(statSync(attacker).mode & 0o777).toBe(0o644);
+    expect(readFileSync(file, "utf8")).toBe(attackerSecret);
+  });
+
+  it("reads the validated descriptor when the target path is swapped after validation", () => {
+    const { dir, file } = fixture();
+    const original = "original-session-secret-012345678901234567";
+    const attacker = path.join(dir, "attacker-secret");
+    const attackerSecret = "attacker-controlled-session-secret-012345678901234";
+    writeFileSync(file, original, { mode: 0o600 });
+
+    const value = readSessionSecretTarget(file, {
+      afterValidateHook() {
+        unlinkSync(file);
+        writeFileSync(attacker, attackerSecret, { mode: 0o644 });
+        symlinkSync(attacker, file);
+      },
+    });
+
+    expect(value).toBe(original);
+    expect(lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(readFileSync(file, "utf8")).toBe(attackerSecret);
+    expect(readFileSync(attacker, "utf8")).toBe(attackerSecret);
+    expect(statSync(attacker).mode & 0o777).toBe(0o644);
   });
 
   it("fails without replacing a non-regular existing target", async () => {
