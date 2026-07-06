@@ -69,6 +69,16 @@ describe("Stripe payment provider", () => {
     };
   }
 
+  function checkoutSessionWithDateHeader(date: string | undefined) {
+    return {
+      id: "cs_obs",
+      status: "expired",
+      url: null,
+      subscription: null,
+      lastResponse: { headers: date === undefined ? {} : { date } },
+    };
+  }
+
   it("derives retrieveSubscription observedAt from the provider Date header", async () => {
     const { instance, retrieveSubscription } = provider();
     retrieveSubscription.mockResolvedValue(
@@ -94,6 +104,35 @@ describe("Stripe payment provider", () => {
     retrieveSubscription.mockResolvedValue(subscriptionWithDateHeader("not-a-real-date"));
 
     const result = await instance.retrieveSubscription("sub_obs");
+
+    expect(result.observedAt).toBeNull();
+  });
+
+  it("derives getSubscriptionCheckoutState observedAt from the provider Date header", async () => {
+    const { instance, retrieveSession } = provider();
+    retrieveSession.mockResolvedValue(
+      checkoutSessionWithDateHeader("Tue, 20 Jan 2026 00:00:00 GMT"),
+    );
+
+    const result = await instance.getSubscriptionCheckoutState("cs_obs");
+
+    expect(result.observedAt).toEqual(new Date("2026-01-20T00:00:00.000Z"));
+  });
+
+  it("returns null checkout observedAt when the provider omits the Date header", async () => {
+    const { instance, retrieveSession } = provider();
+    retrieveSession.mockResolvedValue(checkoutSessionWithDateHeader(undefined));
+
+    const result = await instance.getSubscriptionCheckoutState("cs_obs");
+
+    expect(result.observedAt).toBeNull();
+  });
+
+  it("returns null checkout observedAt when the provider Date header is unparseable", async () => {
+    const { instance, retrieveSession } = provider();
+    retrieveSession.mockResolvedValue(checkoutSessionWithDateHeader("not-a-real-date"));
+
+    const result = await instance.getSubscriptionCheckoutState("cs_obs");
 
     expect(result.observedAt).toBeNull();
   });
