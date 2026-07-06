@@ -1,5 +1,9 @@
 # Issue #101 — task claim paths, leases, and bounded dispatcher concurrency
 
+> **Historical audit record** pinned to the baseline below; written pre-v1.0.
+> `v1.0.0` has since been released — "before v1.0" phrasing reflects the
+> decision context at audit time, not a current gate.
+
 - **Baseline:** `e08363ab988785cc510ea1900f7e2c178bf14cf8` (validated on the current `main`).
 - **Type:** design + benchmark. **No production code is changed in this branch.**
 - **Classification result:** **Confirmed P2 scalability issue; not a v1.0 correctness blocker.** The

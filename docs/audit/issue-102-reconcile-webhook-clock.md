@@ -1,5 +1,9 @@
 # Issue #102 — reconcile / webhook clock ordering (validation report)
 
+> **Historical audit record** pinned to the baseline below; written pre-v1.0.
+> The defect was fixed under #112 before `v1.0.0` was released — "fix before
+> v1.0" phrasing below reflects the audit-time gate, which was met.
+
 - **Baseline:** `e08363ab988785cc510ea1900f7e2c178bf14cf8` (validated on the current `main`, unchanged code path).
 - **Classification result:** **CONFIRMED user-visible incorrect state.**
 - **Reproduction:** `src/modules/payment/reconcile-webhook-clock.integration.test.ts` (real PostgreSQL, drives the production `reconcileSubscriptions`, `persistPaymentProviderEvent`, and `dispatchPaymentProviderEvent`).
