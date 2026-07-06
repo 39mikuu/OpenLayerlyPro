@@ -58,7 +58,9 @@ export function fsyncDirectory(path) {
 export function readSessionSecretTarget(target, { afterValidateHook = () => {} } = {}) {
   let descriptor;
   try {
-    descriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK is required so a FIFO left at the target cannot block this open()
+    // forever waiting for a writer; it has no effect on the regular-file open below.
+    descriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if (isErrnoCode(error, "ENOENT")) {
       throw new Error("session secret file is missing");

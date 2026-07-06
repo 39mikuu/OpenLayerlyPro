@@ -1,4 +1,4 @@
-import { execFile } from "child_process";
+import { execFile, execFileSync } from "child_process";
 import {
   chmodSync,
   lstatSync,
@@ -207,6 +207,28 @@ describe("persistent session secret creation", () => {
     expect(readFileSync(file, "utf8")).toBe(attackerSecret);
     expect(readFileSync(attacker, "utf8")).toBe(attackerSecret);
     expect(statSync(attacker).mode & 0o777).toBe(0o644);
+  });
+
+  it("rejects a FIFO target instead of blocking on open", async () => {
+    const { file } = fixture();
+    execFileSync("mkfifo", [file]);
+
+    const child = execFile(process.execPath, [script, file], {
+      env: { ...process.env, SESSION_SECRET: "" },
+    });
+
+    // A read-only open() of a FIFO with no writer blocks forever without
+    // O_NONBLOCK. Race the child against a timeout instead of awaiting it
+    // directly so a regression here fails fast rather than hanging the suite.
+    const outcome = await Promise.race([
+      new Promise<"exited">((resolve) => child.on("exit", () => resolve("exited"))),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 2_000)),
+    ]);
+
+    if (outcome === "timeout") child.kill("SIGKILL");
+
+    expect(outcome).toBe("exited");
+    expect(child.exitCode).not.toBe(0);
   });
 
   it("fails without replacing a non-regular existing target", async () => {
