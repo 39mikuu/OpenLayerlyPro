@@ -688,6 +688,7 @@ export const ja: Messages = {
       apiKeySet: "設定済みです。空欄なら現在の値を保持します",
       apiKeyMissing: "API キーを入力してください",
       monthlyCharLimit: "月間文字数上限（任意）",
+      monthlyCharLimitHint: "記録のみで、上限を超えても利用は制限されません。",
       invalidLimit: "月間文字数上限は正の整数で指定してください",
       directPublish: "AI 翻訳を生成後すぐに公開できるようにする",
       directPublishWarning: "高リスクの設定です。人によるレビューを省略します。既定では無効です。",

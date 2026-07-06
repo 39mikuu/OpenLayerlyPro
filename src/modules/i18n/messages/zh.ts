@@ -675,6 +675,7 @@ export const zh = {
       apiKeySet: "已设置；留空则保留旧值",
       apiKeyMissing: "请输入 API Key",
       monthlyCharLimit: "每月字符上限（可选）",
+      monthlyCharLimitHint: "仅作记录，超额不会被阻止。",
       invalidLimit: "每月字符上限必须为正整数",
       directPublish: "允许 AI 译文生成后直接发布",
       directPublishWarning: "高风险策略：跳过人工审核。默认关闭。",
