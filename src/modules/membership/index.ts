@@ -514,13 +514,16 @@ export async function getMembershipDetail(
 
 export async function listMembershipHistory(
   id: string,
+  limit = 100,
   dbc: DbClient = getDb(),
 ): Promise<AuditEvent[]> {
+  const safeLimit = Math.min(Math.max(limit, 1), 200);
   return dbc
     .select()
     .from(auditEvents)
     .where(and(eq(auditEvents.entityType, "membership"), eq(auditEvents.entityId, id)))
-    .orderBy(desc(auditEvents.createdAt));
+    .orderBy(desc(auditEvents.createdAt))
+    .limit(safeLimit);
 }
 
 export async function listTiersOrdered(): Promise<MembershipTier[]> {

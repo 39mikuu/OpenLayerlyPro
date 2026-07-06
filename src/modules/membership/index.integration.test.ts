@@ -54,6 +54,23 @@ describeWithDatabase("membership lifecycle integration", () => {
     return { admin, user, tier };
   }
 
+  async function insertSyntheticMembershipAuditEvents(membershipId: string, count: number) {
+    for (let index = 0; index < count; index += 1) {
+      await db.insert(auditEvents).values({
+        entityType: "membership",
+        entityId: membershipId,
+        action: "grant",
+        actorType: "system",
+        actorId: null,
+        reason: null,
+        beforeJson: null,
+        afterJson: null,
+        correlationId: randomUUID(),
+        causationId: null,
+      });
+    }
+  }
+
   it("grants and audits a membership while an inactive tier remains valid for access", async () => {
     const { user, tier } = await seed({ tierActive: false });
     const correlationId = randomUUID();
@@ -170,6 +187,51 @@ describeWithDatabase("membership lifecycle integration", () => {
       "suspend",
       "grant",
     ]);
+  });
+
+  it("caps membership history at the default limit when no limit is provided", async () => {
+    const { user, tier } = await seed();
+    const { membership } = await grantMembership({
+      userId: user.id,
+      tierId: tier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    await insertSyntheticMembershipAuditEvents(membership.id, 150);
+
+    const history = await listMembershipHistory(membership.id);
+
+    expect(history).toHaveLength(100);
+  });
+
+  it("clamps membership history requests to the hard cap", async () => {
+    const { user, tier } = await seed();
+    const { membership } = await grantMembership({
+      userId: user.id,
+      tierId: tier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    await insertSyntheticMembershipAuditEvents(membership.id, 250);
+
+    const history = await listMembershipHistory(membership.id, 500);
+
+    expect(history).toHaveLength(200);
+  });
+
+  it("respects a small explicit membership history limit", async () => {
+    const { user, tier } = await seed();
+    const { membership } = await grantMembership({
+      userId: user.id,
+      tierId: tier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    await insertSyntheticMembershipAuditEvents(membership.id, 10);
+
+    const history = await listMembershipHistory(membership.id, 5);
+
+    expect(history).toHaveLength(5);
   });
 
   it("rejects duplicate state commands and stale extension retries", async () => {
