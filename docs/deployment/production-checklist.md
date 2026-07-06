@@ -1,6 +1,6 @@
 # Production Checklist
 
-> This checklist describes current `main`. S7 #87 is merged; a production `v1.0.0` release still requires every item in [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
+> This checklist describes current `main`. `v1.0.0` is released; [the v1.0 acceptance checklist](../release-v1.0-checklist.md) passed on the exact release build and is kept as a historical record. Use this document as the operational checklist for your own deployment.
 
 ## Base deployment
 
@@ -75,8 +75,8 @@
 ## Current hardening status
 
 S4 authentication hardening, S5 mail reliability, S6 security response headers,
-and S7 hardened recovery are implemented. The remaining release gate is #88
-real-environment acceptance.
+and S7 hardened recovery are implemented. The #88 real-environment acceptance
+gate passed on the exact `v1.0.0` release build.
 
 ## Application request-body limits
 
