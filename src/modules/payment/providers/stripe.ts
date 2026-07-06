@@ -171,6 +171,7 @@ function normalizeSubscriptionInvoice(
     type: "subscription_renewed",
     localSubscriptionId:
       localSubscriptionId || invoiceMetadata(invoice).subscriptionId || undefined,
+    appOwned: invoiceMetadata(invoice).app === "openlayerlypro" || undefined,
     providerSubscriptionRef,
     providerInvoiceRef: invoice.id,
     providerPaymentRef: invoicePaymentRef(invoice),

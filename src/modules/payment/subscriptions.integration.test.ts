@@ -479,6 +479,51 @@ describeWithDatabase("Stripe subscription integration", () => {
     ).resolves.toHaveLength(1);
   });
 
+  it("fails closed when metadata id conflicts with an existing provider ref", async () => {
+    const { user, subscription } = await seedSubscription();
+    const event = paidInvoiceEvent({
+      localSubscriptionId: undefined,
+      providerSubscriptionRef: "sub_foreign_conflict",
+      providerInvoiceRef: "in_foreign_conflict",
+      providerEventId: "evt_foreign_conflict",
+    });
+    providerMocks.retrieveSubscription.mockResolvedValue({
+      status: "active",
+      providerSubscriptionRef: "sub_foreign_conflict",
+      providerCustomerRef: "cus_foreign_conflict",
+      currentPeriodEndsAt: null,
+      cancelAtPeriodEnd: false,
+      metadata: { subscriptionId: subscription.id },
+      observedAt: new Date("2026-02-01T00:00:00.999Z"),
+    });
+
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+
+    await expect(dispatchPaymentProviderEvent(eventRow!.id)).rejects.toThrow(
+      "subscriptionUnresolved",
+    );
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(storedEvent).toMatchObject({ status: "failed", attempts: 1 });
+    expect(providerMocks.retrieveSubscription).toHaveBeenCalledWith("sub_foreign_conflict");
+    await expect(
+      db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.providerInvoiceRef, "in_foreign_conflict")),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(0);
+  });
+
   it("keeps subscription ownership retrieve failures retryable without business rows", async () => {
     const event = paidInvoiceEvent({
       localSubscriptionId: undefined,
@@ -558,6 +603,44 @@ describeWithDatabase("Stripe subscription integration", () => {
       currentPeriodEndsAt: null,
       cancelAtPeriodEnd: false,
       metadata: { app: "openlayerlypro" },
+      observedAt: new Date("2026-02-01T00:00:00.999Z"),
+    });
+
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+
+    await expect(dispatchPaymentProviderEvent(eventRow!.id)).rejects.toThrow(
+      "subscriptionUnresolved",
+    );
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(storedEvent).toMatchObject({ status: "failed", attempts: 1 });
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(0);
+  });
+
+  it("keeps invoices carrying the app marker retryable when the remote metadata lost it", async () => {
+    const event = {
+      ...paidInvoiceEvent({
+        localSubscriptionId: undefined,
+        providerSubscriptionRef: "sub_invoice_app_marker",
+        providerInvoiceRef: "in_invoice_app_marker",
+        providerEventId: "evt_invoice_app_marker",
+      }),
+      appOwned: true,
+    };
+    providerMocks.retrieveSubscription.mockResolvedValue({
+      status: "active",
+      providerSubscriptionRef: "sub_invoice_app_marker",
+      providerCustomerRef: "cus_invoice_app_marker",
+      currentPeriodEndsAt: null,
+      cancelAtPeriodEnd: false,
+      metadata: {},
       observedAt: new Date("2026-02-01T00:00:00.999Z"),
     });
 
@@ -1720,11 +1803,11 @@ describeWithDatabase("Stripe subscription integration", () => {
     expect(providerMocks.listPaidSubscriptionInvoices).not.toHaveBeenCalled();
   });
 
-  // The webhook write is simulated with the production predicate (lte gate on
-  // statusEventAt) rather than a full dispatch: every real webhook that wins its
-  // gate also moves status away from 'pending', which makes the expiry CAS no-op
-  // on the status check alone. Only the timestamp fence is under test here.
-  it("expires a checkout over a same-second webhook committed first", async () => {
+  // This manually preserves pending status to isolate the timestamp predicate.
+  // A real webhook that commits first and moves the row out of pending wins via
+  // the expiry status CAS; this verifies only that S.000 is older than S.999
+  // while the row is still pending.
+  it("expires a still-pending checkout over an older same-second webhook timestamp", async () => {
     const { user, tier } = await seed();
     const sameSecondWebhookAt = new Date("2026-02-01T00:00:00.000Z");
     const observedAt = new Date("2026-02-01T00:00:00.999Z");
@@ -2228,6 +2311,72 @@ describeWithDatabase("Stripe subscription integration", () => {
       .where(eq(memberships.id, stored!.grantedMembershipId!));
     expect(stored?.status).toBe("reversed");
     expect(membership?.status).toBe("revoked");
+  });
+
+  it("does not rebind an existing subscription on conflicting activation metadata", async () => {
+    const { user, subscription } = await seedSubscription();
+    const originalVersion = subscription.version;
+
+    await persistPaymentProviderEvent("stripe", {
+      type: "subscription_activated",
+      localSubscriptionId: subscription.id,
+      providerSubscriptionRef: "sub_foreign_activation",
+      providerCustomerRef: "cus_foreign_activation",
+      currentPeriodEndsAt: new Date("2026-03-01T00:00:00.000Z"),
+      cancelAtPeriodEnd: false,
+      providerEventId: "evt_foreign_activation_conflict",
+      providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+    });
+    const [activationRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_foreign_activation_conflict"));
+
+    await dispatchPaymentProviderEvent(activationRow!.id);
+
+    const [storedActivation] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, activationRow!.id));
+    const [unchanged] = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.id, subscription.id));
+    expect(storedActivation).toMatchObject({ status: "processed", attempts: 1 });
+    expect(unchanged).toMatchObject({
+      status: subscription.status,
+      providerSubscriptionRef: subscription.providerSubscriptionRef,
+      version: originalVersion,
+    });
+
+    const invoice = paidInvoiceEvent({
+      localSubscriptionId: undefined,
+      providerSubscriptionRef: "sub_foreign_activation",
+      providerInvoiceRef: "in_foreign_activation",
+      providerEventId: "evt_foreign_activation_invoice",
+    });
+    await persistPaymentProviderEvent("stripe", invoice);
+    const [invoiceRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, invoice.providerEventId));
+
+    await dispatchPaymentProviderEvent(invoiceRow!.id);
+
+    const [storedInvoice] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, invoiceRow!.id));
+    expect(storedInvoice).toMatchObject({ status: "processed", attempts: 1 });
+    await expect(
+      db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.providerInvoiceRef, invoice.providerInvoiceRef)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(0);
   });
 
   it("keeps paid entitlement when invoice.paid arrives before subscription.created", async () => {

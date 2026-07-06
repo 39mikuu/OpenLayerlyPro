@@ -43,6 +43,7 @@ export type ReversalPaymentEvent = RefundedPaymentEvent | DisputedPaymentEvent;
 export type SubscriptionRenewedPaymentEvent = {
   type: "subscription_renewed";
   localSubscriptionId?: string;
+  appOwned?: boolean;
   providerSubscriptionRef: string;
   providerInvoiceRef: string;
   providerPaymentRef: string | null;
@@ -140,9 +141,9 @@ export interface PaymentProvider {
     metadata: Record<string, string>;
     // Provider-clock observation fence used by reconcile. Providers may expose a
     // coarse timestamp (Stripe HTTP Date is second-granularity); getPaymentProvider
-    // normalizes it to the end of the represented provider second so an ambiguous
-    // same-second webhook cannot directly overwrite the observed state. `null`
-    // means no usable provider timestamp; reconcile then skips the fence write.
+    // normalizes it to the end of the represented provider second. The fence only
+    // applies after a guarded observation write is eligible and commits; `null`
+    // means no usable provider timestamp, so reconcile skips the fence write.
     observedAt: Date | null;
   }>;
   listPaidSubscriptionInvoices?(
