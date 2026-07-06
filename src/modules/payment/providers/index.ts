@@ -129,6 +129,7 @@ export interface PaymentProvider {
     status: "open" | "complete" | "expired";
     redirectUrl: string | null;
     providerSubscriptionRef: string | null;
+    observedAt: Date | null;
   }>;
   retrieveSubscription?(providerSubscriptionRef: string): Promise<{
     status: "active" | "past_due" | "canceled" | "expired" | "pending";
@@ -136,6 +137,7 @@ export interface PaymentProvider {
     providerCustomerRef: string | null;
     currentPeriodEndsAt: Date | null;
     cancelAtPeriodEnd: boolean;
+    metadata: Record<string, string>;
     // Provider-clock observation fence used by reconcile. Providers may expose a
     // coarse timestamp (Stripe HTTP Date is second-granularity); getPaymentProvider
     // normalizes it to the end of the represented provider second so an ambiguous
@@ -168,6 +170,14 @@ export function providerObservationFence(observedAt: Date): Date {
 }
 
 class ReconcileStripePaymentProvider extends StripePaymentProvider {
+  override async getSubscriptionCheckoutState(providerRef: string) {
+    const checkout = await super.getSubscriptionCheckoutState(providerRef);
+    return {
+      ...checkout,
+      observedAt: checkout.observedAt ? providerObservationFence(checkout.observedAt) : null,
+    };
+  }
+
   override async retrieveSubscription(providerSubscriptionRef: string) {
     const remote = await super.retrieveSubscription(providerSubscriptionRef);
     return {

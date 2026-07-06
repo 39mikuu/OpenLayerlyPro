@@ -15,6 +15,7 @@ import {
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
+import { logger } from "@/lib/logger";
 import { recordAudit } from "@/modules/audit";
 import { grantMembershipForPeriod, revokeMembership } from "@/modules/membership";
 import { enqueueTask, PermanentTaskError } from "@/modules/tasks";
@@ -46,6 +47,11 @@ type ResolvedCheckoutByPaymentIntent = Awaited<
     NonNullable<Awaited<ReturnType<typeof getPaymentProvider>>>["resolveCheckoutByPaymentIntent"]
   >
 >;
+
+type SubscriptionOwnershipResolution =
+  | { kind: "owned-resolved"; subscriptionId: string }
+  | { kind: "owned-unresolved"; reason: string }
+  | { kind: "foreign"; reason: string };
 
 type ResolvedProviderEvent =
   | { event: Exclude<NormalizedPaymentEvent, ReversalPaymentEvent>; oneTimeCheckout: null }
@@ -296,10 +302,111 @@ async function claimProviderEvent(
   });
 }
 
+function isUuid(value: string | undefined): value is string {
+  return Boolean(
+    value?.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
+  );
+}
+
+async function findOwnedSubscription(input: {
+  provider: string;
+  localSubscriptionId?: string;
+  providerSubscriptionRef?: string | null;
+}): Promise<string | null> {
+  const conditions = [];
+  if (input.localSubscriptionId) conditions.push(eq(subscriptions.id, input.localSubscriptionId));
+  if (input.providerSubscriptionRef) {
+    conditions.push(
+      and(
+        eq(subscriptions.provider, input.provider),
+        eq(subscriptions.providerSubscriptionRef, input.providerSubscriptionRef),
+      ),
+    );
+  }
+  if (conditions.length === 0) return null;
+
+  const [subscription] = await getDb()
+    .select({ id: subscriptions.id })
+    .from(subscriptions)
+    .where(or(...conditions))
+    .limit(1);
+  return subscription?.id ?? null;
+}
+
+async function resolveSubscriptionOwnership(
+  provider: string,
+  event: SubscriptionRenewedPaymentEvent,
+): Promise<SubscriptionOwnershipResolution> {
+  const localSubscriptionId = isUuid(event.localSubscriptionId)
+    ? event.localSubscriptionId
+    : undefined;
+  const providerSubscriptionRef = event.providerSubscriptionRef;
+  const localMatch = await findOwnedSubscription({
+    provider,
+    localSubscriptionId,
+    providerSubscriptionRef,
+  });
+  if (localMatch) return { kind: "owned-resolved", subscriptionId: localMatch };
+  if (localSubscriptionId) {
+    return { kind: "owned-unresolved", reason: "local subscription metadata is not yet local" };
+  }
+
+  const providerClient = await getPaymentProvider(provider);
+  if (!providerClient?.retrieveSubscription) {
+    return { kind: "owned-unresolved", reason: "subscription ownership cannot be retrieved" };
+  }
+
+  let remote: Awaited<ReturnType<NonNullable<typeof providerClient.retrieveSubscription>>>;
+  try {
+    remote = await providerClient.retrieveSubscription(providerSubscriptionRef);
+  } catch {
+    return { kind: "owned-unresolved", reason: "subscription ownership retrieve failed" };
+  }
+
+  const remoteMetadata = remote.metadata ?? {};
+  const remoteSubscriptionId = isUuid(remoteMetadata.subscriptionId)
+    ? remoteMetadata.subscriptionId
+    : undefined;
+  const remoteMatch = await findOwnedSubscription({
+    provider,
+    localSubscriptionId: remoteSubscriptionId,
+    providerSubscriptionRef: remote.providerSubscriptionRef,
+  });
+  if (remoteMatch) return { kind: "owned-resolved", subscriptionId: remoteMatch };
+  if (remoteSubscriptionId) {
+    return { kind: "owned-unresolved", reason: "owned subscription is not yet local" };
+  }
+  if (remoteMetadata.app === "openlayerlypro") {
+    return { kind: "owned-unresolved", reason: "app-owned subscription is not yet local" };
+  }
+  return { kind: "foreign", reason: "subscription has no local ownership metadata" };
+}
+
 async function resolveProviderEvent(
   provider: string,
   event: NormalizedPaymentEvent,
 ): Promise<ResolvedProviderEvent> {
+  if (event.type === "subscription_renewed") {
+    const ownership = await resolveSubscriptionOwnership(provider, event);
+    if (ownership.kind === "foreign") {
+      return {
+        event: {
+          type: "ignored",
+          providerEventId: event.providerEventId,
+          providerCreatedAt: event.providerCreatedAt,
+        },
+        oneTimeCheckout: null,
+      };
+    }
+    if (ownership.kind === "owned-unresolved") {
+      throw new ApiError(503, "subscriptionUnresolved");
+    }
+    return {
+      event: { ...event, localSubscriptionId: ownership.subscriptionId },
+      oneTimeCheckout: null,
+    };
+  }
+
   if (event.type !== "refunded" && event.type !== "disputed") {
     return { event, oneTimeCheckout: null };
   }
@@ -326,6 +433,48 @@ async function resolveProviderEvent(
 
   const checkout = await providerClient?.resolveCheckoutByPaymentIntent?.(event.paymentRef);
   return { event: { ...event }, oneTimeCheckout: checkout ?? null };
+}
+
+async function expirePendingSubscriptionWithProviderFence(
+  subscription: Pick<Subscription, "id">,
+  observedAt: Date | null,
+  source: "checkout-retry" | "reconcile",
+): Promise<boolean> {
+  if (!observedAt) {
+    logger.warn("Subscription checkout expiry skipped without provider observation timestamp", {
+      subscriptionId: subscription.id,
+      source,
+    });
+    return false;
+  }
+
+  // Checkout-expiry observations are fenced to the end of the provider second
+  // (S.999) and use a strict `< observedAt` guard. That means the observation can
+  // supersede rows whose statusEventAt is NULL or strictly older, including a
+  // same-second webhook timestamp at S.000 if the expiry write runs later. Once
+  // the fenced S.999 value is stored, a same-second webhook cannot overwrite it
+  // through the webhook `<= eventAt` gate; only a genuinely later provider second
+  // can advance the row.
+  const [updated] = await getDb()
+    .update(subscriptions)
+    .set({
+      status: "expired",
+      statusEventAt: observedAt,
+      updatedAt: sql`now()`,
+      version: sql`${subscriptions.version} + 1`,
+    })
+    .where(
+      and(
+        eq(subscriptions.id, subscription.id),
+        eq(subscriptions.status, "pending"),
+        or(
+          sql`${subscriptions.statusEventAt} is null`,
+          lt(subscriptions.statusEventAt, observedAt),
+        ),
+      ),
+    )
+    .returning({ id: subscriptions.id });
+  return Boolean(updated);
 }
 
 async function markProviderEventFailed(
@@ -942,10 +1091,12 @@ export async function createSubscriptionCheckout(
     if (checkout.status === "open" && checkout.redirectUrl)
       return { redirectUrl: checkout.redirectUrl };
     if (checkout.providerSubscriptionRef) throw new ApiError(400, "subscriptionAlreadyActive");
-    await db
-      .update(subscriptions)
-      .set({ status: "expired", updatedAt: new Date() })
-      .where(and(eq(subscriptions.id, claim.subscription.id), eq(subscriptions.status, "pending")));
+    const expired = await expirePendingSubscriptionWithProviderFence(
+      claim.subscription,
+      checkout.observedAt,
+      "checkout-retry",
+    );
+    if (!expired) throw new ApiError(503, "subscriptionCheckoutExpiryUnobserved");
     return createSubscriptionCheckout(input);
   }
 
@@ -1047,10 +1198,11 @@ export async function reconcileSubscriptions(): Promise<number> {
         subscription.providerCheckoutRef,
       );
       if (checkout.status === "expired") {
-        await getDb()
-          .update(subscriptions)
-          .set({ status: "expired", updatedAt: new Date() })
-          .where(and(eq(subscriptions.id, subscription.id), eq(subscriptions.status, "pending")));
+        await expirePendingSubscriptionWithProviderFence(
+          subscription,
+          checkout.observedAt,
+          "reconcile",
+        );
         processed += 1;
         continue;
       }
@@ -1107,6 +1259,7 @@ export async function reconcileSubscriptions(): Promise<number> {
           cancelAtPeriodEnd: remote.cancelAtPeriodEnd,
           statusEventAt: remote.observedAt,
           updatedAt: new Date(),
+          version: sql`${subscriptions.version} + 1`,
         })
         .where(
           and(

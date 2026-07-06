@@ -472,6 +472,7 @@ export class StripePaymentProvider implements PaymentProvider {
     status: "open" | "complete" | "expired";
     redirectUrl: string | null;
     providerSubscriptionRef: string | null;
+    observedAt: Date | null;
   }> {
     const session = await this.client.checkout.sessions.retrieve(providerRef);
     if (!session.status) throw new ApiError(502, "stripeEventInvalid");
@@ -479,6 +480,7 @@ export class StripePaymentProvider implements PaymentProvider {
       status: session.status,
       redirectUrl: session.status === "open" ? session.url : null,
       providerSubscriptionRef: objectId(session.subscription),
+      observedAt: stripeResponseDate(session),
     };
   }
 
@@ -488,6 +490,7 @@ export class StripePaymentProvider implements PaymentProvider {
     providerCustomerRef: string | null;
     currentPeriodEndsAt: Date | null;
     cancelAtPeriodEnd: boolean;
+    metadata: Record<string, string>;
     observedAt: Date | null;
   }> {
     const subscription = await this.client.subscriptions.retrieve(providerSubscriptionRef);
@@ -497,6 +500,7 @@ export class StripePaymentProvider implements PaymentProvider {
       providerCustomerRef: objectId(subscription.customer),
       currentPeriodEndsAt: subscriptionCurrentPeriodEnd(subscription),
       cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+      metadata: subscriptionMetadata(subscription),
       observedAt: stripeResponseDate(subscription),
     };
   }
