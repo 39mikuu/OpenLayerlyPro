@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { StripePaymentProvider } from "./stripe";
 
+type StripeFixtureGeneration = "preBasil" | "postBasil";
+
 function provider() {
   const create = vi.fn();
   const retrieve = vi.fn();
@@ -76,6 +78,107 @@ describe("Stripe payment provider", () => {
       url: null,
       subscription: null,
       lastResponse: { headers: date === undefined ? {} : { date } },
+    };
+  }
+
+  function subscriptionInvoiceFixture(generation: StripeFixtureGeneration) {
+    if (generation === "preBasil") {
+      return {
+        id: "in_pre_basil",
+        subscription: "sub_pre_basil",
+        payment_intent: "pi_pre_basil",
+        currency: "USD",
+        metadata: {
+          app: "openlayerlypro",
+          subscriptionId: "33333333-3333-4333-8333-333333333333",
+          providerPriceRef: "price_pre_basil",
+        },
+        lines: {
+          data: [
+            {
+              price: { id: "price_pre_basil" },
+              amount: 900,
+              period: { start: 1_767_225_600, end: 1_769_904_000 },
+            },
+            {
+              price: { id: "price_other" },
+              amount: 100,
+              period: { start: 1_767_225_600, end: 1_767_312_000 },
+            },
+          ],
+        },
+      };
+    }
+
+    return {
+      id: "in_post_basil",
+      subscription: null,
+      payment_intent: null,
+      parent: {
+        type: "subscription_details",
+        quote_details: null,
+        subscription_details: {
+          subscription: "sub_post_basil",
+          metadata: {
+            app: "openlayerlypro",
+            subscriptionId: "44444444-4444-4444-8444-444444444444",
+            providerPriceRef: "price_post_basil",
+          },
+        },
+      },
+      payments: {
+        data: [
+          {
+            id: "ip_open",
+            status: "open",
+            payment: { type: "payment_intent", payment_intent: "pi_open" },
+          },
+          {
+            id: "ip_paid",
+            status: "paid",
+            payment: { type: "payment_intent", payment_intent: "pi_post_basil" },
+          },
+        ],
+      },
+      currency: "USD",
+      metadata: {},
+      lines: {
+        data: [
+          {
+            price: null,
+            pricing: {
+              type: "price_details",
+              price_details: { price: "price_post_basil" },
+            },
+            amount: 1200,
+            period: { start: 1_767_225_600, end: 1_769_904_000 },
+          },
+        ],
+      },
+    };
+  }
+
+  function postBasilSubscriptionFixture(eventType: string) {
+    return {
+      id: `evt_${eventType.replaceAll(".", "_")}`,
+      created: 1_767_225_600,
+      type: eventType,
+      data: {
+        object: {
+          id: "sub_items_webhook",
+          status: "active",
+          customer: "cus_items_webhook",
+          current_period_end: null,
+          cancel_at_period_end: false,
+          metadata: { subscriptionId: "88888888-8888-4888-8888-888888888888" },
+          items: {
+            data: [
+              { id: "si_short", current_period_end: 1_893_456_000 },
+              { id: "si_long", current_period_end: 1_896_048_000 },
+            ],
+          },
+        },
+      },
     };
   }
 
@@ -158,6 +261,23 @@ describe("Stripe payment provider", () => {
 
     expect(result.currentPeriodEndsAt).toEqual(new Date(1_896_048_000 * 1000));
   });
+
+  it.each(["customer.subscription.created", "customer.subscription.updated"] as const)(
+    "normalizes post-basil %s current period from subscription items",
+    async (eventType) => {
+      const { instance, constructEvent } = provider();
+      constructEvent.mockReturnValue(postBasilSubscriptionFixture(eventType));
+
+      await expect(instance.parseWebhook(Buffer.from(eventType), "sig")).resolves.toMatchObject({
+        type: "subscription_activated",
+        localSubscriptionId: "88888888-8888-4888-8888-888888888888",
+        providerSubscriptionRef: "sub_items_webhook",
+        providerCustomerRef: "cus_items_webhook",
+        currentPeriodEndsAt: new Date(1_896_048_000 * 1000),
+        cancelAtPeriodEnd: false,
+      });
+    },
+  );
 
   it("keeps null subscription currentPeriodEndsAt when neither shape has a period", async () => {
     const { instance, retrieveSubscription } = provider();
@@ -443,6 +563,48 @@ describe("Stripe payment provider", () => {
     });
   });
 
+  it("normalizes post-basil refunds when charge.invoice is null", async () => {
+    const { instance, constructEvent } = provider();
+    constructEvent.mockReturnValue({
+      id: "evt_refund_post_basil",
+      type: "charge.refunded",
+      data: {
+        object: {
+          refunded: true,
+          amount: 500,
+          amount_refunded: 500,
+          payment_intent: "pi_refunded_post_basil",
+          invoice: null,
+        },
+      },
+    });
+
+    await expect(instance.parseWebhook(Buffer.from("refund-post-basil"), "sig")).resolves.toEqual({
+      type: "refunded",
+      paymentRef: "pi_refunded_post_basil",
+      providerInvoiceRef: undefined,
+      providerEventId: "evt_refund_post_basil",
+      providerCreatedAt: new Date(0),
+    });
+  });
+
+  it("normalizes post-basil disputes when charge.invoice is null", async () => {
+    const { instance, constructEvent } = provider();
+    constructEvent.mockReturnValue({
+      id: "evt_dispute_post_basil",
+      type: "charge.dispute.created",
+      data: { object: { payment_intent: "pi_disputed_post_basil", invoice: null } },
+    });
+
+    await expect(instance.parseWebhook(Buffer.from("dispute-post-basil"), "sig")).resolves.toEqual({
+      type: "disputed",
+      paymentRef: "pi_disputed_post_basil",
+      providerInvoiceRef: undefined,
+      providerEventId: "evt_dispute_post_basil",
+      providerCreatedAt: new Date(0),
+    });
+  });
+
   it("creates a subscription checkout with a stable local idempotency key", async () => {
     const { instance, create } = provider();
     create.mockResolvedValue({
@@ -476,33 +638,98 @@ describe("Stripe payment provider", () => {
     );
   });
 
-  it("normalizes subscription invoices with candidate price lines for snapshot matching", async () => {
+  it.each(["preBasil", "postBasil"] as const)(
+    "normalizes %s subscription invoice renewal payloads",
+    async (generation) => {
+      const { instance, constructEvent } = provider();
+      constructEvent.mockReturnValue({
+        id: `evt_invoice_${generation}`,
+        created: 1_767_225_600,
+        type: "invoice.paid",
+        data: { object: subscriptionInvoiceFixture(generation) },
+      });
+
+      const expected =
+        generation === "preBasil"
+          ? {
+              localSubscriptionId: "33333333-3333-4333-8333-333333333333",
+              providerSubscriptionRef: "sub_pre_basil",
+              providerInvoiceRef: "in_pre_basil",
+              providerPaymentRef: "pi_pre_basil",
+              providerPriceRef: "price_pre_basil",
+              amountMinor: 900,
+            }
+          : {
+              localSubscriptionId: "44444444-4444-4444-8444-444444444444",
+              providerSubscriptionRef: "sub_post_basil",
+              providerInvoiceRef: "in_post_basil",
+              providerPaymentRef: "pi_post_basil",
+              providerPriceRef: "price_post_basil",
+              amountMinor: 1200,
+            };
+
+      await expect(
+        instance.parseWebhook(Buffer.from(`invoice-${generation}`), "sig"),
+      ).resolves.toMatchObject({
+        type: "subscription_renewed",
+        localSubscriptionId: expected.localSubscriptionId,
+        appOwned: true,
+        providerSubscriptionRef: expected.providerSubscriptionRef,
+        providerInvoiceRef: expected.providerInvoiceRef,
+        providerPaymentRef: expected.providerPaymentRef,
+        providerPriceRef: expected.providerPriceRef,
+        lines: [
+          expect.objectContaining({
+            providerPriceRef: expected.providerPriceRef,
+            periodStart: new Date(1_767_225_600 * 1000),
+            periodEnd: new Date(1_769_904_000 * 1000),
+            amountMinor: expected.amountMinor,
+          }),
+          ...(generation === "preBasil"
+            ? [expect.objectContaining({ providerPriceRef: "price_other", amountMinor: 100 })]
+            : []),
+        ],
+        currency: "usd",
+      });
+    },
+  );
+
+  it("normalizes post-basil parent subscription metadata before stale root metadata", async () => {
     const { instance, constructEvent } = provider();
     constructEvent.mockReturnValue({
-      id: "evt_invoice",
-      created: 1767225600,
+      id: "evt_invoice_basil_metadata_precedence",
+      created: 1_767_225_600,
       type: "invoice.paid",
       data: {
         object: {
-          id: "in_123",
-          subscription: "sub_123",
-          payment_intent: "pi_123",
-          currency: "USD",
+          ...subscriptionInvoiceFixture("postBasil"),
+          id: "in_basil_metadata_precedence",
+          parent: {
+            type: "subscription_details",
+            quote_details: null,
+            subscription_details: {
+              subscription: "sub_basil_metadata_precedence",
+              metadata: {
+                app: "openlayerlypro",
+                subscriptionId: "real-subscription-id",
+                providerPriceRef: "real-price",
+              },
+            },
+          },
           metadata: {
-            subscriptionId: "33333333-3333-4333-8333-333333333333",
-            providerPriceRef: "price_recurring",
+            subscriptionId: "root-should-not-win",
+            providerPriceRef: "root-price-should-not-win",
           },
           lines: {
             data: [
               {
-                price: { id: "price_other" },
-                amount: 100,
-                period: { start: 1767225600, end: 1767312000 },
-              },
-              {
-                price: { id: "price_recurring" },
-                amount: 900,
-                period: { start: 1767225600, end: 1769904000 },
+                price: null,
+                pricing: {
+                  type: "price_details",
+                  price_details: { price: "real-price" },
+                },
+                amount: 1200,
+                period: { start: 1_767_225_600, end: 1_769_904_000 },
               },
             ],
           },
@@ -510,43 +737,27 @@ describe("Stripe payment provider", () => {
       },
     });
 
-    await expect(instance.parseWebhook(Buffer.from("invoice"), "sig")).resolves.toMatchObject({
+    await expect(
+      instance.parseWebhook(Buffer.from("invoice-basil-metadata"), "sig"),
+    ).resolves.toMatchObject({
       type: "subscription_renewed",
-      localSubscriptionId: "33333333-3333-4333-8333-333333333333",
-      providerSubscriptionRef: "sub_123",
-      providerInvoiceRef: "in_123",
-      providerPaymentRef: "pi_123",
-      providerPriceRef: "price_recurring",
-      lines: [
-        expect.objectContaining({ providerPriceRef: "price_other", amountMinor: 100 }),
-        expect.objectContaining({ providerPriceRef: "price_recurring", amountMinor: 900 }),
-      ],
-      currency: "usd",
+      localSubscriptionId: "real-subscription-id",
+      providerPriceRef: "real-price",
+      appOwned: true,
     });
   });
 
-  it("normalizes basil subscription invoices from parent, payments, and pricing fields", async () => {
+  it("normalizes post-basil invoice payment intents with nested succeeded objects", async () => {
     const { instance, constructEvent } = provider();
     constructEvent.mockReturnValue({
-      id: "evt_invoice_basil",
-      created: 1767225600,
+      id: "evt_invoice_basil_nested_pi",
+      created: 1_767_225_600,
       type: "invoice.paid",
       data: {
         object: {
-          id: "in_basil",
-          subscription: null,
+          ...subscriptionInvoiceFixture("postBasil"),
+          id: "in_basil_nested_pi",
           payment_intent: null,
-          parent: {
-            type: "subscription_details",
-            quote_details: null,
-            subscription_details: {
-              subscription: "sub_basil",
-              metadata: {
-                subscriptionId: "44444444-4444-4444-8444-444444444444",
-                providerPriceRef: "price_basil",
-              },
-            },
-          },
           payments: {
             data: [
               {
@@ -555,24 +766,12 @@ describe("Stripe payment provider", () => {
                 payment: { type: "payment_intent", payment_intent: "pi_open" },
               },
               {
-                id: "ip_paid",
-                status: "paid",
-                payment: { type: "payment_intent", payment_intent: "pi_basil" },
-              },
-            ],
-          },
-          currency: "USD",
-          metadata: {},
-          lines: {
-            data: [
-              {
-                price: null,
-                pricing: {
-                  type: "price_details",
-                  price_details: { price: "price_basil" },
+                id: "ip_succeeded",
+                status: "open",
+                payment: {
+                  type: "payment_intent",
+                  payment_intent: { id: "pi_succeeded", status: "succeeded" },
                 },
-                amount: 1200,
-                period: { start: 1767225600, end: 1769904000 },
               },
             ],
           },
@@ -580,18 +779,12 @@ describe("Stripe payment provider", () => {
       },
     });
 
-    await expect(instance.parseWebhook(Buffer.from("invoice-basil"), "sig")).resolves.toMatchObject(
-      {
-        type: "subscription_renewed",
-        localSubscriptionId: "44444444-4444-4444-8444-444444444444",
-        providerSubscriptionRef: "sub_basil",
-        providerInvoiceRef: "in_basil",
-        providerPaymentRef: "pi_basil",
-        providerPriceRef: "price_basil",
-        lines: [expect.objectContaining({ providerPriceRef: "price_basil", amountMinor: 1200 })],
-        currency: "usd",
-      },
-    );
+    await expect(
+      instance.parseWebhook(Buffer.from("invoice-basil-nested-pi"), "sig"),
+    ).resolves.toMatchObject({
+      type: "subscription_renewed",
+      providerPaymentRef: "pi_succeeded",
+    });
   });
 
   it("normalizes legacy subscription-details invoice metadata before root metadata", async () => {
@@ -645,29 +838,67 @@ describe("Stripe payment provider", () => {
     });
   });
 
-  it("normalizes ambiguous invoice lines for the application layer to reject by snapshot", async () => {
+  it("normalizes post-basil invoice.payment_failed from parent subscription metadata", async () => {
+    const { instance, constructEvent } = provider();
+    constructEvent.mockReturnValue({
+      id: "evt_payment_failed_post_basil",
+      created: 1_767_225_600,
+      type: "invoice.payment_failed",
+      data: {
+        object: {
+          id: "in_failed_post_basil",
+          subscription: null,
+          parent: {
+            type: "subscription_details",
+            quote_details: null,
+            subscription_details: {
+              subscription: "sub_failed_post_basil",
+              metadata: { subscriptionId: "99999999-9999-4999-8999-999999999999" },
+            },
+          },
+          metadata: {},
+        },
+      },
+    });
+
+    await expect(
+      instance.parseWebhook(Buffer.from("invoice-payment-failed"), "sig"),
+    ).resolves.toMatchObject({
+      type: "subscription_payment_failed",
+      providerSubscriptionRef: "sub_failed_post_basil",
+      localSubscriptionId: "99999999-9999-4999-8999-999999999999",
+      providerInvoiceRef: "in_failed_post_basil",
+    });
+  });
+
+  it("normalizes ambiguous post-basil invoice lines for the application layer to reject by snapshot", async () => {
     const { instance, constructEvent } = provider();
     constructEvent.mockReturnValue({
       id: "evt_invoice_ambiguous",
       type: "invoice.paid",
       data: {
         object: {
+          ...subscriptionInvoiceFixture("postBasil"),
           id: "in_ambiguous",
-          subscription: "sub_123",
-          payment_intent: "pi_123",
-          currency: "usd",
-          metadata: { providerPriceRef: "price_recurring" },
           lines: {
             data: [
               {
-                price: { id: "price_recurring" },
+                price: null,
+                pricing: {
+                  type: "price_details",
+                  price_details: { price: "price_recurring" },
+                },
                 amount: 900,
-                period: { start: 1767225600, end: 1769904000 },
+                period: { start: 1_767_225_600, end: 1_769_904_000 },
               },
               {
-                price: { id: "price_recurring" },
+                price: null,
+                pricing: {
+                  type: "price_details",
+                  price_details: { price: "price_recurring" },
+                },
                 amount: 900,
-                period: { start: 1769904000, end: 1772323200 },
+                period: { start: 1_769_904_000, end: 1_772_323_200 },
               },
             ],
           },
@@ -759,10 +990,12 @@ describe("Stripe payment provider", () => {
       providerSubscriptionRef: "sub_basil_refund",
       localSubscriptionId: "66666666-6666-4666-8666-666666666666",
     });
+    expect(listCharges).toHaveBeenCalledWith({ payment_intent: "pi_basil_refund", limit: 1 });
     expect(listInvoicePayments).toHaveBeenCalledWith({
       payment: { type: "payment_intent", payment_intent: "pi_basil_refund" },
       limit: 1,
     });
+    expect(retrieveInvoice).toHaveBeenCalledWith("in_basil_refund");
   });
 
   it("returns null when PaymentIntent invoice lookup finds no invoice", async () => {
