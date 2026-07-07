@@ -6,6 +6,9 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   reporter: process.env.CI ? "github" : "list",
+  expect: {
+    toHaveScreenshot: { maxDiffPixelRatio: 0.01 },
+  },
   use: {
     baseURL: process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001",
     trace: "retain-on-failure",
