@@ -199,6 +199,15 @@ async function seedFixtures() {
   await upsertSetting("artist_name", "Blog Theme Smoke Artist");
   await upsertSetting("artist_bio", "Functional smoke fixtures for the blog theme.");
   await upsertSetting("social_links", []);
+  // s6-security-headers.spec.ts (runs before this file) intentionally leaves public
+  // integrations/footer/CSP settings mutated (a mock script-injection integration,
+  // legacy footer markup). Reset them so this spec's pages aren't running against
+  // stale cross-file state - mirrors theme-visual-baseline.spec.ts's own reset.
+  await upsertSetting("custom_footer_markup", "");
+  await upsertSetting("custom_footer_html", "");
+  await upsertSetting("site_verification", []);
+  await upsertSetting("public_integrations", []);
+  await upsertSetting("public_csp_revision", "theme-permission-locale-smoke");
   await upsertSetting(ACTIVE_THEME_SETTING_KEY, "blog");
   await upsertSetting(THEME_CONFIG_SETTING_KEY, {
     builtin: { colorPreset: "blue" },
