@@ -943,6 +943,7 @@ export const ja: Messages = {
       "このブラウザータブは廃止された旧フッターフィールドを使用しています。管理画面を再読み込みし、旧値を明示的に移行してください。",
     publicSecurityRevisionConflict:
       "別のタブでサイトのセキュリティ設定が変更されました。再度保存する前にこのページを再読み込みしてください。",
+    unknownTheme: "不明なテーマです",
     unknownColorPreset: "不明なカラープリセットです",
     customColorUnsupported: "現在のテーマはカスタムカラーに対応していません",
     customHueRequired: "カスタムカラーには有効な色相が必要です",

@@ -914,6 +914,7 @@ export const zh = {
     legacyFooterClientRefreshRequired:
       "当前浏览器标签页仍使用已停用的旧页脚字段；请刷新后台并显式迁移旧值。",
     publicSecurityRevisionConflict: "站点安全设置已在其他标签页变更；请刷新本页后再保存。",
+    unknownTheme: "未知的主题",
     unknownColorPreset: "未知的颜色预设",
     customColorUnsupported: "当前主题不支持自由取色",
     customHueRequired: "自定义颜色需要有效的色相值",

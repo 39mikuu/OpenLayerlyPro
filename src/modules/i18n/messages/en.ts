@@ -952,6 +952,7 @@ export const en: Messages = {
       "This browser tab uses the retired custom-footer field. Reload the admin page and migrate the legacy value explicitly.",
     publicSecurityRevisionConflict:
       "These site security settings changed in another tab. Reload this page before saving again.",
+    unknownTheme: "Unknown theme",
     unknownColorPreset: "Unknown color preset",
     customColorUnsupported: "The current theme does not support custom colors",
     customHueRequired: "A valid hue is required for custom colors",

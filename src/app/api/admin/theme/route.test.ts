@@ -89,7 +89,7 @@ describe("PUT /api/admin/theme", () => {
     const response = await PUT(request({ theme: "not-a-theme", colorPreset: "neutral" }));
 
     expect(response.status).toBe(400);
-    expect(await responseBody(response)).toMatchObject({ ok: false, error: "errors.unknownTheme" });
+    expect(await responseBody(response)).toMatchObject({ ok: false, error: "未知的主题" });
     expect(applyThemeUpdate).not.toHaveBeenCalled();
   });
 
@@ -101,7 +101,7 @@ describe("PUT /api/admin/theme", () => {
       expect(response.status).toBe(400);
       expect(await responseBody(response)).toMatchObject({
         ok: false,
-        error: "errors.unknownTheme",
+        error: "未知的主题",
       });
       expect(applyThemeUpdate).not.toHaveBeenCalled();
     },
