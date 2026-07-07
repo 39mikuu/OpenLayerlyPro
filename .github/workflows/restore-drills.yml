@@ -30,6 +30,7 @@ jobs:
             openlayerlypro_s7_source openlayerlypro_s7_restore \
             openlayerlypro_s7_v1_source openlayerlypro_s7_v1_restore \
             openlayerlypro_s7_s3_source openlayerlypro_s7_s3_restore \
-            openlayerlypro_s7_s3_restore_fail openlayerlypro_s7_s3_restore_autherr; do
+            openlayerlypro_s7_s3_restore_fail openlayerlypro_s7_s3_restore_autherr \
+            openlayerlypro_s7_s3_restore_secret_mismatch; do
             sudo -n docker compose -p "$project" down -v || true
           done
