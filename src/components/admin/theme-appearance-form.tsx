@@ -10,21 +10,38 @@ import { api } from "@/lib/client";
 
 export type ThemePresetOption = { id: string; name: string };
 
-export function ThemeAppearanceForm({
-  initial,
-  presets,
-  supportsCustomColor,
-}: {
-  initial: { colorPreset: string; customHue: number };
+export type ThemeOption = {
+  id: string;
+  name: string;
   presets: ThemePresetOption[];
   supportsCustomColor: boolean;
+  /** 该主题当前保存的配置（服务端已按主题分键读取并回落默认）。 */
+  initial: { colorPreset: string; customHue: number };
+};
+
+export function ThemeAppearanceForm({
+  activeTheme,
+  options,
+}: {
+  activeTheme: string;
+  options: ThemeOption[];
 }) {
   const router = useRouter();
   const t = useT();
-  const [colorPreset, setColorPreset] = useState(initial.colorPreset);
-  const [customHue, setCustomHue] = useState(initial.customHue);
+  const [themeId, setThemeId] = useState(activeTheme);
+  // 每个主题的配色编辑状态独立保留，来回切换不丢失。
+  const [configs, setConfigs] = useState<
+    Record<string, { colorPreset: string; customHue: number }>
+  >(() => Object.fromEntries(options.map((option) => [option.id, option.initial])));
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  const selected = options.find((option) => option.id === themeId) ?? options[0];
+  const config = configs[selected.id] ?? selected.initial;
+
+  function patchConfig(patch: Partial<{ colorPreset: string; customHue: number }>) {
+    setConfigs((prev) => ({ ...prev, [selected.id]: { ...config, ...patch } }));
+  }
 
   async function save() {
     setLoading(true);
@@ -32,7 +49,7 @@ export function ThemeAppearanceForm({
     try {
       await api("/api/admin/theme", {
         method: "PUT",
-        body: { colorPreset, customHue },
+        body: { theme: selected.id, colorPreset: config.colorPreset, customHue: config.customHue },
       });
       setMessage(t("admin.site.savedLive"));
       router.refresh();
@@ -46,23 +63,41 @@ export function ThemeAppearanceForm({
   return (
     <div className="max-w-xl space-y-4">
       <div className="space-y-2">
+        <Label htmlFor="active-theme">{t("admin.site.theme")}</Label>
+        <select
+          id="active-theme"
+          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          value={selected.id}
+          onChange={(event) => setThemeId(event.target.value)}
+        >
+          {options.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.name}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-muted-foreground">{t("admin.site.themeHelp")}</p>
+      </div>
+      <div className="space-y-2">
         <Label htmlFor="color-preset">{t("admin.site.colorPreset")}</Label>
         <select
           id="color-preset"
           className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-          value={colorPreset}
-          onChange={(event) => setColorPreset(event.target.value)}
+          value={config.colorPreset}
+          onChange={(event) => patchConfig({ colorPreset: event.target.value })}
         >
-          {presets.map((p) => (
+          {selected.presets.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
             </option>
           ))}
-          {supportsCustomColor ? <option value="custom">{t("admin.site.custom")}</option> : null}
+          {selected.supportsCustomColor ? (
+            <option value="custom">{t("admin.site.custom")}</option>
+          ) : null}
         </select>
         <p className="text-xs text-muted-foreground">{t("admin.site.colorScope")}</p>
       </div>
-      {colorPreset === "custom" && supportsCustomColor ? (
+      {config.colorPreset === "custom" && selected.supportsCustomColor ? (
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-4">
             <Label htmlFor="custom-hue">{t("admin.site.hue")}</Label>
@@ -70,9 +105,9 @@ export function ThemeAppearanceForm({
               <span
                 aria-hidden="true"
                 className="size-6 rounded-full border shadow-xs"
-                style={{ background: `oklch(0.6 0.18 ${customHue})` }}
+                style={{ background: `oklch(0.6 0.18 ${config.customHue})` }}
               />
-              <span>{customHue}°</span>
+              <span>{config.customHue}°</span>
             </div>
           </div>
           <input
@@ -81,8 +116,8 @@ export function ThemeAppearanceForm({
             min="0"
             max="359"
             step="1"
-            value={customHue}
-            onChange={(event) => setCustomHue(Number(event.target.value))}
+            value={config.customHue}
+            onChange={(event) => patchConfig({ customHue: Number(event.target.value) })}
             className="w-full accent-primary"
           />
           <p className="text-xs text-muted-foreground">{t("admin.site.hueHelp")}</p>

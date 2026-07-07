@@ -651,6 +651,9 @@ export const ja: Messages = {
       addLink: "リンクを追加",
       saveSettings: "設定を保存",
       appearance: "外観",
+      theme: "テーマ",
+      themeHelp:
+        "公開サイトのテーマを切り替えます。保存するとすぐに反映され、配色はテーマごとに保存されます。",
       appearanceDescription:
         "公開サイトの組み込みカラープリセットを選択します。ライト・ダークモードは訪問者が選択できます。",
       colorPreset: "カラープリセット",
@@ -940,6 +943,7 @@ export const ja: Messages = {
       "このブラウザータブは廃止された旧フッターフィールドを使用しています。管理画面を再読み込みし、旧値を明示的に移行してください。",
     publicSecurityRevisionConflict:
       "別のタブでサイトのセキュリティ設定が変更されました。再度保存する前にこのページを再読み込みしてください。",
+    unknownTheme: "不明なテーマです",
     unknownColorPreset: "不明なカラープリセットです",
     customColorUnsupported: "現在のテーマはカスタムカラーに対応していません",
     customHueRequired: "カスタムカラーには有効な色相が必要です",

@@ -3,14 +3,29 @@ import { ThemeAppearanceForm } from "@/components/admin/theme-appearance-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getT } from "@/modules/i18n/server";
 import { readAdminSiteInfo } from "@/modules/site";
-import { getActiveTheme, getThemeConfig } from "@/modules/theme";
+import { getActiveTheme, getThemeConfig, themes } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminSitePage() {
   const site = await readAdminSiteInfo();
   const theme = await getActiveTheme();
-  const themeConfig = await getThemeConfig(theme);
+  const themeOptions = await Promise.all(
+    Object.values(themes).map(async (option) => {
+      const config = await getThemeConfig(option);
+      return {
+        id: option.id,
+        name: option.name,
+        presets: option.colorPresets.map((p) => ({ id: p.id, name: p.name })),
+        supportsCustomColor: typeof option.colorVarsFromHue === "function",
+        initial: {
+          colorPreset: config.colorPreset,
+          customHue:
+            config.customHue ?? option.colorPresets.find((preset) => preset.hue !== null)?.hue ?? 0,
+        },
+      };
+    }),
+  );
   const t = await getT();
 
   return (
@@ -43,17 +58,7 @@ export default async function AdminSitePage() {
           <CardDescription>{t("admin.site.appearanceDescription")}</CardDescription>
         </CardHeader>
         <CardContent>
-          <ThemeAppearanceForm
-            initial={{
-              colorPreset: themeConfig.colorPreset,
-              customHue:
-                themeConfig.customHue ??
-                theme.colorPresets.find((preset) => preset.hue !== null)?.hue ??
-                0,
-            }}
-            presets={theme.colorPresets.map((p) => ({ id: p.id, name: p.name }))}
-            supportsCustomColor={typeof theme.colorVarsFromHue === "function"}
-          />
+          <ThemeAppearanceForm activeTheme={theme.id} options={themeOptions} />
         </CardContent>
       </Card>
     </div>

@@ -1,5 +1,6 @@
 export {
   ACTIVE_THEME_SETTING_KEY,
+  applyThemeUpdate,
   buildColorPresetCss,
   darkClassFromMode,
   DEFAULT_THEME_ID,
@@ -7,7 +8,6 @@ export {
   getThemeConfig,
   resolveColorHue,
   resolveThemeId,
-  setThemeConfig,
   THEME_CONFIG_SETTING_KEY,
   THEME_INIT_SCRIPT,
   THEME_MODE_COOKIE,

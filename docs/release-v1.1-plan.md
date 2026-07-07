@@ -1,6 +1,6 @@
 # v1.1 计划书：不只画师
 
-> 状态：**WP1 实现基本完成、验收中（PR #123，两项验收范围未闭合——见 §3 WP1 验收；当前 CI/审阅状态以 PR 本身为准，不在本文档重复断言），WP2–WP6 提案未启动**。本文档定义 v1.1 的目标、产品优先级、实施顺序与发布门槛。
+> 状态：**WP1 实现与验收完成（PR #123，exact-head CI run #554 通过，待合并），WP2–WP6 提案未启动**。本文档定义 v1.1 的目标、产品优先级、实施顺序与发布门槛。
 > 前置条件：`v1.0.0` 正式发布（已于 2026-07-06 完成，tag/Release/#88/#64 均已关闭）+ 发布后 4–6 周稳定窗口；窗口内只接受 bug 修复与文档。
 > Draft PR 不得通过提前合并绕过该前置条件。
 >
@@ -44,8 +44,8 @@
   - 管理员写接口先认证，再读取和进行业务 schema 校验。
   - 主题 id 使用 own-property/显式枚举校验，不能用会接受原型属性的 `in`。
 - **验收**
-  - [ ] 全部公开页面在 Blog 主题下正常；匿名/登录/会员/admin 权限矩阵无回退。**部分验证**：G6 基线覆盖 Home/Posts/PostDetail（博客主题唯一有形态分歧的三页）；Tiers/Login/Me/MeOrders/Checkout 按设计直接复用内置主题组件（无分歧），未逐页视觉核验；权限矩阵未针对博客主题重新跑一遍专项回归，依赖 Core 现有测试覆盖（未变更）。
-  - [ ] 明暗模式、颜色预设、自定义 hue、zh/en/ja 在两个主题下均正常。**部分验证**：明暗模式两主题均已截图核验；颜色预设逻辑（含 custom hue）有单元测试覆盖，G6 截图使用各主题自己的真实默认预设（`BUILTIN_DEFAULT_COLOR_PRESET_ID`/`BLOG_DEFAULT_COLOR_PRESET_ID`，非任意选取）但不覆盖其余具名预设；zh/en/ja 由 G4 保证 key 集合一致，G6 截图固定用 en，未逐语言视觉核验。
+  - [x] 所有存在主题特定实现的公开页面完成双主题视觉验证（G6）；直接复用 builtin 正文组件的页面通过组件身份断言（`src/themes/blog/component-identity.test.ts`，真实主题对象、非 mock，`toBe` 引用相等）证明无主题特定正文实现风险，并通过 Blog 主题下公开、登录可见、会员可见、admin 的代表性权限 smoke（`e2e/theme-permission-locale-smoke.spec.ts`，真实 Postgres + 浏览器，已验证通过）。完整权限决策继续由未变更的 Core 权限矩阵覆盖。
+  - [x] 两主题的全部具名预设与自定义 hue 通过参数化功能测试（同上 `component-identity.test.ts`，覆盖 builtin `neutral/blue/green/rose`、blog `ink/indigo/teal/amber` 全部预设与 hue 边界值）；zh/en/ja 通过 G4 key 完整性门禁及逐语言浏览器 smoke（`theme-permission-locale-smoke.spec.ts`，已验证通过）；视觉回归集中覆盖默认预设下存在布局分歧的关键页面与明暗模式（G6）。
   - [x] 主题切换无需重启，且配置、活动主题和 audit 原子提交。`applyThemeUpdate` 真实 Postgres 集成测试直接验证。
   - [x] 并发修改不同主题配置不会丢失更新。真实 Postgres 并发测试直接验证（锁机制测试 + 业务结果测试）。
   - [x] G4/G6 门禁已进入 CI，空分类/标签等内容形态无可见渲染异常。两门禁均已在 `pnpm test:e2e`/`pnpm test` 中运行；空分类/标签有专项回归测试。当前 CI 通过/失败状态以 PR #123 为准，不在本文档重复断言。

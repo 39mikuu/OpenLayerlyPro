@@ -658,6 +658,9 @@ export const en: Messages = {
       addLink: "Add link",
       saveSettings: "Save settings",
       appearance: "Appearance",
+      theme: "Theme",
+      themeHelp:
+        "Switch the theme used by the public site; changes apply on save. Colors are saved per theme.",
       appearanceDescription:
         "Choose a built-in color preset for the public site. Visitors control light and dark mode.",
       colorPreset: "Color preset",
@@ -949,6 +952,7 @@ export const en: Messages = {
       "This browser tab uses the retired custom-footer field. Reload the admin page and migrate the legacy value explicitly.",
     publicSecurityRevisionConflict:
       "These site security settings changed in another tab. Reload this page before saving again.",
+    unknownTheme: "Unknown theme",
     unknownColorPreset: "Unknown color preset",
     customColorUnsupported: "The current theme does not support custom colors",
     customHueRequired: "A valid hue is required for custom colors",
