@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getSetting, setSetting } from "@/modules/site";
+import { getSetting } from "@/modules/site";
 
 vi.mock("server-only", () => ({}));
 
@@ -13,8 +13,6 @@ import {
   getThemeConfig,
   resolveColorHue,
   resolveThemeId,
-  setThemeConfig,
-  THEME_CONFIG_SETTING_KEY,
   themes,
 } from "./registry";
 
@@ -63,10 +61,9 @@ vi.mock("@/themes/blog", () => ({
   },
 }));
 
-vi.mock("@/modules/site", () => ({ getSetting: vi.fn(), setSetting: vi.fn() }));
+vi.mock("@/modules/site", () => ({ getSetting: vi.fn() }));
 
 const mockedGetSetting = vi.mocked(getSetting);
-const mockedSetSetting = vi.mocked(setSetting);
 
 describe("theme registry", () => {
   beforeEach(() => {
@@ -79,6 +76,9 @@ describe("theme registry", () => {
     expect(resolveThemeId("blog")).toBe("blog");
     expect(resolveThemeId(null)).toBe("builtin");
     expect(resolveThemeId("nope")).toBe("builtin");
+    expect(resolveThemeId("toString")).toBe("builtin");
+    expect(resolveThemeId("constructor")).toBe("builtin");
+    expect(resolveThemeId("__proto__")).toBe("builtin");
     expect(DEFAULT_THEME_ID).toBe("builtin");
   });
 
@@ -168,16 +168,5 @@ describe("theme registry", () => {
     mockedGetSetting.mockResolvedValue({ colorPreset: "blue", customHue: 100 });
     expect((await getThemeConfig(themes.builtin)).colorPreset).toBe("blue");
     expect((await getThemeConfig(themes.blog)).colorPreset).toBe("ink");
-  });
-
-  it("setThemeConfig migrates legacy flat config and preserves other themes' entries", async () => {
-    mockedGetSetting.mockResolvedValue({ colorPreset: "blue", customHue: 100 });
-
-    await setThemeConfig(themes.blog, { colorPreset: "indigo", customHue: 275 });
-
-    expect(mockedSetSetting).toHaveBeenCalledWith(THEME_CONFIG_SETTING_KEY, {
-      builtin: { colorPreset: "blue", customHue: 100 },
-      blog: { colorPreset: "indigo", customHue: 275 },
-    });
   });
 });

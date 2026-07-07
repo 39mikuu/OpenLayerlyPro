@@ -21,7 +21,7 @@ export function PostCard({ post, t }: { post: PostCardView; t: Translate }) {
         {post.summary && (
           <p className="line-clamp-2 text-sm leading-7 text-muted-foreground">{post.summary}</p>
         )}
-        {(post.categories?.length || post.tags?.length) && (
+        {((post.categories?.length ?? 0) > 0 || (post.tags?.length ?? 0) > 0) && (
           <p className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
             {post.categories?.map((category) => (
               <span key={category.slug}>{category.name}</span>

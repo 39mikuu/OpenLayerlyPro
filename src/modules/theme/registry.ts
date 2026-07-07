@@ -1,8 +1,13 @@
 import "server-only";
 
+import { randomUUID } from "crypto";
+import { eq } from "drizzle-orm";
 import { cache } from "react";
 
-import { getSetting, setSetting } from "@/modules/site";
+import { getDb } from "@/db";
+import { siteSettings } from "@/db/schema";
+import { type AuditActor, recordAudit } from "@/modules/audit";
+import { getSetting } from "@/modules/site";
 import { blogTheme } from "@/themes/blog";
 import { builtinTheme } from "@/themes/builtin";
 
@@ -35,7 +40,7 @@ function normalizeHue(value: unknown, fallback: number): number {
 
 /** 把存储值解析为已知主题 id；未知或缺省回落内置主题。 */
 export function resolveThemeId(stored: string | null | undefined): ThemeId {
-  return stored && stored in themes ? (stored as ThemeId) : DEFAULT_THEME_ID;
+  return stored && Object.hasOwn(themes, stored) ? (stored as ThemeId) : DEFAULT_THEME_ID;
 }
 
 /**
@@ -88,25 +93,84 @@ export const getThemeConfig = cache(async (theme: Theme): Promise<ThemeConfig> =
   };
 });
 
-/**
- * 写入指定主题的站点级配置（管理员）。
- * 始终写回按主题分键的新形态；旧平铺形态在首次写入时迁移到默认主题名下，
- * 其他主题已有的配置原样保留。
- */
-export async function setThemeConfig(theme: Theme, config: ThemeConfig): Promise<void> {
-  const stored = await getSetting<unknown>(THEME_CONFIG_SETTING_KEY);
+function mergeThemeConfigEntries(
+  stored: unknown,
+  theme: Theme,
+  config: ThemeConfig,
+): Partial<Record<ThemeId, StoredThemeEntry>> {
   const next: Partial<Record<ThemeId, StoredThemeEntry>> = {};
   for (const id of Object.keys(themes) as ThemeId[]) {
     const entry = extractThemeEntry(stored, id);
     if (entry) next[id] = { colorPreset: entry.colorPreset, customHue: entry.customHue };
   }
   next[theme.id] = config;
-  await setSetting(THEME_CONFIG_SETTING_KEY, next);
+  return next;
 }
 
-/** 写入活动主题 id（管理员）；读取端 `resolveThemeId` 对未知值回落内置主题。 */
-export async function setActiveTheme(id: ThemeId): Promise<void> {
-  await setSetting(ACTIVE_THEME_SETTING_KEY, id);
+/**
+ * 原子应用管理员主题更新：锁定 theme_config 行、合并单主题配置、可选切换活动主题，
+ * 并在同一事务内记录审计事件，避免跨主题颜色配置并发写入互相覆盖。
+ */
+export async function applyThemeUpdate(
+  theme: Theme,
+  patch: { colorPreset: string; customHue?: number },
+  options: { switchActiveTheme: boolean; actor: AuditActor },
+): Promise<ThemeConfig> {
+  return getDb().transaction(async (tx) => {
+    await tx
+      .insert(siteSettings)
+      .values({ key: THEME_CONFIG_SETTING_KEY, valueJson: {} })
+      .onConflictDoNothing({ target: siteSettings.key });
+
+    const [row] = await tx
+      .select({ id: siteSettings.id, valueJson: siteSettings.valueJson })
+      .from(siteSettings)
+      .where(eq(siteSettings.key, THEME_CONFIG_SETTING_KEY))
+      .limit(1)
+      .for("update");
+    if (!row) throw new Error("Failed to lock theme_config setting");
+
+    const currentEntry = extractThemeEntry(row.valueJson, theme.id);
+    const nextEntry: ThemeConfig = {
+      colorPreset: patch.colorPreset,
+      customHue: normalizeHue(patch.customHue ?? currentEntry?.customHue, defaultCustomHue(theme)),
+    };
+    const next = mergeThemeConfigEntries(row.valueJson, theme, nextEntry);
+
+    await tx
+      .insert(siteSettings)
+      .values({ key: THEME_CONFIG_SETTING_KEY, valueJson: next })
+      .onConflictDoUpdate({
+        target: siteSettings.key,
+        set: { valueJson: next, updatedAt: new Date() },
+      });
+
+    if (options.switchActiveTheme) {
+      await tx
+        .insert(siteSettings)
+        .values({ key: ACTIVE_THEME_SETTING_KEY, valueJson: theme.id })
+        .onConflictDoUpdate({
+          target: siteSettings.key,
+          set: { valueJson: theme.id, updatedAt: new Date() },
+        });
+    }
+
+    await recordAudit(tx, {
+      entityType: "site_theme_config",
+      entityId: row.id,
+      action: "theme_updated",
+      actor: options.actor,
+      before: { themeId: theme.id, ...(currentEntry ?? {}) },
+      after: {
+        themeId: theme.id,
+        ...nextEntry,
+        activeThemeSwitched: options.switchActiveTheme,
+      },
+      correlationId: randomUUID(),
+    });
+
+    return nextEntry;
+  });
 }
 
 /** 把具名预设或 custom 配置解析为最终 hue；neutral / 未知配置不生成覆盖。 */

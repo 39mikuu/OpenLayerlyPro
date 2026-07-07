@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { requireAdmin } from "@/modules/auth/session";
-import { getActiveTheme, getThemeConfig, setActiveTheme, setThemeConfig } from "@/modules/theme";
+import { applyThemeUpdate, getActiveTheme } from "@/modules/theme";
 
 import { PUT } from "./route";
 
@@ -18,10 +18,9 @@ const builtin = {
 
 vi.mock("@/modules/auth/session", () => ({ requireAdmin: vi.fn() }));
 vi.mock("@/modules/theme", () => ({
+  applyThemeUpdate: vi.fn(),
   getActiveTheme: vi.fn(),
   getThemeConfig: vi.fn(),
-  setActiveTheme: vi.fn(),
-  setThemeConfig: vi.fn(),
   themes: {
     builtin: {
       id: "builtin",
@@ -64,7 +63,7 @@ describe("PUT /api/admin/theme", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(requireAdmin).mockResolvedValue({
-      id: "admin",
+      id: "00000000-0000-4000-8000-000000000001",
       email: "admin@example.com",
       passwordHash: null,
       displayName: null,
@@ -75,9 +74,7 @@ describe("PUT /api/admin/theme", () => {
       lastLoginAt: null,
     });
     vi.mocked(getActiveTheme).mockResolvedValue(builtin as never);
-    vi.mocked(getThemeConfig).mockResolvedValue({ colorPreset: "neutral", customHue: 256 });
-    vi.mocked(setThemeConfig).mockResolvedValue();
-    vi.mocked(setActiveTheme).mockResolvedValue();
+    vi.mocked(applyThemeUpdate).mockResolvedValue({ colorPreset: "neutral", customHue: 256 });
   });
 
   it("rejects unknown presets", async () => {
@@ -85,18 +82,30 @@ describe("PUT /api/admin/theme", () => {
 
     expect(response.status).toBe(400);
     expect(await responseBody(response)).toMatchObject({ ok: false });
-    expect(setThemeConfig).not.toHaveBeenCalled();
-    expect(setActiveTheme).not.toHaveBeenCalled();
+    expect(applyThemeUpdate).not.toHaveBeenCalled();
   });
 
   it("rejects unknown theme ids", async () => {
     const response = await PUT(request({ theme: "not-a-theme", colorPreset: "neutral" }));
 
     expect(response.status).toBe(400);
-    expect(await responseBody(response)).toMatchObject({ ok: false });
-    expect(setThemeConfig).not.toHaveBeenCalled();
-    expect(setActiveTheme).not.toHaveBeenCalled();
+    expect(await responseBody(response)).toMatchObject({ ok: false, error: "errors.unknownTheme" });
+    expect(applyThemeUpdate).not.toHaveBeenCalled();
   });
+
+  it.each(["toString", "constructor", "__proto__", "hasOwnProperty"])(
+    "rejects inherited object property theme id %s",
+    async (theme) => {
+      const response = await PUT(request({ theme, colorPreset: "neutral" }));
+
+      expect(response.status).toBe(400);
+      expect(await responseBody(response)).toMatchObject({
+        ok: false,
+        error: "errors.unknownTheme",
+      });
+      expect(applyThemeUpdate).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     { label: "missing hue", body: { colorPreset: "custom" } },
@@ -108,48 +117,61 @@ describe("PUT /api/admin/theme", () => {
 
     expect(response.status).toBe(400);
     expect(await responseBody(response)).toMatchObject({ ok: false });
-    expect(setThemeConfig).not.toHaveBeenCalled();
+    expect(applyThemeUpdate).not.toHaveBeenCalled();
   });
 
   it("stores only the selected id and numeric hue for custom colors", async () => {
+    vi.mocked(applyThemeUpdate).mockResolvedValue({ colorPreset: "custom", customHue: 42 });
+
     const response = await PUT(request({ colorPreset: "custom", customHue: 42 }));
 
     expect(response.status).toBe(200);
-    expect(setThemeConfig).toHaveBeenCalledWith(expect.objectContaining({ id: "builtin" }), {
-      colorPreset: "custom",
-      customHue: 42,
-    });
+    expect(applyThemeUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "builtin" }),
+      { colorPreset: "custom", customHue: 42 },
+      {
+        switchActiveTheme: false,
+        actor: { type: "admin", id: "00000000-0000-4000-8000-000000000001" },
+      },
+    );
     // 未提交 theme 字段：只改配色，不写活动主题。
-    expect(setActiveTheme).not.toHaveBeenCalled();
     expect(await responseBody(response)).toEqual({
       ok: true,
       data: { theme: "builtin", colorPreset: "custom", customHue: 42 },
     });
   });
 
-  it("preserves the previous custom hue when saving a named preset", async () => {
-    vi.mocked(getThemeConfig).mockResolvedValue({ colorPreset: "custom", customHue: 42 });
+  it("lets the transactional updater preserve the previous custom hue when saving a named preset", async () => {
+    vi.mocked(applyThemeUpdate).mockResolvedValue({ colorPreset: "blue", customHue: 42 });
 
     const response = await PUT(request({ colorPreset: "blue" }));
 
     expect(response.status).toBe(200);
-    expect(setThemeConfig).toHaveBeenCalledWith(expect.objectContaining({ id: "builtin" }), {
-      colorPreset: "blue",
-      customHue: 42,
+    expect(applyThemeUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "builtin" }),
+      { colorPreset: "blue", customHue: undefined },
+      expect.objectContaining({ switchActiveTheme: false }),
+    );
+    expect(await responseBody(response)).toEqual({
+      ok: true,
+      data: { theme: "builtin", colorPreset: "blue", customHue: 42 },
     });
   });
 
   it("switches the active theme and validates presets against the target theme", async () => {
-    vi.mocked(getThemeConfig).mockResolvedValue({ colorPreset: "ink", customHue: 275 });
+    vi.mocked(applyThemeUpdate).mockResolvedValue({ colorPreset: "indigo", customHue: 275 });
 
     const response = await PUT(request({ theme: "blog", colorPreset: "indigo" }));
 
     expect(response.status).toBe(200);
-    expect(setThemeConfig).toHaveBeenCalledWith(expect.objectContaining({ id: "blog" }), {
-      colorPreset: "indigo",
-      customHue: 275,
-    });
-    expect(setActiveTheme).toHaveBeenCalledWith("blog");
+    expect(applyThemeUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "blog" }),
+      { colorPreset: "indigo", customHue: undefined },
+      {
+        switchActiveTheme: true,
+        actor: { type: "admin", id: "00000000-0000-4000-8000-000000000001" },
+      },
+    );
     expect(await responseBody(response)).toEqual({
       ok: true,
       data: { theme: "blog", colorPreset: "indigo", customHue: 275 },
@@ -160,7 +182,6 @@ describe("PUT /api/admin/theme", () => {
     const response = await PUT(request({ theme: "blog", colorPreset: "blue" }));
 
     expect(response.status).toBe(400);
-    expect(setThemeConfig).not.toHaveBeenCalled();
-    expect(setActiveTheme).not.toHaveBeenCalled();
+    expect(applyThemeUpdate).not.toHaveBeenCalled();
   });
 });

@@ -6,6 +6,7 @@ import type { Translate } from "@/modules/i18n";
 import type { HomeView, PostCardView, PostListView } from "@/modules/theme/types";
 
 import { Home } from "./home";
+import { PostCard } from "./post-card";
 import { PostList } from "./post-list";
 
 const t: Translate = (key) => key;
@@ -91,5 +92,33 @@ describe("blog theme post list", () => {
     const html = renderToStaticMarkup(createElement(PostList, { t, view: { posts: [] } }));
 
     expect(html).toContain("posts.empty");
+  });
+});
+
+describe("blog theme post card", () => {
+  it("omits taxonomy markup without rendering a literal zero when categories and tags are empty", () => {
+    const html = renderToStaticMarkup(
+      createElement(PostCard, { t, post: post({ categories: [], tags: [] }) }),
+    );
+
+    expect(html).toContain("Hello");
+    expect(html).not.toContain(">0<");
+    expect(html).not.toContain(
+      'class="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground"',
+    );
+  });
+
+  it("renders taxonomy markup when categories or tags exist", () => {
+    const html = renderToStaticMarkup(
+      createElement(PostCard, {
+        t,
+        post: post({ categories: [], tags: [{ name: "日常", slug: "daily" }] }),
+      }),
+    );
+
+    expect(html).toContain("#日常");
+    expect(html).toContain(
+      'class="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground"',
+    );
   });
 });
