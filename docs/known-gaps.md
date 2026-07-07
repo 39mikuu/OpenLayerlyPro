@@ -71,8 +71,9 @@
 
 ## 已立项
 
-- **G6**：随 v1.1 WP1（PR #123，维护者 2026-07-07 例外提前启动）一并实施，随 WP1 合并进入 CI。
+（空）
 
 ## 已完成
 
 - **G4**：`src/modules/i18n/key-completeness.test.ts`，2026-07-07，随 PR #123。
+- **G6**：`e2e/theme-visual-baseline.spec.ts`，2026-07-07，随 PR #123；12 张截图（Home/Posts/PostDetail × 明暗 × 两主题），CI 绿（含一轮 CI 环境字体渲染差异修复，基线改用 CI 实际渲染结果）。
