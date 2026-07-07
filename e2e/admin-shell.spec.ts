@@ -338,7 +338,7 @@ test("view site performs a full document navigation and loads public integration
       response.request().resourceType() === "document" && new URL(response.url()).pathname === "/",
   );
 
-  await page.getByRole("link", { name: "查看站点" }).click();
+  await page.getByTestId("admin-view-site-link").click();
 
   const publicDocumentResponse = await publicDocumentResponsePromise;
   const publicPolicy =

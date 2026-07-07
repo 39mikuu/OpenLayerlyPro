@@ -40,7 +40,11 @@ function AccountActions({ labels, userEmail }: { labels: AdminShellLabels; userE
       <LocaleSwitcher />
       <div>
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- leaving admin must establish a new public CSP document */}
-        <a href="/" className="underline underline-offset-4 hover:text-foreground">
+        <a
+          href="/"
+          className="underline underline-offset-4 hover:text-foreground"
+          data-testid="admin-view-site-link"
+        >
           {labels.viewSite}
         </a>
       </div>
