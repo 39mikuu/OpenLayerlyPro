@@ -1,6 +1,8 @@
 # v1.0.0 最终验收与发布清单
 
-> 本文档是当前发布门槛，对应 issue #88。S6 #86 与 S7 #87 合并前不得创建 `v1.0.0` tag。旧的 `release-v0.2-checklist.md` 已被本清单取代，仅保留为历史说明。
+> **已完成（历史存档）。** #88 验收已在最终 release build 上全部通过，`v1.0.0` tag 与 GitHub Release 均已发布（验收证据见 Release 附录）。下方清单保留为验收时的门槛记录，未逐项回填勾选。
+>
+> 本文档曾是当时的发布门槛，对应 issue #88。S6 #86 与 S7 #87 合并前不得创建 `v1.0.0` tag。旧的 `release-v0.2-checklist.md` 已被本清单取代，仅保留为历史说明。
 
 代码合并、CI 通过或 handoff 文档完成均不等于可以发布。以下真实环境检查全部通过、结果记录归档后，才允许创建 `v1.0.0` tag 和 GitHub Release。
 
@@ -50,17 +52,22 @@
 ## 5. 部署、升级、备份与恢复
 
 - [ ] 全新 Docker Compose 安装、迁移和 `/admin/setup` 正常。
+- [ ] 未设置 `SESSION_SECRET` 时首次启动原子生成 `0600` 文件；restart 与容器重建后 session/HMAC 连续。
 - [ ] 首次初始化前，实例、Cloudflare Tunnel 与反向代理保持非公开；确认首次 setup 已完成（`initialized=true`）、`/admin/setup` 已关闭后再对公网暴露。setup 端点在初始化前对未认证访问者开放，第一个完成 setup 的调用者即成为管理员——并发不会造成部分初始化或重复管理员（见 `docs/audit/issue-103-concurrent-setup.md`），但公开暴露窗口仍须由运维在暴露前关闭。
 - [ ] 从受支持旧版本升级时，先解决 pending-payment 冲突，再运行 migrator 与 mandatory file-safety backfill，最后启动 app。
 - [ ] archive v2 包含 manifest 与完整 SHA-256；任一 payload 被篡改时在破坏正式数据库前失败。
+- [ ] archive v3 包含从 image OCI labels / image ID 读取的 image-authoritative runtime provenance（`RUNTIME_APP_VERSION`、`RUNTIME_SOURCE_COMMIT`、`RUNTIME_IMAGE_ID`、`BUILD_TIMESTAMP`）、独立 backup tool provenance（`BACKUP_TOOL_COMMIT`、`BACKUP_TOOL_SCRIPT_SHA256`）与 config-key fingerprint/format（`CONFIG_ENCRYPTION_KEY_SHA256`、`CONFIG_ENCRYPTION_KEY_FORMAT`）；v3 缺失、重复或格式错误的 required provenance/fingerprint/format 字段，以及任一 payload、config-key fingerprint 或 config-key format 被篡改时，均在破坏正式数据库前失败。
 - [ ] v1 legacy archive 的 migration prefix、更新、分叉、unknown 和显式 override 矩阵符合 fail-closed 规则。
+- [ ] v1/v2 archive 恢复路径明确 warning 其早于 image-authoritative provenance；版本/commit/image mismatch 仅 warning，不替代 migration identity hard gate。
 - [ ] v1 schema probe 的随机临时数据库在成功、失败和信号退出后均被清理；兼容检查前正式数据库未被 drop。
 - [ ] 恢复旧于 S1a 的数据时，缺失对象先 quarantine，随后 mandatory file-safety backfill 能重编码安全 raster 并隔离旧 SVG/HTML/非 raster。
 - [ ] 恢复时全部 `storage.delete_object` task（包括 terminal 行）被中和，最终收敛只为真实孤儿重新入队。
 - [ ] 非终态 provider event 与 dispatch task 成对复位；缺 task、饱和 attempts 和窄窗口均可幂等恢复。
 - [ ] local 与真实 S3/R2：备份 → 人为制造 DB/对象/任务/支付漂移 → 独立 Compose 恢复 → `/api/ready` 200。
 - [ ] 恢复后抽样核对管理员、会员、付款、订阅、文章、翻译、加密配置、文件和任务状态。
-- [ ] `SESSION_SECRET` 与 `CONFIG_ENCRYPTION_KEY` 的外部备份、恢复和丢失语义已由操作者实际确认。
+- [ ] file-backed `SESSION_SECRET` 随 checksum 归档并等值恢复；external secret 不入档且指纹匹配；历史归档缺少显式强 secret 时在破坏数据库前 fail-loud。
+- [ ] `SESSION_SECRET` 与 `CONFIG_ENCRYPTION_KEY` 的托管、恢复和丢失语义已由操作者实际确认。
+- [ ] 发布镜像通过内联 `OPENLAYERLY_BUILD_VERSION=<package version>`、`OPENLAYERLY_BUILD_COMMIT=<release SHA>`、`OPENLAYERLY_BUILD_TIMESTAMP=<UTC ISO timestamp>` 运行 `docker compose build app` 构建；这些变量未持久化到 `.env`，镜像 `/app/build-info.json`、OCI labels、镜像 ID 与备份 manifest v3 中的 runtime provenance 已抽样核对一致，且不存在会覆盖 build identity 的 `.env`/container 环境值。
 
 ## 6. 工程质量
 
@@ -68,6 +75,7 @@
 - [ ] `pnpm lint`
 - [ ] `pnpm format:check`
 - [ ] `pnpm check:request-bodies`
+- [ ] `pnpm check:auth-before-body`
 - [ ] `pnpm exec tsc --noEmit`
 - [ ] `RUN_DB_INTEGRATION_TESTS=true pnpm test`
 - [ ] `pnpm build:migrator`，并确认 `dist/migrate.mjs` 可在目标 one-off 容器中启动。

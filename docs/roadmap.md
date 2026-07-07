@@ -91,13 +91,12 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 
 ## v1.0 安全硬化 ▶
 
-已完成：S2、S3、订阅、S1a、S1b、S4、S5、S6、S7。
-
-剩余：
+已完成：S2、S3、订阅、S1a、S1b、S4、S5、S6、S7，以及首轮验收后的硬化线（截至 PR #128）。
 
 - **S6 ✅**：#86；nonce CSP、动态来源、legacy footer 迁移和浏览器验证。
 - **S7 ✅**：#87；archive v2、旧 archive 探测、文件安全修复、任务/支付事件中和和 DB↔存储收敛。
-- **最终验收 🚧**：#88；真实环境验证、三个 one-off artifact、tag 与 GitHub Release。
+- **验收后硬化 ✅**：CodeQL 修复（#95）、auth-before-body 静态门（#106/#125）、文件引用完整性（#97/#108/#124）、并发 setup 验证（#103/#110）、reconcile 时钟围栏（#102/#112/#113/#128）、admin keyset 分页（#96/#114）、SESSION_SECRET 自动生成（#120）、CONFIG_ENCRYPTION_KEY 原子供给（#126）、archive manifest v3 镜像权威 provenance（#127）、项目网站（#116/#117）。这些改变了运行时行为，#88 验收必须在最终 release build 上执行。
+- **最终验收 🚧**：#88；真实环境验证、三个 one-off artifact、tag 与 GitHub Release。版本号已在 release PR 中冻结为 1.0.0（版本提升是发布前最后一次代码变更）。
 
 ## Phase 8：Plugin v0 🚧
 

@@ -19,8 +19,8 @@ const patchSchema = z.object({
 
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, patchSchema);
     await requireAdmin();
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, patchSchema);
     const { id } = await ctx.params;
     return jsonOk(await updatePaymentMethod(id, input));
   } catch (err) {

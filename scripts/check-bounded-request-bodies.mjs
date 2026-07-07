@@ -4,8 +4,15 @@ import { pathToFileURL } from "node:url";
 
 import ts from "typescript";
 
-const BODY_METHODS = new Set(["json", "text", "formData"]);
-const HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]);
+import {
+  BODY_METHODS,
+  collectRequestAliases,
+  collectRouteHandlers,
+  isRequestCloneExpression,
+  isRequestConstructionExpression,
+  unwrapExpression,
+} from "./lib/route-ast.mjs";
+
 const ROUTE_FILE_PATTERN = /^route\.(?:[cm]?[jt]sx?)$/;
 
 async function collectRouteFiles(root) {
@@ -17,98 +24,6 @@ async function collectRouteFiles(root) {
     else if (entry.isFile() && ROUTE_FILE_PATTERN.test(entry.name)) files.push(absolute);
   }
   return files;
-}
-
-function unwrapExpression(node) {
-  let current = node;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isTypeAssertionExpression(current) ||
-    ts.isNonNullExpression(current) ||
-    ts.isSatisfiesExpression(current) ||
-    ts.isPartiallyEmittedExpression(current)
-  ) {
-    current = current.expression;
-  }
-  return current;
-}
-
-function routeHandlerName(node) {
-  if (ts.isFunctionDeclaration(node) && node.name && HTTP_METHODS.has(node.name.text)) {
-    return node.name.text;
-  }
-
-  if (
-    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-    ts.isVariableDeclaration(node.parent) &&
-    ts.isIdentifier(node.parent.name) &&
-    HTTP_METHODS.has(node.parent.name.text)
-  ) {
-    return node.parent.name.text;
-  }
-
-  return null;
-}
-
-function collectRouteHandlers(sourceFile) {
-  const handlers = [];
-
-  function visit(node) {
-    const name = routeHandlerName(node);
-    if (name) handlers.push({ name, node });
-    ts.forEachChild(node, visit);
-  }
-
-  visit(sourceFile);
-  return handlers;
-}
-
-function isAliasExpression(expression, aliases) {
-  const unwrapped = unwrapExpression(expression);
-  return ts.isIdentifier(unwrapped) && aliases.has(unwrapped.text);
-}
-
-function collectRequestAliases(handler) {
-  const firstParameter = handler.parameters[0];
-  if (!firstParameter || !ts.isIdentifier(firstParameter.name)) return new Set();
-
-  const aliases = new Set([firstParameter.name.text]);
-  let changed = true;
-
-  while (changed) {
-    changed = false;
-
-    function visit(node) {
-      if (
-        ts.isVariableDeclaration(node) &&
-        ts.isIdentifier(node.name) &&
-        node.initializer &&
-        isAliasExpression(node.initializer, aliases) &&
-        !aliases.has(node.name.text)
-      ) {
-        aliases.add(node.name.text);
-        changed = true;
-      }
-
-      if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        ts.isIdentifier(node.left) &&
-        isAliasExpression(node.right, aliases) &&
-        !aliases.has(node.left.text)
-      ) {
-        aliases.add(node.left.text);
-        changed = true;
-      }
-
-      ts.forEachChild(node, visit);
-    }
-
-    if (handler.body) visit(handler.body);
-  }
-
-  return aliases;
 }
 
 function getBodyRead(call, aliases) {
@@ -125,9 +40,75 @@ function getBodyRead(call, aliases) {
     if (argument && ts.isStringLiteralLike(argument)) method = argument.text;
   }
 
-  if (!method || !BODY_METHODS.has(method) || !target || !ts.isIdentifier(target)) return null;
-  if (!aliases.has(target.text)) return null;
-  return { requestName: target.text, method };
+  if (!method || !BODY_METHODS.has(method) || !target) return null;
+  if (ts.isIdentifier(target) && aliases.has(target.text))
+    return { requestName: target.text, method };
+  if (isRequestCloneExpression(target, aliases)) return { requestName: "request.clone()", method };
+  if (isRequestConstructionExpression(target, aliases))
+    return { requestName: "new Request", method };
+  return null;
+}
+
+function expressionContainsRequestAlias(expression, aliases) {
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isIdentifier(unwrapped)) return aliases.has(unwrapped.text);
+  if (isRequestCloneExpression(unwrapped, aliases)) return true;
+  if (isRequestConstructionExpression(unwrapped, aliases)) return true;
+  if (ts.isObjectLiteralExpression(unwrapped)) {
+    return unwrapped.properties.some((property) => {
+      if (ts.isPropertyAssignment(property)) {
+        return expressionContainsRequestAlias(property.initializer, aliases);
+      }
+      if (ts.isShorthandPropertyAssignment(property)) {
+        return expressionContainsRequestAlias(property.name, aliases);
+      }
+      if (ts.isSpreadAssignment(property)) {
+        return expressionContainsRequestAlias(property.expression, aliases);
+      }
+      return false;
+    });
+  }
+  if (ts.isArrayLiteralExpression(unwrapped)) {
+    return unwrapped.elements.some((element) => {
+      if (ts.isSpreadElement(element)) {
+        return expressionContainsRequestAlias(element.expression, aliases);
+      }
+      return expressionContainsRequestAlias(element, aliases);
+    });
+  }
+  return false;
+}
+
+function getRequestContainerEscape(node, aliases) {
+  if (!ts.isObjectLiteralExpression(node) && !ts.isArrayLiteralExpression(node)) return null;
+  if (!expressionContainsRequestAlias(node, aliases)) return null;
+  return { requestName: "request container", method: "container" };
+}
+
+function getArrayFactoryContainerEscape(node, aliases) {
+  let args;
+
+  if (ts.isCallExpression(node)) {
+    const callee = unwrapExpression(node.expression);
+    if (
+      !ts.isPropertyAccessExpression(callee) ||
+      callee.name.text !== "of" ||
+      !ts.isIdentifier(callee.expression) ||
+      callee.expression.text !== "Array"
+    ) {
+      return null;
+    }
+    args = node.arguments;
+  } else if (ts.isNewExpression(node)) {
+    const callee = unwrapExpression(node.expression);
+    if (!ts.isIdentifier(callee) || callee.text !== "Array") return null;
+    args = node.arguments ?? [];
+  } else {
+    return null;
+  }
+
+  if (!args.some((argument) => expressionContainsRequestAlias(argument, aliases))) return null;
+  return { requestName: "request container", method: "container" };
 }
 
 export function findDirectBodyReads(source, fileName = "route.ts") {
@@ -153,6 +134,28 @@ export function findDirectBodyReads(source, fileName = "route.ts") {
             line: position.line + 1,
             column: position.character + 1,
             ...bodyRead,
+          });
+        }
+      }
+      if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+        const factoryEscape = getArrayFactoryContainerEscape(node, aliases);
+        if (factoryEscape) {
+          const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+          violations.push({
+            line: position.line + 1,
+            column: position.character + 1,
+            ...factoryEscape,
+          });
+        }
+      }
+      if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) {
+        const containerEscape = getRequestContainerEscape(node, aliases);
+        if (containerEscape) {
+          const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+          violations.push({
+            line: position.line + 1,
+            column: position.character + 1,
+            ...containerEscape,
           });
         }
       }

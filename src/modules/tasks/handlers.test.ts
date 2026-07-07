@@ -274,6 +274,20 @@ describe("task handlers", () => {
     expect(mocks.dispatchPaymentProviderEvent).toHaveBeenCalledWith(eventRowId);
   });
 
+  it("defers provider inbox tasks when the event row is busy", async () => {
+    const eventRowId = "550e8400-e29b-41d4-a716-446655440000";
+    mocks.dispatchPaymentProviderEvent.mockRejectedValue(
+      new ApiError(503, "paymentProviderEventBusy", {
+        leaseUntil: "2026-06-25T08:00:00.000Z",
+      }),
+    );
+
+    const result = await runTaskHandler(task({ eventRowId }, "payment_provider_event.dispatch"));
+
+    expect(mocks.dispatchPaymentProviderEvent).toHaveBeenCalledWith(eventRowId);
+    expect(result.deferUntil).toEqual(new Date("2026-06-25T08:00:00.250Z"));
+  });
+
   it("reuses the deduplicated reconcile task row by deferring it after success", async () => {
     const result = await runTaskHandler(task({}, "subscription.reconcile"));
     expect(mocks.reconcileSubscriptions).toHaveBeenCalledOnce();

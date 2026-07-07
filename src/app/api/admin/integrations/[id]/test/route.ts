@@ -12,7 +12,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     const admin = await requireAdmin();
     const { id } = await ctx.params;
     const integration = integrations.find((item) => item.id === id);
-    // 单一守卫同时覆盖未知 id、Turnstile、Tunnel（均无 test）。
+    // 单一守卫覆盖未知 id 以及任何未实现 test() 的集成（如 Turnstile、Translation、Tunnel）。
     if (!integration?.test) {
       return jsonError(400, "integrationTestUnsupported");
     }

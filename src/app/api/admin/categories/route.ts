@@ -26,8 +26,8 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const input = await readJsonWithLimit(request, getEnv().REQUEST_JSON_MAX_BYTES, categorySchema);
     await requireAdmin();
+    const input = await readJsonWithLimit(request, getEnv().REQUEST_JSON_MAX_BYTES, categorySchema);
     return jsonOk(await createCategory(input));
   } catch (error) {
     return handleApiError(error);

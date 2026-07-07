@@ -11,7 +11,8 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
-  SESSION_SECRET: z.string().default("change-me"),
+  SESSION_SECRET: z.string().optional(),
+  SESSION_SECRET_FILE: z.string().optional(),
 
   TURNSTILE_ENABLED: z
     .string()
@@ -145,24 +146,12 @@ export type Env = z.infer<typeof envSchema>;
 
 let cached: Env | null = null;
 
-const MIN_SESSION_SECRET_LENGTH = 32;
-
 /**
- * 运行时安全校验。`next build` 期间（NEXT_PHASE=phase-production-build）跳过，
- * 因为构建环境（CI / Docker build）没有真实 secret；运行时严格生效。
+ * 运行时安全校验。SESSION_SECRET 由独立 resolver 在 Node.js 运行时解析，
+ * 避免构建阶段读取或要求真实 secret。
  */
 function assertRuntimeSecurity(env: Env) {
   if (process.env.NEXT_PHASE === "phase-production-build") return;
-
-  if (env.NODE_ENV === "production") {
-    const secret = env.SESSION_SECRET;
-    if (!secret || secret === "change-me" || secret.length < MIN_SESSION_SECRET_LENGTH) {
-      throw new Error(
-        "SESSION_SECRET must be set to a strong random value in production. " +
-          "Generate one with: openssl rand -base64 32",
-      );
-    }
-  }
 
   if (env.SECURITY_HSTS_ENABLED && new URL(env.APP_URL).protocol !== "https:") {
     throw new Error("SECURITY_HSTS_ENABLED=true requires an HTTPS APP_URL");

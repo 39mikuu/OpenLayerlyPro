@@ -54,12 +54,12 @@ const bodySchema = z.object({
 
 export async function PUT(req: NextRequest) {
   try {
+    await requireAdmin();
     const {
       theme: themeId,
       colorPreset,
       customHue,
     } = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
-    await requireAdmin();
     // 只接受注册表内的主题 id；缺省表示只改当前活动主题的配色。
     if (themeId !== undefined && !isThemeId(themeId)) {
       return jsonError(400, "unknownTheme");

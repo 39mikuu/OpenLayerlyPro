@@ -3,7 +3,6 @@ import { and, desc, eq, ne, or, sql } from "drizzle-orm";
 
 import { type DbClient, getDb, type TxClient } from "@/db";
 import {
-  files,
   memberships,
   type MembershipTier,
   membershipTiers,
@@ -22,6 +21,7 @@ import {
   normalizeAdminPageSize,
 } from "@/modules/admin/pagination";
 import { recordAudit } from "@/modules/audit";
+import { lockFileReferences } from "@/modules/file/references";
 import { grantMembership, revokeMembership } from "@/modules/membership";
 import { enqueuePaymentProofCleanup } from "@/modules/payment/proof-lifecycle";
 import { recordEvent } from "@/modules/system/events";
@@ -52,8 +52,12 @@ export async function createPaymentMethod(input: {
   isActive?: boolean;
   sortOrder?: number;
 }): Promise<PaymentMethod> {
-  const [method] = await getDb().insert(paymentMethods).values(input).returning();
-  return method;
+  return getDb().transaction(async (tx) => {
+    if (input.qrFileId) await lockPaymentQrReference(tx, input.qrFileId);
+    const [method] = await tx.insert(paymentMethods).values(input).returning();
+    if (!method) throw new Error("payment method insert failed");
+    return method;
+  });
 }
 
 export async function updatePaymentMethod(
@@ -66,13 +70,16 @@ export async function updatePaymentMethod(
     sortOrder: number;
   }>,
 ): Promise<PaymentMethod> {
-  const [method] = await getDb()
-    .update(paymentMethods)
-    .set({ ...patch, updatedAt: new Date() })
-    .where(eq(paymentMethods.id, id))
-    .returning();
-  if (!method) throw new ApiError(404, "paymentMethodNotFound");
-  return method;
+  return getDb().transaction(async (tx) => {
+    if (patch.qrFileId) await lockPaymentQrReference(tx, patch.qrFileId);
+    const [method] = await tx
+      .update(paymentMethods)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(paymentMethods.id, id))
+      .returning();
+    if (!method) throw new ApiError(404, "paymentMethodNotFound");
+    return method;
+  });
 }
 
 export async function deletePaymentMethod(id: string): Promise<void> {
@@ -97,12 +104,41 @@ export type PaymentRequestDetail = {
   userEmail: string;
 };
 
-/** 校验付款截图文件：必须存在、用途为 payment_proof、且由本人上传 */
-async function assertOwnProofFile(proofFileId: string, userId: string): Promise<void> {
-  const [file] = await getDb().select().from(files).where(eq(files.id, proofFileId)).limit(1);
-  if (!file || file.purpose !== "payment_proof" || file.createdBy !== userId) {
-    throw new ApiError(400, "invalidPaymentProof");
-  }
+async function lockPaymentQrReference(tx: TxClient, fileId: string): Promise<void> {
+  await lockFileReferences(tx, [
+    {
+      fileId,
+      invalid: (reason) =>
+        reason === "quarantined"
+          ? new ApiError(410, "fileQuarantined")
+          : new ApiError(400, "invalidRequest", { field: "qrFileId" }),
+      validate: (record) => {
+        if (record.purpose !== "payment_qr") {
+          throw new ApiError(400, "invalidRequest", { field: "qrFileId" });
+        }
+      },
+    },
+  ]);
+}
+
+/** 锁定并校验付款截图：必须存在、未隔离、用途正确且由本人上传。 */
+async function lockOwnProofReference(
+  tx: TxClient,
+  proofFileId: string,
+  userId: string,
+): Promise<void> {
+  await lockFileReferences(tx, [
+    {
+      fileId: proofFileId,
+      ownerId: userId,
+      invalid: () => new ApiError(400, "invalidPaymentProof"),
+      validate: (record) => {
+        if (record.purpose !== "payment_proof") {
+          throw new ApiError(400, "invalidPaymentProof");
+        }
+      },
+    },
+  ]);
 }
 
 async function assertActivePaymentMethod(paymentMethodId: string): Promise<void> {
@@ -130,10 +166,12 @@ export async function createPaymentRequest(input: {
   if (!tier || !tier.isActive) throw new ApiError(404, "tierNotFound");
   if (!tier.purchaseEnabled) throw new ApiError(400, "tierUnavailable");
   if (input.paymentMethodId) await assertActivePaymentMethod(input.paymentMethodId);
-  if (input.proofFileId) await assertOwnProofFile(input.proofFileId, input.userId);
 
   const request = await db.transaction(async (tx) => {
     await acquirePendingPaymentLock(tx, input.userId);
+    if (input.proofFileId) {
+      await lockOwnProofReference(tx, input.proofFileId, input.userId);
+    }
     // pending uniqueness is serialized by PostgreSQL transactions.
     const [existing] = await tx
       .select()
@@ -287,7 +325,6 @@ export async function resubmitPaymentProof(input: {
   userId: string;
   proofFileId: string;
 }): Promise<PaymentRequest> {
-  await assertOwnProofFile(input.proofFileId, input.userId);
   const correlationId = randomUUID();
   return getDb().transaction(async (tx) => {
     await acquirePendingPaymentLock(tx, input.userId);
@@ -295,8 +332,11 @@ export async function resubmitPaymentProof(input: {
       .select()
       .from(paymentRequests)
       .where(and(eq(paymentRequests.id, input.requestId), eq(paymentRequests.userId, input.userId)))
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (!request) throw new ApiError(404, "paymentRequestNotFound");
+    if (request.status !== "rejected") throw new ApiError(400, "resubmitRejectedOnly");
+    await lockOwnProofReference(tx, input.proofFileId, input.userId);
 
     const [updated] = await tx
       .update(paymentRequests)
@@ -321,18 +361,7 @@ export async function resubmitPaymentProof(input: {
         ),
       )
       .returning();
-    if (!updated) {
-      const [current] = await tx
-        .select({ status: paymentRequests.status })
-        .from(paymentRequests)
-        .where(
-          and(eq(paymentRequests.id, input.requestId), eq(paymentRequests.userId, input.userId)),
-        )
-        .limit(1);
-      if (!current) throw new ApiError(404, "paymentRequestNotFound");
-      if (current.status !== "rejected") throw new ApiError(400, "resubmitRejectedOnly");
-      throw new ApiError(400, "pendingPaymentExists");
-    }
+    if (!updated) throw new ApiError(400, "pendingPaymentExists");
     await recordAudit(tx, {
       entityType: "payment_request",
       entityId: updated.id,
@@ -649,9 +678,9 @@ export async function createAutoCheckout(input: {
 export async function confirmAutoPayment(
   providerId: string,
   event: PaidPaymentEvent,
+  tx?: TxClient,
 ): Promise<void> {
-  const db = getDb();
-  await db.transaction(async (tx) => {
+  const apply = async (tx: TxClient) => {
     const [processed] = await tx
       .select({ id: paymentRequests.id })
       .from(paymentRequests)
@@ -756,15 +785,20 @@ export async function confirmAutoPayment(
       correlationId,
       causationId: paymentEvent.id,
     });
-  });
+  };
+  if (tx) {
+    await apply(tx);
+    return;
+  }
+  await getDb().transaction(apply);
 }
 
 export async function expireAutoPayment(
   providerId: string,
   event: ExpiredPaymentEvent,
+  tx?: TxClient,
 ): Promise<void> {
-  const db = getDb();
-  await db.transaction(async (tx) => {
+  const apply = async (tx: TxClient) => {
     const [processed] = await tx
       .select({ id: paymentRequests.id })
       .from(paymentRequests)
@@ -815,7 +849,12 @@ export async function expireAutoPayment(
       },
       correlationId,
     });
-  });
+  };
+  if (tx) {
+    await apply(tx);
+    return;
+  }
+  await getDb().transaction(apply);
 }
 
 export async function rejectPaymentRequest(
@@ -950,31 +989,47 @@ async function applyApprovedPaymentReversal(
 export async function reverseAutoPayment(
   providerId: string,
   event: ReversalPaymentEvent,
-): Promise<void> {
-  const db = getDb();
-  const [mappedPayment] = await db
-    .select({ id: paymentRequests.id })
-    .from(paymentRequests)
-    .where(
-      and(
-        eq(paymentRequests.provider, providerId),
-        eq(paymentRequests.providerPaymentRef, event.paymentRef),
-      ),
-    )
-    .limit(1);
-
-  let checkout: Awaited<
+  tx?: TxClient,
+  checkout?: Awaited<
     ReturnType<
       NonNullable<Awaited<ReturnType<typeof getPaymentProvider>>>["resolveCheckoutByPaymentIntent"]
     >
-  > = null;
-  if (!mappedPayment) {
-    const provider = await getPaymentProvider(providerId);
-    if (!provider) throw new ApiError(400, "paymentProviderUnsupported");
-    checkout = await provider.resolveCheckoutByPaymentIntent(event.paymentRef);
-  }
+  >,
+): Promise<void> {
+  const db = getDb();
+  const resolvedCheckout =
+    checkout === undefined && !tx
+      ? await (async () => {
+          const [mappedPayment] = await db
+            .select({ id: paymentRequests.id })
+            .from(paymentRequests)
+            .where(
+              and(
+                eq(paymentRequests.provider, providerId),
+                eq(paymentRequests.providerPaymentRef, event.paymentRef),
+              ),
+            )
+            .limit(1);
 
-  await db.transaction(async (tx) => {
+          if (mappedPayment) return null;
+          const provider = await getPaymentProvider(providerId);
+          if (!provider) throw new ApiError(400, "paymentProviderUnsupported");
+          return provider.resolveCheckoutByPaymentIntent(event.paymentRef);
+        })()
+      : (checkout ?? null);
+
+  const apply = async (tx: TxClient) => {
+    const [mappedPayment] = await tx
+      .select({ id: paymentRequests.id })
+      .from(paymentRequests)
+      .where(
+        and(
+          eq(paymentRequests.provider, providerId),
+          eq(paymentRequests.providerPaymentRef, event.paymentRef),
+        ),
+      )
+      .limit(1);
+
     const [processed] = await tx
       .select({ id: paymentRequests.id })
       .from(paymentRequests)
@@ -999,14 +1054,14 @@ export async function reverseAutoPayment(
       .limit(1)
       .for("update");
 
-    if (!request && checkout) {
+    if (!request && resolvedCheckout) {
       [request] = await tx
         .select()
         .from(paymentRequests)
         .where(
           and(
             eq(paymentRequests.provider, providerId),
-            eq(paymentRequests.providerRef, checkout.providerRef),
+            eq(paymentRequests.providerRef, resolvedCheckout.providerRef),
           ),
         )
         .limit(1)
@@ -1014,7 +1069,7 @@ export async function reverseAutoPayment(
     }
 
     if (!request) {
-      if (mappedPayment || checkout?.owned) {
+      if (mappedPayment || resolvedCheckout?.owned) {
         logger.error("Payment reversal target unavailable", {
           providerId,
           category: "owned_target_missing",
@@ -1023,19 +1078,23 @@ export async function reverseAutoPayment(
       }
       logger.warn("Payment reversal ignored", {
         providerId,
-        category: checkout ? "external_checkout" : "checkout_not_found",
+        category: resolvedCheckout ? "external_checkout" : "checkout_not_found",
       });
       return;
     }
 
-    if (checkout?.owned && checkout.requestId && checkout.requestId !== request.id) {
+    if (
+      resolvedCheckout?.owned &&
+      resolvedCheckout.requestId &&
+      resolvedCheckout.requestId !== request.id
+    ) {
       throw new ApiError(409, "paymentReferenceMismatch");
     }
     if (
-      checkout &&
+      resolvedCheckout &&
       request.providerRef &&
       !request.providerRef.startsWith("creating:") &&
-      request.providerRef !== checkout.providerRef
+      request.providerRef !== resolvedCheckout.providerRef
     ) {
       throw new ApiError(409, "paymentReferenceMismatch");
     }
@@ -1110,7 +1169,13 @@ export async function reverseAutoPayment(
       auditAfterExtra,
       notifyMember: true,
     });
-  });
+  };
+
+  if (tx) {
+    await apply(tx);
+    return;
+  }
+  await db.transaction(apply);
 }
 
 export async function reversePaymentApproval(

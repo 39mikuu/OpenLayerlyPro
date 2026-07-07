@@ -1,10 +1,28 @@
 # Changelog
 
-## Unreleased — v1.0.0
+## v1.0.0 — 2026-07-05 (release candidate; tag pending #88)
 
-OpenLayerlyPro is in pre-release v1.0 final acceptance. Payment, subscription, content, file, theme, translation, S6 security response headers (#86), and S7 backup/restore consistency (#87) are present on `main`; the remaining gate is the real-environment acceptance checklist (#88 / `docs/release-v1.0-checklist.md`).
+OpenLayerlyPro v1.0.0 is feature- and hardening-complete. Payment, subscription, content, file, theme, translation, S6 security response headers (#86), S7 backup/restore consistency (#87), and the post-acceptance hardening line through PR #128 are all on `main`, and the package version is frozen at 1.0.0.
 
-Do not create a production `v1.0.0` tag until #88 is complete.
+The production `v1.0.0` tag and GitHub Release are created only after the real-environment acceptance checklist (#88 / `docs/release-v1.0-checklist.md`) passes on the exact release build. Do not tag before that.
+
+### Final-Acceptance Hardening (after the first release-candidate report)
+
+The 2026-06-29 release-candidate report was gathered at commit `4768aafa`; the following merged afterwards and changed runtime behavior, so #88 acceptance must be executed against the final release build:
+
+- Resolved the initial CodeQL findings (PR #95) and pinned all third-party CI actions by commit (PR #105).
+- Authenticated admin config routes before any body parsing (PR #106), then generalized this into the `check:auth-before-body` static CI gate — import-provenance and dominance analysis over every protected write handler, hardened against alias/container/wrapper bypasses (PR #125).
+- Hardened restore-script child-shell argument handling (PR #107).
+- Indexed cover/proof file references and bounded deletion existence checks while preserving the counted `fileInUse` contract (PRs #97/#108), then fixed file-reference integrity end to end: UUID case normalization in `lockFileReferences`, the fail-loud 0020 preflight migration with NOWAIT locking, and quarantine-race regression coverage with real backfill/pre-scan functions (PR #124).
+- Verified concurrent first-time `/admin/setup` initialization is atomic (single admin, no partial init) and documented the pre-exposure operational gate (PRs #110, `docs/audit/issue-103-concurrent-setup.md`).
+- Fixed subscription reconcile clock ordering: `statusEventAt` now advances through an end-of-second provider-clock observation fence with a strict-`<` live-row guard, fails closed on missing provider timestamps, and reconciled invoices use Stripe paid/created timestamps instead of local time (PRs #113, issues #102/#112; comment-precision follow-up PR #128).
+- Recorded dispatcher claim-path benchmarks and classified batch-claim scalability as a non-blocking P2 follow-up (PR #111, `docs/audit/issue-101-dispatcher-design.md`).
+- Added stable keyset pagination with scoped cursors to the admin payment list (PR #114).
+- Retained archived-post inline images instead of deleting them with the source post (PR #118).
+- Auto-generated `SESSION_SECRET` on first boot as an atomic `0600` file, stopped pinning `SESSION_SECRET_FILE` in compose so operator `.env` is honored, and hardened the restore E2E drills against host residue (PR #120).
+- Provisioned `CONFIG_ENCRYPTION_KEY` atomically: single-descriptor key-file validation, chown without dereference, isolated env-mode key path, and a pre-drop archive key probe during restore (PR #126).
+- Introduced archive manifest v3 with image-authoritative runtime provenance read from OCI labels/image ID (`RUNTIME_APP_VERSION`, `RUNTIME_SOURCE_COMMIT`, `RUNTIME_IMAGE_ID`, `BUILD_TIMESTAMP`), independent backup-tool provenance, and config-key fingerprint/format fields — all fail-closed on missing, duplicated, or tampered values; backup now supports paused containers, binds backup/restore to one container, and wires compose build identity (PR #127).
+- Added the project website (GitHub Pages, zh/en/ja) under `website/` (PRs #116/#117).
 
 ### Payments and Memberships
 
@@ -28,7 +46,7 @@ Do not create a production `v1.0.0` tag until #88 is complete.
 - Added S4 authentication hardening: trusted resolved/unresolved identities, high-entropy login codes, keyed email identities, persistent delivery fences, correct-code-first semantics, and source-scoped pre-comparison budgets.
 - Added S5 mail reliability: failure classification, operator defer/dead behavior, stable Message-ID, delivery ledger, retry/admin visibility, and stale/cancel send guards.
 - Added encrypted configuration groups and admin UI for SMTP, Turnstile, storage, upload limits, Stripe, and AI translation.
-- Added archive v2 integrity, legacy schema probing, restored-task/provider-event neutralization, mandatory file-safety remediation, local/S3 convergence, and isolated recovery drills.
+- Added archive v2 integrity, legacy schema probing, restored-task/provider-event neutralization, mandatory file-safety remediation, local/S3 convergence, and isolated recovery drills; archive manifest v3 adds image-authoritative runtime provenance, backup-tool provenance, and config-key fingerprint/format fail-closed validation.
 - Added nonce-based CSP, global security response headers, dynamic Turnstile/storage/video/integration sources, revision fencing, and safe migration of legacy custom footer code.
 
 ### i18n, Translation, and Theme

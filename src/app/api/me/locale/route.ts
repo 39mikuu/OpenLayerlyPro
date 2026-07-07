@@ -14,8 +14,8 @@ const bodySchema = z.object({ locale: z.enum(SUPPORTED_LOCALES) });
 
 export async function PUT(req: NextRequest) {
   try {
-    const { locale } = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const user = await requireUser();
+    const { locale } = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     await updateUserLocale(user.id, locale);
     return jsonOk({ locale });
   } catch (err) {

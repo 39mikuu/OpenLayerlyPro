@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getDb } from "@/db";
@@ -21,6 +21,7 @@ import {
   PermanentTaskError,
   renewTaskLease,
   retryTask,
+  sweepExpiredFinalAttemptTasksAt,
   taskBackoffMs,
 } from "./index";
 
@@ -145,6 +146,247 @@ describeWithDatabase("durable tasks integration", () => {
     });
   });
 
+  it("claims only due pending and failed work from the claimable branch", async () => {
+    const now = new Date("2026-06-18T10:00:00.000Z");
+    const [pendingDue, failedDue, pendingFuture, failedFuture, succeeded, dead] = await db
+      .insert(tasks)
+      .values([
+        { kind: "email", payloadJson: {}, runAfter: new Date(now.getTime() - 5_000) },
+        {
+          kind: "email",
+          payloadJson: {},
+          status: "failed",
+          attempts: 1,
+          runAfter: new Date(now.getTime() - 4_000),
+        },
+        { kind: "email", payloadJson: {}, runAfter: new Date(now.getTime() + 5_000) },
+        {
+          kind: "email",
+          payloadJson: {},
+          status: "failed",
+          attempts: 1,
+          runAfter: new Date(now.getTime() + 4_000),
+        },
+        { kind: "email", payloadJson: {}, status: "succeeded", runAfter: now },
+        { kind: "email", payloadJson: {}, status: "dead", runAfter: now },
+      ])
+      .returning();
+
+    const claimed = await claimDueTasksAt(10, now, { lockToken: "claimable-worker" });
+
+    expect(claimed.map((task) => task.id)).toEqual([pendingDue!.id, failedDue!.id]);
+    expect(claimed).toEqual([
+      expect.objectContaining({ attempts: 1, lockedBy: "claimable-worker" }),
+      expect.objectContaining({ attempts: 2, lockedBy: "claimable-worker" }),
+    ]);
+    const untouched = await db
+      .select()
+      .from(tasks)
+      .where(inArray(tasks.id, [pendingFuture!.id, failedFuture!.id, succeeded!.id, dead!.id]));
+    expect(untouched).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: pendingFuture!.id, status: "pending", lockedBy: null }),
+        expect.objectContaining({ id: failedFuture!.id, status: "failed", lockedBy: null }),
+        expect.objectContaining({ id: succeeded!.id, status: "succeeded", lockedBy: null }),
+        expect.objectContaining({ id: dead!.id, status: "dead", lockedBy: null }),
+      ]),
+    );
+  });
+
+  it("claims only retryable stale processing work from the lease branch", async () => {
+    const now = new Date("2026-06-18T10:00:00.000Z");
+    const [retryable, fresh, exhausted, dead] = await db
+      .insert(tasks)
+      .values([
+        {
+          kind: "email",
+          payloadJson: {},
+          status: "processing",
+          attempts: 1,
+          maxAttempts: 5,
+          lockedBy: "stale-worker",
+          leaseUntil: new Date(now.getTime() - 1_000),
+        },
+        {
+          kind: "email",
+          payloadJson: {},
+          status: "processing",
+          attempts: 1,
+          lockedBy: "fresh-worker",
+          leaseUntil: new Date(now.getTime() + 60_000),
+        },
+        {
+          kind: "email",
+          payloadJson: {},
+          status: "processing",
+          attempts: 5,
+          maxAttempts: 5,
+          lockedBy: "exhausted-worker",
+          leaseUntil: new Date(now.getTime() - 1_000),
+        },
+        {
+          kind: "email",
+          payloadJson: {},
+          status: "dead",
+          leaseUntil: new Date(now.getTime() - 1_000),
+        },
+      ])
+      .returning();
+
+    const claimed = await claimDueTasksAt(10, now, { lockToken: "lease-worker" });
+
+    expect(claimed.map((task) => task.id)).toEqual([retryable!.id]);
+    expect(claimed[0]).toMatchObject({
+      status: "processing",
+      attempts: 2,
+      lockedBy: "lease-worker",
+    });
+    await expect(db.select().from(tasks).where(eq(tasks.id, fresh!.id))).resolves.toMatchObject([
+      expect.objectContaining({ status: "processing", attempts: 1, lockedBy: "fresh-worker" }),
+    ]);
+    await expect(db.select().from(tasks).where(eq(tasks.id, exhausted!.id))).resolves.toMatchObject(
+      [
+        expect.objectContaining({
+          status: "processing",
+          attempts: 5,
+          lockedBy: "exhausted-worker",
+        }),
+      ],
+    );
+    await expect(db.select().from(tasks).where(eq(tasks.id, dead!.id))).resolves.toMatchObject([
+      expect.objectContaining({ status: "dead", lockedBy: null }),
+    ]);
+  });
+
+  it("prioritizes stale processing claims before due pending and failed work", async () => {
+    const now = new Date("2026-06-18T10:30:00.000Z");
+    const [pendingFirst, staleSecond, failedThird, staleFourth, pendingFifth] = await db
+      .insert(tasks)
+      .values([
+        { kind: "email", payloadJson: {}, runAfter: new Date("2026-06-18T10:00:00.000Z") },
+        {
+          kind: "email",
+          payloadJson: {},
+          status: "processing",
+          attempts: 1,
+          runAfter: new Date("2026-06-18T10:05:00.000Z"),
+          lockedBy: "stale-second",
+          leaseUntil: new Date(now.getTime() - 1_000),
+        },
+        {
+          kind: "email",
+          payloadJson: {},
+          status: "failed",
+          attempts: 1,
+          runAfter: new Date("2026-06-18T10:10:00.000Z"),
+        },
+        {
+          kind: "email",
+          payloadJson: {},
+          status: "processing",
+          attempts: 1,
+          runAfter: new Date("2026-06-18T10:15:00.000Z"),
+          lockedBy: "stale-fourth",
+          leaseUntil: new Date(now.getTime() - 1_000),
+        },
+        { kind: "email", payloadJson: {}, runAfter: new Date("2026-06-18T10:20:00.000Z") },
+      ])
+      .returning();
+
+    const firstClaim = await claimDueTasksAt(2, now, { lockToken: "order-a" });
+    expect(firstClaim.map((task) => task.id)).toEqual([staleSecond!.id, staleFourth!.id]);
+
+    const secondClaim = await claimDueTasksAt(2, now, { lockToken: "order-b" });
+    expect(secondClaim.map((task) => task.id)).toEqual([pendingFirst!.id, failedThird!.id]);
+    await expect(
+      db.select().from(tasks).where(eq(tasks.id, pendingFifth!.id)),
+    ).resolves.toMatchObject([expect.objectContaining({ status: "pending", lockedBy: null })]);
+  });
+
+  it("fills remaining claim budget from due pending and failed work after stale reclaims", async () => {
+    const now = new Date("2026-06-18T11:00:00.000Z");
+    const [pendingFirst, staleSecond, failedThird, staleFourth, pendingFifth, failedSixth] =
+      await db
+        .insert(tasks)
+        .values([
+          { kind: "email", payloadJson: {}, runAfter: new Date("2026-06-18T10:00:00.000Z") },
+          {
+            kind: "email",
+            payloadJson: {},
+            status: "processing",
+            attempts: 1,
+            runAfter: new Date("2026-06-18T10:01:00.000Z"),
+            lockedBy: "stale-1",
+            leaseUntil: new Date(now.getTime() - 1_000),
+          },
+          {
+            kind: "email",
+            payloadJson: {},
+            status: "failed",
+            attempts: 1,
+            runAfter: new Date("2026-06-18T10:02:00.000Z"),
+          },
+          {
+            kind: "email",
+            payloadJson: {},
+            status: "processing",
+            attempts: 1,
+            runAfter: new Date("2026-06-18T10:03:00.000Z"),
+            lockedBy: "stale-2",
+            leaseUntil: new Date(now.getTime() - 1_000),
+          },
+          { kind: "email", payloadJson: {}, runAfter: new Date("2026-06-18T10:04:00.000Z") },
+          {
+            kind: "email",
+            payloadJson: {},
+            status: "failed",
+            attempts: 1,
+            runAfter: new Date("2026-06-18T10:05:00.000Z"),
+          },
+        ])
+        .returning();
+
+    const claimed = await claimDueTasksAt(4, now, { lockToken: "limit-worker" });
+
+    expect(claimed.map((task) => task.id)).toEqual([
+      staleSecond!.id,
+      staleFourth!.id,
+      pendingFirst!.id,
+      failedThird!.id,
+    ]);
+    await expect(
+      db.select().from(tasks).where(eq(tasks.id, pendingFifth!.id)),
+    ).resolves.toMatchObject([expect.objectContaining({ status: "pending", lockedBy: null })]);
+    await expect(
+      db.select().from(tasks).where(eq(tasks.id, failedSixth!.id)),
+    ).resolves.toMatchObject([expect.objectContaining({ status: "failed", lockedBy: null })]);
+  });
+
+  it("does not double-claim mixed pending and stale processing work concurrently", async () => {
+    const now = new Date("2026-06-18T10:00:00.000Z");
+    await db.insert(tasks).values([
+      { kind: "email", payloadJson: {}, runAfter: new Date(now.getTime() - 2_000) },
+      {
+        kind: "email",
+        payloadJson: {},
+        status: "processing",
+        attempts: 1,
+        runAfter: new Date(now.getTime() - 1_000),
+        lockedBy: "stale-worker",
+        leaseUntil: new Date(now.getTime() - 1_000),
+      },
+    ]);
+
+    const [first, second] = await Promise.all([
+      claimDueTasksAt(1, now, { lockToken: "mixed-worker-a" }),
+      claimDueTasksAt(1, now, { lockToken: "mixed-worker-b" }),
+    ]);
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(first[0]?.id).not.toBe(second[0]?.id);
+  });
+
   it("counts lease recovery as a new execution and does not exceed max attempts", async () => {
     const now = new Date("2026-06-18T10:00:00.000Z");
     const [created] = await db
@@ -174,6 +416,16 @@ describeWithDatabase("durable tasks integration", () => {
     await expect(claimDueTasksAt(1, afterFinalLease, { lockToken: "claim-c" })).resolves.toEqual(
       [],
     );
+    const [stillProcessing] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(stillProcessing).toMatchObject({
+      status: "processing",
+      attempts: 2,
+      lockedBy: "claim-b",
+    });
+
+    await expect(sweepExpiredFinalAttemptTasksAt(afterFinalLease)).resolves.toMatchObject([
+      { id: created!.id, kind: "email", attempts: 2 },
+    ]);
     const [stored] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
     expect(stored).toMatchObject({
       status: "dead",
@@ -522,7 +774,17 @@ describeWithDatabase("durable tasks integration", () => {
       })
       .returning();
 
-    await expect(claimDueTasksAt(1, now, { lockToken: "recovery-worker" })).resolves.toEqual([]);
+    await expect(sweepExpiredFinalAttemptTasksAt(now)).resolves.toMatchObject([
+      { id: created!.id, kind: "auth.login_code_email", attempts: 5 },
+    ]);
+    const [stored] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(stored).toMatchObject({
+      status: "dead",
+      attempts: 5,
+      lockedBy: null,
+      leaseUntil: null,
+      lastError: "Task lease expired after the final execution attempt",
+    });
     expect(warn).toHaveBeenCalledWith("email task dead-lettered", {
       taskId: created!.id,
       kind: "auth.login_code_email",

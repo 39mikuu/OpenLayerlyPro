@@ -23,11 +23,11 @@ const previewSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    const input = await readJsonWithLimit(req, POST_JSON_MAX_BYTES, previewSchema);
     const admin = await requireAdmin();
     if (!rateLimit(`admin-markdown-preview:${admin.id}`, PREVIEW_LIMIT, PREVIEW_WINDOW_MS)) {
       throw new ApiError(429, "requestRateLimited");
     }
+    const input = await readJsonWithLimit(req, POST_JSON_MAX_BYTES, previewSchema);
 
     return jsonOk(
       { html: renderMarkdown(input.markdown, { embedMode: input.embedMode }) },

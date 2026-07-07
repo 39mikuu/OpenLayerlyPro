@@ -17,8 +17,8 @@ const contentSchema = z
 
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    const { body } = await readJsonWithLimit(req, POST_JSON_MAX_BYTES, contentSchema);
     await requireAdmin();
+    const { body } = await readJsonWithLimit(req, POST_JSON_MAX_BYTES, contentSchema);
     const { id } = await ctx.params;
     return jsonOk(await savePublishedPostBody(id, body));
   } catch (err) {

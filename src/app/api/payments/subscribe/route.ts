@@ -13,8 +13,8 @@ const bodySchema = z.object({ tierId: z.string().uuid() });
 
 export async function POST(req: NextRequest) {
   try {
-    const { tierId } = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const user = await requireUser();
+    const { tierId } = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const appUrl = getEnv().APP_URL.replace(/\/$/, "");
     return jsonOk(
       await createSubscriptionCheckout({

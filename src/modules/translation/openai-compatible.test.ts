@@ -48,11 +48,35 @@ describe("OpenAI-compatible translation provider", () => {
       "https://api.example.com/v1/chat/completions",
       expect.objectContaining({
         method: "POST",
+        redirect: "error",
         headers: expect.objectContaining({
           Authorization: "Bearer provider-secret",
         }),
       }),
     );
+  });
+
+  it.each([
+    ["not a valid URL", "not a url"],
+    ["a query string", "https://api.example.com/v1?tenant=abc"],
+    ["embedded userinfo", "https://user:pass@api.example.com/v1"],
+    ["a fragment", "https://api.example.com/v1#frag"],
+    ["a non-http(s) scheme", "ftp://files.example.com/v1"],
+  ])("refuses to call a legacy endpoint with %s", async (_label, endpoint) => {
+    const fetcher = vi.fn() as unknown as typeof fetch;
+    const provider = createOpenAiCompatibleProvider(
+      {
+        apiKey: "provider-secret",
+        endpoint,
+        model: "translation-model",
+      },
+      fetcher,
+    );
+
+    await expect(
+      provider.translate({ text: "正文", sourceLocale: "zh", targetLocale: "ja" }),
+    ).rejects.toMatchObject({ status: 400, code: "translationEndpointInvalid" });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("does not leak the api key when the provider fails", async () => {
