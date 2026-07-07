@@ -13,6 +13,8 @@ import {
   tags,
 } from "../src/db/schema";
 import { LOCALE_COOKIE } from "../src/modules/i18n/config";
+import { BLOG_DEFAULT_COLOR_PRESET_ID } from "../src/themes/blog/color-presets";
+import { BUILTIN_DEFAULT_COLOR_PRESET_ID } from "../src/themes/builtin/color-presets";
 
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001";
 // Duplicated rather than imported from src/modules/theme/registry.ts: that module
@@ -100,9 +102,11 @@ test.beforeAll(async () => {
       site_verification: [],
       public_integrations: [],
       public_csp_revision: "visual-baseline",
+      // Each theme's own real default preset (not an arbitrary fixture choice) - this
+      // is what a fresh, unconfigured install actually renders.
       theme_config: {
-        builtin: { colorPreset: "neutral" },
-        blog: { colorPreset: "ink" },
+        builtin: { colorPreset: BUILTIN_DEFAULT_COLOR_PRESET_ID },
+        blog: { colorPreset: BLOG_DEFAULT_COLOR_PRESET_ID },
       },
     };
 

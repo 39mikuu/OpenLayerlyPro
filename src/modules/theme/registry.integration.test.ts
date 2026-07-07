@@ -96,6 +96,12 @@ describeWithDatabase("theme registry transactional updates", () => {
         await expect(blocked).resolves.toHaveLength(1);
         await c2`commit`;
       } finally {
+        // If waitForQueryLock throws (e.g. the lock was never detected), c1/c2 would
+        // otherwise be released back to the pool with their transactions still open,
+        // poisoning later tests' connections. Rolling back is a harmless no-op on the
+        // happy path (nothing left to roll back once both sides already committed).
+        await c1`rollback`.catch(() => {});
+        await c2`rollback`.catch(() => {});
         await c1.release();
         await c2.release();
       }

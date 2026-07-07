@@ -27,4 +27,4 @@ the migration and browser observation before enforcing CSP. See
 
 ## Theme Configuration
 
-The active built-in theme reads public identity plus `theme_config` color settings. Theme configuration is presentation-only and cannot change membership, payment, content visibility, file authorization, or integration secrets.
+The active theme (`builtin` or `blog`, selectable from the appearance card) reads public identity plus its own `theme_config` color settings. Theme configuration is presentation-only and cannot change membership, payment, content visibility, file authorization, or integration secrets.
