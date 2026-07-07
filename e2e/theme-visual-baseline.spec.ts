@@ -195,9 +195,13 @@ for (const theme of themes) {
               await expect(page.getByText(`#${TAG_NAME}`).first()).toBeVisible();
             }
 
+            // Both chrome footers render `new Date().getFullYear()`, so the copyright
+            // line's year is a known-volatile region - mask it or this baseline fails
+            // every January regardless of whether the UI actually changed.
             await expect(page).toHaveScreenshot(`${theme}-${mode}-${pageCase.id}.png`, {
               animations: "disabled",
               fullPage: true,
+              mask: [page.getByText(/©\s*\d{4}/)],
             });
           });
         }
