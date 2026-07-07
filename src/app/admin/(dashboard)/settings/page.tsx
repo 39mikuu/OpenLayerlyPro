@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/admin/primitives";
 import { SmtpConfigForm } from "@/components/admin/smtp-config-form";
 import { StorageConfigForm } from "@/components/admin/storage-config-form";
 import { StripeConfigForm } from "@/components/admin/stripe-config-form";
@@ -28,8 +29,8 @@ export default async function AdminSettingsPage() {
   ]);
   const t = await getT();
   return (
-    <div className="space-y-6 max-w-2xl">
-      <h1 className="text-xl font-bold">{t("admin.settings.title")}</h1>
+    <div className="max-w-2xl space-y-6">
+      <PageHeader description={t("admin.settings.description")} title={t("admin.settings.title")} />
       <Card>
         <CardHeader>
           <CardTitle className="text-base">{t("admin.settings.stripe")}</CardTitle>

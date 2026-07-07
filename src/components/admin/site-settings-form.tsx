@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { ErrorSummary } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -307,14 +308,10 @@ export function SiteSettingsForm({
             )}
           </div>
         ) : null}
-        {initial.publicSecurityConfigurationErrors.map((error) => (
-          <div
-            key={error}
-            className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm"
-          >
-            {error}
-          </div>
-        ))}
+        <ErrorSummary
+          errors={initial.publicSecurityConfigurationErrors}
+          title={t("admin.site.publicSecurityConfigurationErrors")}
+        />
         <div className="space-y-2">
           <Label>{t("admin.site.customFooterMarkup")}</Label>
           <Textarea

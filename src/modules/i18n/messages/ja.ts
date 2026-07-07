@@ -253,6 +253,7 @@ export const ja: Messages = {
       uploadFailed: "アップロードに失敗しました",
       deleteFailed: "削除に失敗しました",
       saved: "保存しました",
+      saving: "保存中...",
       sortOrder: "並び順",
       source: "ソース",
       status: "状態",
@@ -489,6 +490,7 @@ export const ja: Messages = {
     },
     posts: {
       title: "コンテンツ",
+      description: "公開、ログイン限定、メンバー限定のコンテンツを作成・編集・公開します。",
       new: "新規コンテンツ",
       editTitle: "コンテンツを編集",
       titleColumn: "タイトル",
@@ -619,6 +621,7 @@ export const ja: Messages = {
       publicSecurity: "公開ページのセキュリティと連携",
       publicSecurityDescription:
         "安全なフッター、サイト確認メタデータ、nonce で許可する連携を個別に設定します。",
+      publicSecurityConfigurationErrors: "公開ページセキュリティ設定エラー",
       cspStatus: "設定 CSP モード：{configured}、ブラウザー適用モード：{effective}。",
       customFooterMarkup: "安全なフッターマークアップ",
       safeMarkupHelp:
@@ -665,6 +668,7 @@ export const ja: Messages = {
     },
     settings: {
       title: "システム設定",
+      description: "外部連携、アップロード制限、実行時設定のソースを一元管理します。",
       smtp: "SMTP メール",
       smtpDescription:
         "管理画面の設定は環境変数より優先されます（管理画面 > 環境変数 > 既定値）。機密情報は暗号化されます。",
