@@ -63,39 +63,45 @@ describeWithDatabase("theme registry transactional updates", () => {
     return row?.valueJson;
   }
 
-  it("locks the theme_config row with SELECT FOR UPDATE", async () => {
-    await db.insert(siteSettings).values({
-      key: THEME_CONFIG_SETTING_KEY,
-      valueJson: { builtin: { colorPreset: "neutral", customHue: 256 } },
-    });
+  // waitForQueryLock alone budgets up to 5s; vitest's 5s default test timeout would
+  // otherwise race it and abandon the test mid-poll, orphaning c1's uncommitted
+  // lock-holding transaction on a pooled connection and hanging every later hook
+  // that needs to touch site_settings.
+  const LOCK_TEST_TIMEOUT_MS = 15_000;
 
-    const c1 = await raw.reserve();
-    const c2 = await raw.reserve();
-    try {
-      await c1`begin`;
-      await c2`begin`;
-      await c1`select id from site_settings where key = ${THEME_CONFIG_SETTING_KEY} for update`;
+  it(
+    "locks the theme_config row with SELECT FOR UPDATE",
+    async () => {
+      await db.insert(siteSettings).values({
+        key: THEME_CONFIG_SETTING_KEY,
+        valueJson: { builtin: { colorPreset: "neutral", customHue: 256 } },
+      });
 
-      // postgres.js queries are dispatched lazily on `.then()`/`.execute()`, not on
-      // construction — without this, `blocked` never actually reaches the server
-      // until the `expect(blocked)` below, by which point c1 has already committed
-      // and there is nothing left to block on.
-      const blocked =
-        c2`select id from site_settings where key = ${THEME_CONFIG_SETTING_KEY} for update`.execute();
-      await waitForQueryLock("%site_settings%for update%");
+      const c1 = await raw.reserve();
+      const c2 = await raw.reserve();
+      try {
+        await c1`begin`;
+        await c2`begin`;
+        await c1`select id from site_settings where key = ${THEME_CONFIG_SETTING_KEY} for update`;
 
-      await c1`commit`;
-      await expect(blocked).resolves.toHaveLength(1);
-      await c2`commit`;
-    } finally {
-      await c1.release();
-      await c2.release();
-    }
-  }, // waitForQueryLock alone budgets up to 5s; vitest's 5s default test timeout
-  // would otherwise race it and abandon the test mid-poll, orphaning c1's
-  // uncommitted lock-holding transaction on a pooled connection and hanging
-  // every later hook that needs to touch site_settings.
-  15_000);
+        // postgres.js queries are dispatched lazily on `.then()`/`.execute()`, not on
+        // construction — without this, `blocked` never actually reaches the server
+        // until the `expect(blocked)` below, by which point c1 has already committed
+        // and there is nothing left to block on.
+        const blocked =
+          c2`select id from site_settings where key = ${THEME_CONFIG_SETTING_KEY} for update`.execute();
+        await waitForQueryLock("%site_settings%for update%");
+
+        await c1`commit`;
+        await expect(blocked).resolves.toHaveLength(1);
+        await c2`commit`;
+      } finally {
+        await c1.release();
+        await c2.release();
+      }
+    },
+    LOCK_TEST_TIMEOUT_MS,
+  );
 
   it("preserves both themes' config when different themes update concurrently", async () => {
     await db.insert(siteSettings).values({
