@@ -4,6 +4,7 @@ import { inArray, sql } from "drizzle-orm";
 import { closeDb, getDb } from "../src/db";
 import {
   categories,
+  memberships,
   membershipTiers,
   postCategories,
   postFiles,
@@ -66,6 +67,10 @@ test.beforeAll(async () => {
     await tx.delete(posts);
     await tx.delete(categories);
     await tx.delete(tags);
+    // Other e2e specs (e.g. theme-permission-locale-smoke.spec.ts) can leave a
+    // memberships row referencing a membership_tiers row; delete the child rows
+    // first or this FK-constrained delete fails.
+    await tx.delete(memberships);
     await tx.delete(membershipTiers);
 
     // Other e2e specs (e.g. s6-security-headers.spec.ts, which runs first) can leave

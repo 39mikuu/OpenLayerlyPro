@@ -32,7 +32,7 @@ function defaultCustomHue(theme: Theme): number {
   return theme.colorPresets.find((preset) => preset.hue !== null)?.hue ?? 0;
 }
 
-function normalizeHue(value: unknown, fallback: number): number {
+export function normalizeHue(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   const rounded = Math.round(value);
   return ((rounded % 360) + 360) % 360;
