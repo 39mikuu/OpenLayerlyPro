@@ -1,4 +1,4 @@
-import { readFileSync } from "fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "fs";
 
 import { getEnv } from "@/lib/env";
 
@@ -19,15 +19,38 @@ function validateSecret(value: string, requireStrong: boolean): string {
   return value;
 }
 
+// Exported so a regression test can exercise this exact flag combination against a FIFO
+// in a killable child process, without risking a hang in-process if it were ever weakened.
+export const SECRET_FILE_OPEN_FLAGS =
+  constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
 function readSecretFile(path: string): string {
-  let content: string;
+  let descriptor: number;
   try {
-    content = readFileSync(path, "utf8");
+    // O_NONBLOCK prevents FIFO targets from hanging; it is a no-op for regular files.
+    descriptor = openSync(path, SECRET_FILE_OPEN_FLAGS);
   } catch {
     throw new Error("session secret file is unreadable");
   }
-  const value = content.replace(/\r?\n$/, "");
-  return validateSecret(value, true);
+  try {
+    let metadata;
+    try {
+      metadata = fstatSync(descriptor);
+    } catch {
+      throw new Error("session secret file is unreadable");
+    }
+    if (!metadata.isFile()) throw new Error("session secret file is unreadable");
+    let content: string;
+    try {
+      content = readFileSync(descriptor, "utf8");
+    } catch {
+      throw new Error("session secret file is unreadable");
+    }
+    const value = content.replace(/\r?\n$/, "");
+    return validateSecret(value, true);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 export function getSessionSecret(): string {
