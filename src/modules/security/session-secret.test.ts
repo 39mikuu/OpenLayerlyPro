@@ -1,8 +1,11 @@
+import { execFile, execFileSync } from "child_process";
 import { createHmac } from "crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { SECRET_FILE_OPEN_FLAGS } from "./session-secret";
 
 const original = {
   NODE_ENV: process.env.NODE_ENV,
@@ -148,6 +151,55 @@ describe("session secret resolver", () => {
     process.env.SESSION_SECRET_FILE = unreadable;
     const unreadableModule = await import("./session-secret");
     expect(() => unreadableModule.getSessionSecret()).toThrow("session secret file is unreadable");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects a symlink session secret target without reading through it", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "olp-session-secret-"));
+    const attacker = path.join(dir, "attacker-secret");
+    const file = path.join(dir, "secret-link");
+    const attackerSecret = "attacker-controlled-session-secret-012345678901234";
+    writeFileSync(attacker, attackerSecret, { mode: 0o600 });
+    symlinkSync(attacker, file);
+
+    vi.stubEnv("NODE_ENV", "production");
+    delete process.env.SESSION_SECRET;
+    process.env.SESSION_SECRET_FILE = file;
+    const { getSessionSecret } = await loadSecret();
+
+    expect(() => getSessionSecret()).toThrow("session secret file is unreadable");
+    expect(readFileSync(attacker, "utf8")).toBe(attackerSecret);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("opens a FIFO using the production open flags without blocking", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "olp-session-secret-"));
+    const file = path.join(dir, "secret-fifo");
+    execFileSync("mkfifo", [file]);
+
+    // session-secret.ts imports @/lib/env, so spawning the real module needs this
+    // project's path-alias setup; calling the sync reader in-process could hang the
+    // worker forever if O_NONBLOCK ever regressed. Instead, pass the actual exported
+    // SECRET_FILE_OPEN_FLAGS value into a killable child process, so this test fails
+    // on the real flags rather than a copy that could silently drift from them.
+    const child = execFile(process.execPath, [
+      "-e",
+      `const fs = require("fs");
+const descriptor = fs.openSync(process.argv[1], Number(process.argv[2]));
+fs.closeSync(descriptor);`,
+      file,
+      String(SECRET_FILE_OPEN_FLAGS),
+    ]);
+
+    const outcome = await Promise.race([
+      new Promise<"exited">((resolve) => child.on("exit", () => resolve("exited"))),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 2_000)),
+    ]);
+
+    if (outcome === "timeout") child.kill("SIGKILL");
+
+    expect(outcome).toBe("exited");
+    expect(child.exitCode).toBe(0);
     rmSync(dir, { recursive: true, force: true });
   });
 });
