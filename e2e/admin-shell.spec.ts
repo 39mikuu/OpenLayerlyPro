@@ -20,6 +20,8 @@ const ADMIN_EMAIL = "admin-shell-e2e@example.com";
 const MEMBER_EMAIL = "admin-shell-member@example.com";
 const POST_SLUG = "admin-shell-e2e-post";
 const TIER_SLUG = "admin-shell-e2e-tier";
+const PUBLIC_INTEGRATION_SCRIPT_URL = "https://admin-shell-public.example/integration.js";
+const PUBLIC_INTEGRATION_ORIGIN = "https://admin-shell-public.example";
 const SEEDED_SETTING_KEYS = [
   "initialized",
   "site_name",
@@ -32,6 +34,27 @@ const SEEDED_SETTING_KEYS = [
   "public_integrations",
   "public_csp_revision",
 ] as const;
+
+type SiteSettingsSnapshot = Map<string, unknown>;
+let originalSiteSettings: SiteSettingsSnapshot | null = null;
+
+async function snapshotSiteSettings(): Promise<SiteSettingsSnapshot> {
+  const rows = await getDb()
+    .select({ key: siteSettings.key, valueJson: siteSettings.valueJson })
+    .from(siteSettings)
+    .where(inArray(siteSettings.key, [...SEEDED_SETTING_KEYS]));
+  return new Map(rows.map((row) => [row.key, row.valueJson]));
+}
+
+async function restoreSiteSettings(snapshot: SiteSettingsSnapshot) {
+  const db = getDb();
+  await db.transaction(async (tx) => {
+    await tx.delete(siteSettings).where(inArray(siteSettings.key, [...SEEDED_SETTING_KEYS]));
+    for (const [key, valueJson] of snapshot) {
+      await tx.insert(siteSettings).values({ key, valueJson });
+    }
+  });
+}
 
 async function upsertSetting(key: string, valueJson: unknown) {
   await getDb()
@@ -190,12 +213,14 @@ async function assertShellWidthSmoke(page: Page, width: number, route: string) {
 }
 
 test.beforeAll(async () => {
+  originalSiteSettings = await snapshotSiteSettings();
   await seedFixtures();
 });
 
 test.afterAll(async () => {
   try {
     await cleanupFixtures();
+    if (originalSiteSettings) await restoreSiteSettings(originalSiteSettings);
   } finally {
     await closeDb();
   }
@@ -262,6 +287,74 @@ test("mobile drawer closes after route navigation and nested pages activate thei
   await page.getByRole("link", { name: "文件管理" }).click();
   await expect(page).toHaveURL(/\/admin\/files$/);
   await expect(page.getByTestId("admin-mobile-nav")).toBeHidden();
+});
+
+test("mobile drawer closes without restoring focus to hidden trigger when resized to desktop", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 720 });
+  await page.goto("/admin/tasks");
+  const trigger = page.getByTestId("admin-mobile-menu-button");
+  await trigger.click();
+  await expect(page.getByTestId("admin-mobile-nav")).toBeVisible();
+
+  await page.setViewportSize({ width: 1024, height: 768 });
+
+  await expect(page.getByTestId("admin-mobile-nav")).toBeHidden();
+  await expect(page.getByTestId("admin-mobile-menu-button")).toBeHidden();
+  await expect(page.getByTestId("admin-desktop-sidebar")).toBeVisible();
+  expect(await trigger.evaluate((element) => document.activeElement === element)).toBe(false);
+  await expectNoDocumentOverflow(page);
+});
+
+test("view site performs a full document navigation and loads public integrations", async ({
+  page,
+}) => {
+  let integrationScriptRequested = false;
+  await page.route(`${PUBLIC_INTEGRATION_ORIGIN}/**`, async (route) => {
+    integrationScriptRequested = true;
+    await route.fulfill({
+      contentType: "application/javascript",
+      body: "window.__adminShellPublicIntegrationLoaded = true;",
+    });
+  });
+  await upsertSetting("public_integrations", [
+    {
+      id: "admin-shell-public-integration",
+      provider: "custom",
+      enabled: true,
+      placement: "head",
+      src: PUBLIC_INTEGRATION_SCRIPT_URL,
+      data: {},
+      csp: { script: [PUBLIC_INTEGRATION_ORIGIN], image: [], connect: [], frame: [] },
+    },
+  ]);
+  await upsertSetting("public_csp_revision", `admin-shell-e2e-${Date.now()}`);
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/admin");
+  const publicDocumentResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().resourceType() === "document" && new URL(response.url()).pathname === "/",
+  );
+
+  await page.getByRole("link", { name: "查看站点" }).click();
+
+  const publicDocumentResponse = await publicDocumentResponsePromise;
+  const publicPolicy =
+    publicDocumentResponse.headers()["content-security-policy"] ??
+    publicDocumentResponse.headers()["content-security-policy-report-only"];
+  expect(publicPolicy).toContain(PUBLIC_INTEGRATION_ORIGIN);
+  await expect.poll(() => integrationScriptRequested).toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as Window & { __adminShellPublicIntegrationLoaded?: boolean })
+            .__adminShellPublicIntegrationLoaded,
+      ),
+    )
+    .toBe(true);
 });
 
 test("skip link moves focus to the main content", async ({ page }) => {

@@ -39,9 +39,10 @@ function AccountActions({ labels, userEmail }: { labels: AdminShellLabels; userE
       </p>
       <LocaleSwitcher />
       <div>
-        <Link href="/" className="underline underline-offset-4 hover:text-foreground">
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- leaving admin must establish a new public CSP document */}
+        <a href="/" className="underline underline-offset-4 hover:text-foreground">
           {labels.viewSite}
-        </Link>
+        </a>
       </div>
       <LogoutButton />
     </div>
@@ -68,6 +69,19 @@ export function AdminShell({
   useEffect(() => {
     setMobileNavOpen(false);
   }, [pathname]);
+
+  useEffect(() => {
+    const desktopQuery = window.matchMedia("(min-width: 1024px)");
+    const closeDrawerForDesktop = (query: MediaQueryList | MediaQueryListEvent) => {
+      if (!query.matches) return;
+      shouldRestoreFocusRef.current = false;
+      setMobileNavOpen(false);
+    };
+
+    closeDrawerForDesktop(desktopQuery);
+    desktopQuery.addEventListener("change", closeDrawerForDesktop);
+    return () => desktopQuery.removeEventListener("change", closeDrawerForDesktop);
+  }, []);
 
   useEffect(() => {
     if (mobileNavOpen) {
