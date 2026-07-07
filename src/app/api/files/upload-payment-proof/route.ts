@@ -4,7 +4,6 @@ import { getClientIp, handleApiError, jsonError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
 import {
-  assertContentLengthWithinLimit,
   multipartTransferLimitBytes,
   parseFormDataBody,
   readBoundedRawBody,
@@ -25,7 +24,6 @@ const PRE_AUTH_UPLOAD_UNRESOLVED_MAX = 100;
 export async function POST(req: NextRequest) {
   try {
     const transferLimit = multipartTransferLimitBytes(getEnv().PAYMENT_PROOF_MAX_SIZE_MB);
-    assertContentLengthWithinLimit(req, transferLimit);
 
     const ip = getClientIp(req);
     const preAuthKey = ip ? `proof-upload-preauth-ip:${ip}` : "proof-upload-preauth-unresolved";

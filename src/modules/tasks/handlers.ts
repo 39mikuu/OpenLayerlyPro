@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { Task } from "@/db/schema";
+import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { deliverLoginCodeEmailTask } from "@/modules/auth/login-code";
 import { executeScheduledPublish } from "@/modules/content/publishing";
@@ -29,6 +30,7 @@ import {
 } from "@/modules/payment/subscriptions";
 
 import { PermanentTaskError } from "./errors";
+import { paymentProviderEventPayloadSchema } from "./payloads";
 
 const emailPayloadSchema = z.discriminatedUnion("template", [
   z.object({
@@ -83,7 +85,6 @@ const storageDeletePayloadSchema = z.object({
   bucket: z.string().nullable(),
   objectKey: z.string().min(1),
 });
-const paymentProviderEventPayloadSchema = z.object({ eventRowId: z.string().uuid() });
 const paymentProofCleanupPayloadSchema = z.object({
   requestId: z.string().uuid(),
   fileId: z.string().uuid(),
@@ -100,6 +101,8 @@ const loginCodeEmailPayloadSchema = z.object({
 });
 
 export type TaskHandlerResult = { note?: string; deferUntil?: Date };
+
+const PROVIDER_EVENT_BUSY_DEFER_JITTER_MS = 250;
 
 async function runEmailTask(task: Task): Promise<TaskHandlerResult> {
   const payload = emailPayloadSchema.parse(task.payloadJson);
@@ -232,7 +235,24 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
     case "payment_provider_event.dispatch": {
       const parsed = paymentProviderEventPayloadSchema.safeParse(task.payloadJson);
       if (!parsed.success) throw new PermanentTaskError("Invalid payment provider event payload");
-      await dispatchPaymentProviderEvent(parsed.data.eventRowId);
+      try {
+        await dispatchPaymentProviderEvent(parsed.data.eventRowId);
+      } catch (error) {
+        if (
+          error instanceof ApiError &&
+          error.status === 503 &&
+          error.code === "paymentProviderEventBusy" &&
+          typeof error.params?.leaseUntil === "string"
+        ) {
+          const leaseUntil = new Date(error.params.leaseUntil);
+          if (!Number.isNaN(leaseUntil.getTime())) {
+            return {
+              deferUntil: new Date(leaseUntil.getTime() + PROVIDER_EVENT_BUSY_DEFER_JITTER_MS),
+            };
+          }
+        }
+        throw error;
+      }
       return {};
     }
     case "subscription.renewal_reminder": {

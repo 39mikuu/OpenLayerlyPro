@@ -1,11 +1,11 @@
 # Production Checklist
 
-> This checklist describes current `main`. S7 #87 is merged; a production `v1.0.0` release still requires every item in [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
+> This checklist describes current `main`. `v1.0.0` is released; [the v1.0 acceptance checklist](../release-v1.0-checklist.md) passed on the exact release build and is kept as a historical record. Use this document as the operational checklist for your own deployment.
 
 ## Base deployment
 
 - [ ] `APP_URL` is the public HTTPS URL.
-- [ ] `SESSION_SECRET` is strong, unique, backed up separately, and not rotated unintentionally.
+- [ ] `SESSION_SECRET` resolves from the intended env/file source; all replicas share it and it is not rotated unintentionally.
 - [ ] The config encryption key is backed up and readable only by the deployment.
 - [ ] SMTP is configured and failed/dead/deferred mail work is monitored.
 - [ ] `TRUSTED_PROXY_HEADER` and `TRUSTED_PROXY_HOPS` match the real edge topology.
@@ -67,15 +67,16 @@
 - [ ] Operators compare the app container's env `STORAGE_DRIVER` fallback with the effective DB-backed Storage setting; current `backup.sh` does not do this automatically.
 - [ ] Every referenced local object is preserved even when the env fallback is `s3`.
 - [ ] Every referenced S3/R2 object has a matching version/snapshot recovery point even when the env fallback is `local`.
-- [ ] `SESSION_SECRET` is preserved separately when seamless recovery is required.
+- [ ] File-backed `SESSION_SECRET` is present in the checksummed archive, or the external value matches the recorded fingerprint.
+- [ ] `docker compose down -v` is prohibited unless the secrets volume has a tested recovery point.
 - [ ] An archive plus separately protected storage components has been restored in an isolated Compose project.
-- [ ] Before v1.0 release, verify the merged S7 checksums, legacy schema probing, storage inventory/convergence, file-safety backfill and task/payment-event neutralization in isolated local and S3 drills.
+- [ ] For your deployment, verify the S7 checksums, legacy schema probing, storage inventory/convergence, file-safety backfill and task/payment-event neutralization in isolated local and S3 restore drills.
 
 ## Current hardening status
 
 S4 authentication hardening, S5 mail reliability, S6 security response headers,
-and S7 hardened recovery are implemented. The remaining release gate is #88
-real-environment acceptance.
+and S7 hardened recovery are implemented. The #88 real-environment acceptance
+gate passed on the exact `v1.0.0` release build.
 
 ## Application request-body limits
 

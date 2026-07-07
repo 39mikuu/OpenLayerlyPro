@@ -1,12 +1,38 @@
 # v1.0 Finalization Progress
 
-Last updated: 2026-06-29 (Asia/Singapore)
+> **Historical snapshot.** This progress log ends at the pre-release stage; the
+> `v1.0.0` tag has since been created and the GitHub Release published after
+> the #88 acceptance checklist passed on the exact release build. Nothing
+> below is a current gate or instruction.
+
+Last updated: 2026-07-05 (Asia/Singapore)
 
 ## Current stage
 
-Final v1.0 acceptance (#88) is in progress from merged S7 main commit
-`4768aafa`. This is an evidence-gathering and release-preparation stage; no tag,
-release, issue closure, production mutation, or autonomous publication is allowed.
+The release PR (`chore/release-v1.0.0`) freezes documentation and the 1.0.0
+package version. After the first release-candidate report was gathered at
+`4768aafa` (2026-06-29), a post-acceptance hardening line merged through PR
+#128 — including runtime changes (auth-before-body static gate #125,
+file-reference integrity #124, atomic `CONFIG_ENCRYPTION_KEY` provisioning
+#126, image-authoritative archive manifest v3 #127, reconcile provider-clock
+fence #113, auto `SESSION_SECRET` #120) — so the #88 real-environment
+acceptance matrix must be re-executed against the exact release build after
+this PR merges. No tag, release, issue closure, production mutation, or
+autonomous publication is allowed until #88 passes.
+
+### 2026-07-05 update
+
+- Hardening PRs merged since the RC report: #95, #105, #106, #107, #108, #110,
+  #111, #113, #114, #116, #117, #118, #120, #124, #125, #126, #127, #128
+  (final merge commit `c846e2a`).
+- Release PR prepared from baseline `c846e2a`: CHANGELOG hardening section,
+  README/roadmap/SECURITY status sync, draft release notes
+  (`docs/releases/v1.0.0-release-notes.md`), and the 1.0.0 version bump as the
+  final commit.
+- The 2026-06-29 release-candidate report remains a point-in-time evidence
+  record for `4768aafa`; its unexecuted-blockers list (Stripe/SMTP/CSP
+  observation/AI provider/secret custody/security-alert review) still stands
+  and now must be evidenced on the release build.
 
 ## Authoritative inputs read
 
@@ -70,8 +96,10 @@ release, issue closure, production mutation, or autonomous publication is allowe
 - Confirmed port `5433` is occupied by prior S6 work; S7 will use `5434`/`3003`.
 - Created isolated S7 worktree and branch from `origin/main`.
 - Read `docs/handoff/harden-s7-backup-consistency.md` and inspected baseline
-  `scripts/backup.sh` / `scripts/restore.sh` (currently `FORMAT_VERSION=1`,
-  no checksums, no task neutralization, no pre-start convergence).
+  `scripts/backup.sh` / `scripts/restore.sh` (historical snapshot: at that time
+  `FORMAT_VERSION=1`, no checksums, no task neutralization, no pre-start
+  convergence; current archives are `FORMAT_VERSION=3` — see
+  `docs/deployment/backup-restore.md`).
 
 ### S6 (complete — merged)
 

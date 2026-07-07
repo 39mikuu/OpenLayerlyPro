@@ -16,8 +16,8 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const admin = await requireAdmin();
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const { id } = await ctx.params;
     return jsonOk(
       await revokeMembership(id, {

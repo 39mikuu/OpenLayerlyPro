@@ -17,6 +17,9 @@ RUN pnpm build && pnpm build:migrator && pnpm build:files-backfill && pnpm build
 # ---- 运行 ----
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
+ARG APP_VERSION=dev
+ARG SOURCE_COMMIT=dev
+ARG BUILD_TIMESTAMP=unknown
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
@@ -37,11 +40,27 @@ COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-pre-scan.mjs ./dist/
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-neutralize.mjs ./dist/restore-neutralize.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-converge.mjs ./dist/restore-converge.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-schema-check.mjs ./dist/restore-schema-check.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-config-key-probe.mjs ./dist/restore-config-key-probe.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/dedupe-pending-payments.mjs ./scripts/dedupe-pending-payments.mjs
+COPY docker/ensure-config-encryption-key.mjs ./docker/ensure-config-encryption-key.mjs
+COPY docker/ensure-session-secret.mjs ./docker/ensure-session-secret.mjs
 COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/entrypoint-secrets.sh /entrypoint-secrets.sh
 RUN chmod +x /entrypoint.sh \
   && mkdir -p /app/uploads /app/secrets \
   && chown nextjs:nodejs /app/uploads /app/secrets
+
+# BUILD_TIMESTAMP intentionally breaks layer caching from this point onward; keep the
+# build identity metadata after file-copy/setup layers to minimize cache damage.
+RUN APP_VERSION="$APP_VERSION" SOURCE_COMMIT="$SOURCE_COMMIT" BUILD_TIMESTAMP="$BUILD_TIMESTAMP" \
+  node -e 'const fs=require("fs"); const data={appVersion:process.env.APP_VERSION||"dev",sourceCommit:process.env.SOURCE_COMMIT||"dev",buildTimestamp:process.env.BUILD_TIMESTAMP||"unknown"}; fs.writeFileSync("/app/build-info.json", JSON.stringify(data) + "\n", { mode: 0o444 });'
+ENV APP_VERSION=$APP_VERSION
+ENV SOURCE_COMMIT=$SOURCE_COMMIT
+ENV BUILD_TIMESTAMP=$BUILD_TIMESTAMP
+LABEL org.opencontainers.image.version=$APP_VERSION
+LABEL org.opencontainers.image.revision=$SOURCE_COMMIT
+LABEL org.opencontainers.image.created=$BUILD_TIMESTAMP
+LABEL org.opencontainers.image.source="https://github.com/39mikuu/OpenLayerlyPro"
 
 EXPOSE 3000
 ENTRYPOINT ["/entrypoint.sh"]

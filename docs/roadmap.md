@@ -2,19 +2,19 @@
 
 > ✅ 已完成｜▶ 当前主线｜🚧 计划中｜⏸ 推迟。只有一个阶段可以标记为当前主线。
 
-## 当前主线：v1.0 最终记录与发布 ▶
+## 当前主线：v1.1「不只画师」 ▶
+
+`v1.0.0` 已于 2026-07-06 正式发布（tag、GitHub Release、验收证据均已归档；#88、#64 已关闭）。发布后的审计复查（dead-letter 可见性、provider event fencing/ownership、translation 硬化、文档准确性、membership 分页、restore drills 上 CI、session-secret 符号链接加固等）已全部完成并合并，详见 CHANGELOG。
+
+按原计划，`v1.1` 新功能工作包（WP1–WP6）应在发布后 4–6 周稳定窗口结束再启动，范围、产品优先级、实施顺序与发布门槛见 [release-v1.1-plan.md](./release-v1.1-plan.md)。**维护者已于 2026-07-07（发布次日）明确决定提前启动 WP1**，不再等待窗口结束；这是对该计划前置条件的一次显式例外，其余 WP（WP2–WP6）的时机仍按计划书执行，不因此次例外自动提前。
 
 固定顺序：
 
 ```text
-S6 #86 全局安全响应头 ✅
-→ S7 #87 备份与恢复一致性 ✅
-→ #88 v1.0 最终验收矩阵基线 ✅ 已关闭
-→ 审计修复 #98–#103 / #112、#58 与 #119 ✅
-→ #104 已完成外部真实环境验收的证据归档、最终候选冻结与发布
+v1.0.0 发布 + 发布后审计硬化 ✅
+→ WP1 第二主题 + 后台主题选择器（提前启动，维护者例外授权）
+→ WP2–WP6 按 release-v1.1-plan.md §4 里程碑顺序
 ```
-
-Phase 4 Integration 与 Phase 5 Theme 的 v1 基座已经完成。#64 已作为 v1.0 安全硬化实现 epic 关闭；这不等于 `v1.0.0` 已发布。当前唯一 open release gate 是 #104。操作者已完成真实 Stripe、SMTP、S3/R2、Turnstile/CSP、密钥托管与恢复验收；剩余工作是把证据、日期、环境和测试 SHA 规范写回发布报告，决定未决 Draft PR 的版本归属，冻结最终 `main`，完成 exact-final-SHA CI/受影响范围复验并由维护者授权发布。
 
 ## Phase 0：MVP 主链路 ✅
 
@@ -58,7 +58,7 @@ Phase 4 Integration 与 Phase 5 Theme 的 v1 基座已经完成。#64 已作为 
 - 明暗模式、字体、颜色预设与受约束自由取色。
 - Theme 不负责权限、数据库访问或服务端 secret。
 
-**🚧 v1.1 候选：** 第二主题、主题选择器、主题切换 audit 与双主题视觉回归门禁；Draft PR #123 尚未满足合并要求，也不属于已完成的 v1.0 基座。
+**▶ 进行中：** 第二主题（Blog）与后台主题选择器，v1.1 WP1，见 [release-v1.1-plan.md](./release-v1.1-plan.md)。**⏸ 仍推迟：** 主题包上传/主题市场/第三方主题生命周期（Plugin 生命周期问题，不进入 v1.1）。
 
 详见 [Theme 架构](./architecture/theme-system.md)。
 
@@ -89,20 +89,17 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 - keyset 分页、流式上传、S3 multipart。
 - 视频附件、local/S3 单段 Range 与权限代理。
 
-真实 Stripe、SMTP、S3/R2、Turnstile/CSP、密钥托管和恢复验收已由操作者完成；#104 当前负责证据同步、最终候选 SHA 绑定、必要的窄范围复验和发布授权。
+真实 Stripe、local/S3、升级和恢复统一归入 #88 验收。
 
-## v1.0 安全硬化 ✅（实现完成）
+## v1.0 安全硬化与发布 ✅
 
-已完成：S2、S3、订阅、S1a、S1b、S4、S5、S6、S7，以及审计确认的发布前修复。
+已完成：S2、S3、订阅、S1a、S1b、S4、S5、S6、S7，首轮验收后的硬化线（截至 PR #128），以及发布前最终验收。
 
 - **S6 ✅**：#86；nonce CSP、动态来源、legacy footer 迁移和浏览器验证。
 - **S7 ✅**：#87；archive v2、旧 archive 探测、文件安全修复、任务/支付事件中和和 DB↔存储收敛。
-- **实现 epic ✅**：#64 已关闭。
-- **发布记录与授权 ▶**：#104；归档已完成的真实环境证据，冻结 exact-final-main 候选，完成受影响范围复验、tag 与 GitHub Release。
-
-## v1.1：不只画师 🚧
-
-`v1.0.0` 发布并完成 4–6 周稳定窗口后启动。范围、产品优先级、实施顺序与发布门槛见 [release-v1.1-plan.md](./release-v1.1-plan.md)（提案）。Draft PR #123 不得通过提前合并绕过该前置条件；若维护者决定改变版本归属，必须先修改计划并把其纳入 #104 最终候选验收。
+- **验收后硬化 ✅**：CodeQL 修复（#95）、auth-before-body 静态门（#106/#125）、文件引用完整性（#97/#108/#124）、并发 setup 验证（#103/#110）、reconcile 时钟围栏（#102/#112/#113/#128）、admin keyset 分页（#96/#114）、SESSION_SECRET 自动生成（#120）、CONFIG_ENCRYPTION_KEY 原子供给（#126）、archive manifest v3 镜像权威 provenance（#127）、项目网站（#116/#117）。
+- **最终验收与发布 ✅**：#88、#64 已关闭；真实环境验证、三个 one-off artifact、`v1.0.0` tag 与 GitHub Release 均已完成（2026-07-06）。
+- **发布后审计硬化 ✅**：provider event 处理 dead-letter 可见性与 ownership 修复、translation 措辞与 URL 硬化、文档准确性刷新、Stripe post-basil 兼容 fixtures、dispatcher claim 查询性能、session-secret TOCTOU/符号链接加固、membership 历史分页、restore drills 上 CI。详见 CHANGELOG。
 
 ## Phase 8：Plugin v0 🚧
 

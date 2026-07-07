@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const providerMocks = vi.hoisted(() => ({
@@ -9,6 +9,7 @@ const providerMocks = vi.hoisted(() => ({
   retrieveSubscription: vi.fn(),
   listPaidSubscriptionInvoices: vi.fn(),
   resolveInvoiceByPaymentIntent: vi.fn(),
+  resolveCheckoutByPaymentIntent: vi.fn(),
   getPaymentProvider: vi.fn(),
 }));
 
@@ -22,6 +23,7 @@ vi.mock("./providers", async (importOriginal) => {
 
 import { getDb } from "@/db";
 import {
+  auditEvents,
   memberships,
   membershipTiers,
   paymentProviderEvents,
@@ -32,10 +34,11 @@ import {
 } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { getActiveMembership, grantMembershipForPeriod } from "@/modules/membership";
+import { claimDueTasks, retryTask } from "@/modules/tasks";
+import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
 
 import {
   applyPaidInvoice,
-  applySubscriptionReversalOrTombstone,
   createSubscriptionCheckout,
   dispatchPaymentProviderEvent,
   persistPaymentProviderEvent,
@@ -59,6 +62,7 @@ describeWithDatabase("Stripe subscription integration", () => {
       retrieveSubscription: providerMocks.retrieveSubscription,
       listPaidSubscriptionInvoices: providerMocks.listPaidSubscriptionInvoices,
       resolveInvoiceByPaymentIntent: providerMocks.resolveInvoiceByPaymentIntent,
+      resolveCheckoutByPaymentIntent: providerMocks.resolveCheckoutByPaymentIntent,
     });
     providerMocks.createSubscriptionCheckout.mockResolvedValue({
       redirectUrl: "https://checkout.stripe.test/subscription",
@@ -68,6 +72,17 @@ describeWithDatabase("Stripe subscription integration", () => {
       status: "open",
       redirectUrl: "https://checkout.stripe.test/existing",
       providerSubscriptionRef: null,
+      observedAt: new Date("2026-01-01T00:00:00.999Z"),
+    });
+    providerMocks.resolveCheckoutByPaymentIntent.mockResolvedValue(null);
+    providerMocks.retrieveSubscription.mockResolvedValue({
+      status: "active",
+      providerSubscriptionRef: "sub_foreign_default",
+      providerCustomerRef: "cus_foreign_default",
+      currentPeriodEndsAt: null,
+      cancelAtPeriodEnd: false,
+      metadata: {},
+      observedAt: new Date("2026-01-01T00:00:00.999Z"),
     });
   });
 
@@ -213,25 +228,35 @@ describeWithDatabase("Stripe subscription integration", () => {
     });
   });
 
-  it("keeps a reversal-first invoice tombstone from granting later paid events", async () => {
+  it("keeps a resolver-found basil refund tombstone from granting a later paid invoice", async () => {
     const { user, subscription } = await seedSubscription();
     const event = paidInvoiceEvent({
       localSubscriptionId: subscription.id,
-      providerInvoiceRef: "in_refund_first",
+      providerInvoiceRef: "in_refund_first_basil",
+      providerPaymentRef: "pi_refund_first_basil",
+    });
+    providerMocks.resolveInvoiceByPaymentIntent.mockResolvedValue({
+      providerInvoiceRef: event.providerInvoiceRef,
+      providerSubscriptionRef: subscription.providerSubscriptionRef,
+      localSubscriptionId: subscription.id,
     });
 
-    await db.transaction((tx) =>
-      applySubscriptionReversalOrTombstone(tx, "stripe", {
-        type: "refunded",
-        paymentRef: "pi_refund_first",
-        providerInvoiceRef: event.providerInvoiceRef,
-        providerEventId: "evt_refund_first",
-        providerCreatedAt: new Date("2026-01-31T23:59:00.000Z"),
-        localSubscriptionId: subscription.id,
-      } as never),
-    );
+    await persistPaymentProviderEvent("stripe", {
+      type: "refunded",
+      paymentRef: event.providerPaymentRef!,
+      providerEventId: "evt_refund_first_basil",
+      providerCreatedAt: new Date("2026-01-31T23:59:00.000Z"),
+    });
+    const [refundRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_refund_first_basil"));
+    await dispatchPaymentProviderEvent(refundRow!.id);
     await db.transaction((tx) => applyPaidInvoice(tx, "stripe", event));
 
+    expect(providerMocks.resolveInvoiceByPaymentIntent).toHaveBeenCalledWith(
+      event.providerPaymentRef,
+    );
     await expect(
       db.select().from(memberships).where(eq(memberships.userId, user.id)),
     ).resolves.toHaveLength(0);
@@ -239,7 +264,49 @@ describeWithDatabase("Stripe subscription integration", () => {
     expect(request).toMatchObject({
       status: "reversed",
       providerInvoiceRef: event.providerInvoiceRef,
-      reversalEventId: "evt_refund_first",
+      subscriptionId: subscription.id,
+      reversalEventId: "evt_refund_first_basil",
+    });
+  });
+
+  it("creates a resolver-found tombstone by provider subscription ref when invoice metadata is missing", async () => {
+    const { user, subscription } = await seedSubscription();
+    const event = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_refund_first_provider_ref",
+      providerPaymentRef: "pi_refund_first_provider_ref",
+    });
+    providerMocks.resolveInvoiceByPaymentIntent.mockResolvedValue({
+      providerInvoiceRef: event.providerInvoiceRef,
+      providerSubscriptionRef: subscription.providerSubscriptionRef,
+      localSubscriptionId: undefined,
+    });
+
+    await persistPaymentProviderEvent("stripe", {
+      type: "refunded",
+      paymentRef: event.providerPaymentRef!,
+      providerEventId: "evt_refund_first_provider_ref",
+      providerCreatedAt: new Date("2026-01-31T23:59:00.000Z"),
+    });
+    const [refundRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_refund_first_provider_ref"));
+    await dispatchPaymentProviderEvent(refundRow!.id);
+    await db.transaction((tx) => applyPaidInvoice(tx, "stripe", event));
+
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(0);
+    const [request] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.providerInvoiceRef, event.providerInvoiceRef));
+    expect(request).toMatchObject({
+      status: "reversed",
+      providerInvoiceRef: event.providerInvoiceRef,
+      subscriptionId: subscription.id,
+      reversalEventId: "evt_refund_first_provider_ref",
     });
   });
 
@@ -309,10 +376,16 @@ describeWithDatabase("Stripe subscription integration", () => {
       .select({ id: paymentProviderEvents.id })
       .from(paymentProviderEvents)
       .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
-    await Promise.all([
+    const dispatches = await Promise.allSettled([
       dispatchPaymentProviderEvent(eventRow!.id),
       dispatchPaymentProviderEvent(eventRow!.id),
     ]);
+    expect(dispatches.some((result) => result.status === "fulfilled")).toBe(true);
+    for (const result of dispatches) {
+      if (result.status === "rejected") {
+        expect(String(result.reason)).toContain("paymentProviderEventBusy");
+      }
+    }
 
     const granted = await db.select().from(memberships).where(eq(memberships.userId, user.id));
     const [inbox] = await db.select().from(paymentProviderEvents);
@@ -322,6 +395,1328 @@ describeWithDatabase("Stripe subscription integration", () => {
       status: "processed",
       attempts: 1,
     });
+  });
+
+  it("ignores foreign subscription invoices on a shared Stripe account", async () => {
+    const event = paidInvoiceEvent({
+      localSubscriptionId: undefined,
+      providerSubscriptionRef: "sub_foreign",
+      providerInvoiceRef: "in_foreign",
+      providerEventId: "evt_foreign_invoice",
+    });
+
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+
+    await dispatchPaymentProviderEvent(eventRow!.id);
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(storedEvent).toMatchObject({ status: "processed", attempts: 1 });
+    expect(providerMocks.retrieveSubscription).toHaveBeenCalledWith("sub_foreign");
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(0);
+    await expect(db.select().from(memberships)).resolves.toHaveLength(0);
+  });
+
+  it("retries owned but unresolved first invoices and later resolves them", async () => {
+    const { user, tier } = await seed();
+    const localSubscriptionId = randomUUID();
+    const event = paidInvoiceEvent({
+      localSubscriptionId,
+      providerSubscriptionRef: "sub_out_of_order",
+      providerInvoiceRef: "in_out_of_order",
+      providerEventId: "evt_out_of_order_invoice",
+    });
+
+    await persistPaymentProviderEvent("stripe", event);
+    let [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+
+    await expect(dispatchPaymentProviderEvent(eventRow!.id)).rejects.toThrow(
+      "subscriptionUnresolved",
+    );
+    [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+    expect(eventRow).toMatchObject({ status: "failed", attempts: 1 });
+
+    await db.insert(subscriptions).values({
+      id: localSubscriptionId,
+      userId: user.id,
+      tierId: tier.id,
+      status: "pending",
+      provider: "stripe",
+      providerSubscriptionRef: "sub_out_of_order",
+      providerPriceRef: "price_monthly_snapshot",
+      expectedAmountMinor: 900,
+      expectedCurrency: "usd",
+      quantity: 1,
+    });
+
+    await dispatchPaymentProviderEvent(eventRow!.id);
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(storedEvent).toMatchObject({ status: "processed", attempts: 2 });
+    await expect(
+      db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.providerInvoiceRef, "in_out_of_order")),
+    ).resolves.toHaveLength(1);
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("fails closed when metadata id conflicts with an existing provider ref", async () => {
+    const { user, subscription } = await seedSubscription();
+    const event = paidInvoiceEvent({
+      localSubscriptionId: undefined,
+      providerSubscriptionRef: "sub_foreign_conflict",
+      providerInvoiceRef: "in_foreign_conflict",
+      providerEventId: "evt_foreign_conflict",
+    });
+    providerMocks.retrieveSubscription.mockResolvedValue({
+      status: "active",
+      providerSubscriptionRef: "sub_foreign_conflict",
+      providerCustomerRef: "cus_foreign_conflict",
+      currentPeriodEndsAt: null,
+      cancelAtPeriodEnd: false,
+      metadata: { subscriptionId: subscription.id },
+      observedAt: new Date("2026-02-01T00:00:00.999Z"),
+    });
+
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+
+    await expect(dispatchPaymentProviderEvent(eventRow!.id)).rejects.toThrow(
+      "subscriptionUnresolved",
+    );
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(storedEvent).toMatchObject({ status: "failed", attempts: 1 });
+    expect(providerMocks.retrieveSubscription).toHaveBeenCalledWith("sub_foreign_conflict");
+    await expect(
+      db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.providerInvoiceRef, "in_foreign_conflict")),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(0);
+  });
+
+  it("keeps subscription ownership retrieve failures retryable without business rows", async () => {
+    const event = paidInvoiceEvent({
+      localSubscriptionId: undefined,
+      providerSubscriptionRef: "sub_unknown_retrieve_failure",
+      providerInvoiceRef: "in_unknown_retrieve_failure",
+      providerEventId: "evt_unknown_retrieve_failure",
+    });
+    providerMocks.retrieveSubscription.mockRejectedValue(new Error("stripe retrieve unavailable"));
+
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+
+    await expect(dispatchPaymentProviderEvent(eventRow!.id)).rejects.toThrow(
+      "subscriptionUnresolved",
+    );
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(storedEvent).toMatchObject({ status: "failed", attempts: 1 });
+    expect(providerMocks.retrieveSubscription).toHaveBeenCalledWith("sub_unknown_retrieve_failure");
+    await expect(db.select().from(subscriptions)).resolves.toHaveLength(0);
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(0);
+    await expect(db.select().from(memberships)).resolves.toHaveLength(0);
+  });
+
+  it("keeps remote metadata-owned subscriptions retryable when local rows lag", async () => {
+    const event = paidInvoiceEvent({
+      localSubscriptionId: undefined,
+      providerSubscriptionRef: "sub_remote_owned",
+      providerInvoiceRef: "in_remote_owned",
+      providerEventId: "evt_remote_owned",
+    });
+    providerMocks.retrieveSubscription.mockResolvedValue({
+      status: "active",
+      providerSubscriptionRef: "sub_remote_owned",
+      providerCustomerRef: "cus_remote_owned",
+      currentPeriodEndsAt: null,
+      cancelAtPeriodEnd: false,
+      metadata: { subscriptionId: randomUUID() },
+      observedAt: new Date("2026-02-01T00:00:00.999Z"),
+    });
+
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+
+    await expect(dispatchPaymentProviderEvent(eventRow!.id)).rejects.toThrow(
+      "subscriptionUnresolved",
+    );
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(storedEvent).toMatchObject({ status: "failed", attempts: 1 });
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(0);
+  });
+
+  it("keeps app-marker-owned subscriptions retryable when only remote app metadata exists", async () => {
+    const event = paidInvoiceEvent({
+      localSubscriptionId: undefined,
+      providerSubscriptionRef: "sub_app_marker_owned",
+      providerInvoiceRef: "in_app_marker_owned",
+      providerEventId: "evt_app_marker_owned",
+    });
+    providerMocks.retrieveSubscription.mockResolvedValue({
+      status: "active",
+      providerSubscriptionRef: "sub_app_marker_owned",
+      providerCustomerRef: "cus_app_marker_owned",
+      currentPeriodEndsAt: null,
+      cancelAtPeriodEnd: false,
+      metadata: { app: "openlayerlypro" },
+      observedAt: new Date("2026-02-01T00:00:00.999Z"),
+    });
+
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+
+    await expect(dispatchPaymentProviderEvent(eventRow!.id)).rejects.toThrow(
+      "subscriptionUnresolved",
+    );
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(storedEvent).toMatchObject({ status: "failed", attempts: 1 });
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(0);
+  });
+
+  it("keeps invoices carrying the app marker retryable when the remote metadata lost it", async () => {
+    const event = {
+      ...paidInvoiceEvent({
+        localSubscriptionId: undefined,
+        providerSubscriptionRef: "sub_invoice_app_marker",
+        providerInvoiceRef: "in_invoice_app_marker",
+        providerEventId: "evt_invoice_app_marker",
+      }),
+      appOwned: true,
+    };
+    providerMocks.retrieveSubscription.mockResolvedValue({
+      status: "active",
+      providerSubscriptionRef: "sub_invoice_app_marker",
+      providerCustomerRef: "cus_invoice_app_marker",
+      currentPeriodEndsAt: null,
+      cancelAtPeriodEnd: false,
+      metadata: {},
+      observedAt: new Date("2026-02-01T00:00:00.999Z"),
+    });
+
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+
+    await expect(dispatchPaymentProviderEvent(eventRow!.id)).rejects.toThrow(
+      "subscriptionUnresolved",
+    );
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(storedEvent).toMatchObject({ status: "failed", attempts: 1 });
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(0);
+  });
+
+  it("processes subscription invoices owned by provider subscription ref without metadata", async () => {
+    const { user, subscription } = await seedSubscription();
+    const event = paidInvoiceEvent({
+      localSubscriptionId: undefined,
+      providerSubscriptionRef: subscription.providerSubscriptionRef!,
+      providerInvoiceRef: "in_owned_by_ref",
+      providerEventId: "evt_owned_by_ref",
+    });
+
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+
+    await dispatchPaymentProviderEvent(eventRow!.id);
+
+    expect(providerMocks.retrieveSubscription).not.toHaveBeenCalled();
+    await expect(
+      db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.providerInvoiceRef, "in_owned_by_ref")),
+    ).resolves.toHaveLength(1);
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("dead-letters final-attempt provider events and their durable dispatch task", async () => {
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_final_attempt_dead",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_final_attempt_dead",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "processing",
+        attempts: 5,
+        maxAttempts: 5,
+        lockedBy: "crashed-provider-worker",
+        leaseUntil: new Date(Date.now() - 60_000),
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "processing",
+        attempts: 1,
+        lockedBy: "task-worker",
+        leaseUntil: new Date(Date.now() + 60_000),
+      })
+      .returning();
+
+    await dispatchClaimedTask(task!);
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [storedTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(storedEvent).toMatchObject({
+      status: "dead",
+      lockedBy: null,
+      error: "Payment provider event lease expired after the final execution attempt",
+    });
+    expect(storedTask).toMatchObject({
+      status: "dead",
+      lockedBy: null,
+      lastError: "Payment provider event lease expired after the final execution attempt",
+    });
+  });
+
+  it("revives dead provider-event inbox rows when retrying their dispatch task", async () => {
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_retry_dead_provider_event",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_retry_dead_provider_event",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "dead",
+        attempts: 5,
+        maxAttempts: 5,
+        processedAt: new Date("2026-02-01T00:00:01.000Z"),
+        error: "exhausted provider event",
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + eventRow!.id,
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "dead",
+        attempts: 5,
+        lastError: "Payment provider event is dead",
+      })
+      .returning();
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({
+      id: task!.id,
+      status: "pending",
+      attempts: 0,
+      lastError: null,
+    });
+    await expect(
+      db.select().from(paymentProviderEvents).where(eq(paymentProviderEvents.id, eventRow!.id)),
+    ).resolves.toMatchObject([
+      expect.objectContaining({
+        status: "received",
+        attempts: 0,
+        lockedBy: null,
+        processedAt: null,
+        error: null,
+      }),
+    ]);
+
+    const [claimedTask] = await claimDueTasks(1, { lockToken: "retried-provider-task" });
+    expect(claimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(claimedTask!);
+
+    const [processedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [succeededTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(processedEvent).toMatchObject({ status: "processed", attempts: 1, lockedBy: null });
+    expect(succeededTask).toMatchObject({
+      status: "succeeded",
+      attempts: 1,
+      lockedBy: null,
+      dedupeKey: "payment-provider-event:" + eventRow!.id,
+    });
+  });
+
+  it("recovers a dead dispatch task when its provider event is still received", async () => {
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_retry_received_event",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_retry_received_event",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "received",
+        attempts: 0,
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + eventRow!.id,
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "dead",
+        attempts: 5,
+        lastError: "handler crashed before provider event claim",
+      })
+      .returning();
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+
+    const [claimableEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(claimableEvent).toMatchObject({ status: "received", attempts: 0, lockedBy: null });
+
+    const [claimedTask] = await claimDueTasks(1, { lockToken: "retry-received-task" });
+    expect(claimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(claimedTask!);
+
+    const [processedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [succeededTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(processedEvent).toMatchObject({ status: "processed", attempts: 1, lockedBy: null });
+    expect(succeededTask).toMatchObject({ status: "succeeded", attempts: 1, lockedBy: null });
+  });
+
+  it("recovers a dead dispatch task when its provider event has an expired processing lease", async () => {
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_retry_expired_processing_event",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_retry_expired_processing_event",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "processing",
+        attempts: 1,
+        lockedBy: "crashed-provider-worker",
+        leaseUntil: new Date(Date.now() - 60_000),
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + eventRow!.id,
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "dead",
+        attempts: 5,
+        lastError: "task final attempt crashed after provider claim",
+      })
+      .returning();
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+
+    const [untouchedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(untouchedEvent).toMatchObject({
+      status: "processing",
+      attempts: 1,
+      lockedBy: "crashed-provider-worker",
+    });
+
+    const [claimedTask] = await claimDueTasks(1, { lockToken: "retry-expired-task" });
+    expect(claimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(claimedTask!);
+
+    const [processedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [succeededTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(processedEvent).toMatchObject({ status: "processed", attempts: 2, lockedBy: null });
+    expect(succeededTask).toMatchObject({ status: "succeeded", attempts: 1, lockedBy: null });
+  });
+
+  it("recovers a dead dispatch task for an already processed event without duplicate side effects", async () => {
+    const { user, subscription } = await seedSubscription();
+    const event = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_processed_retry",
+      providerPaymentRef: "pi_processed_retry",
+      providerEventId: "evt_processed_retry",
+    });
+    await persistPaymentProviderEvent("stripe", event);
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+    await dispatchPaymentProviderEvent(eventRow!.id);
+    const [task] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.dedupeKey, "payment-provider-event:" + eventRow!.id));
+    await db
+      .update(tasks)
+      .set({ status: "dead", attempts: 5, lastError: "worker crashed before task success" })
+      .where(eq(tasks.id, task!.id));
+
+    const sideEffectsBefore = {
+      memberships: await db.select().from(memberships).where(eq(memberships.userId, user.id)),
+      requests: await db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.providerInvoiceRef, event.providerInvoiceRef)),
+      audits: await db.select().from(auditEvents),
+      emails: (await db.select().from(tasks)).filter((row) => row.kind === "email"),
+    };
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+    const claimedTasks = await claimDueTasks(10, { lockToken: "retry-processed-task" });
+    const claimedTask = claimedTasks.find((row) => row.id === task!.id);
+    expect(claimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(claimedTask!);
+
+    const sideEffectsAfter = {
+      memberships: await db.select().from(memberships).where(eq(memberships.userId, user.id)),
+      requests: await db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.providerInvoiceRef, event.providerInvoiceRef)),
+      audits: await db.select().from(auditEvents),
+      emails: (await db.select().from(tasks)).filter((row) => row.kind === "email"),
+    };
+    const [processedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [succeededTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+
+    expect(processedEvent).toMatchObject({ status: "processed", attempts: 1 });
+    expect(succeededTask).toMatchObject({ status: "succeeded", attempts: 1, lockedBy: null });
+    expect(sideEffectsAfter.memberships).toHaveLength(sideEffectsBefore.memberships.length);
+    expect(sideEffectsAfter.requests).toHaveLength(sideEffectsBefore.requests.length);
+    expect(sideEffectsAfter.audits).toHaveLength(sideEffectsBefore.audits.length);
+    expect(sideEffectsAfter.emails).toHaveLength(sideEffectsBefore.emails.length);
+  });
+
+  it("recovers a dead dispatch task for a live busy provider event by deferring without stealing", async () => {
+    const futureLease = new Date(Date.now() + 60_000);
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_retry_live_processing_event",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_retry_live_processing_event",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "processing",
+        attempts: 1,
+        lockedBy: "active-provider-worker",
+        leaseUntil: futureLease,
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + eventRow!.id,
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "dead",
+        attempts: 5,
+        lastError: "task exhausted while provider worker still owns event",
+      })
+      .returning();
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+    const [claimedTask] = await claimDueTasks(1, { lockToken: "retry-live-busy-task" });
+    expect(claimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(claimedTask!);
+
+    const [busyEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [deferredTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(busyEvent).toMatchObject({
+      status: "processing",
+      attempts: 1,
+      lockedBy: "active-provider-worker",
+    });
+    expect(busyEvent!.leaseUntil!.getTime()).toBe(futureLease.getTime());
+    expect(deferredTask).toMatchObject({ status: "pending", attempts: 0, lastError: null });
+    expect(deferredTask!.runAfter.getTime()).toBeGreaterThanOrEqual(futureLease.getTime());
+  });
+
+  it("rejects retry atomically when the linked provider event row is missing", async () => {
+    const missingEventId = "550e8400-e29b-41d4-a716-446655440000";
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + missingEventId,
+        payloadJson: { eventRowId: missingEventId },
+        status: "dead",
+        attempts: 5,
+        lastError: "provider event disappeared",
+      })
+      .returning();
+
+    await expect(retryTask(task!.id)).rejects.toThrow("taskNotRetryable");
+
+    const [stillDead] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(stillDead).toMatchObject({
+      status: "dead",
+      attempts: 5,
+      lastError: "provider event disappeared",
+    });
+  });
+
+  it("converges exhausted expired processing events through dead before admin retry revival", async () => {
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_retry_exhausted_processing_event",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_retry_exhausted_processing_event",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "processing",
+        attempts: 5,
+        maxAttempts: 5,
+        lockedBy: "crashed-final-provider-worker",
+        leaseUntil: new Date(Date.now() - 60_000),
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + eventRow!.id,
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "dead",
+        attempts: 5,
+        lastError: "task crashed during final provider event attempt",
+      })
+      .returning();
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+
+    const [firstClaimedTask] = await claimDueTasks(1, { lockToken: "retry-exhausted-task" });
+    expect(firstClaimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(firstClaimedTask!);
+
+    const [deadEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [deadTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(0);
+    await expect(db.select().from(memberships)).resolves.toHaveLength(0);
+    await expect(db.select().from(auditEvents)).resolves.toHaveLength(0);
+    expect(deadEvent).toMatchObject({
+      status: "dead",
+      attempts: 5,
+      lockedBy: null,
+      error: "Payment provider event lease expired after the final execution attempt",
+    });
+    expect(deadTask).toMatchObject({
+      status: "dead",
+      attempts: 1,
+      lockedBy: null,
+      lastError: "Payment provider event lease expired after the final execution attempt",
+    });
+
+    await expect(retryTask(task!.id)).resolves.toMatchObject({ status: "pending", attempts: 0 });
+    const [resetEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(resetEvent).toMatchObject({ status: "received", attempts: 0, lockedBy: null });
+
+    const [secondClaimedTask] = await claimDueTasks(1, { lockToken: "retry-revived-task" });
+    expect(secondClaimedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(secondClaimedTask!);
+
+    const [processedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [succeededTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(processedEvent).toMatchObject({ status: "processed", attempts: 1, lockedBy: null });
+    expect(succeededTask).toMatchObject({ status: "succeeded", attempts: 1, lockedBy: null });
+  });
+
+  it("defers an actively leased provider event without failing the dispatch task", async () => {
+    const futureLease = new Date(Date.now() + 60_000);
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_busy_race",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_busy_race",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "processing",
+        attempts: 1,
+        maxAttempts: 5,
+        lockedBy: "provider-worker-x",
+        leaseUntil: futureLease,
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + eventRow!.id,
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "processing",
+        attempts: 1,
+        lockedBy: "task-worker",
+        leaseUntil: new Date(Date.now() + 60_000),
+      })
+      .returning();
+
+    await dispatchClaimedTask(task!);
+
+    const [busyEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [deferredTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(busyEvent).toMatchObject({
+      status: "processing",
+      attempts: 1,
+      lockedBy: "provider-worker-x",
+    });
+    expect(busyEvent!.leaseUntil!.getTime()).toBe(futureLease.getTime());
+    expect(deferredTask).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      lastError: null,
+      lockedBy: null,
+      dedupeKey: "payment-provider-event:" + eventRow!.id,
+    });
+    expect(deferredTask!.runAfter.getTime()).toBeGreaterThanOrEqual(futureLease.getTime());
+
+    await db
+      .update(paymentProviderEvents)
+      .set({ leaseUntil: new Date(Date.now() - 60_000) })
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    await db
+      .update(tasks)
+      .set({ runAfter: new Date(Date.now() - 60_000) })
+      .where(eq(tasks.id, task!.id));
+
+    const [retriedTask] = await claimDueTasks(1, { lockToken: "task-worker-retry" });
+    expect(retriedTask?.id).toBe(task!.id);
+    await dispatchClaimedTask(retriedTask!);
+
+    const [processedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [succeededTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(processedEvent).toMatchObject({ status: "processed", attempts: 2, lockedBy: null });
+    expect(succeededTask).toMatchObject({ status: "succeeded", attempts: 1, lockedBy: null });
+  });
+
+  it("does not dead-letter a max-attempt dispatch task while its provider event remains busy", async () => {
+    const futureLease = new Date(Date.now() + 60_000);
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_busy_dead_task_regression",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_busy_dead_task_regression",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "processing",
+        attempts: 1,
+        maxAttempts: 5,
+        lockedBy: "provider-worker-x",
+        leaseUntil: futureLease,
+      })
+      .returning();
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        kind: "payment_provider_event.dispatch",
+        dedupeKey: "payment-provider-event:" + eventRow!.id,
+        payloadJson: { eventRowId: eventRow!.id },
+        status: "processing",
+        attempts: 5,
+        maxAttempts: 5,
+        lockedBy: "task-worker",
+        leaseUntil: new Date(Date.now() + 60_000),
+      })
+      .returning();
+
+    await dispatchClaimedTask(task!);
+
+    let [storedTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(storedTask).toMatchObject({ status: "pending", attempts: 4, lastError: null });
+
+    await db
+      .update(tasks)
+      .set({
+        status: "processing",
+        attempts: 5,
+        lockedBy: "task-worker-2",
+        leaseUntil: new Date(Date.now() + 60_000),
+      })
+      .where(eq(tasks.id, task!.id));
+    [storedTask] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    await dispatchClaimedTask(storedTask!);
+
+    const [busyEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    const [deferredAgain] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(busyEvent).toMatchObject({ status: "processing", lockedBy: "provider-worker-x" });
+    expect(deferredAgain).toMatchObject({
+      status: "pending",
+      attempts: 4,
+      lastError: null,
+      dedupeKey: "payment-provider-event:" + eventRow!.id,
+    });
+  });
+
+  it("does not treat processing, received, failed, or missing provider events as processed", async () => {
+    const futureLease = new Date(Date.now() + 60_000);
+    const eventRows = await db
+      .insert(paymentProviderEvents)
+      .values([
+        {
+          provider: "stripe",
+          providerEventId: "evt_processing_not_processed",
+          eventType: "ignored",
+          providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+          payloadJson: { type: "ignored", providerEventId: "evt_processing_not_processed" },
+          status: "processing",
+          attempts: 1,
+          lockedBy: "provider-worker-x",
+          leaseUntil: futureLease,
+        },
+        {
+          provider: "stripe",
+          providerEventId: "evt_received_exhausted_not_processed",
+          eventType: "ignored",
+          providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+          payloadJson: { type: "ignored", providerEventId: "evt_received_exhausted_not_processed" },
+          status: "received",
+          attempts: 5,
+          maxAttempts: 5,
+        },
+        {
+          provider: "stripe",
+          providerEventId: "evt_failed_exhausted_not_processed",
+          eventType: "ignored",
+          providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+          payloadJson: { type: "ignored", providerEventId: "evt_failed_exhausted_not_processed" },
+          status: "failed",
+          attempts: 5,
+          maxAttempts: 5,
+        },
+      ])
+      .returning();
+
+    await expect(dispatchPaymentProviderEvent(eventRows[0]!.id)).rejects.toMatchObject({
+      status: 503,
+      code: "paymentProviderEventBusy",
+    });
+    await expect(dispatchPaymentProviderEvent(eventRows[1]!.id)).rejects.toThrow(
+      "Payment provider event exhausted before claim",
+    );
+    await expect(dispatchPaymentProviderEvent(eventRows[2]!.id)).rejects.toThrow(
+      "Payment provider event exhausted before claim",
+    );
+    await expect(
+      dispatchPaymentProviderEvent("550e8400-e29b-41d4-a716-446655440000"),
+    ).rejects.toThrow("Payment provider event is missing");
+
+    const refreshed = await db.select().from(paymentProviderEvents);
+    expect(refreshed.filter((row) => row.status === "processed")).toHaveLength(0);
+    expect(refreshed.filter((row) => row.status === "dead")).toHaveLength(2);
+  });
+
+  it("treats processed provider events as idempotent dispatch success", async () => {
+    const [eventRow] = await db
+      .insert(paymentProviderEvents)
+      .values({
+        provider: "stripe",
+        providerEventId: "evt_processed_noop",
+        eventType: "ignored",
+        providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        payloadJson: {
+          type: "ignored",
+          providerEventId: "evt_processed_noop",
+          providerCreatedAt: "2026-02-01T00:00:00.000Z",
+        },
+        status: "processed",
+        attempts: 1,
+        processedAt: new Date("2026-02-01T00:00:01.000Z"),
+      })
+      .returning();
+
+    await expect(dispatchPaymentProviderEvent(eventRow!.id)).resolves.toBeUndefined();
+
+    const [storedEvent] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, eventRow!.id));
+    expect(storedEvent).toMatchObject({ status: "processed", attempts: 1 });
+  });
+
+  it("rolls back paid invoice business changes when provider-event fencing fails", async () => {
+    const { user, subscription } = await seedSubscription();
+    const event = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_stale_worker",
+      providerPaymentRef: "pi_stale_worker",
+      providerEventId: "evt_stale_worker",
+    });
+    await persistPaymentProviderEvent("stripe", event);
+    const [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, event.providerEventId));
+    await db.execute(
+      sql.raw(`
+        create function steal_provider_event_lock_on_invoice_insert() returns trigger as $$
+        begin
+          if new.provider_invoice_ref = 'in_stale_worker' then
+            update payment_provider_events
+            set locked_by = 'worker-b'
+            where id = '${row!.id}';
+          end if;
+          return new;
+        end;
+        $$ language plpgsql;
+        create trigger steal_provider_event_lock_on_invoice_insert_trigger
+        after insert on payment_requests
+        for each row execute function steal_provider_event_lock_on_invoice_insert();
+      `),
+    );
+    try {
+      await expect(dispatchPaymentProviderEvent(row!.id)).rejects.toThrow(
+        "Payment provider event fencing failed",
+      );
+    } finally {
+      await db.execute(
+        sql.raw(`
+          drop trigger if exists steal_provider_event_lock_on_invoice_insert_trigger on payment_requests;
+          drop function if exists steal_provider_event_lock_on_invoice_insert();
+        `),
+      );
+    }
+
+    const [eventAfterStaleCommit] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, row!.id));
+    const requests = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.providerInvoiceRef, event.providerInvoiceRef));
+    const grants = await db.select().from(memberships).where(eq(memberships.userId, user.id));
+    expect(eventAfterStaleCommit).toMatchObject({ status: "failed", lockedBy: null });
+    expect(requests).toHaveLength(0);
+    expect(grants).toHaveLength(0);
+  });
+
+  it("rolls back subscription reversal when the fenced commit fails", async () => {
+    const { user, subscription } = await seedSubscription();
+    const paid = paidInvoiceEvent({
+      localSubscriptionId: subscription.id,
+      providerInvoiceRef: "in_reversal_rollback",
+      providerPaymentRef: "pi_reversal_rollback",
+    });
+    await db.transaction((tx) => applyPaidInvoice(tx, "stripe", paid));
+    providerMocks.resolveInvoiceByPaymentIntent.mockResolvedValue({
+      providerInvoiceRef: paid.providerInvoiceRef,
+      providerSubscriptionRef: subscription.providerSubscriptionRef,
+      localSubscriptionId: subscription.id,
+    });
+    await persistPaymentProviderEvent("stripe", {
+      type: "refunded",
+      paymentRef: paid.providerPaymentRef!,
+      providerEventId: "evt_reversal_rollback",
+      providerCreatedAt: new Date("2026-02-02T00:00:00.000Z"),
+    });
+    const [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_reversal_rollback"));
+    await db.execute(
+      sql.raw(`
+        create function steal_provider_event_lock_on_reversal_update() returns trigger as $$
+        begin
+          if new.reversal_event_id = 'evt_reversal_rollback' then
+            update payment_provider_events
+            set locked_by = 'worker-b'
+            where id = '${row!.id}';
+          end if;
+          return new;
+        end;
+        $$ language plpgsql;
+        create trigger steal_provider_event_lock_on_reversal_update_trigger
+        after update on payment_requests
+        for each row execute function steal_provider_event_lock_on_reversal_update();
+      `),
+    );
+    try {
+      await expect(dispatchPaymentProviderEvent(row!.id)).rejects.toThrow(
+        "Payment provider event fencing failed",
+      );
+    } finally {
+      await db.execute(
+        sql.raw(`
+          drop trigger if exists steal_provider_event_lock_on_reversal_update_trigger on payment_requests;
+          drop function if exists steal_provider_event_lock_on_reversal_update();
+        `),
+      );
+    }
+
+    const [request] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.providerInvoiceRef, paid.providerInvoiceRef));
+    const [membership] = await db.select().from(memberships).where(eq(memberships.userId, user.id));
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, row!.id));
+    expect(request).toMatchObject({ status: "approved", reversalEventId: null });
+    expect(membership).toMatchObject({ status: "active" });
+    expect(eventRow).toMatchObject({ status: "failed", lockedBy: null });
+  });
+
+  it("rolls back one-time refund fallback reversal when the fenced commit fails", async () => {
+    const { user, tier } = await seed();
+    const [request] = await db
+      .insert(paymentRequests)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        flow: "auto",
+        status: "pending_payment",
+        provider: "stripe",
+        providerRef: "cs_one_time_refund_rollback",
+        amountMinor: 900,
+        currency: "usd",
+        amountLabel: "$9",
+        durationDays: 31,
+      })
+      .returning();
+    await persistPaymentProviderEvent("stripe", {
+      type: "paid",
+      providerRef: "cs_one_time_refund_rollback",
+      paymentRef: "pi_one_time_refund_rollback",
+      requestId: request!.id,
+      providerEventId: "evt_one_time_paid_rollback",
+      amountMinor: 900,
+      currency: "usd",
+    });
+    let [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_one_time_paid_rollback"));
+    await dispatchPaymentProviderEvent(row!.id);
+
+    providerMocks.resolveInvoiceByPaymentIntent.mockResolvedValue(null);
+    providerMocks.resolveCheckoutByPaymentIntent.mockResolvedValue(null);
+    await persistPaymentProviderEvent("stripe", {
+      type: "refunded",
+      paymentRef: "pi_one_time_refund_rollback",
+      providerEventId: "evt_one_time_refund_rollback",
+    });
+    [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_one_time_refund_rollback"));
+    const auditCountBeforeDispatch = (await db.select().from(auditEvents)).length;
+    const emailCountBeforeDispatch = (await db.select().from(tasks)).filter(
+      (task) => task.kind === "email",
+    ).length;
+    await db.execute(
+      sql.raw(`
+        create function steal_provider_event_lock_on_one_time_refund_update() returns trigger as $$
+        begin
+          if new.reversal_event_id = 'evt_one_time_refund_rollback' then
+            update payment_provider_events
+            set locked_by = 'worker-b'
+            where id = '${row!.id}';
+          end if;
+          return new;
+        end;
+        $$ language plpgsql;
+        create trigger steal_provider_event_lock_on_one_time_refund_update_trigger
+        after update on payment_requests
+        for each row execute function steal_provider_event_lock_on_one_time_refund_update();
+      `),
+    );
+    try {
+      await expect(dispatchPaymentProviderEvent(row!.id)).rejects.toThrow(
+        "Payment provider event fencing failed",
+      );
+    } finally {
+      await db.execute(
+        sql.raw(`
+          drop trigger if exists steal_provider_event_lock_on_one_time_refund_update_trigger on payment_requests;
+          drop function if exists steal_provider_event_lock_on_one_time_refund_update();
+        `),
+      );
+    }
+
+    const [stored] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, request!.id));
+    const [membership] = await db
+      .select()
+      .from(memberships)
+      .where(eq(memberships.id, stored!.grantedMembershipId!));
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, row!.id));
+    const auditCountAfterDispatch = (await db.select().from(auditEvents)).length;
+    const emailCountAfterDispatch = (await db.select().from(tasks)).filter(
+      (task) => task.kind === "email",
+    ).length;
+
+    expect(providerMocks.resolveInvoiceByPaymentIntent).toHaveBeenCalledWith(
+      "pi_one_time_refund_rollback",
+    );
+    expect(providerMocks.resolveCheckoutByPaymentIntent).toHaveBeenCalledWith(
+      "pi_one_time_refund_rollback",
+    );
+    expect(stored).toMatchObject({ status: "approved", reversalEventId: null });
+    expect(membership).toMatchObject({ status: "active" });
+    expect(auditCountAfterDispatch).toBe(auditCountBeforeDispatch);
+    expect(emailCountAfterDispatch).toBe(emailCountBeforeDispatch);
+    expect(eventRow).toMatchObject({
+      status: "failed",
+      attempts: 1,
+      lockedBy: null,
+      leaseUntil: null,
+    });
+    const [dispatchTask] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.dedupeKey, "payment-provider-event:" + row!.id));
+    expect(dispatchTask).toMatchObject({
+      kind: "payment_provider_event.dispatch",
+      status: "pending",
+      attempts: 0,
+      lastError: null,
+    });
+  });
+
+  it("rolls back legacy one-time paid work when the fenced commit fails", async () => {
+    const { user, tier } = await seed();
+    const [request] = await db
+      .insert(paymentRequests)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        flow: "auto",
+        status: "pending_payment",
+        provider: "stripe",
+        providerRef: "cs_paid_rollback",
+        amountMinor: 900,
+        currency: "usd",
+        amountLabel: "$9",
+        durationDays: 31,
+      })
+      .returning();
+    await persistPaymentProviderEvent("stripe", {
+      type: "paid",
+      providerRef: "cs_paid_rollback",
+      paymentRef: "pi_paid_rollback",
+      requestId: request!.id,
+      providerEventId: "evt_paid_rollback",
+      amountMinor: 900,
+      currency: "usd",
+    });
+    const [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_paid_rollback"));
+    await db.execute(
+      sql.raw(`
+        create function steal_provider_event_lock_on_paid_update() returns trigger as $$
+        begin
+          if new.provider_event_id = 'evt_paid_rollback' then
+            update payment_provider_events
+            set locked_by = 'worker-b'
+            where id = '${row!.id}';
+          end if;
+          return new;
+        end;
+        $$ language plpgsql;
+        create trigger steal_provider_event_lock_on_paid_update_trigger
+        after update on payment_requests
+        for each row execute function steal_provider_event_lock_on_paid_update();
+      `),
+    );
+    try {
+      await expect(dispatchPaymentProviderEvent(row!.id)).rejects.toThrow(
+        "Payment provider event fencing failed",
+      );
+    } finally {
+      await db.execute(
+        sql.raw(`
+          drop trigger if exists steal_provider_event_lock_on_paid_update_trigger on payment_requests;
+          drop function if exists steal_provider_event_lock_on_paid_update();
+        `),
+      );
+    }
+
+    const [stored] = await db
+      .select()
+      .from(paymentRequests)
+      .where(eq(paymentRequests.id, request!.id));
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, row!.id));
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(0);
+    expect(stored).toMatchObject({
+      status: "pending_payment",
+      providerEventId: null,
+      providerPaymentRef: null,
+      grantedMembershipId: null,
+    });
+    expect(eventRow).toMatchObject({ status: "failed", lockedBy: null });
+  });
+
+  it("keeps resolution failures retryable with no business commit", async () => {
+    const { user, subscription } = await seedSubscription();
+    await persistPaymentProviderEvent("stripe", {
+      type: "refunded",
+      paymentRef: "pi_resolution_failure",
+      providerEventId: "evt_resolution_failure",
+      providerCreatedAt: new Date("2026-02-02T00:00:00.000Z"),
+    });
+    const [row] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_resolution_failure"));
+    providerMocks.resolveInvoiceByPaymentIntent.mockRejectedValue(new Error("stripe unavailable"));
+
+    await expect(dispatchPaymentProviderEvent(row!.id)).rejects.toThrow("stripe unavailable");
+
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, row!.id));
+    expect(eventRow).toMatchObject({ status: "failed", attempts: 1, lockedBy: null });
+    await expect(db.select().from(paymentRequests)).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(subscriptions).where(eq(subscriptions.id, subscription.id)),
+    ).resolves.toHaveLength(1);
   });
 
   it("recovers a missing pending subscription through its checkout and paid invoice", async () => {
@@ -356,6 +1751,7 @@ describeWithDatabase("Stripe subscription integration", () => {
       providerCustomerRef: "cus_recovered",
       currentPeriodEndsAt: invoice.lines[0]!.periodEnd,
       cancelAtPeriodEnd: false,
+      metadata: {},
       observedAt: new Date(),
     });
     providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([invoice]);
@@ -375,12 +1771,337 @@ describeWithDatabase("Stripe subscription integration", () => {
 
   it("marks an abandoned checkout expired and stops remote subscription reconciliation", async () => {
     const { user, tier } = await seed();
+    const [subscription] = await db
+      .insert(subscriptions)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        status: "pending",
+        provider: "stripe",
+        providerCheckoutRef: "cs_abandoned",
+        providerPriceRef: "price_monthly_snapshot",
+        expectedAmountMinor: 900,
+        expectedCurrency: "usd",
+        quantity: 1,
+      })
+      .returning();
+    const observedAt = new Date("2026-02-01T00:00:00.999Z");
+    providerMocks.getSubscriptionCheckoutState.mockResolvedValue({
+      status: "expired",
+      redirectUrl: null,
+      providerSubscriptionRef: null,
+      observedAt,
+    });
+
+    await expect(reconcileSubscriptions()).resolves.toBe(1);
+
+    const [updated] = await db.select().from(subscriptions);
+    expect(updated?.status).toBe("expired");
+    expect(updated?.statusEventAt).toEqual(observedAt);
+    expect(updated?.version).toBe(subscription!.version + 1);
+    expect(providerMocks.retrieveSubscription).not.toHaveBeenCalled();
+    expect(providerMocks.listPaidSubscriptionInvoices).not.toHaveBeenCalled();
+  });
+
+  // This manually preserves pending status to isolate the timestamp predicate.
+  // A real webhook that commits first and moves the row out of pending wins via
+  // the expiry status CAS; this verifies only that S.000 is older than S.999
+  // while the row is still pending.
+  it("expires a still-pending checkout over an older same-second webhook timestamp", async () => {
+    const { user, tier } = await seed();
+    const sameSecondWebhookAt = new Date("2026-02-01T00:00:00.000Z");
+    const observedAt = new Date("2026-02-01T00:00:00.999Z");
+    const [subscription] = await db
+      .insert(subscriptions)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        status: "pending",
+        provider: "stripe",
+        providerCheckoutRef: "cs_same_second_webhook_first",
+        providerPriceRef: "price_monthly_snapshot",
+        expectedAmountMinor: 900,
+        expectedCurrency: "usd",
+        quantity: 1,
+      })
+      .returning();
+
+    await db
+      .update(subscriptions)
+      .set({
+        statusEventAt: sameSecondWebhookAt,
+        updatedAt: sameSecondWebhookAt,
+        version: sql`${subscriptions.version} + 1`,
+      })
+      .where(
+        and(
+          eq(subscriptions.id, subscription!.id),
+          or(
+            isNull(subscriptions.statusEventAt),
+            lte(subscriptions.statusEventAt, sameSecondWebhookAt),
+          ),
+        ),
+      );
+    providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([]);
+    providerMocks.getSubscriptionCheckoutState.mockResolvedValue({
+      status: "expired",
+      redirectUrl: null,
+      providerSubscriptionRef: null,
+      observedAt,
+    });
+
+    await expect(reconcileSubscriptions()).resolves.toBe(1);
+
+    const [updated] = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.id, subscription!.id));
+    expect(updated?.status).toBe("expired");
+    expect(updated?.statusEventAt).toEqual(observedAt);
+    expect(updated?.version).toBe(subscription!.version + 2);
+  });
+
+  it("lets a next-second webhook cross a stored expiry fence", async () => {
+    const { user, tier } = await seed();
+    const observedAt = new Date("2026-02-01T00:00:00.999Z");
+    const nextSecondWebhookAt = new Date("2026-02-01T00:00:01.000Z");
+    const [subscription] = await db
+      .insert(subscriptions)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        status: "pending",
+        provider: "stripe",
+        providerCheckoutRef: "cs_next_second_after_expiry",
+        providerPriceRef: "price_monthly_snapshot",
+        expectedAmountMinor: 900,
+        expectedCurrency: "usd",
+        quantity: 1,
+      })
+      .returning();
+    providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([]);
+    providerMocks.getSubscriptionCheckoutState.mockResolvedValue({
+      status: "expired",
+      redirectUrl: null,
+      providerSubscriptionRef: null,
+      observedAt,
+    });
+
+    await expect(reconcileSubscriptions()).resolves.toBe(1);
+    await persistPaymentProviderEvent("stripe", {
+      type: "subscription_payment_failed",
+      localSubscriptionId: subscription!.id,
+      providerSubscriptionRef: "sub_next_second_after_expiry",
+      providerInvoiceRef: "in_next_second_after_expiry",
+      providerEventId: "evt_next_second_after_expiry",
+      providerCreatedAt: nextSecondWebhookAt,
+    });
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_next_second_after_expiry"));
+
+    await dispatchPaymentProviderEvent(eventRow!.id);
+
+    const [updated] = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.id, subscription!.id));
+    expect(updated?.status).toBe("past_due");
+    expect(updated?.statusEventAt).toEqual(nextSecondWebhookAt);
+    expect(updated?.version).toBe(subscription!.version + 2);
+  });
+
+  it("ignores a duplicate observation at the same fenced instant", async () => {
+    const { user, tier } = await seed();
+    const observedAt = new Date("2026-02-01T00:00:00.999Z");
+    const [subscription] = await db
+      .insert(subscriptions)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        status: "pending",
+        provider: "stripe",
+        providerCheckoutRef: "cs_duplicate_observation_fence",
+        providerPriceRef: "price_monthly_snapshot",
+        expectedAmountMinor: 900,
+        expectedCurrency: "usd",
+        quantity: 1,
+      })
+      .returning();
+    providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([]);
+    providerMocks.getSubscriptionCheckoutState.mockResolvedValue({
+      status: "expired",
+      redirectUrl: null,
+      providerSubscriptionRef: null,
+      observedAt,
+    });
+
+    await expect(reconcileSubscriptions()).resolves.toBe(1);
+    const [expired] = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.id, subscription!.id));
+    expect(expired?.status).toBe("expired");
+    expect(expired?.statusEventAt).toEqual(observedAt);
+    expect(expired?.version).toBe(subscription!.version + 1);
+
+    await expect(reconcileSubscriptions()).resolves.toBe(1);
+
+    const [updated] = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.id, subscription!.id));
+    expect(updated?.status).toBe("expired");
+    expect(updated?.statusEventAt).toEqual(observedAt);
+    expect(updated?.version).toBe(expired!.version);
+  });
+
+  it("blocks a same-second webhook after checkout expiry stores the provider fence", async () => {
+    const { user, tier } = await seed();
+    const observedAt = new Date("2026-02-01T00:00:00.999Z");
+    const sameSecondWebhookAt = new Date("2026-02-01T00:00:00.000Z");
+    const [subscription] = await db
+      .insert(subscriptions)
+      .values({
+        userId: user.id,
+        tierId: tier.id,
+        status: "pending",
+        provider: "stripe",
+        providerCheckoutRef: "cs_same_second_expiry",
+        providerPriceRef: "price_monthly_snapshot",
+        expectedAmountMinor: 900,
+        expectedCurrency: "usd",
+        quantity: 1,
+      })
+      .returning();
+    providerMocks.getSubscriptionCheckoutState.mockResolvedValue({
+      status: "expired",
+      redirectUrl: null,
+      providerSubscriptionRef: null,
+      observedAt,
+    });
+    providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([]);
+
+    await expect(reconcileSubscriptions()).resolves.toBe(1);
+    await persistPaymentProviderEvent("stripe", {
+      type: "subscription_canceled",
+      localSubscriptionId: subscription!.id,
+      providerSubscriptionRef: "sub_same_second_expiry",
+      canceledAt: sameSecondWebhookAt,
+      providerEventId: "evt_same_second_after_expiry",
+      providerCreatedAt: sameSecondWebhookAt,
+    });
+    const [eventRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_same_second_after_expiry"));
+
+    await dispatchPaymentProviderEvent(eventRow!.id);
+
+    const [updated] = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.id, subscription!.id));
+    expect(updated?.status).toBe("expired");
+    expect(updated?.statusEventAt).toEqual(observedAt);
+    expect(updated?.version).toBe(subscription!.version + 1);
+  });
+
+  it("marks pending checkouts expired when statusEventAt is null or older", async () => {
+    const { user: nullFenceUser, tier: nullFenceTier } = await seed();
+    const { user: olderFenceUser, tier: olderFenceTier } = await seed();
+    const observedAt = new Date("2026-02-01T00:00:00.999Z");
+    const olderStatusEventAt = new Date("2026-01-31T23:59:59.000Z");
+    const [nullFence, olderFence] = await db
+      .insert(subscriptions)
+      .values([
+        {
+          userId: nullFenceUser.id,
+          tierId: nullFenceTier.id,
+          status: "pending",
+          provider: "stripe",
+          providerCheckoutRef: "cs_expired_null_fence",
+          providerPriceRef: "price_monthly_snapshot",
+          expectedAmountMinor: 900,
+          expectedCurrency: "usd",
+          quantity: 1,
+        },
+        {
+          userId: olderFenceUser.id,
+          tierId: olderFenceTier.id,
+          status: "pending",
+          provider: "stripe",
+          providerCheckoutRef: "cs_expired_older_fence",
+          providerPriceRef: "price_monthly_snapshot",
+          expectedAmountMinor: 900,
+          expectedCurrency: "usd",
+          quantity: 1,
+          statusEventAt: olderStatusEventAt,
+        },
+      ])
+      .returning();
+    providerMocks.getSubscriptionCheckoutState.mockResolvedValue({
+      status: "expired",
+      redirectUrl: null,
+      providerSubscriptionRef: null,
+      observedAt,
+    });
+
+    await expect(reconcileSubscriptions()).resolves.toBe(2);
+
+    const rows = await db
+      .select()
+      .from(subscriptions)
+      .where(sql`${subscriptions.id} in (${nullFence!.id}, ${olderFence!.id})`);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const originalVersion = row.id === nullFence!.id ? nullFence!.version : olderFence!.version;
+      expect(row.status).toBe("expired");
+      expect(row.statusEventAt).toEqual(observedAt);
+      expect(row.version).toBe(originalVersion + 1);
+    }
+    expect(providerMocks.retrieveSubscription).not.toHaveBeenCalled();
+    expect(providerMocks.listPaidSubscriptionInvoices).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite checkout expiry with a stale provider observation", async () => {
+    const { user, tier } = await seed();
+    const existingFence = new Date("2026-02-01T00:00:01.000Z");
     await db.insert(subscriptions).values({
       userId: user.id,
       tierId: tier.id,
       status: "pending",
       provider: "stripe",
-      providerCheckoutRef: "cs_abandoned",
+      providerCheckoutRef: "cs_abandoned_stale",
+      providerPriceRef: "price_monthly_snapshot",
+      expectedAmountMinor: 900,
+      expectedCurrency: "usd",
+      quantity: 1,
+      statusEventAt: existingFence,
+    });
+    providerMocks.getSubscriptionCheckoutState.mockResolvedValue({
+      status: "expired",
+      redirectUrl: null,
+      providerSubscriptionRef: null,
+      observedAt: new Date("2026-02-01T00:00:00.999Z"),
+    });
+
+    await expect(reconcileSubscriptions()).resolves.toBe(1);
+
+    const [updated] = await db.select().from(subscriptions);
+    expect(updated?.status).toBe("pending");
+    expect(updated?.statusEventAt).toEqual(existingFence);
+  });
+
+  it("fails closed when checkout expiry has no provider observation", async () => {
+    const { user, tier } = await seed();
+    await db.insert(subscriptions).values({
+      userId: user.id,
+      tierId: tier.id,
+      status: "pending",
+      provider: "stripe",
+      providerCheckoutRef: "cs_abandoned_unobserved",
       providerPriceRef: "price_monthly_snapshot",
       expectedAmountMinor: 900,
       expectedCurrency: "usd",
@@ -390,14 +2111,49 @@ describeWithDatabase("Stripe subscription integration", () => {
       status: "expired",
       redirectUrl: null,
       providerSubscriptionRef: null,
+      observedAt: null,
     });
 
     await expect(reconcileSubscriptions()).resolves.toBe(1);
 
     const [updated] = await db.select().from(subscriptions);
-    expect(updated?.status).toBe("expired");
-    expect(providerMocks.retrieveSubscription).not.toHaveBeenCalled();
-    expect(providerMocks.listPaidSubscriptionInvoices).not.toHaveBeenCalled();
+    expect(updated?.status).toBe("pending");
+    expect(updated?.statusEventAt).toBeNull();
+  });
+
+  it("does not create a replacement checkout when expiry has no provider observation", async () => {
+    const { user, tier } = await seed();
+    await db.insert(subscriptions).values({
+      userId: user.id,
+      tierId: tier.id,
+      status: "pending",
+      provider: "stripe",
+      providerCheckoutRef: "cs_retry_unobserved",
+      providerPriceRef: "price_monthly_snapshot",
+      expectedAmountMinor: 900,
+      expectedCurrency: "usd",
+      quantity: 1,
+    });
+    providerMocks.getSubscriptionCheckoutState.mockResolvedValue({
+      status: "expired",
+      redirectUrl: null,
+      providerSubscriptionRef: null,
+      observedAt: null,
+    });
+
+    await expect(
+      createSubscriptionCheckout({
+        userId: user.id,
+        tierId: tier.id,
+        successUrl: "https://site.test/success",
+        cancelUrl: "https://site.test/cancel",
+      }),
+    ).rejects.toMatchObject({ status: 503, code: "subscriptionCheckoutExpiryUnobserved" });
+
+    expect(providerMocks.createSubscriptionCheckout).not.toHaveBeenCalled();
+    const [updated] = await db.select().from(subscriptions);
+    expect(updated?.status).toBe("pending");
+    expect(updated?.statusEventAt).toBeNull();
   });
 
   it("deduplicates a webhook racing reconciliation for the same paid invoice", async () => {
@@ -409,6 +2165,7 @@ describeWithDatabase("Stripe subscription integration", () => {
       providerCustomerRef: "cus_race",
       currentPeriodEndsAt: event.lines[0]!.periodEnd,
       cancelAtPeriodEnd: false,
+      metadata: {},
       observedAt: new Date(),
     });
     providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([event]);
@@ -444,6 +2201,7 @@ describeWithDatabase("Stripe subscription integration", () => {
       providerCustomerRef: "cus_canceled",
       currentPeriodEndsAt: event.lines[0]!.periodEnd,
       cancelAtPeriodEnd: false,
+      metadata: {},
       observedAt: new Date(),
     });
     providerMocks.listPaidSubscriptionInvoices.mockResolvedValue([event]);
@@ -524,10 +2282,8 @@ describeWithDatabase("Stripe subscription integration", () => {
       .select()
       .from(paymentProviderEvents)
       .where(eq(paymentProviderEvents.providerEventId, "evt_one_time_paid"));
-    await Promise.all([
-      dispatchPaymentProviderEvent(row!.id),
-      dispatchPaymentProviderEvent(row!.id),
-    ]);
+    await dispatchPaymentProviderEvent(row!.id);
+    await dispatchPaymentProviderEvent(row!.id);
     await expect(
       db.select().from(memberships).where(eq(memberships.userId, user.id)),
     ).resolves.toHaveLength(1);
@@ -555,6 +2311,72 @@ describeWithDatabase("Stripe subscription integration", () => {
       .where(eq(memberships.id, stored!.grantedMembershipId!));
     expect(stored?.status).toBe("reversed");
     expect(membership?.status).toBe("revoked");
+  });
+
+  it("does not rebind an existing subscription on conflicting activation metadata", async () => {
+    const { user, subscription } = await seedSubscription();
+    const originalVersion = subscription.version;
+
+    await persistPaymentProviderEvent("stripe", {
+      type: "subscription_activated",
+      localSubscriptionId: subscription.id,
+      providerSubscriptionRef: "sub_foreign_activation",
+      providerCustomerRef: "cus_foreign_activation",
+      currentPeriodEndsAt: new Date("2026-03-01T00:00:00.000Z"),
+      cancelAtPeriodEnd: false,
+      providerEventId: "evt_foreign_activation_conflict",
+      providerCreatedAt: new Date("2026-02-01T00:00:00.000Z"),
+    });
+    const [activationRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, "evt_foreign_activation_conflict"));
+
+    await dispatchPaymentProviderEvent(activationRow!.id);
+
+    const [storedActivation] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, activationRow!.id));
+    const [unchanged] = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.id, subscription.id));
+    expect(storedActivation).toMatchObject({ status: "processed", attempts: 1 });
+    expect(unchanged).toMatchObject({
+      status: subscription.status,
+      providerSubscriptionRef: subscription.providerSubscriptionRef,
+      version: originalVersion,
+    });
+
+    const invoice = paidInvoiceEvent({
+      localSubscriptionId: undefined,
+      providerSubscriptionRef: "sub_foreign_activation",
+      providerInvoiceRef: "in_foreign_activation",
+      providerEventId: "evt_foreign_activation_invoice",
+    });
+    await persistPaymentProviderEvent("stripe", invoice);
+    const [invoiceRow] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.providerEventId, invoice.providerEventId));
+
+    await dispatchPaymentProviderEvent(invoiceRow!.id);
+
+    const [storedInvoice] = await db
+      .select()
+      .from(paymentProviderEvents)
+      .where(eq(paymentProviderEvents.id, invoiceRow!.id));
+    expect(storedInvoice).toMatchObject({ status: "processed", attempts: 1 });
+    await expect(
+      db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.providerInvoiceRef, invoice.providerInvoiceRef)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(memberships).where(eq(memberships.userId, user.id)),
+    ).resolves.toHaveLength(0);
   });
 
   it("keeps paid entitlement when invoice.paid arrives before subscription.created", async () => {
@@ -697,10 +2519,10 @@ describeWithDatabase("Stripe subscription integration", () => {
     expect(rows.map((row) => row.provider).sort()).toEqual(["other-provider", "stripe"]);
 
     await Promise.all(
-      rows.flatMap((row) => [
-        dispatchPaymentProviderEvent(row.id),
-        dispatchPaymentProviderEvent(row.id),
-      ]),
+      rows.map(async (row) => {
+        await dispatchPaymentProviderEvent(row.id);
+        await dispatchPaymentProviderEvent(row.id);
+      }),
     );
 
     const dispatched = await db.select().from(paymentProviderEvents);

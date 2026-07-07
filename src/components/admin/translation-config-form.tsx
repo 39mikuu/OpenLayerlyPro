@@ -122,6 +122,9 @@ export function TranslationConfigForm({ initial }: { initial: TranslationAdminVi
           value={monthlyCharLimit}
           onChange={(event) => setMonthlyCharLimit(event.target.value)}
         />
+        <p className="text-xs text-muted-foreground">
+          {t("admin.translation.monthlyCharLimitHint")}
+        </p>
       </div>
       <Label className="flex items-start gap-2">
         <input

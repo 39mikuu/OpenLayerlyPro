@@ -2,11 +2,9 @@
 
 开源、自托管、单画师会员站系统。
 
-官网：[openlayerlypro 项目主页](https://39mikuu.github.io/OpenLayerlyPro/)（中文 · [EN](https://39mikuu.github.io/OpenLayerlyPro/en/) · [日本語](https://39mikuu.github.io/OpenLayerlyPro/ja/)）
-
 OpenLayerlyPro helps independent illustrators and creators run their own membership site: publish posts, offer membership tiers through manual review, Stripe hosted one-time checkout, or recurring Stripe subscriptions, and deliver member-only files from a self-hosted deployment.
 
-Current status: **v1.0 pre-release final acceptance**. The application includes the payment, subscription, content, file, theme, translation, S6 security-response-header, S7 hardened backup/restore, approved audit fixes, and persistent automatic Compose session-secret generation. The operator has completed the real Stripe, SMTP, S3/R2, Turnstile/CSP, secret-custody, and recovery gates. Issue #104 now tracks evidence normalization, final-candidate freeze, exact-final-SHA CI/impacted rechecks, and publication authorization. Do not create a production `v1.0.0` tag until [the v1.0 acceptance checklist](docs/release-v1.0-checklist.md) is complete under #104. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, payments, and backups.
+Current status: **v1.0.0 released** (tag `v1.0.0`). The application includes the payment, subscription, content, file, theme, translation, S6 security-response-header, and S7 hardened backup/restore feature set, plus the final-acceptance hardening line (auth-before-body gate, file-reference integrity, atomic secret provisioning, image-authoritative archive v3 provenance, reconcile clock fence). The #88 real-environment acceptance checklist ([v1.0 checklist](docs/release-v1.0-checklist.md)) was completed on the exact release build before tagging. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, payments, and backups.
 
 ## 核心特性
 
@@ -62,7 +60,7 @@ Current status: **v1.0 pre-release final acceptance**. The application includes 
 git clone https://github.com/39mikuu/OpenLayerlyPro.git
 cd OpenLayerlyPro
 cp .env.example .env
-# 配置 SMTP；标准 Docker Compose 可在未显式设置时持久化生成 SESSION_SECRET
+# 编辑 .env：配置 APP_URL、SMTP 与存储；Compose 会持久化生成 SESSION_SECRET
 
 docker compose up -d
 ```
@@ -137,7 +135,7 @@ docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 | 变量 | 说明 |
 |---|---|
 | `APP_URL` | 站点对外地址 |
-| `SESSION_SECRET` / `SESSION_SECRET_FILE` | 显式会话密钥或文件 override；标准 Compose 未设置时会持久化生成强随机文件密钥 |
+| `SESSION_SECRET` / `SESSION_SECRET_FILE` | 外部托管值优先；Compose 默认使用 `/app/secrets/session-secret` |
 | `DATABASE_URL` | PostgreSQL 连接串 |
 | `SMTP_HOST` / `SMTP_FROM` 等 | SMTP 邮件配置，粉丝验证码登录必需 |
 | `EMAIL_RETRY_RECHECK_MINUTES` / `EMAIL_DELIVERY_MAX_AGE_HOURS` | 业务邮件待运维修复时的重投间隔与最长待命时间（默认 15 分钟 / 24 小时） |
@@ -157,20 +155,19 @@ Stripe and AI translation provider settings are configured in the admin settings
 
 ### SESSION_SECRET
 
-标准 Docker Compose 的解析顺序是：
-
-1. 显式 `SESSION_SECRET`；
-2. `SESSION_SECRET_FILE` 指向的文件；
-3. Compose 管理的持久化自动生成文件；
-4. 非生产确定性 fallback；生产环境若仍无法解析则 fail-loud。
-
-手工或非标准部署仍可自行生成：
+Docker Compose 默认可省略 `SESSION_SECRET`。首次启动使用安全随机数生成
+`/app/secrets/session-secret`，权限为 `0600`，并在后续重启和容器重建中复用。
+高级部署可提供长度至少 32 字符的外部值：
 
 ```bash
 openssl rand -base64 32
 ```
 
-自动生成的 secret 必须跨重启/重建保持稳定。迁移服务器、恢复归档或切换部署方式时，应保留解析后的同一个 secret；丢失或更换会使旧 session 失效，并可能使尚未处理的加密登录码任务不可恢复。
+环境变量优先于 `SESSION_SECRET_FILE`。多主机或不共享 volume 的部署必须通过
+Secret Manager 提供同一个环境变量，或由编排平台挂载同一个文件；本地 named
+volume 不能跨主机共享。删除或替换该 secret 会使现有 session、验证码摘要和
+认证中间任务失效。不要执行 `docker compose down -v`，除非已验证备份可恢复
+secrets volume。
 
 ### Turnstile 与真实 IP
 
@@ -187,7 +184,9 @@ openssl rand -base64 32
 
 Docker 用户可以留空 `CONFIG_ENCRYPTION_KEY`。首次启动时 entrypoint 会生成随机密钥并持久化到 `/app/secrets/config-encryption-key`。
 
-> 迁移服务器或恢复备份时，必须同时备份 PostgreSQL 数据库和配置加密密钥。密钥丢失后，加密配置可能无法恢复。无缝会话恢复还必须保留同一个已解析 `SESSION_SECRET`。
+> 迁移服务器或恢复备份时，必须同时保护数据库、配置加密密钥与 session secret。
+> 新归档包含 file-backed session secret；外部 `SESSION_SECRET` 只记录不可逆指纹，
+> 明文仍必须由操作者单独托管。
 
 标准 Docker Compose 部署可用单个归档同时备份数据库、密钥和本地上传文件：
 
@@ -270,8 +269,6 @@ pnpm build
 
 - [产品需求文档](docs/PRD.md)
 - [路线图](docs/roadmap.md)
-- [v1.1 计划书](docs/release-v1.1-plan.md)
-- [已知缺口账本](docs/known-gaps.md)
 - [架构文档](docs/architecture/core-system.md)
 - [架构决策记录（ADR）](docs/adr/README.md)
 - [会员生命周期设计稿（#4）](docs/architecture/membership-lifecycle.md)
@@ -303,7 +300,6 @@ pnpm build
 - [Security Policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
 - [v1.0.0 最终验收与发布清单](docs/release-v1.0-checklist.md)
-- [v1.0.0 候选报告](docs/releases/v1.0.0-release-candidate-report.md)
 - [v0.2.0 历史验收清单（已取代）](docs/release-v0.2-checklist.md)
 - [v0.1 readiness audit](docs/releases/v0.1-readiness-audit.md)
 - [v0.1 release checklist](docs/releases/v0.1-release-checklist.md)

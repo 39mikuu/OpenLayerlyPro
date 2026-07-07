@@ -91,11 +91,11 @@ S4 已由当前运行时实现，权威语义见 [../handoff/harden-s4-auth-rate
   `style-src` 使用 `'self' 'unsafe-inline'` 兼容退路；`script-src`
   仍强制 per-request nonce，生产环境无 `unsafe-inline` / `unsafe-eval`。
 
-### S7 #87 ▶
+### S7 #87 ✅
 
-- 恢复前兼容检查、one-off migrator/file-safety backfill/neutralization/convergence；
+- 恢复前兼容检查、one-off migrator/file-safety backfill/neutralization/convergence 均已实现；
 - 正常 app/dispatcher 在恢复一致性完成前保持停止；
-- local/S3 恢复演练纳入 #88。
+- #88 在隔离的 local/S3 Compose 演练中验证已实现的 S7 流程。
 
 ## Phase 10 及以后 🚧
 

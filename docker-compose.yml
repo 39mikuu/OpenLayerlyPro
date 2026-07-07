@@ -3,12 +3,20 @@ services:
     build:
       context: .
       target: runner
+      args:
+        APP_VERSION: ${OPENLAYERLY_BUILD_VERSION:-dev}
+        SOURCE_COMMIT: ${OPENLAYERLY_BUILD_COMMIT:-dev}
+        BUILD_TIMESTAMP: ${OPENLAYERLY_BUILD_TIMESTAMP:-unknown}
     restart: unless-stopped
     env_file:
       - .env
     environment:
       DATABASE_URL: postgresql://artist:artist_password@postgres:5432/artist_member
       UPLOAD_DIR: /app/uploads
+      # SESSION_SECRET_FILE is intentionally not fixed here so an operator-provided value in
+      # .env is honoured. When it is unset the entrypoint falls back to
+      # /app/secrets/session-secret on the persistent secrets volume. A custom path must
+      # point inside the container and have its directory mounted (see .env.example).
     depends_on:
       - postgres
     volumes:

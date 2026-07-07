@@ -15,12 +15,12 @@ const bodySchema = z.object({
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
+    const user = await requireUser();
     const { proofFileId } = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
       bodySchema,
     );
-    const user = await requireUser();
     const { id } = await ctx.params;
     const updated = await resubmitPaymentProof({
       requestId: id,

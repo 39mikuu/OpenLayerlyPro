@@ -57,7 +57,7 @@ describe("subscription cancel route", () => {
     });
   });
 
-  it("rejects oversized JSON before auth", async () => {
+  it("rejects oversized JSON after auth", async () => {
     const response = await POST(
       new Request("http://localhost/api/me/subscription/cancel", {
         method: "POST",
@@ -67,6 +67,6 @@ describe("subscription cancel route", () => {
     );
 
     expect(response.status).toBe(413);
-    expect(mocks.requireUser).not.toHaveBeenCalled();
+    expect(mocks.requireUser).toHaveBeenCalledOnce();
   });
 });

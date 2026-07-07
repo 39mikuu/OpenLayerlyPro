@@ -21,7 +21,7 @@ Core 负责且仅 Core 负责：
 | 配置中心 | 加密 `app_settings` 与 SMTP/Turnstile/Storage/Upload/Stripe/Translation 管理 | ✅ |
 | 审计与任务 | `audit_events` 因果链、`app_events`、durable task/outbox、lease/fencing/retry | ✅ |
 | 全局安全响应头 | per-request nonce CSP、动态来源与 legacy footer 迁移 | ✅ #86 |
-| 恢复一致性 | archive integrity、schema probe、任务中和、文件 backfill 与 DB↔存储收敛 | ▶ #87 |
+| 恢复一致性 | archive integrity、schema probe、任务中和、文件 backfill 与 DB↔存储收敛 | ✅ #87 |
 
 不属于 Core 的：主题布局与视觉实现（Theme）、第三方扩展机制（Plugin）、跨站聚合发现（Hub）和多实例编排。Integration 是官方内置 adapter；其调用必须经过 Core 的事务、权限、审计和幂等边界。
 
@@ -91,7 +91,7 @@ src/
 - Stripe webhook 验签后持久化 normalized provider event，再返回 2xx；dispatcher 负责业务处理，event-id 与 invoice-id 双层幂等。
 - 终态 task 仍占用全局 dedupe key，因此恢复/重建流程必须显式 re-arm、upsert 或删除对应行，不能假设普通 enqueue 会覆盖。
 
-## v1.0 剩余边界
+## v1.0 收尾状态
 
-- #87：archive v2/checksum、v1 schema probe、mandatory file-safety remediation、任务/支付事件中和、DB↔local/S3 收敛。
-- #88：真实 Stripe、local/S3、升级/恢复、安全攻击回归与完整发布验收。
+- #87（已实现）：archive v3/checksum、v1 schema probe、mandatory file-safety remediation、任务/支付事件中和、DB↔local/S3 收敛。
+- #88（真实环境验收，已完成于 v1.0.0）：真实 Stripe、local/S3、升级/恢复、安全攻击回归与完整发布验收——验证的是已实现的 #87 流程。

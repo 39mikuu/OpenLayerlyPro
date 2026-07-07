@@ -24,7 +24,10 @@ Create and retain a complete archive immediately before upgrading:
 ./scripts/backup.sh /srv/backups/openlayerly
 ```
 
-Do not proceed unless the command exits successfully. For local storage, the archive contains PostgreSQL, the file-backed config encryption key, and uploads. `SESSION_SECRET` and externally managed secrets remain outside the archive and must be preserved separately.
+Do not proceed unless the command exits successfully. For local storage, the archive contains
+PostgreSQL, file-backed config/session secrets, and uploads. An environment-managed
+`SESSION_SECRET` is not archived; its fingerprint is recorded and the exact value must remain
+in the operator's secret manager.
 
 For S3/R2, record and verify a matching bucket version/snapshot/provider recovery point. The archive alone cannot restore object bytes.
 
@@ -34,9 +37,14 @@ Record the archive, current commit/image, and object-storage recovery point:
 git rev-parse HEAD
 ```
 
-Current archives use format v2 checksums and the hardened S7 restore pipeline.
-Use `backup.sh --stop-app` when a self-consistent local snapshot is required, and
-keep the old deployment intact until verification completes.
+Current archives use manifest format v3: v2's checksums and the hardened S7
+restore pipeline plus mandatory image-authoritative runtime provenance,
+backup-tool provenance, and config-key fingerprint/format fields, all validated
+fail-closed before the production database is touched (see
+[backup-restore](backup-restore.md)). v1/v2 archives remain supported only as
+compatibility restore paths and warn that they predate image-authoritative
+provenance. Use `backup.sh --stop-app` when a self-consistent local snapshot is
+required, and keep the old deployment intact until verification completes.
 
 ## 3. Stage the New Version Without Starting It
 
@@ -44,8 +52,16 @@ For source deployments:
 
 ```bash
 git pull --ff-only
+OPENLAYERLY_BUILD_VERSION="$(node -p 'require("./package.json").version')" \
+OPENLAYERLY_BUILD_COMMIT="$(git rev-parse HEAD)" \
+OPENLAYERLY_BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 docker compose build app
 ```
+
+Pass these build identity variables inline for the release build. Do **not** persist them
+in `.env`; stale values would bake a false identity into later images. Plain
+`docker compose up -d --build` remains valid for non-release rebuilds and produces an
+explicit `dev`/`dev`/`unknown` identity.
 
 For image deployments, update to an immutable tag/digest and pull without starting:
 
@@ -54,6 +70,10 @@ docker compose pull app
 ```
 
 Do not run `docker compose up` yet. The normal entrypoint runs migrations and starts the dispatcher, which is too early for the required pre-migration remediation/backfill sequence.
+
+Existing env-managed deployments remain compatible. To switch from env to file, first write
+the exact existing value to `SESSION_SECRET_FILE` with mode `0600`, then remove the env
+override. Never let entrypoint generate a different value during this migration.
 
 ## 4. Stop Writes and Resolve Duplicate Pending Payments
 
@@ -102,6 +122,35 @@ docker compose run --rm --no-deps --entrypoint node app /app/dist/migrate.mjs
 ```
 
 Do not rely on the normal app entrypoint for this step. The app must remain stopped while the next file-safety remediation runs.
+
+### File reference integrity migration (0020)
+
+This migration adds database-enforced integrity between `files` and every
+table that references one (post covers, payment QR/proof images,
+inline post files, and the three site branding settings). It aborts instead of
+applying if it finds a pre-existing reference to a file that is missing,
+quarantined, or has the wrong `purpose` for its usage — including the site
+avatar/logo/icon settings, which previously had no `purpose` enforcement on
+write and could reference e.g. a `content_image`-purpose file. If this
+migration fails, an administrator must inspect and correct the offending
+row(s) (reported in the error) before rerunning; it will not silently delete
+or repair the data for you. It also acquires an exclusive lock across these
+tables for the duration of its preflight check and schema changes (`NOWAIT`,
+so it fails fast and is retried automatically rather than queuing), which is
+why this step requires the application to be fully stopped beforehand.
+
+This preflight check only guarantees a clean state at the moment the
+migration runs. The very next step (file-safety remediation) can still mark
+an already-referenced file as quarantined if it fails the stricter safety
+scan — that's expected, not a regression: quarantine and file-reference
+integrity are independent concerns, and the application has always refused
+to serve quarantined file bytes regardless of whether the file is
+referenced (`authorizeFileAccess` returns `410 fileQuarantined`). A
+newly-quarantined referenced file means the referencing content (a post
+cover, a QR code, etc.) will render without a valid image until an
+administrator replaces or removes the reference — not data corruption or a
+crash. Review the remediation preview's quarantine list with this in mind
+before applying it.
 
 ## 6. Run Mandatory File-Safety Remediation
 

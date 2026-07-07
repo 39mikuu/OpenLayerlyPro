@@ -11,6 +11,7 @@ import { files, siteSettings } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { getStorageConfig, type ResolvedStorageConfig } from "@/modules/config";
+import { lockSiteFileSettingReferences } from "@/modules/file/references";
 import {
   type CspSourceGroups,
   type EffectiveCspMode,
@@ -726,6 +727,8 @@ export async function updatePublicSecuritySettings(update: PublicSecurityUpdate)
         throw new ApiError(409, "publicSecurityRevisionConflict");
       }
     }
+
+    await lockSiteFileSettingReferences(tx, update.additionalSettings ?? {});
 
     for (const key of update.deleteSettingKeys ?? []) {
       await tx.delete(siteSettings).where(eq(siteSettings.key, key));

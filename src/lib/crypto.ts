@@ -12,6 +12,7 @@ import {
 import { getEnv } from "@/lib/env";
 import { CROCKFORD_BASE32_ALPHABET, getLoginCodeAlphabet } from "@/modules/auth/input-policy";
 import { getConfigEncryptionKey } from "@/modules/security/config-key";
+import { getSessionSecret } from "@/modules/security/session-secret";
 
 export { CROCKFORD_BASE32_ALPHABET };
 
@@ -28,11 +29,11 @@ export function sha256(input: string): string {
  * 即使数据库内容泄露，没有 SECRET 也无法伪造 token 或离线爆破验证码。
  */
 export function hmacSha256(input: string): string {
-  return createHmac("sha256", getEnv().SESSION_SECRET).update(input).digest("hex");
+  return createHmac("sha256", getSessionSecret()).update(input).digest("hex");
 }
 
 export function hmacSha256WithPurpose(purpose: string, input: string): string {
-  return createHmac("sha256", getEnv().SESSION_SECRET)
+  return createHmac("sha256", getSessionSecret())
     .update(purpose)
     .update("\0")
     .update(input)
@@ -128,7 +129,7 @@ export function decryptSecret(payload: string): string {
 }
 
 function getAuthTaskEncryptionKey(): Buffer {
-  return normalizeAesKey(`auth-task-payload:v1:${getEnv().SESSION_SECRET}`);
+  return normalizeAesKey(`auth-task-payload:v1:${getSessionSecret()}`);
 }
 
 export function encryptAuthTaskSecret(plaintext: string): string {

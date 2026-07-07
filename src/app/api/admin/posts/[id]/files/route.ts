@@ -22,8 +22,8 @@ const attachSchema = z.object({
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, attachSchema);
     await requireAdmin();
+    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, attachSchema);
     const { id } = await ctx.params;
     if (!(await getPostById(id))) return jsonError(404, "postNotFound");
     const link = await attachFileToPost({ postId: id, ...input });
@@ -49,8 +49,8 @@ const detachSchema = z.object({
 
 export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    const { fileId } = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, detachSchema);
     await requireAdmin();
+    const { fileId } = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, detachSchema);
     const { id } = await ctx.params;
     await detachFileFromPost(id, fileId);
     return jsonOk({ detached: true });

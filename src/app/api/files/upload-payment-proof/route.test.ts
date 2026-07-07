@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { multipartTransferLimitBytes } from "@/lib/request-body";
+import { neverEndingBodyRequest } from "@/test/never-ending-body";
 
 const mocks = vi.hoisted(() => ({
   requireUser: vi.fn(),
@@ -59,6 +60,15 @@ function streamRequest(chunks: Uint8Array[], headers: HeadersInit = {}): NextReq
     body,
     duplex: "half",
   } as RequestInit & { duplex: "half" }) as NextRequest;
+}
+
+async function withShortTimeout<T>(promise: Promise<T>): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error("handler did not return before reading body")), 250);
+    }),
+  ]);
 }
 
 describe("payment proof multipart upload", () => {
@@ -119,7 +129,7 @@ describe("payment proof multipart upload", () => {
     ]);
   });
 
-  it("pre-rejects an oversized Content-Length before auth, image handling, storage, or DB", async () => {
+  it("rejects an oversized Content-Length after auth but before image handling, storage, or DB", async () => {
     const response = await POST(
       streamRequest([Uint8Array.from([1])], {
         "content-length": String(transferLimit() + 1),
@@ -127,8 +137,8 @@ describe("payment proof multipart upload", () => {
     );
 
     expect(response.status).toBe(413);
-    expect(mocks.requireUser).not.toHaveBeenCalled();
-    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.requireUser).toHaveBeenCalledOnce();
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(3);
     expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
   });
 
@@ -180,6 +190,73 @@ describe("payment proof multipart upload", () => {
     expect(response.status).toBe(401);
     expect(mocks.rateLimit).toHaveBeenCalledTimes(1);
     expect(getReader).not.toHaveBeenCalled();
+    expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 before pulling a never-ending unauthenticated proof upload body", async () => {
+    const slowBody = neverEndingBodyRequest("http://localhost/api/files/upload-payment-proof", {
+      headers: {
+        "content-type": "multipart/form-data; boundary=bounded-test",
+      },
+    });
+    mocks.requireUser.mockRejectedValue(new ApiError(401, "authRequired"));
+
+    try {
+      const pullsBeforeHandler = slowBody.pulls;
+      const response = await withShortTimeout(POST(slowBody.request));
+
+      expect(response.status).toBe(401);
+      expect(mocks.rateLimit).toHaveBeenCalledTimes(1);
+      expect(mocks.rateLimit.mock.calls[0]?.[0]).toBe("proof-upload-preauth-unresolved");
+      expect(slowBody.pulls).toBe(pullsBeforeHandler);
+      expect(mocks.reservePaymentProofUpload).not.toHaveBeenCalled();
+      expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
+    } finally {
+      slowBody.cleanup();
+    }
+  });
+
+  it("returns 429 from the pre-auth proof upload bucket without auth or body reads", async () => {
+    const slowBody = neverEndingBodyRequest("http://localhost/api/files/upload-payment-proof", {
+      headers: {
+        "content-type": "multipart/form-data; boundary=bounded-test",
+      },
+    });
+    mocks.rateLimit.mockReturnValue(false);
+
+    try {
+      const pullsBeforeHandler = slowBody.pulls;
+      const response = await withShortTimeout(POST(slowBody.request));
+
+      expect(response.status).toBe(429);
+      expect(mocks.rateLimit).toHaveBeenCalledTimes(1);
+      expect(mocks.requireUser).not.toHaveBeenCalled();
+      expect(slowBody.pulls).toBe(pullsBeforeHandler);
+      expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
+    } finally {
+      slowBody.cleanup();
+    }
+  });
+
+  it("calls post-auth proof upload buckets only after auth succeeds and before body parsing", async () => {
+    const { request, getReader } = unreadRequest({ "content-length": String(transferLimit()) });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(400);
+    expect(mocks.requireUser).toHaveBeenCalledTimes(1);
+    expect(mocks.rateLimit.mock.calls.map((call) => call[0])).toEqual([
+      "proof-upload-preauth-unresolved",
+      "proof-upload:user-1",
+      "proof-upload-ip:unresolved",
+    ]);
+    expect(mocks.rateLimit.mock.invocationCallOrder[1]).toBeGreaterThan(
+      mocks.requireUser.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.rateLimit.mock.invocationCallOrder[2]).toBeGreaterThan(
+      mocks.requireUser.mock.invocationCallOrder[0]!,
+    );
+    expect(getReader).toHaveBeenCalledTimes(1);
     expect(mocks.saveUploadedFile).not.toHaveBeenCalled();
   });
 

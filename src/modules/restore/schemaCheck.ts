@@ -79,7 +79,7 @@ export async function runRestoreSchemaCheck(input: SchemaCheckInput): Promise<Sc
 
   if (input.formatVersion === 1) {
     warnings.push(
-      "FORMAT_VERSION=1 archive has no checksum protection or manifest migration identity",
+      "FORMAT_VERSION=1 archive has no checksum protection, manifest migration identity, or image-authoritative provenance",
     );
     if (!input.databaseUrl) {
       return {
@@ -91,6 +91,11 @@ export async function runRestoreSchemaCheck(input: SchemaCheckInput): Promise<Sc
     }
     archiveHistory = await readArchiveHistoryFromDatabase(input.databaseUrl);
   } else if (input.formatVersion >= 2) {
+    if (input.formatVersion === 2) {
+      warnings.push(
+        "FORMAT_VERSION=2 archive predates image-authoritative provenance; runtime version/commit/image identity are informational only when present",
+      );
+    }
     if (!input.manifestPath) {
       return {
         formatVersion: input.formatVersion,
