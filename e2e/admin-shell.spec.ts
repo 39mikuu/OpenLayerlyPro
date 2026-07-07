@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { eq, like, sql } from "drizzle-orm";
+import { eq, inArray, like, sql } from "drizzle-orm";
 
 import { closeDb, getDb } from "../src/db";
 import {
@@ -20,6 +20,18 @@ const ADMIN_EMAIL = "admin-shell-e2e@example.com";
 const MEMBER_EMAIL = "admin-shell-member@example.com";
 const POST_SLUG = "admin-shell-e2e-post";
 const TIER_SLUG = "admin-shell-e2e-tier";
+const SEEDED_SETTING_KEYS = [
+  "initialized",
+  "site_name",
+  "artist_name",
+  "artist_bio",
+  "social_links",
+  "custom_footer_markup",
+  "custom_footer_html",
+  "site_verification",
+  "public_integrations",
+  "public_csp_revision",
+] as const;
 
 async function upsertSetting(key: string, valueJson: unknown) {
   await getDb()
@@ -28,24 +40,28 @@ async function upsertSetting(key: string, valueJson: unknown) {
     .onConflictDoUpdate({ target: siteSettings.key, set: { valueJson, updatedAt: sql`now()` } });
 }
 
-async function seedFixtures() {
+async function cleanupFixtures() {
   const db = getDb();
   await db.transaction(async (tx) => {
-    await tx
-      .delete(paymentRequests)
-      .where(
-        sql`${paymentRequests.userId} in (select id from users where email like 'admin-shell-%@example.com')`,
-      );
+    await tx.delete(paymentRequests).where(sql`
+      ${paymentRequests.userId} in (select id from users where email like 'admin-shell-%@example.com')
+      or ${paymentRequests.tierId} in (select id from membership_tiers where slug = ${TIER_SLUG})
+    `);
     await tx
       .delete(sessions)
       .where(
         sql`${sessions.userId} in (select id from users where email like 'admin-shell-%@example.com')`,
       );
     await tx.delete(posts).where(eq(posts.slug, POST_SLUG));
-    await tx.delete(membershipTiers).where(eq(membershipTiers.slug, TIER_SLUG));
     await tx.delete(tasks).where(like(tasks.dedupeKey, "admin-shell-e2e%"));
     await tx.delete(users).where(like(users.email, "admin-shell-%@example.com"));
+    await tx.delete(membershipTiers).where(eq(membershipTiers.slug, TIER_SLUG));
+    await tx.delete(siteSettings).where(inArray(siteSettings.key, [...SEEDED_SETTING_KEYS]));
   });
+}
+
+async function seedFixtures() {
+  await cleanupFixtures();
 
   await upsertSetting("initialized", true);
   await upsertSetting("site_name", "Admin Shell E2E");
@@ -178,7 +194,11 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await closeDb();
+  try {
+    await cleanupFixtures();
+  } finally {
+    await closeDb();
+  }
 });
 
 test.beforeEach(async ({ page }) => {
