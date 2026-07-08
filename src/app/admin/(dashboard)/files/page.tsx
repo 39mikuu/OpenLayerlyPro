@@ -1,4 +1,5 @@
 import { DeleteButton } from "@/components/admin/delete-button";
+import { MobileDataCard, MobileDataField, ResponsiveDataView } from "@/components/admin/primitives";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -35,41 +36,83 @@ export default async function AdminFilesPage({
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold">{t("admin.files.title")}</h1>
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>{t("admin.files.name")}</TableHead>
-            <TableHead>{t("admin.files.purpose")}</TableHead>
-            <TableHead>{t("admin.files.size")}</TableHead>
-            <TableHead>{t("admin.files.storage")}</TableHead>
-            <TableHead>{t("admin.files.uploadedAt")}</TableHead>
-            <TableHead></TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {files.map((f) => (
-            <TableRow key={f.id}>
-              <TableCell className="max-w-60 truncate">
-                <a href={`/api/files/${f.id}/download`} target="_blank" className="hover:underline">
-                  {f.originalName}
-                </a>
-              </TableCell>
-              <TableCell>
-                <Badge variant="secondary">{f.purpose}</Badge>
-              </TableCell>
-              <TableCell>{formatSize(f.sizeBytes)}</TableCell>
-              <TableCell>{f.storageDriver}</TableCell>
-              <TableCell className="text-muted-foreground">{formatDateTime(f.createdAt)}</TableCell>
-              <TableCell>
-                <DeleteButton
-                  path={`/api/admin/files/${f.id}`}
-                  confirmText={t("admin.files.confirmDelete", { name: f.originalName })}
-                />
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+      <ResponsiveDataView
+        table={
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("admin.files.name")}</TableHead>
+                <TableHead>{t("admin.files.purpose")}</TableHead>
+                <TableHead>{t("admin.files.size")}</TableHead>
+                <TableHead>{t("admin.files.storage")}</TableHead>
+                <TableHead>{t("admin.files.uploadedAt")}</TableHead>
+                <TableHead></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {files.map((f) => (
+                <TableRow key={f.id}>
+                  <TableCell className="max-w-72 whitespace-normal break-words">
+                    <a
+                      href={`/api/files/${f.id}/download`}
+                      target="_blank"
+                      className="hover:underline"
+                    >
+                      {f.originalName}
+                    </a>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="secondary">{f.purpose}</Badge>
+                  </TableCell>
+                  <TableCell>{formatSize(f.sizeBytes)}</TableCell>
+                  <TableCell>{f.storageDriver}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {formatDateTime(f.createdAt)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <DeleteButton
+                      path={`/api/admin/files/${f.id}`}
+                      confirmText={t("admin.files.confirmDelete", { name: f.originalName })}
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        }
+        cards={files.map((f) => (
+          <MobileDataCard
+            key={f.id}
+            title={
+              <a href={`/api/files/${f.id}/download`} target="_blank" className="hover:underline">
+                {f.originalName}
+              </a>
+            }
+            actions={
+              <DeleteButton
+                path={`/api/admin/files/${f.id}`}
+                confirmText={t("admin.files.confirmDelete", { name: f.originalName })}
+              />
+            }
+          >
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="secondary">{f.purpose}</Badge>
+              <Badge variant="outline">{f.storageDriver}</Badge>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <MobileDataField label={t("admin.files.size")}>
+                {formatSize(f.sizeBytes)}
+              </MobileDataField>
+              <MobileDataField
+                label={t("admin.files.uploadedAt")}
+                valueClassName="text-muted-foreground"
+              >
+                {formatDateTime(f.createdAt)}
+              </MobileDataField>
+            </div>
+          </MobileDataCard>
+        ))}
+      />
       {files.length === 0 && (
         <p className="text-sm text-muted-foreground">{t("admin.files.empty")}</p>
       )}
@@ -95,32 +138,49 @@ export default async function AdminFilesPage({
         <p className="text-sm text-muted-foreground">
           Metadata only. Quarantined bytes cannot be downloaded, previewed, exported, or overridden.
         </p>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>ID</TableHead>
-              <TableHead>{t("admin.files.name")}</TableHead>
-              <TableHead>{t("admin.files.purpose")}</TableHead>
-              <TableHead>Reason</TableHead>
-              <TableHead>Quarantined at</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {quarantinedFiles.map((file) => (
-              <TableRow key={file.id}>
-                <TableCell className="font-mono text-xs">{file.id}</TableCell>
-                <TableCell className="max-w-60 truncate">{file.originalName}</TableCell>
-                <TableCell>
-                  <Badge variant="secondary">{file.purpose}</Badge>
-                </TableCell>
-                <TableCell>{file.quarantineReason ?? "unknown"}</TableCell>
-                <TableCell className="text-muted-foreground">
-                  {file.quarantinedAt ? formatDateTime(file.quarantinedAt) : "-"}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <ResponsiveDataView
+          table={
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>ID</TableHead>
+                  <TableHead>{t("admin.files.name")}</TableHead>
+                  <TableHead>{t("admin.files.purpose")}</TableHead>
+                  <TableHead>Reason</TableHead>
+                  <TableHead>Quarantined at</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {quarantinedFiles.map((file) => (
+                  <TableRow key={file.id}>
+                    <TableCell className="font-mono text-xs">{file.id}</TableCell>
+                    <TableCell className="max-w-72 whitespace-normal break-words">
+                      {file.originalName}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="secondary">{file.purpose}</Badge>
+                    </TableCell>
+                    <TableCell>{file.quarantineReason ?? "unknown"}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {file.quarantinedAt ? formatDateTime(file.quarantinedAt) : "-"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          }
+          cards={quarantinedFiles.map((file) => (
+            <MobileDataCard key={file.id} title={file.originalName} eyebrow={file.id}>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="secondary">{file.purpose}</Badge>
+                <Badge variant="outline">{file.quarantineReason ?? "unknown"}</Badge>
+              </div>
+              <MobileDataField label="Quarantined at" valueClassName="text-muted-foreground">
+                {file.quarantinedAt ? formatDateTime(file.quarantinedAt) : "-"}
+              </MobileDataField>
+            </MobileDataCard>
+          ))}
+        />
         {quarantinedPage.nextCursor && (
           <a
             href={filesPageHref(filters, "quarantinedCursor", quarantinedPage.nextCursor)}

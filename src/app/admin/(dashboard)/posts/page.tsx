@@ -1,6 +1,13 @@
 import Link from "next/link";
 
-import { Notice, PageHeader, StatusBadge } from "@/components/admin/primitives";
+import {
+  MobileDataCard,
+  MobileDataField,
+  Notice,
+  PageHeader,
+  ResponsiveDataView,
+  StatusBadge,
+} from "@/components/admin/primitives";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -54,42 +61,74 @@ export default async function AdminPostsPage() {
         description={t("admin.posts.description")}
         title={t("admin.posts.title")}
       />
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>{t("admin.posts.titleColumn")}</TableHead>
-            <TableHead>{t("admin.posts.visibility")}</TableHead>
-            <TableHead>{t("admin.common.status")}</TableHead>
-            <TableHead>{t("admin.posts.updatedAt")}</TableHead>
-            <TableHead></TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {posts.map((post) => (
-            <TableRow key={post.id}>
-              <TableCell>{post.title}</TableCell>
-              <TableCell>
-                <StatusBadge tone={VISIBILITY_TONES[post.visibility]}>
-                  {t(VISIBILITY_KEYS[post.visibility])}
-                </StatusBadge>
-              </TableCell>
-              <TableCell>
-                <StatusBadge tone={STATUS_TONES[post.status]}>
-                  {t(STATUS_KEYS[post.status])}
-                </StatusBadge>
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {formatDateTime(post.updatedAt)}
-              </TableCell>
-              <TableCell>
-                <Button size="sm" variant="outline" asChild>
-                  <Link href={`/admin/posts/${post.id}`}>{t("admin.common.edit")}</Link>
-                </Button>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+      <ResponsiveDataView
+        table={
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("admin.posts.titleColumn")}</TableHead>
+                <TableHead>{t("admin.posts.visibility")}</TableHead>
+                <TableHead>{t("admin.common.status")}</TableHead>
+                <TableHead>{t("admin.posts.updatedAt")}</TableHead>
+                <TableHead></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {posts.map((post) => (
+                <TableRow key={post.id}>
+                  <TableCell className="max-w-96 whitespace-normal break-words font-medium">
+                    {post.title}
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge tone={VISIBILITY_TONES[post.visibility]}>
+                      {t(VISIBILITY_KEYS[post.visibility])}
+                    </StatusBadge>
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge tone={STATUS_TONES[post.status]}>
+                      {t(STATUS_KEYS[post.status])}
+                    </StatusBadge>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {formatDateTime(post.updatedAt)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button size="sm" variant="outline" asChild>
+                      <Link href={`/admin/posts/${post.id}`}>{t("admin.common.edit")}</Link>
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        }
+        cards={posts.map((post) => (
+          <MobileDataCard
+            key={post.id}
+            title={post.title}
+            actions={
+              <Button size="sm" variant="outline" asChild>
+                <Link href={`/admin/posts/${post.id}`}>{t("admin.common.edit")}</Link>
+              </Button>
+            }
+          >
+            <div className="flex flex-wrap gap-2">
+              <StatusBadge tone={VISIBILITY_TONES[post.visibility]}>
+                {t(VISIBILITY_KEYS[post.visibility])}
+              </StatusBadge>
+              <StatusBadge tone={STATUS_TONES[post.status]}>
+                {t(STATUS_KEYS[post.status])}
+              </StatusBadge>
+            </div>
+            <MobileDataField
+              label={t("admin.posts.updatedAt")}
+              valueClassName="text-muted-foreground"
+            >
+              {formatDateTime(post.updatedAt)}
+            </MobileDataField>
+          </MobileDataCard>
+        ))}
+      />
       {posts.length === 0 && <Notice>{t("admin.posts.empty")}</Notice>}
     </div>
   );
