@@ -110,6 +110,10 @@ async function seedFixtures() {
   return admin.id;
 }
 
+function seededPaymentReviewRow(page: Page) {
+  return page.getByRole("row").filter({ hasText: MEMBER_EMAIL }).filter({ hasText: LONG_NOTE });
+}
+
 async function installAdminSession(page: Page, adminId: string) {
   const token = generateSessionToken();
   await getDb()
@@ -160,7 +164,9 @@ test.beforeEach(async ({ page }) => {
 test("reject dialog remains usable on mobile with a long note", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/admin/payments/reviews");
-  await page.getByRole("button", { name: "Reject" }).click();
+  const row = seededPaymentReviewRow(page);
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: "Reject" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Reject payment request" });
   await expect(dialog).toBeVisible();
@@ -176,7 +182,9 @@ test("reject dialog remains usable on mobile with a long note", async ({ page })
 test("reject dialog cannot be dismissed while the review request is pending", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/admin/payments/reviews");
-  await page.getByRole("button", { name: "Reject" }).click();
+  const row = seededPaymentReviewRow(page);
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: "Reject" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Reject payment request" });
   await expect(dialog).toBeVisible();
@@ -217,7 +225,9 @@ test("sends a stable reject reason code instead of the administrator locale text
     .addCookies([{ name: LOCALE_COOKIE, value: "ja", url: BASE_URL, sameSite: "Lax" }]);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/admin/payments/reviews");
-  await page.getByRole("button", { name: "却下" }).click();
+  const row = seededPaymentReviewRow(page);
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: "却下" }).click();
 
   const dialog = page.getByRole("dialog", { name: "支払い申請を却下" });
   await expect(dialog).toBeVisible();
