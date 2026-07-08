@@ -27,6 +27,8 @@ const POST_SLUG = "admin-visual-e2e-post";
 const FILE_OBJECT_PREFIX = "admin-visual-e2e/";
 const TASK_DEDUPE_PREFIX = "admin-visual-e2e";
 const FIXED_DATE = new Date("2026-03-16T10:30:00.000Z");
+// Keep the failed-task screenshot fixture non-claimable by the background dispatcher.
+const TASK_RETRY_AFTER_DATE = new Date("2099-03-16T10:30:00.000Z");
 const SEEDED_SETTING_KEYS = [
   "initialized",
   "site_name",
@@ -244,7 +246,7 @@ async function seedFixtures() {
         status: "failed",
         attempts: 2,
         maxAttempts: 5,
-        runAfter: FIXED_DATE,
+        runAfter: TASK_RETRY_AFTER_DATE,
         lastError: "Email delivery failed",
         createdAt: FIXED_DATE,
         updatedAt: FIXED_DATE,
