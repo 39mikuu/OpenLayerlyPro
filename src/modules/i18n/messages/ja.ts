@@ -270,6 +270,9 @@ export const ja: Messages = {
       saveFailed: "保存に失敗しました",
       uploadFailed: "アップロードに失敗しました",
       deleteFailed: "削除に失敗しました",
+      deleting: "削除中...",
+      deleteDialogTitle: "削除の確認",
+      deleteDialogDescription: "削除後に元に戻せない場合があります。続行前に確認してください。",
       saved: "保存しました",
       saving: "保存中...",
       sortOrder: "並び順",
@@ -294,11 +297,16 @@ export const ja: Messages = {
       passwordHint: "8文字以上。変更後は他の端末をログアウトし、現在のセッションは維持します。",
       updatePassword: "パスワードを更新",
       confirmPasswordChange: "管理者パスワードを変更し、他の端末をログアウトしますか？",
+      passwordDialogTitle: "管理者パスワードを変更",
+      passwordDialogDescription:
+        "パスワードを変更すると他の端末はログアウトし、現在のセッションは維持されます。",
       passwordChanged: "パスワードを更新し、他の端末をログアウトしました",
       changeEmail: "メールアドレスを変更",
       newEmail: "新しいメールアドレス",
       updateEmail: "メールアドレスを更新",
       confirmEmailChange: "管理者のログインメールアドレスを変更しますか？",
+      emailDialogTitle: "管理者メールアドレスを変更",
+      emailDialogDescription: "管理者のログインメールアドレスを {email} に変更しますか？",
       emailChanged: "管理者メールアドレスを更新しました",
       sessions: "ログインセッション",
       currentSession: "現在",
@@ -311,6 +319,15 @@ export const ja: Messages = {
       confirmRevokeSession: "このログインセッションを無効化しますか？",
       confirmRevokeCurrent: "現在のセッションを無効化し、管理画面からログアウトしますか？",
       confirmRevokeOthers: "現在以外のすべての端末をログアウトしますか？",
+      revokeSessionDialogTitle: "ログインセッションを無効化",
+      revokeSessionDialogDescription: "その端末では管理画面への再ログインが必要になります。",
+      revokeCurrentDialogTitle: "現在のセッションを無効化",
+      revokeCurrentDialogDescription:
+        "現在のセッションはすぐに管理画面からログアウトし、再ログインが必要になります。",
+      revokeOthersDialogTitle: "他の端末をログアウト",
+      revokeOthersDialogDescription:
+        "現在のセッション以外のすべての管理画面ログインを無効化します。",
+      revoking: "無効化中...",
       sessionRevoked: "セッションを無効化しました",
       otherSessionsRevoked: "他の端末をログアウトしました",
       history: "操作履歴",
@@ -363,6 +380,9 @@ export const ja: Messages = {
       storage: "ストレージ",
       uploadedAt: "アップロード日時",
       confirmDelete: "ファイル「{name}」を削除しますか？",
+      deleteDialogTitle: "ファイルを削除",
+      deleteDialogDescription:
+        "ファイル「{name}」を削除しますか？コンテンツ、支払い証明、サイト設定から参照されている場合は削除されません。",
       empty: "ファイルはまだありません。",
     },
     users: {
@@ -449,6 +469,10 @@ export const ja: Messages = {
       retry: "再試行",
       retrying: "再試行中…",
       retryConfirm: "このタスクを今すぐ再試行しますか？",
+      retryConfirmAction: "再試行する",
+      retryDialogTitle: "バックグラウンドタスクを再試行",
+      retryDialogDescription:
+        "再試行すると、この失敗タスクを待機キューに戻します。安全に再試行できることを確認してください。",
       retryFailed: "タスクを再試行できませんでした",
       statuspending: "待機中",
       statusprocessing: "処理中",
@@ -469,6 +493,9 @@ export const ja: Messages = {
       saveAssociations: "カテゴリーとタグを保存",
       saved: "カテゴリーとタグを保存しました",
       confirmDelete: "「{name}」を削除しますか？投稿は削除されません。",
+      deleteDialogTitle: "カテゴリーまたはタグを削除",
+      deleteDialogDescription:
+        "「{name}」を削除しますか？関連付けは解除されますが、投稿自体は削除されません。",
     },
     markdown: {
       ariaLabel: "Markdown 本文エディター",
@@ -591,6 +618,9 @@ export const ja: Messages = {
       purchasable: "購入可能",
       cardTitle: "{name}（レベル {level}）",
       confirmDelete: "メンバーシッププラン「{name}」を削除しますか？",
+      deleteDialogTitle: "メンバーシッププランを削除",
+      deleteDialogDescription:
+        "メンバーシッププラン「{name}」を削除しますか？メンバーシップ、支払い、投稿から参照されている場合は削除されません。",
     },
     paymentMethods: {
       title: "支払い方法",
@@ -600,6 +630,9 @@ export const ja: Messages = {
       qr: "支払い QR コード",
       qrAlt: "支払い QR コード",
       confirmDelete: "支払い方法「{name}」を削除しますか？",
+      deleteDialogTitle: "支払い方法を削除",
+      deleteDialogDescription:
+        "支払い方法「{name}」を削除しますか？ファンは新しい手動支払いでこの方法を選択できなくなります。",
     },
     reviews: {
       title: "支払い確認",

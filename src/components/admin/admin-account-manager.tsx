@@ -1,11 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { useState } from "react";
 
+import { ConfirmActionButton } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -51,24 +51,27 @@ export function AdminAccountManager({
   const [newEmail, setNewEmail] = useState(email);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
+  const [emailDialogOpen, setEmailDialogOpen] = useState(false);
 
-  async function run(action: () => Promise<void>) {
+  async function runConfirmed(action: () => Promise<void>) {
     setLoading(true);
     setMessage(null);
     try {
       await action();
       router.refresh();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : t("admin.common.operationFailed"));
+      const errorMessage =
+        error instanceof Error ? error.message : t("admin.common.operationFailed");
+      setMessage(errorMessage);
+      throw new Error(errorMessage);
     } finally {
       setLoading(false);
     }
   }
 
-  async function changePassword(event: FormEvent) {
-    event.preventDefault();
-    if (!confirm(t("admin.account.confirmPasswordChange"))) return;
-    await run(async () => {
+  async function changePassword() {
+    await runConfirmed(async () => {
       await api("/api/admin/account/password", {
         method: "POST",
         body: { currentPassword, newPassword },
@@ -79,16 +82,27 @@ export function AdminAccountManager({
     });
   }
 
-  async function changeEmail(event: FormEvent) {
-    event.preventDefault();
-    if (!confirm(t("admin.account.confirmEmailChange"))) return;
-    await run(async () => {
+  async function changeEmail() {
+    await runConfirmed(async () => {
       await api("/api/admin/account/email", {
         method: "POST",
         body: { currentPassword: emailPassword, newEmail },
       });
       setEmailPassword("");
       setMessage(t("admin.account.emailChanged"));
+    });
+  }
+
+  async function revokeSessionConfirmed(session: SessionView) {
+    await runConfirmed(async () => {
+      const result = await api<{ current: boolean }>(`/api/admin/account/sessions/${session.id}`, {
+        method: "DELETE",
+      });
+      if (result.current) {
+        window.location.href = "/login?admin=1";
+        return;
+      }
+      setMessage(t("admin.account.sessionRevoked"));
     });
   }
 
@@ -102,7 +116,14 @@ export function AdminAccountManager({
             <CardTitle>{t("admin.account.changePassword")}</CardTitle>
           </CardHeader>
           <CardContent>
-            <form className="space-y-4" onSubmit={changePassword}>
+            <form
+              className="space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (loading || !currentPassword || newPassword.length < 8) return;
+                setPasswordDialogOpen(true);
+              }}
+            >
               <div className="space-y-1">
                 <Label htmlFor="current-password">{t("admin.account.currentPassword")}</Label>
                 <Input
@@ -125,12 +146,24 @@ export function AdminAccountManager({
                 />
                 <p className="text-xs text-muted-foreground">{t("admin.account.passwordHint")}</p>
               </div>
-              <Button
-                type="submit"
+              <ConfirmActionButton
+                actionLabel={t("admin.account.updatePassword")}
+                cancelLabel={t("admin.common.cancel")}
+                closeLabel={t("admin.common.close")}
+                confirmLabel={t("admin.account.updatePassword")}
+                confirmVariant="default"
+                description={t("admin.account.passwordDialogDescription")}
                 disabled={loading || !currentPassword || newPassword.length < 8}
-              >
-                {t("admin.account.updatePassword")}
-              </Button>
+                errorFallback={t("admin.common.operationFailed")}
+                loadingLabel={t("admin.common.saving")}
+                onOpenChange={setPasswordDialogOpen}
+                open={passwordDialogOpen}
+                size="default"
+                title={t("admin.account.passwordDialogTitle")}
+                triggerOpensDialog={false}
+                triggerType="submit"
+                onConfirm={changePassword}
+              />
             </form>
           </CardContent>
         </Card>
@@ -140,7 +173,14 @@ export function AdminAccountManager({
             <CardTitle>{t("admin.account.changeEmail")}</CardTitle>
           </CardHeader>
           <CardContent>
-            <form className="space-y-4" onSubmit={changeEmail}>
+            <form
+              className="space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (loading || !emailPassword || !newEmail) return;
+                setEmailDialogOpen(true);
+              }}
+            >
               <div className="space-y-1">
                 <Label htmlFor="new-email">{t("admin.account.newEmail")}</Label>
                 <Input
@@ -160,9 +200,24 @@ export function AdminAccountManager({
                   onChange={(event) => setEmailPassword(event.target.value)}
                 />
               </div>
-              <Button type="submit" disabled={loading || !emailPassword || !newEmail}>
-                {t("admin.account.updateEmail")}
-              </Button>
+              <ConfirmActionButton
+                actionLabel={t("admin.account.updateEmail")}
+                cancelLabel={t("admin.common.cancel")}
+                closeLabel={t("admin.common.close")}
+                confirmLabel={t("admin.account.updateEmail")}
+                confirmVariant="default"
+                description={t("admin.account.emailDialogDescription", { email: newEmail })}
+                disabled={loading || !emailPassword || !newEmail}
+                errorFallback={t("admin.common.operationFailed")}
+                loadingLabel={t("admin.common.saving")}
+                onOpenChange={setEmailDialogOpen}
+                open={emailDialogOpen}
+                size="default"
+                title={t("admin.account.emailDialogTitle")}
+                triggerOpensDialog={false}
+                triggerType="submit"
+                onConfirm={changeEmail}
+              />
             </form>
           </CardContent>
         </Card>
@@ -171,19 +226,24 @@ export function AdminAccountManager({
       <Card>
         <CardHeader className="flex-row items-center justify-between gap-4">
           <CardTitle>{t("admin.account.sessions")}</CardTitle>
-          <Button
-            variant="outline"
+          <ConfirmActionButton
+            actionLabel={t("admin.account.revokeOthers")}
+            cancelLabel={t("admin.common.cancel")}
+            closeLabel={t("admin.common.close")}
+            confirmLabel={t("admin.account.revokeOthers")}
+            description={t("admin.account.revokeOthersDialogDescription")}
             disabled={loading || sessions.filter((session) => !session.current).length === 0}
-            onClick={() => {
-              if (!confirm(t("admin.account.confirmRevokeOthers"))) return;
-              void run(async () => {
+            errorFallback={t("admin.common.operationFailed")}
+            loadingLabel={t("admin.account.revoking")}
+            title={t("admin.account.revokeOthersDialogTitle")}
+            variant="outline"
+            onConfirm={() =>
+              runConfirmed(async () => {
                 await api("/api/admin/account/sessions/revoke-others", { method: "POST" });
                 setMessage(t("admin.account.otherSessionsRevoked"));
-              });
-            }}
-          >
-            {t("admin.account.revokeOthers")}
-          </Button>
+              })
+            }
+          />
         </CardHeader>
         <CardContent className="space-y-3">
           {sessions.map((session) => (
@@ -204,35 +264,27 @@ export function AdminAccountManager({
                   {t("admin.account.expiresAt", { date: formatDateTime(session.expiresAt) })}
                 </p>
               </div>
-              <Button
-                size="sm"
-                variant={session.current ? "destructive" : "outline"}
+              <ConfirmActionButton
+                actionLabel={t("admin.account.revokeSession")}
+                cancelLabel={t("admin.common.cancel")}
+                closeLabel={t("admin.common.close")}
+                confirmLabel={t("admin.account.revokeSession")}
+                description={
+                  session.current
+                    ? t("admin.account.revokeCurrentDialogDescription")
+                    : t("admin.account.revokeSessionDialogDescription")
+                }
                 disabled={loading}
-                onClick={() => {
-                  if (
-                    !confirm(
-                      session.current
-                        ? t("admin.account.confirmRevokeCurrent")
-                        : t("admin.account.confirmRevokeSession"),
-                    )
-                  ) {
-                    return;
-                  }
-                  void run(async () => {
-                    const result = await api<{ current: boolean }>(
-                      `/api/admin/account/sessions/${session.id}`,
-                      { method: "DELETE" },
-                    );
-                    if (result.current) {
-                      window.location.href = "/login?admin=1";
-                      return;
-                    }
-                    setMessage(t("admin.account.sessionRevoked"));
-                  });
-                }}
-              >
-                {t("admin.account.revokeSession")}
-              </Button>
+                errorFallback={t("admin.common.operationFailed")}
+                loadingLabel={t("admin.account.revoking")}
+                title={
+                  session.current
+                    ? t("admin.account.revokeCurrentDialogTitle")
+                    : t("admin.account.revokeSessionDialogTitle")
+                }
+                variant={session.current ? "destructive" : "outline"}
+                onConfirm={() => revokeSessionConfirmed(session)}
+              />
             </div>
           ))}
         </CardContent>

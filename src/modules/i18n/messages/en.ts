@@ -272,6 +272,9 @@ export const en: Messages = {
       saveFailed: "Save failed",
       uploadFailed: "Upload failed",
       deleteFailed: "Delete failed",
+      deleting: "Deleting...",
+      deleteDialogTitle: "Confirm deletion",
+      deleteDialogDescription: "This may not be recoverable. Confirm before continuing.",
       saved: "Saved",
       saving: "Saving...",
       sortOrder: "Sort order",
@@ -298,11 +301,16 @@ export const en: Messages = {
         "At least 8 characters. Other devices are signed out while this session stays active.",
       updatePassword: "Update password",
       confirmPasswordChange: "Change the administrator password and sign out other devices?",
+      passwordDialogTitle: "Change administrator password",
+      passwordDialogDescription:
+        "Changing the password signs out other devices while this session stays active.",
       passwordChanged: "Password updated and other devices signed out",
       changeEmail: "Change email",
       newEmail: "New email",
       updateEmail: "Update email",
       confirmEmailChange: "Change the administrator sign-in email?",
+      emailDialogTitle: "Change administrator email",
+      emailDialogDescription: "Change the administrator sign-in email to {email}?",
       emailChanged: "Administrator email updated",
       sessions: "Login sessions",
       currentSession: "Current",
@@ -315,6 +323,15 @@ export const en: Messages = {
       confirmRevokeSession: "Revoke this login session?",
       confirmRevokeCurrent: "Revoke the current session and sign out of admin?",
       confirmRevokeOthers: "Sign out every device except the current session?",
+      revokeSessionDialogTitle: "Revoke login session",
+      revokeSessionDialogDescription: "That device will need to sign in to admin again.",
+      revokeCurrentDialogTitle: "Revoke current session",
+      revokeCurrentDialogDescription:
+        "This session will immediately leave admin and require sign-in again.",
+      revokeOthersDialogTitle: "Sign out other devices",
+      revokeOthersDialogDescription:
+        "Every admin login except the current session will be revoked.",
+      revoking: "Revoking...",
       sessionRevoked: "Session revoked",
       otherSessionsRevoked: "Other devices signed out",
       history: "Operation history",
@@ -367,6 +384,9 @@ export const en: Messages = {
       storage: "Storage",
       uploadedAt: "Uploaded at",
       confirmDelete: "Delete file “{name}”?",
+      deleteDialogTitle: "Delete file",
+      deleteDialogDescription:
+        "Delete file “{name}”? The system rejects deletion when content, payment proofs, or site settings still reference it.",
       empty: "No files yet.",
     },
     users: {
@@ -455,6 +475,10 @@ export const en: Messages = {
       retry: "Retry",
       retrying: "Retrying…",
       retryConfirm: "Retry this task now?",
+      retryConfirmAction: "Retry task",
+      retryDialogTitle: "Retry background task",
+      retryDialogDescription:
+        "Retrying moves this failed task back to the pending queue. Confirm the error is safe to retry.",
       retryFailed: "Failed to retry task",
       statuspending: "Pending",
       statusprocessing: "Processing",
@@ -475,6 +499,9 @@ export const en: Messages = {
       saveAssociations: "Save categories & tags",
       saved: "Categories and tags saved",
       confirmDelete: "Delete “{name}”? Posts will not be deleted.",
+      deleteDialogTitle: "Delete category or tag",
+      deleteDialogDescription:
+        "Delete “{name}”? Associations are removed, but posts themselves will not be deleted.",
     },
     markdown: {
       ariaLabel: "Markdown body editor",
@@ -597,6 +624,9 @@ export const en: Messages = {
       purchasable: "Purchasable",
       cardTitle: "{name} (level {level})",
       confirmDelete: "Delete membership tier “{name}”?",
+      deleteDialogTitle: "Delete membership tier",
+      deleteDialogDescription:
+        "Delete membership tier “{name}”? The system rejects deletion when memberships, payments, or posts still reference it.",
     },
     paymentMethods: {
       title: "Payment methods",
@@ -606,6 +636,9 @@ export const en: Messages = {
       qr: "Payment QR code",
       qrAlt: "Payment QR code",
       confirmDelete: "Delete payment method “{name}”?",
+      deleteDialogTitle: "Delete payment method",
+      deleteDialogDescription:
+        "Delete payment method “{name}”? Fans will no longer be able to choose it for new manual payments.",
     },
     reviews: {
       title: "Payment reviews",

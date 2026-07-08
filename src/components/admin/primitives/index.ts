@@ -1,3 +1,4 @@
+export { ConfirmActionButton } from "./confirm-action-button";
 export { ErrorSummary } from "./error-summary";
 export { FormField } from "./form-field";
 export { LoadingButton } from "./loading-button";

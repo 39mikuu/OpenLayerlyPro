@@ -1,43 +1,41 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
 
+import { ConfirmActionButton } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
-import { Button } from "@/components/ui/button";
 import { api } from "@/lib/client";
 
 export function DeleteButton({
-  path,
   confirmText,
+  description,
   label,
+  title,
+  path,
 }: {
-  path: string;
-  confirmText: string;
+  confirmText?: string;
+  description?: string;
   label?: string;
+  path: string;
+  title?: string;
 }) {
   const router = useRouter();
   const t = useT();
-  const [loading, setLoading] = useState(false);
   return (
-    <Button
-      size="sm"
+    <ConfirmActionButton
+      actionLabel={label ?? t("admin.common.delete")}
+      cancelLabel={t("admin.common.cancel")}
+      closeLabel={t("admin.common.close")}
+      confirmLabel={t("admin.common.delete")}
+      description={description ?? confirmText ?? t("admin.common.deleteDialogDescription")}
+      errorFallback={t("admin.common.deleteFailed")}
+      loadingLabel={t("admin.common.deleting")}
+      title={title ?? t("admin.common.deleteDialogTitle")}
       variant="destructive"
-      disabled={loading}
-      onClick={async () => {
-        if (!confirm(confirmText)) return;
-        setLoading(true);
-        try {
-          await api(path, { method: "DELETE" });
-          router.refresh();
-        } catch (err) {
-          alert(err instanceof Error ? err.message : t("admin.common.deleteFailed"));
-        } finally {
-          setLoading(false);
-        }
+      onConfirm={async () => {
+        await api(path, { method: "DELETE" });
+        router.refresh();
       }}
-    >
-      {label ?? t("admin.common.delete")}
-    </Button>
+    />
   );
 }
