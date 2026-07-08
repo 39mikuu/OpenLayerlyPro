@@ -16,18 +16,16 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/client";
+import {
+  PAYMENT_REJECT_REASON_CODES,
+  type PaymentRejectReasonCode,
+} from "@/modules/payment/rejection-note";
 
 type ReviewDialog = "approve" | "reject";
 
-type RejectReason = "duplicate" | "other" | "proof_unclear" | "wrong_account" | "wrong_amount";
+type RejectReason = PaymentRejectReasonCode;
 
-const REJECT_REASONS: RejectReason[] = [
-  "proof_unclear",
-  "wrong_amount",
-  "wrong_account",
-  "duplicate",
-  "other",
-];
+const REJECT_REASONS = PAYMENT_REJECT_REASON_CODES;
 
 export type ReviewActionsContext = {
   amountLabel: string;
@@ -68,12 +66,6 @@ export function ReviewActions({ context }: { context: ReviewActionsContext }) {
 
   function reasonLabel(reason: RejectReason): string {
     return t(`admin.reviews.rejectReason.${reason}`);
-  }
-
-  function buildRejectReviewNote(): string {
-    const reason = reasonLabel(rejectReason);
-    const details = rejectDetails.trim();
-    return details ? `${reason}: ${details}` : reason;
   }
 
   function focusAfterCompletion() {
@@ -220,7 +212,10 @@ export function ReviewActions({ context }: { context: ReviewActionsContext }) {
                   void run("reject", () =>
                     api(`/api/admin/payment-requests/${context.requestId}/reject`, {
                       method: "POST",
-                      body: { reviewNote: buildRejectReviewNote() },
+                      body: {
+                        rejectReasonCode: rejectReason,
+                        rejectDetails: rejectDetails.trim() || null,
+                      },
                     }),
                   )
                 }

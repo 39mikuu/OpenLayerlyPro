@@ -24,6 +24,11 @@ import { recordAudit } from "@/modules/audit";
 import { lockFileReferences } from "@/modules/file/references";
 import { grantMembership, revokeMembership } from "@/modules/membership";
 import { enqueuePaymentProofCleanup } from "@/modules/payment/proof-lifecycle";
+import {
+  paymentRejectionAuditReason,
+  serializePaymentRejectionReviewNote,
+  type StructuredPaymentRejection,
+} from "@/modules/payment/rejection-note";
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask } from "@/modules/tasks";
 
@@ -860,8 +865,17 @@ export async function expireAutoPayment(
 export async function rejectPaymentRequest(
   requestId: string,
   reviewerId: string,
-  reviewNote?: string | null,
+  rejection?: StructuredPaymentRejection | { reviewNote?: string | null } | string | null,
 ): Promise<PaymentRequest> {
+  const normalizedRejection =
+    typeof rejection === "string" || rejection === null || rejection === undefined
+      ? { reviewNote: rejection ?? null }
+      : rejection;
+  const storedReviewNote =
+    "rejectReasonCode" in normalizedRejection
+      ? serializePaymentRejectionReviewNote(normalizedRejection)
+      : (normalizedRejection.reviewNote ?? null);
+  const auditReason = paymentRejectionAuditReason(normalizedRejection);
   const db = getDb();
   const request = await getPaymentRequest(requestId);
   if (!request) throw new ApiError(404, "paymentRequestNotFound");
@@ -872,7 +886,7 @@ export async function rejectPaymentRequest(
       .update(paymentRequests)
       .set({
         status: "rejected",
-        reviewNote: reviewNote ?? null,
+        reviewNote: storedReviewNote,
         reviewedBy: reviewerId,
         reviewedAt,
         updatedAt: reviewedAt,
@@ -886,7 +900,7 @@ export async function rejectPaymentRequest(
       entityId: row.id,
       action: "reject",
       actor: { type: "admin", id: reviewerId },
-      reason: reviewNote?.trim() || null,
+      reason: auditReason,
       before: { status: "pending_review" },
       after: { status: "rejected" },
       correlationId,
@@ -907,7 +921,7 @@ export async function rejectPaymentRequest(
         locale: recipient.locale,
         params: {
           tierName: recipient.tierName,
-          reviewNote: reviewNote ?? null,
+          reviewNote: storedReviewNote,
         },
       },
     });

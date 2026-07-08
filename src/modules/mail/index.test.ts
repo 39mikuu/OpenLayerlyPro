@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { serializePaymentRejectionReviewNote } from "@/modules/payment/rejection-note";
+
 import {
   renderLoginCodeEmail,
   renderMembershipActivatedEmail,
@@ -36,6 +38,25 @@ describe("localized mail templates", () => {
     const rejected = renderPaymentRejectedEmail("Gold", "截图不清晰", "en");
     expect(rejected.subject).toBe("Payment request rejected");
     expect(rejected.text).toContain("Reason: 截图不清晰");
+  });
+
+  it("localizes structured payment rejection reasons for the recipient locale", () => {
+    const stored = serializePaymentRejectionReviewNote({
+      rejectReasonCode: "wrong_account",
+      rejectDetails: "Use the creator account shown on checkout.",
+    });
+
+    const english = renderPaymentRejectedEmail("Gold", stored, "en");
+    expect(english.text).toContain(
+      "Reason: Payment account or method does not match: Use the creator account shown on checkout.",
+    );
+    expect(english.text).not.toContain("wrong_account");
+
+    const japanese = renderPaymentRejectedEmail("ゴールド", stored, "ja");
+    expect(japanese.text).toContain(
+      "理由：支払いアカウントまたは方法が一致しません: Use the creator account shown on checkout.",
+    );
+    expect(japanese.text).not.toContain("Payment account or method does not match");
   });
 
   it("renders test email in the administrator request locale", () => {

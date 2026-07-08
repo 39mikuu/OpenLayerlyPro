@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/modules/auth/session";
 import { getT } from "@/modules/i18n/server";
 import { listMyPaymentRequestDetails } from "@/modules/payment";
+import { formatPaymentRejectionReviewNote } from "@/modules/payment/rejection-note";
 import { getActiveTheme, type OrderView } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
@@ -29,7 +30,7 @@ export default async function MyOrdersPage({
     durationDays: request.durationDays,
     createdAt: request.createdAt,
     note: request.note,
-    reviewNote: request.reviewNote,
+    reviewNote: formatPaymentRejectionReviewNote(request.reviewNote, t),
   }));
 
   const { paid } = await searchParams;

@@ -6,6 +6,7 @@ import { formatDate } from "@/lib/dates";
 import { logger } from "@/lib/logger";
 import { getSmtpConfig, type ResolvedSmtpConfig } from "@/modules/config";
 import { DEFAULT_LOCALE, type Locale, translate } from "@/modules/i18n";
+import { formatPaymentRejectionReviewNote } from "@/modules/payment/rejection-note";
 
 import { classifyMailError, MailDeliveryError } from "./delivery";
 
@@ -145,11 +146,12 @@ export function renderPaymentRejectedEmail(
   locale?: Locale,
 ) {
   const t = mailT(locale);
+  const localizedReviewNote = formatPaymentRejectionReviewNote(reviewNote, t);
   return {
     subject: t("mail.rejectedSubject"),
     text: [
       t("mail.rejectedBody", { tier: tierName }),
-      reviewNote ? `\n${t("mail.rejectedReason", { reason: reviewNote })}` : "",
+      localizedReviewNote ? `\n${t("mail.rejectedReason", { reason: localizedReviewNote })}` : "",
       "",
       t("mail.rejectedRetry"),
     ].join("\n"),

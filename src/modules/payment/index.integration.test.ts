@@ -12,7 +12,12 @@ import {
   tasks,
   users,
 } from "@/db/schema";
+import { translate } from "@/modules/i18n";
 import { getActiveMembership } from "@/modules/membership";
+import {
+  formatPaymentRejectionReviewNote,
+  parsePaymentRejectionReviewNote,
+} from "@/modules/payment/rejection-note";
 
 import {
   approvePaymentRequest,
@@ -457,6 +462,45 @@ describeWithDatabase("payment review audit integration", () => {
           reviewNote: "proof is unclear",
         },
       },
+    });
+  });
+
+  it("stores structured rejection reasons as stable codes and defers localization", async () => {
+    const seeded = await seedRequest();
+    const rejected = await rejectPaymentRequest(seeded.request.id, seeded.admin.id, {
+      rejectReasonCode: "proof_unclear",
+      rejectDetails: "Upload the receipt number.",
+    });
+
+    expect(rejected.reviewNote).toBeTruthy();
+    expect(rejected.reviewNote).not.toContain("Payment proof is unclear");
+    expect(rejected.reviewNote).not.toContain("付款凭证不清晰");
+    expect(parsePaymentRejectionReviewNote(rejected.reviewNote)).toMatchObject({
+      kind: "structured",
+      rejectReasonCode: "proof_unclear",
+      rejectDetails: "Upload the receipt number.",
+    });
+    expect(
+      formatPaymentRejectionReviewNote(rejected.reviewNote, (key, params) =>
+        translate("en", key, params),
+      ),
+    ).toBe("Payment proof is unclear or incomplete: Upload the receipt number.");
+    expect(
+      formatPaymentRejectionReviewNote(rejected.reviewNote, (key, params) =>
+        translate("zh", key, params),
+      ),
+    ).toBe("付款凭证不清晰或信息不足: Upload the receipt number.");
+
+    const [rejectEvent] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.entityId, seeded.request.id), eq(auditEvents.action, "reject")));
+    expect(rejectEvent).toMatchObject({ reason: "proof_unclear: Upload the receipt number." });
+
+    const [rejectionTask] = await db.select().from(tasks).where(eq(tasks.kind, "email"));
+    expect(rejectionTask?.payloadJson).toMatchObject({
+      template: "payment_rejected",
+      params: { tierName: seeded.tier.name, reviewNote: rejected.reviewNote },
     });
   });
 

@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { eq, inArray, like, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 
 import { closeDb, getDb } from "../src/db";
 import { membershipTiers, paymentRequests, sessions, siteSettings, users } from "../src/db/schema";
@@ -207,4 +207,37 @@ test("reject dialog cannot be dismissed while the review request is pending", as
 
   releaseRejectRequest();
   await expect(dialog).toBeHidden();
+});
+
+test("sends a stable reject reason code instead of the administrator locale text", async ({
+  page,
+}) => {
+  await page
+    .context()
+    .addCookies([{ name: LOCALE_COOKIE, value: "ja", url: BASE_URL, sameSite: "Lax" }]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/admin/payments/reviews");
+  await page.getByRole("button", { name: "却下" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "支払い申請を却下" });
+  await expect(dialog).toBeVisible();
+
+  let requestBody: unknown;
+  await page.route(/\/api\/admin\/payment-requests\/[^/]+\/reject$/, async (route) => {
+    requestBody = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, data: {} }),
+    });
+  });
+
+  await dialog.getByRole("button", { name: "申請を却下" }).click();
+
+  await expect
+    .poll(() => requestBody)
+    .toEqual({
+      rejectReasonCode: "proof_unclear",
+      rejectDetails: null,
+    });
+  expect(JSON.stringify(requestBody)).not.toContain("支払い証明");
 });
