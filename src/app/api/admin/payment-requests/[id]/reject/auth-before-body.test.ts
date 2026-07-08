@@ -29,6 +29,28 @@ describe("admin payment request rejection auth-before-body invariant", () => {
     mocks.rejectPaymentRequest.mockResolvedValue({ id: "request-1" });
   });
 
+  it("passes stable reject reason code and optional details to the payment module", async () => {
+    mocks.readJsonWithLimitOrDefault.mockResolvedValue({
+      rejectReasonCode: "wrong_amount",
+      rejectDetails: "Expected $99.",
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/admin/payment-requests/request-1/reject", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rejectReasonCode: "wrong_amount", rejectDetails: "Expected $99." }),
+      }) as NextRequest,
+      { params: Promise.resolve({ id: "request-1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.rejectPaymentRequest).toHaveBeenCalledWith("request-1", "admin-1", {
+      rejectReasonCode: "wrong_amount",
+      rejectDetails: "Expected $99.",
+    });
+  });
+
   it("returns 401 before readJsonWithLimitOrDefault on an unauthenticated request", async () => {
     mocks.requireAdmin.mockRejectedValue(new ApiError(401, "authRequired"));
 

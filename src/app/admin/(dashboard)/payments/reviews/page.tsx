@@ -49,7 +49,9 @@ export default async function AdminPaymentReviewsPage({
     <div className="space-y-8">
       <div className="space-y-4">
         <h1 className="text-xl font-bold">{t("admin.reviews.title")}</h1>
-        <h2 className="font-semibold">{t("admin.reviews.pending")}</h2>
+        <h2 id="admin-payment-reviews-pending-heading" tabIndex={-1} className="font-semibold">
+          {t("admin.reviews.pending")}
+        </h2>
         <RequestTable rows={pendingPage.items} showActions t={t} />
         {pendingPage.nextCursor && (
           <a
@@ -150,7 +152,19 @@ function RequestTable({
               </TableCell>
               {showActions && (
                 <TableCell>
-                  <ReviewActions requestId={request.id} />
+                  <ReviewActions
+                    context={{
+                      amountLabel: request.amountLabel,
+                      note: request.note,
+                      proofHref: request.proofFileId
+                        ? `/api/files/${request.proofFileId}/download`
+                        : null,
+                      requestId: request.id,
+                      submittedAtLabel: formatDateTime(request.createdAt),
+                      tierName: tier.name,
+                      userEmail,
+                    }}
+                  />
                 </TableCell>
               )}
             </TableRow>
