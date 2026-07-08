@@ -103,8 +103,10 @@ export function PostEditor({
   const hasUnsavedFormChanges = currentFormSnapshot !== savedFormSnapshot;
   const hasUnsavedTaxonomyChanges = currentTaxonomySnapshot !== savedTaxonomySnapshot;
   const hasUnsavedChanges = hasUnsavedFormChanges || hasUnsavedTaxonomyChanges;
+  const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
   const unsavedChangesConfirmMessageRef = useRef(t("admin.posts.unsavedChangesConfirm"));
   const allowNextPopStateRef = useRef(false);
+  hasUnsavedChangesRef.current = hasUnsavedChanges;
   unsavedChangesConfirmMessageRef.current = t("admin.posts.unsavedChangesConfirm");
 
   useEffect(() => {
@@ -133,6 +135,14 @@ export function PostEditor({
         return false;
       }
     };
+    const isDirtyGuardHistoryEntry = () => {
+      const currentState = window.history.state;
+      return (
+        currentState &&
+        typeof currentState === "object" &&
+        currentState.__adminPostEditorDirtyGuard === true
+      );
+    };
     const pushDirtyGuardHistoryEntry = () => {
       const currentState = window.history.state;
       const currentStateObject =
@@ -142,6 +152,11 @@ export function PostEditor({
         "",
         window.location.href,
       );
+    };
+    const collapseDirtyGuardHistoryEntry = () => {
+      if (!isDirtyGuardHistoryEntry()) return;
+      allowNextPopStateRef.current = true;
+      window.history.back();
     };
 
     pushDirtyGuardHistoryEntry();
@@ -168,6 +183,10 @@ export function PostEditor({
       }
     };
 
+    const handleBeforeLogout = (event: Event) => {
+      if (!confirmNavigation()) event.preventDefault();
+    };
+
     const handlePopState = (event: PopStateEvent) => {
       if (allowNextPopStateRef.current) {
         allowNextPopStateRef.current = false;
@@ -183,10 +202,13 @@ export function PostEditor({
     };
 
     document.addEventListener("click", handleDocumentClick, true);
+    window.addEventListener("admin:before-logout", handleBeforeLogout);
     window.addEventListener("popstate", handlePopState, true);
     return () => {
       document.removeEventListener("click", handleDocumentClick, true);
+      window.removeEventListener("admin:before-logout", handleBeforeLogout);
       window.removeEventListener("popstate", handlePopState, true);
+      if (!hasUnsavedChangesRef.current) collapseDirtyGuardHistoryEntry();
     };
   }, [hasUnsavedChanges]);
 

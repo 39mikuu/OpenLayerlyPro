@@ -168,7 +168,7 @@ test("dirty editor shows unsaved state, blocks publish, and returns to saved sta
   expect(savedBeforeUnloadPrevented).toBe(false);
 });
 
-test("dirty editor keeps the user on the page when internal navigation or browser back is canceled", async ({
+test("dirty editor guards logout, internal navigation, browser back, and clean back behavior", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -181,6 +181,20 @@ test("dirty editor keeps the user on the page when internal navigation or browse
     .getByRole("textbox", { name: "正文", exact: true })
     .fill("未保存正文内容，准备测试离开页面保护");
   await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+
+  let logoutRequests = 0;
+  await page.route("**/api/auth/logout", async (route) => {
+    logoutRequests += 1;
+    await route.abort();
+  });
+  page.once("dialog", async (dialog) => {
+    expect(dialog.type()).toBe("confirm");
+    expect(dialog.message()).toContain("你有未保存更改");
+    await dialog.dismiss();
+  });
+  await page.getByRole("button", { name: "退出", exact: true }).click();
+  expect(logoutRequests).toBe(0);
+  await expect(page).toHaveURL(new RegExp(`/admin/posts/${postId}$`));
 
   page.once("dialog", async (dialog) => {
     expect(dialog.type()).toBe("confirm");
@@ -197,4 +211,11 @@ test("dirty editor keeps the user on the page when internal navigation or browse
   expect(backDialog.message()).toContain("你有未保存更改");
   await backDialog.dismiss();
   await expect(page).toHaveURL(new RegExp(`/admin/posts/${postId}$`));
+
+  const saveButton = page.getByRole("button", { name: "保存", exact: true });
+  await saveButton.click();
+  await expect(page.getByText("当前更改已保存。")).toBeVisible();
+  await expect(saveButton).toBeDisabled();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/admin\/posts$/);
 });

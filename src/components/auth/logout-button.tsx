@@ -11,6 +11,8 @@ export function LogoutButton() {
       variant="ghost"
       size="sm"
       onClick={async () => {
+        const beforeLogout = new Event("admin:before-logout", { cancelable: true });
+        if (!window.dispatchEvent(beforeLogout)) return;
         await api("/api/auth/logout", { method: "POST" });
         window.location.assign("/");
       }}
