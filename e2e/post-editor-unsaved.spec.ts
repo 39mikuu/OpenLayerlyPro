@@ -196,6 +196,22 @@ test("dirty editor guards logout, internal navigation, browser back, and clean b
   expect(logoutRequests).toBe(0);
   await expect(page).toHaveURL(new RegExp(`/admin/posts/${postId}$`));
 
+  const confirmedLogoutState = await page.evaluate(() => {
+    const originalConfirm = window.confirm;
+    window.confirm = () => true;
+    try {
+      const beforeLogout = new Event("admin:before-logout", { cancelable: true });
+      const allowed = window.dispatchEvent(beforeLogout);
+      const beforeUnload = new Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
+      window.dispatchEvent(beforeUnload);
+      window.dispatchEvent(new Event("admin:logout-aborted"));
+      return { allowed, beforeUnloadPrevented: beforeUnload.defaultPrevented };
+    } finally {
+      window.confirm = originalConfirm;
+    }
+  });
+  expect(confirmedLogoutState).toEqual({ allowed: true, beforeUnloadPrevented: false });
+
   page.once("dialog", async (dialog) => {
     expect(dialog.type()).toBe("confirm");
     expect(dialog.message()).toContain("你有未保存更改");

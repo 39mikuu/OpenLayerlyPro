@@ -106,12 +106,14 @@ export function PostEditor({
   const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
   const unsavedChangesConfirmMessageRef = useRef(t("admin.posts.unsavedChangesConfirm"));
   const allowNextPopStateRef = useRef(false);
+  const suppressBeforeUnloadRef = useRef(false);
   hasUnsavedChangesRef.current = hasUnsavedChanges;
   unsavedChangesConfirmMessageRef.current = t("admin.posts.unsavedChangesConfirm");
 
   useEffect(() => {
     if (!hasUnsavedChanges) return;
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (suppressBeforeUnloadRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -184,7 +186,15 @@ export function PostEditor({
     };
 
     const handleBeforeLogout = (event: Event) => {
-      if (!confirmNavigation()) event.preventDefault();
+      if (!confirmNavigation()) {
+        event.preventDefault();
+        return;
+      }
+      suppressBeforeUnloadRef.current = true;
+    };
+
+    const handleLogoutAborted = () => {
+      suppressBeforeUnloadRef.current = false;
     };
 
     const handlePopState = (event: PopStateEvent) => {
@@ -203,10 +213,12 @@ export function PostEditor({
 
     document.addEventListener("click", handleDocumentClick, true);
     window.addEventListener("admin:before-logout", handleBeforeLogout);
+    window.addEventListener("admin:logout-aborted", handleLogoutAborted);
     window.addEventListener("popstate", handlePopState, true);
     return () => {
       document.removeEventListener("click", handleDocumentClick, true);
       window.removeEventListener("admin:before-logout", handleBeforeLogout);
+      window.removeEventListener("admin:logout-aborted", handleLogoutAborted);
       window.removeEventListener("popstate", handlePopState, true);
       if (!hasUnsavedChangesRef.current) collapseDirtyGuardHistoryEntry();
     };

@@ -13,8 +13,13 @@ export function LogoutButton() {
       onClick={async () => {
         const beforeLogout = new Event("admin:before-logout", { cancelable: true });
         if (!window.dispatchEvent(beforeLogout)) return;
-        await api("/api/auth/logout", { method: "POST" });
-        window.location.assign("/");
+        try {
+          await api("/api/auth/logout", { method: "POST" });
+          window.location.assign("/");
+        } catch (error) {
+          window.dispatchEvent(new Event("admin:logout-aborted"));
+          throw error;
+        }
       }}
     >
       {t("common.logout")}
