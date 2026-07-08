@@ -21,7 +21,9 @@ export default async function AdminSitePage() {
         initial: {
           colorPreset: config.colorPreset,
           customHue:
-            config.customHue ?? option.colorPresets.find((preset) => preset.hue !== null)?.hue ?? 0,
+            config.customHue ??
+            option.colorPresets.find((preset) => preset.kind === "hue")?.hue ??
+            0,
         },
       };
     }),

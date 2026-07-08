@@ -16,6 +16,7 @@ import {
 import { LOCALE_COOKIE } from "../src/modules/i18n/config";
 import { BLOG_DEFAULT_COLOR_PRESET_ID } from "../src/themes/blog/color-presets";
 import { BUILTIN_DEFAULT_COLOR_PRESET_ID } from "../src/themes/builtin/color-presets";
+import { WORDPRESS_DEFAULT_COLOR_PRESET_ID } from "../src/themes/wordpress/color-presets";
 
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001";
 // Duplicated rather than imported from src/modules/theme/registry.ts: that module
@@ -23,6 +24,7 @@ const BASE_URL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001";
 // bundler special-cases but which fails to resolve in Playwright's plain Node
 // test runner (the package isn't even a real node_modules dependency).
 const ACTIVE_THEME_SETTING_KEY = "theme";
+const THEME_CONFIG_SETTING_KEY = "theme_config";
 const THEME_MODE_COOKIE = "theme_mode";
 const SCREENSHOT_LOCALE = "en";
 
@@ -31,11 +33,33 @@ const POST_TITLE = "Visual Baseline Studio Notes";
 const CATEGORY_NAME = "Studio Notes";
 const TAG_NAME = "Baseline";
 const FIXED_PUBLISHED_AT = new Date("2025-03-15T09:30:00.000Z");
+const fixtureTierSlugs = ["visual-supporter", "visual-archive-member"] as const;
+const fixtureCategorySlug = "studio-notes";
+const fixtureTagSlug = "baseline";
+const mutatedSettingKeys = [
+  "initialized",
+  "site_name",
+  "artist_name",
+  "artist_bio",
+  "social_links",
+  "custom_footer_markup",
+  "custom_footer_html",
+  "site_verification",
+  "public_integrations",
+  "public_csp_revision",
+  ACTIVE_THEME_SETTING_KEY,
+  THEME_CONFIG_SETTING_KEY,
+  "artist_avatar_file_id",
+  "site_logo_file_id",
+  "site_icon_file_id",
+] as const;
+type SettingSnapshot = Record<string, unknown | undefined>;
+let originalSettings: SettingSnapshot = {};
 
-type ThemeId = "builtin" | "blog";
+type ThemeId = "builtin" | "blog" | "wordpress";
 type ThemeMode = "light" | "dark";
 
-const themes: readonly ThemeId[] = ["builtin", "blog"];
+const themes: readonly ThemeId[] = ["builtin", "blog", "wordpress"];
 const modes: readonly ThemeMode[] = ["light", "dark"];
 const pages = [
   { id: "home", path: "/", expectTaxonomy: false },
@@ -43,6 +67,56 @@ const pages = [
   { id: "post-detail", path: `/posts/${POST_SLUG}`, expectTaxonomy: true },
 ] as const;
 
+async function snapshotSettings(keys: readonly string[]): Promise<SettingSnapshot> {
+  const rows = await getDb()
+    .select({ key: siteSettings.key, valueJson: siteSettings.valueJson })
+    .from(siteSettings)
+    .where(inArray(siteSettings.key, [...keys]));
+  const snapshot: SettingSnapshot = Object.fromEntries(keys.map((key) => [key, undefined]));
+  for (const row of rows) snapshot[row.key] = row.valueJson;
+  return snapshot;
+}
+
+async function restoreSettings(snapshot: SettingSnapshot) {
+  const db = getDb();
+  for (const [key, valueJson] of Object.entries(snapshot)) {
+    if (valueJson === undefined) {
+      await db.delete(siteSettings).where(sql`${siteSettings.key} = ${key}`);
+    } else {
+      await db
+        .insert(siteSettings)
+        .values({ key, valueJson })
+        .onConflictDoUpdate({
+          target: siteSettings.key,
+          set: { valueJson, updatedAt: new Date() },
+        });
+    }
+  }
+}
+
+async function cleanupFixtures() {
+  await getDb().transaction(async (tx) => {
+    await tx
+      .delete(postFiles)
+      .where(sql`${postFiles.postId} in (select id from posts where slug = ${POST_SLUG})`);
+    await tx
+      .delete(postCategories)
+      .where(sql`${postCategories.postId} in (select id from posts where slug = ${POST_SLUG})`);
+    await tx
+      .delete(postTags)
+      .where(sql`${postTags.postId} in (select id from posts where slug = ${POST_SLUG})`);
+    await tx.delete(posts).where(sql`${posts.slug} = ${POST_SLUG}`);
+    await tx.delete(categories).where(sql`${categories.slug} = ${fixtureCategorySlug}`);
+    await tx.delete(tags).where(sql`${tags.slug} = ${fixtureTagSlug}`);
+    await tx.delete(memberships).where(
+      sql`${memberships.tierId} in (select id from membership_tiers where slug in (${sql.join(
+        fixtureTierSlugs.map((slug) => sql`${slug}`),
+        sql`, `,
+      )}))`,
+    );
+    await tx.delete(membershipTiers).where(inArray(membershipTiers.slug, [...fixtureTierSlugs]));
+  });
+}
 async function upsertSetting(key: string, valueJson: unknown) {
   await getDb()
     .insert(siteSettings)
@@ -59,20 +133,10 @@ async function setActiveTheme(theme: ThemeId) {
 
 test.beforeAll(async () => {
   const db = getDb();
+  originalSettings = await snapshotSettings(mutatedSettingKeys);
 
+  await cleanupFixtures();
   await db.transaction(async (tx) => {
-    await tx.delete(postFiles);
-    await tx.delete(postCategories);
-    await tx.delete(postTags);
-    await tx.delete(posts);
-    await tx.delete(categories);
-    await tx.delete(tags);
-    // Other e2e specs (e.g. theme-permission-locale-smoke.spec.ts) can leave a
-    // memberships row referencing a membership_tiers row; delete the child rows
-    // first or this FK-constrained delete fails.
-    await tx.delete(memberships);
-    await tx.delete(membershipTiers);
-
     // Other e2e specs (e.g. s6-security-headers.spec.ts, which runs first) can leave
     // artist_avatar_file_id/site_logo_file_id/site_icon_file_id pointing at files that
     // only resolve under their own test's mocked routes - a stale value here renders
@@ -112,6 +176,7 @@ test.beforeAll(async () => {
       theme_config: {
         builtin: { colorPreset: BUILTIN_DEFAULT_COLOR_PRESET_ID },
         blog: { colorPreset: BLOG_DEFAULT_COLOR_PRESET_ID },
+        wordpress: { colorPreset: WORDPRESS_DEFAULT_COLOR_PRESET_ID },
       },
     };
 
@@ -182,6 +247,8 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
+  await cleanupFixtures();
+  await restoreSettings(originalSettings);
   await closeDb();
 });
 
@@ -218,3 +285,52 @@ for (const theme of themes) {
     }
   });
 }
+
+test.describe("wordpress theme preset and mobile baselines", () => {
+  for (const mode of modes) {
+    test(`wordpress layer-seal ${mode} home visual baseline`, async ({ page, context }) => {
+      await setActiveTheme("wordpress");
+      await upsertSetting("theme_config", {
+        builtin: { colorPreset: BUILTIN_DEFAULT_COLOR_PRESET_ID },
+        blog: { colorPreset: BLOG_DEFAULT_COLOR_PRESET_ID },
+        wordpress: { colorPreset: "layer-seal" },
+      });
+      await context.addCookies([
+        { name: THEME_MODE_COOKIE, value: mode, url: BASE_URL },
+        { name: LOCALE_COOKIE, value: SCREENSHOT_LOCALE, url: BASE_URL },
+      ]);
+
+      await page.goto("/");
+      await expect(page.getByText(POST_TITLE)).toBeVisible();
+      await expect(page).toHaveScreenshot(`wordpress-layer-seal-${mode}-home.png`, {
+        animations: "disabled",
+        fullPage: true,
+        mask: [page.getByText(/©\s*\d{4}/)],
+      });
+    });
+  }
+
+  for (const pageCase of pages) {
+    test(`wordpress mobile ${pageCase.id} visual baseline`, async ({ page, context }) => {
+      await setActiveTheme("wordpress");
+      await upsertSetting("theme_config", {
+        builtin: { colorPreset: BUILTIN_DEFAULT_COLOR_PRESET_ID },
+        blog: { colorPreset: BLOG_DEFAULT_COLOR_PRESET_ID },
+        wordpress: { colorPreset: WORDPRESS_DEFAULT_COLOR_PRESET_ID },
+      });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await context.addCookies([
+        { name: THEME_MODE_COOKIE, value: "light", url: BASE_URL },
+        { name: LOCALE_COOKIE, value: SCREENSHOT_LOCALE, url: BASE_URL },
+      ]);
+
+      await page.goto(pageCase.path);
+      await expect(page.getByText(POST_TITLE)).toBeVisible();
+      await expect(page).toHaveScreenshot(`wordpress-mobile-${pageCase.id}.png`, {
+        animations: "disabled",
+        fullPage: true,
+        mask: [page.getByText(/©\s*\d{4}/)],
+      });
+    });
+  }
+});

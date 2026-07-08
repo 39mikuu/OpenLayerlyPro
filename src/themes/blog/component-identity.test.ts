@@ -6,23 +6,24 @@ import { buildColorPresetCss, normalizeHue, resolveColorHue } from "@/modules/th
 import type { Theme } from "@/modules/theme/types";
 import { blogTheme } from "@/themes/blog";
 import { builtinTheme } from "@/themes/builtin";
+import { wordpressTheme } from "@/themes/wordpress";
 
-const reusedBodySlots = ["PostDetail", "Tiers", "Login", "Me", "MeOrders", "Checkout"] as const;
-const overriddenSlots = ["Chrome", "Home", "PostList"] as const;
+const blogReusedBodySlots = ["PostDetail", "Tiers", "Login", "Me", "MeOrders", "Checkout"] as const;
+const blogOverriddenSlots = ["Chrome", "Home", "PostList"] as const;
+const wordpressReusedSlots = ["Tiers", "Login", "Me", "MeOrders", "Checkout"] as const;
+const wordpressOverriddenSlots = ["Chrome", "Home", "PostList", "PostDetail"] as const;
 
-function expectSyntacticThemeCss(css: string, hue: number) {
+function expectSyntacticThemeCss(css: string, expectedFragment: string) {
   expect(css).toContain(".site-theme{");
   expect(css).toContain(".dark .site-theme{");
   expect(css).toMatch(/--[a-z-]+: [^;{}]+;/);
-  expect(css).toContain(` ${hue})`);
-  expect(css).not.toMatch(/NaN|undefined|null/);
+  expect(css).toContain(expectedFragment);
+  expect(css).not.toMatch(/NaN|undefined|null|:root|html/);
 }
 
 describe("blog theme component identity", () => {
   it("reuses builtin body components that have no theme-specific body implementation risk", () => {
-    // This proves only the six body-component slots are shared by reference.
-    // Public pages are still wrapped in the active theme Chrome, which Blog overrides.
-    for (const slot of reusedBodySlots) {
+    for (const slot of blogReusedBodySlots) {
       expect(blogTheme.components[slot]).toBeDefined();
       expect(builtinTheme.components[slot]).toBeDefined();
       expect(blogTheme.components[slot]).toBe(builtinTheme.components[slot]);
@@ -30,7 +31,7 @@ describe("blog theme component identity", () => {
   });
 
   it("overrides chrome, home and post list components", () => {
-    for (const slot of overriddenSlots) {
+    for (const slot of blogOverriddenSlots) {
       expect(blogTheme.components[slot]).toBeDefined();
       expect(builtinTheme.components[slot]).toBeDefined();
       expect(blogTheme.components[slot]).not.toBe(builtinTheme.components[slot]);
@@ -38,25 +39,67 @@ describe("blog theme component identity", () => {
   });
 });
 
+describe("wordpress theme component identity", () => {
+  it("reuses transactional/account body components from builtin", () => {
+    for (const slot of wordpressReusedSlots) {
+      expect(wordpressTheme.components[slot]).toBeDefined();
+      expect(builtinTheme.components[slot]).toBeDefined();
+      expect(wordpressTheme.components[slot]).toBe(builtinTheme.components[slot]);
+    }
+  });
+
+  it("overrides classic blog surface components", () => {
+    for (const slot of wordpressOverriddenSlots) {
+      expect(wordpressTheme.components[slot]).toBeDefined();
+      expect(builtinTheme.components[slot]).toBeDefined();
+      expect(wordpressTheme.components[slot]).not.toBe(builtinTheme.components[slot]);
+    }
+  });
+});
+
 describe("real theme color preset and hue behavior", () => {
-  const themeCases: ReadonlyArray<[string, Theme]> = [
+  const hueThemeCases: ReadonlyArray<[string, Theme]> = [
     ["builtin", builtinTheme],
     ["blog", blogTheme],
   ];
 
-  it.each(themeCases)("resolves every %s named preset", (_themeName, theme) => {
+  it.each(hueThemeCases)("resolves every %s named preset", (_themeName, theme) => {
     for (const preset of theme.colorPresets) {
       const config = { colorPreset: preset.id };
-      expect(resolveColorHue(theme, config)).toBe(preset.hue);
+      const expectedHue = preset.kind === "hue" ? preset.hue : null;
+      expect(resolveColorHue(theme, config)).toBe(expectedHue);
       const css = buildColorPresetCss(theme, config);
 
-      if (preset.hue === null) {
+      if (preset.kind === "none") {
         expect(css).toBeNull();
-      } else {
+      } else if (preset.kind === "hue") {
         expect(css).not.toBeNull();
-        expectSyntacticThemeCss(css!, preset.hue);
+        expectSyntacticThemeCss(css!, ` ${preset.hue})`);
       }
     }
+  });
+
+  it("uses exact vars for wordpress presets and does not support custom hue", () => {
+    expect(wordpressTheme.defaultColorPresetId).toBe("gofun-seiji");
+    expect(wordpressTheme.colorVarsFromHue).toBeUndefined();
+    expect(wordpressTheme.colorPresets.map((preset) => [preset.id, preset.name])).toEqual([
+      ["gofun-seiji", "胡粉 × 墨 × 青磁"],
+      ["layer-seal", "層印品牌"],
+    ]);
+
+    for (const preset of wordpressTheme.colorPresets) {
+      expect(preset.kind).toBe("vars");
+      if (preset.kind !== "vars") continue;
+      expect(preset.cssVars.light).not.toHaveProperty("--destructive");
+      expect(preset.cssVars.dark).not.toHaveProperty("--destructive");
+      const css = buildColorPresetCss(wordpressTheme, { colorPreset: preset.id });
+      expect(css).not.toBeNull();
+      expectSyntacticThemeCss(css!, "--wordpress-seal");
+    }
+
+    expect(
+      buildColorPresetCss(wordpressTheme, { colorPreset: "custom", customHue: 12 }),
+    ).toBeNull();
   });
 
   it.each([
@@ -72,7 +115,7 @@ describe("real theme color preset and hue behavior", () => {
     expect(normalizeHue(input, 123)).toBe(expected);
   });
 
-  it.each(themeCases)(
+  it.each(hueThemeCases)(
     "normalizes custom hue and emits valid scoped CSS for %s",
     (_themeName, theme) => {
       for (const [input, expected] of [
@@ -86,7 +129,7 @@ describe("real theme color preset and hue behavior", () => {
         expect(resolveColorHue(theme, config)).toBe(expected);
         const css = buildColorPresetCss(theme, config);
         expect(css).not.toBeNull();
-        expectSyntacticThemeCss(css!, expected);
+        expectSyntacticThemeCss(css!, ` ${expected})`);
       }
     },
   );

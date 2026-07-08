@@ -16,6 +16,15 @@ export const en: Messages = {
   theme: {
     toLight: "Switch to light",
     toDark: "Switch to dark",
+    wordpress: {
+      label: "WordPress Classic",
+      classicBlog: "Classic Blog",
+      archive: "Archive",
+      postInfo: "Post info",
+      thisPost: "This post",
+      pageCategories: "Page categories",
+      pageTags: "Page tags",
+    },
   },
   locale: {
     label: "Language",
