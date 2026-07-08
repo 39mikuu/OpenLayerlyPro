@@ -457,6 +457,10 @@ export function PostEditor({
               disabled={loading}
               onClick={() =>
                 run(async () => {
+                  if (hasUnsavedChanges) {
+                    setMessage(t("admin.posts.saveBeforeArchive"));
+                    return;
+                  }
                   if (!window.confirm(t("admin.posts.confirmArchive"))) return;
                   await api(`/api/admin/posts/${post.id}/archive`, { method: "POST" });
                   setMessage(t("admin.posts.archived"));

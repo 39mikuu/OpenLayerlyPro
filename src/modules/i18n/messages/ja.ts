@@ -532,6 +532,7 @@ export const ja: Messages = {
       unsavedChangesConfirm:
         "未保存の変更があります。このページを離れると変更は失われます。移動しますか？",
       saveBeforePublish: "公開する前に現在の変更を保存してください。",
+      saveBeforeArchive: "アーカイブする前に現在の変更を保存してください。",
       confirmPublish: "このコンテンツを公開しますか？選択した公開範囲に表示されます。",
       confirmArchive: "このコンテンツをアーカイブしますか？公開サイトでは表示されなくなります。",
       cover: "カバー画像（公開）",

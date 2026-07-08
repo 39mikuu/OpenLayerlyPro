@@ -538,6 +538,7 @@ export const en: Messages = {
       unsavedChangesConfirm:
         "You have unsaved changes. Leaving this page will discard them. Leave anyway?",
       saveBeforePublish: "Save your current changes before publishing.",
+      saveBeforeArchive: "Save your current changes before archiving.",
       confirmPublish: "Publish this content? It will appear to the selected audience.",
       confirmArchive: "Archive this content? It will no longer be visible publicly.",
       cover: "Cover (public)",

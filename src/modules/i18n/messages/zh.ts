@@ -525,6 +525,7 @@ export const zh = {
       allChangesSaved: "当前更改已保存。",
       unsavedChangesConfirm: "你有未保存更改，离开页面会丢失这些更改。确定离开？",
       saveBeforePublish: "请先保存当前更改，再发布内容。",
+      saveBeforeArchive: "请先保存当前更改，再归档内容。",
       confirmPublish: "确认发布该内容？发布后会出现在可见范围内。",
       confirmArchive: "确认归档该内容？归档后前台将不可见。",
       cover: "封面（公开可见）",
