@@ -124,6 +124,8 @@ export function PostEditor({
   useEffect(() => {
     if (!hasUnsavedChanges) return;
 
+    allowNextPopStateRef.current = false;
+
     const confirmNavigation = () => window.confirm(unsavedChangesConfirmMessageRef.current);
     const shouldGuardUrl = (url?: string | URL | null) => {
       if (url === undefined || url === null) return false;
@@ -157,8 +159,10 @@ export function PostEditor({
     };
     const collapseDirtyGuardHistoryEntry = () => {
       if (!isDirtyGuardHistoryEntry()) return;
-      allowNextPopStateRef.current = true;
       window.history.back();
+      // The popstate listener has already been removed during cleanup, so do not
+      // let the synthetic-back bypass leak into the next dirty editing session.
+      allowNextPopStateRef.current = false;
     };
 
     pushDirtyGuardHistoryEntry();

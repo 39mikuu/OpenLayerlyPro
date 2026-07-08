@@ -232,6 +232,53 @@ test("dirty editor guards logout, internal navigation, browser back, and clean b
   await saveButton.click();
   await expect(page.getByText("当前更改已保存。")).toBeVisible();
   await expect(saveButton).toBeDisabled();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          (window.history.state as { __adminPostEditorDirtyGuard?: unknown } | null)
+            ?.__adminPostEditorDirtyGuard,
+        ),
+      ),
+    )
+    .toBe(false);
+
+  await page
+    .getByRole("textbox", { name: "正文", exact: true })
+    .fill("第二轮未保存正文内容，确认保存后再次编辑仍会保护浏览器后退");
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+  await expect(saveButton).toBeEnabled();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          (window.history.state as { __adminPostEditorDirtyGuard?: unknown } | null)
+            ?.__adminPostEditorDirtyGuard,
+        ),
+      ),
+    )
+    .toBe(true);
+
+  const secondBackDialogPromise = page.waitForEvent("dialog");
+  await page.evaluate(() => window.setTimeout(() => window.history.back(), 0));
+  const secondBackDialog = await secondBackDialogPromise;
+  expect(secondBackDialog.type()).toBe("confirm");
+  expect(secondBackDialog.message()).toContain("你有未保存更改");
+  await secondBackDialog.dismiss();
+  await expect(page).toHaveURL(new RegExp(`/admin/posts/${postId}$`));
+
+  await saveButton.click();
+  await expect(saveButton).toBeDisabled();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          (window.history.state as { __adminPostEditorDirtyGuard?: unknown } | null)
+            ?.__adminPostEditorDirtyGuard,
+        ),
+      ),
+    )
+    .toBe(false);
   await page.goBack();
   await expect(page).toHaveURL(/\/admin\/posts$/);
 });
