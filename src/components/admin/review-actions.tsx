@@ -135,7 +135,9 @@ export function ReviewActions({ context }: { context: ReviewActionsContext }) {
             <DialogTitle>
               {dialog === "approve"
                 ? t("admin.reviews.approveDialogTitle")
-                : t("admin.reviews.rejectDialogTitle")}
+                : dialog === "reject"
+                  ? t("admin.reviews.rejectDialogTitle")
+                  : null}
             </DialogTitle>
             <DialogDescription>{t("admin.reviews.reviewDialogDescription")}</DialogDescription>
           </DialogHeader>
@@ -183,49 +185,52 @@ export function ReviewActions({ context }: { context: ReviewActionsContext }) {
             </p>
           ) : null}
 
-          <DialogFooter>
-            <DialogClose render={<Button type="button" variant="outline" disabled={loading} />}>
-              {t("admin.common.cancel")}
-            </DialogClose>
-            {dialog === "approve" ? (
-              <Button
-                type="button"
-                disabled={loading}
-                onClick={() =>
-                  void run("approve", () =>
-                    api(`/api/admin/payment-requests/${context.requestId}/approve`, {
-                      method: "POST",
-                    }),
-                  )
-                }
-              >
-                {pendingAction === "approve"
-                  ? t("admin.reviews.approving")
-                  : t("admin.reviews.confirmApproveAction")}
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                variant="destructive"
-                disabled={loading}
-                onClick={() =>
-                  void run("reject", () =>
-                    api(`/api/admin/payment-requests/${context.requestId}/reject`, {
-                      method: "POST",
-                      body: {
-                        rejectReasonCode: rejectReason,
-                        rejectDetails: rejectDetails.trim() || null,
-                      },
-                    }),
-                  )
-                }
-              >
-                {pendingAction === "reject"
-                  ? t("admin.reviews.rejecting")
-                  : t("admin.reviews.confirmRejectAction")}
-              </Button>
-            )}
-          </DialogFooter>
+          {dialog ? (
+            <DialogFooter>
+              <DialogClose render={<Button type="button" variant="outline" disabled={loading} />}>
+                {t("admin.common.cancel")}
+              </DialogClose>
+              {dialog === "approve" ? (
+                <Button
+                  type="button"
+                  disabled={loading}
+                  onClick={() =>
+                    void run("approve", () =>
+                      api(`/api/admin/payment-requests/${context.requestId}/approve`, {
+                        method: "POST",
+                      }),
+                    )
+                  }
+                >
+                  {pendingAction === "approve"
+                    ? t("admin.reviews.approving")
+                    : t("admin.reviews.confirmApproveAction")}
+                </Button>
+              ) : null}
+              {dialog === "reject" ? (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  disabled={loading}
+                  onClick={() =>
+                    void run("reject", () =>
+                      api(`/api/admin/payment-requests/${context.requestId}/reject`, {
+                        method: "POST",
+                        body: {
+                          rejectReasonCode: rejectReason,
+                          rejectDetails: rejectDetails.trim() || null,
+                        },
+                      }),
+                    )
+                  }
+                >
+                  {pendingAction === "reject"
+                    ? t("admin.reviews.rejecting")
+                    : t("admin.reviews.confirmRejectAction")}
+                </Button>
+              ) : null}
+            </DialogFooter>
+          ) : null}
         </DialogContent>
       </Dialog>
     </div>

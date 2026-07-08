@@ -179,6 +179,34 @@ test("reject dialog remains usable on mobile with a long note", async ({ page })
   await expect(dialog.getByRole("button", { name: "Reject request" })).toBeVisible();
 });
 
+test("approve dialog does not expose reject action while closing", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/admin/payments/reviews");
+  const row = seededPaymentReviewRow(page);
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: "Approve" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Approve payment request" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+
+  const sawRejectActionWhileClosing = await page.evaluate(async () => {
+    function hasRejectRequestButton() {
+      return Array.from(document.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Reject request",
+      );
+    }
+
+    for (let index = 0; index < 12; index += 1) {
+      if (hasRejectRequestButton()) return true;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    return false;
+  });
+
+  expect(sawRejectActionWhileClosing).toBe(false);
+});
+
 test("reject dialog cannot be dismissed while the review request is pending", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/admin/payments/reviews");
