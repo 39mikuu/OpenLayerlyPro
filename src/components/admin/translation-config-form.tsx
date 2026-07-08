@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { ConfigSourceSummary } from "@/components/admin/config-source-summary";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -148,6 +149,11 @@ export function TranslationConfigForm({ initial }: { initial: TranslationAdminVi
         <span>{t("admin.translation.showMachineLabel")}</span>
       </Label>
       <p className="text-xs text-muted-foreground">{t("admin.translation.defaultReviewPolicy")}</p>
+      <ConfigSourceSummary
+        hasSensitiveFields
+        source={initial.hasDbOverride ? "database" : "none"}
+        supportsEnvironmentFallback={false}
+      />
       {message && <p className="text-sm text-muted-foreground">{message}</p>}
       <Button disabled={loading} onClick={save}>
         {t("admin.common.save")}

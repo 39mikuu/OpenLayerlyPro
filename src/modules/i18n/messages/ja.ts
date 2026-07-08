@@ -735,6 +735,31 @@ export const ja: Messages = {
       translationDescription:
         "翻訳プロバイダー、レビューポリシー、公開済み機械翻訳の表示を設定します。API キーは暗号化され、ブラウザーには返されません。",
     },
+    configSource: {
+      currentSource: "現在のソース",
+      source: {
+        database: "管理画面の設定",
+        environment: "環境変数",
+        none: "保存済み設定なし",
+      },
+      databaseDetailWithEnv:
+        "保存済みの管理画面上書きがあります。保存済みフィールドが優先され、未設定フィールドは環境変数または既定値にフォールバックします。",
+      databaseDetailNoEnv: "この連携では保存済みの管理画面設定が有効です。",
+      environmentDetail: "管理画面の上書きがないため、デプロイ環境変数を使用しています。",
+      noneDetailWithEnv: "管理画面の上書きはありません。環境変数と既定値にフォールバックします。",
+      noneDetailNoEnv: "保存済み設定がないため、この連携は未設定です。",
+      importEnvDraft: "環境変数から読み込む操作はフォームに入力するだけで、保存はしません。",
+      restoreEnvDeletesOverride:
+        "環境変数を使用すると保存済みの管理画面上書きを削除し、デプロイ値に戻します。",
+      noEnvironmentFallback:
+        "この連携には環境変数のフォールバックがありません。設定するにはこのフォームを保存してください。",
+      secretPreservationWithEnv:
+        "機密値は表示されません。秘密フィールドを空欄にすると、保存済みまたは環境変数の値を保持します。",
+      secretPreservationSavedOnly:
+        "機密値は表示されません。秘密フィールドを空欄にすると、保存済みの値を保持します。",
+      testUsesSaved:
+        "接続テストは保存済みの有効設定を使用し、このフォームの未保存編集は使用しません。",
+    },
     translation: {
       enable: "AI 翻訳を有効にする",
       endpoint: "OpenAI-compatible エンドポイント",

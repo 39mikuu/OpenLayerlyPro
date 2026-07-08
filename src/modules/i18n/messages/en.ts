@@ -744,6 +744,33 @@ export const en: Messages = {
       translationDescription:
         "Configure the translation provider, review policy, and labels for published machine translations. The API key is encrypted and never returned to the browser.",
     },
+    configSource: {
+      currentSource: "Current source",
+      source: {
+        database: "Admin settings",
+        environment: "Environment variables",
+        none: "No saved configuration",
+      },
+      databaseDetailWithEnv:
+        "A saved admin override exists. Saved fields take precedence; unset fields can still fall back to environment variables or defaults.",
+      databaseDetailNoEnv: "Saved admin settings are active for this integration.",
+      environmentDetail:
+        "Deployment environment values are active because no admin override is saved.",
+      noneDetailWithEnv:
+        "No admin override is saved; the app falls back to environment variables and defaults.",
+      noneDetailNoEnv: "No saved configuration exists, so this integration remains unconfigured.",
+      importEnvDraft: "Import from environment only fills this form; it does not save changes.",
+      restoreEnvDeletesOverride:
+        "Use environment variables clears the saved admin override and then falls back to deployment values.",
+      noEnvironmentFallback:
+        "This integration has no environment-variable fallback; save this form to configure it.",
+      secretPreservationWithEnv:
+        "Sensitive values are never displayed. Leaving a secret field blank keeps the existing saved or environment value.",
+      secretPreservationSavedOnly:
+        "Sensitive values are never displayed. Leaving a secret field blank keeps the existing saved value.",
+      testUsesSaved:
+        "Connection tests use the saved effective configuration, not unsaved edits in this form.",
+    },
     translation: {
       enable: "Enable AI translation",
       endpoint: "OpenAI-compatible endpoint",
