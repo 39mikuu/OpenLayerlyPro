@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { ConfigSourceSummary } from "@/components/admin/config-source-summary";
 import { IntegrationTestButton } from "@/components/admin/integration-test-button";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
@@ -148,9 +149,13 @@ export function SmtpConfigForm({ initial }: { initial: SmtpAdminView }) {
         />
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        {t(initial.hasDbOverride ? "admin.common.dbOverride" : "admin.common.envSource")}
-      </p>
+      <ConfigSourceSummary
+        hasEnvironmentImportAction
+        connectionTestUsesSavedConfig
+        hasSensitiveFields
+        source={initial.hasDbOverride ? "database" : "environment"}
+        supportsEnvironmentFallback
+      />
       {message && <p className="text-sm text-muted-foreground">{message}</p>}
 
       <div className="flex flex-wrap gap-2">

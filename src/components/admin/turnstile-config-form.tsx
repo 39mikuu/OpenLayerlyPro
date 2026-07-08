@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { ConfigSourceSummary } from "@/components/admin/config-source-summary";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -108,10 +109,13 @@ export function TurnstileConfigForm({ initial }: { initial: TurnstileAdminView }
         />
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        {t(initial.hasDbOverride ? "admin.common.dbOverride" : "admin.common.envSource")}
-        {t("admin.turnstile.requirement")}
-      </p>
+      <ConfigSourceSummary
+        hasEnvironmentImportAction
+        extraDetail={t("admin.turnstile.requirement")}
+        hasSensitiveFields
+        source={initial.hasDbOverride ? "database" : "environment"}
+        supportsEnvironmentFallback
+      />
       {message && <p className="text-sm text-muted-foreground">{message}</p>}
 
       <div className="flex flex-wrap gap-2">

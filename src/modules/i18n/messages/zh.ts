@@ -718,6 +718,26 @@ export const zh = {
       translationDescription:
         "配置翻译 provider、默认审核策略和已发布机翻标注。API Key 加密保存且不会返回浏览器。",
     },
+    configSource: {
+      currentSource: "当前来源",
+      source: {
+        database: "后台配置",
+        environment: "环境变量",
+        none: "未保存配置",
+      },
+      databaseDetailWithEnv:
+        "当前存在已保存的后台覆盖；已保存字段优先，未设置字段仍可回退到环境变量或默认值。",
+      databaseDetailNoEnv: "当前已保存后台配置，并由后台配置生效。",
+      environmentDetail: "当前没有后台覆盖，正在使用部署环境变量。",
+      noneDetailWithEnv: "当前没有后台覆盖；系统会回退到环境变量和默认值。",
+      noneDetailNoEnv: "当前没有保存配置，此集成仍未配置。",
+      importEnvDraft: "从环境变量导入只会填入表单，不会立即保存。",
+      restoreEnvDeletesOverride: "恢复为环境变量会删除已保存的后台覆盖，并回退到部署环境值。",
+      noEnvironmentFallback: "此集成没有环境变量回退；需要保存本表单后才会完成配置。",
+      secretPreservationWithEnv: "敏感值不会回显。密钥字段留空会保留已有的后台或环境变量值。",
+      secretPreservationSavedOnly: "敏感值不会回显。密钥字段留空会保留已有的后台保存值。",
+      testUsesSaved: "连接测试使用已保存的有效配置，而不是当前未保存的表单内容。",
+    },
     translation: {
       enable: "启用 AI 翻译",
       endpoint: "OpenAI-compatible Endpoint",

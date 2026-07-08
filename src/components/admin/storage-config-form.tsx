@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { ConfigSourceSummary } from "@/components/admin/config-source-summary";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -199,13 +200,15 @@ export function StorageConfigForm({ initial }: { initial: StorageAdminView }) {
         </div>
       )}
 
-      <div className="space-y-1 text-xs text-muted-foreground">
-        <p>
-          {t(initial.hasDbOverride ? "admin.common.dbOverride" : "admin.common.envSource")}
-          {t("admin.storage.driverHint")}
-        </p>
-        <p>{t("admin.storage.profileHint")}</p>
-      </div>
+      <ConfigSourceSummary
+        hasEnvironmentImportAction
+        connectionTestUsesSavedConfig
+        extraDetail={t("admin.storage.profileHint")}
+        hasSensitiveFields
+        source={initial.hasDbOverride ? "database" : "environment"}
+        supportsEnvironmentFallback
+      />
+      <p className="text-xs text-muted-foreground">{t("admin.storage.driverHint")}</p>
       {message && <p className="text-sm text-muted-foreground">{message}</p>}
 
       <div className="flex flex-wrap gap-2">

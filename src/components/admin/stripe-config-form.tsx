@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { ConfigSourceSummary } from "@/components/admin/config-source-summary";
 import { IntegrationTestButton } from "@/components/admin/integration-test-button";
 import { FormField, LoadingButton, Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
@@ -94,6 +95,12 @@ export function StripeConfigForm({ initial }: { initial: StripeAdminView }) {
         />
       </FormField>
       <Notice>{t("admin.stripe.securityHint")}</Notice>
+      <ConfigSourceSummary
+        connectionTestUsesSavedConfig
+        hasSensitiveFields
+        source={initial.hasDbOverride ? "database" : "none"}
+        supportsEnvironmentFallback={false}
+      />
       {message && <Notice>{message}</Notice>}
       <div className="flex flex-wrap gap-2">
         <LoadingButton

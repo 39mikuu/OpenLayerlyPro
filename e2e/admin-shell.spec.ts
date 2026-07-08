@@ -301,6 +301,22 @@ test("desktop sidebar is visible and marks the current page", async ({ page }) =
   await expectNoDocumentOverflow(page);
 });
 
+test("settings page explains configuration source and saved test semantics on mobile", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 720 });
+  await page.goto("/admin/settings");
+
+  await expect(page.getByTestId("admin-config-source-summary").first()).toBeVisible();
+  await expect(page.getByText("当前来源").first()).toBeVisible();
+  await expect(page.getByText("从环境变量导入只会填入表单，不会立即保存。").first()).toBeVisible();
+  await expect(
+    page.getByText("连接测试使用已保存的有效配置，而不是当前未保存的表单内容。").first(),
+  ).toBeVisible();
+  await expect(page.getByText("此集成没有环境变量回退", { exact: false }).first()).toBeVisible();
+  await expectNoDocumentOverflow(page);
+});
+
 test("mobile drawer opens, traps focus, closes with Escape, and restores focus", async ({
   page,
 }) => {
