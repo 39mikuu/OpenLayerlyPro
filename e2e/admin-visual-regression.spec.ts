@@ -21,7 +21,7 @@ import { type Locale, LOCALE_COOKIE } from "../src/modules/i18n/config";
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001";
 const THEME_MODE_COOKIE = "theme_mode";
 const ADMIN_EMAIL = "admin-visual-e2e@example.com";
-const MEMBER_EMAIL = "admin-visual-member@example.com";
+const MEMBER_EMAIL = "admin-visual-m@example.com";
 const TIER_SLUG = "admin-visual-e2e-tier";
 const POST_SLUG = "admin-visual-e2e-post";
 const FILE_OBJECT_PREFIX = "admin-visual-e2e/";
