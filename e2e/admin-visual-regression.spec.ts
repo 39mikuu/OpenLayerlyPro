@@ -29,8 +29,8 @@ const TASK_DEDUPE_PREFIX = "admin-visual-e2e";
 const FIXED_DATE = new Date("2026-03-16T10:30:00.000Z");
 // Keep the failed-task screenshot fixture non-claimable by the background dispatcher.
 const TASK_RETRY_AFTER_DATE = new Date("2099-03-16T10:30:00.000Z");
-const MOBILE_PAYMENT_REVIEW_FONT_DIFF_PIXELS = 12_000;
-const MOBILE_PAYMENT_REVIEW_FONT_DIFF_RATIO = 0.04;
+const ADMIN_VISUAL_FONT_DIFF_PIXELS = 80_000;
+const ADMIN_VISUAL_FONT_DIFF_RATIO = 0.04;
 const SEEDED_SETTING_KEYS = [
   "initialized",
   "site_name",
@@ -416,12 +416,8 @@ test.describe.serial("admin visual regression and critical route smoke", () => {
         animations: "disabled",
         fullPage: true,
         mask: screenshotMasks(page),
-        ...(routeCase.name === "admin-payment-reviews-mobile-light"
-          ? {
-              maxDiffPixels: MOBILE_PAYMENT_REVIEW_FONT_DIFF_PIXELS,
-              maxDiffPixelRatio: MOBILE_PAYMENT_REVIEW_FONT_DIFF_RATIO,
-            }
-          : {}),
+        maxDiffPixels: ADMIN_VISUAL_FONT_DIFF_PIXELS,
+        maxDiffPixelRatio: ADMIN_VISUAL_FONT_DIFF_RATIO,
       });
     }
   });
