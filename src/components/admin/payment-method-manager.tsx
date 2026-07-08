@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { ConfirmActionButton } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -120,10 +121,20 @@ function MethodEditor({
         >
           {submitLabel}
         </Button>
-        {onDelete && (
-          <Button size="sm" variant="destructive" disabled={loading} onClick={() => run(onDelete)}>
-            {t("admin.common.delete")}
-          </Button>
+        {onDelete && method.name && (
+          <ConfirmActionButton
+            actionLabel={t("admin.common.delete")}
+            cancelLabel={t("admin.common.cancel")}
+            closeLabel={t("admin.common.close")}
+            confirmLabel={t("admin.common.delete")}
+            description={t("admin.paymentMethods.deleteDialogDescription", { name: method.name })}
+            disabled={loading}
+            errorFallback={t("admin.common.deleteFailed")}
+            loadingLabel={t("admin.common.deleting")}
+            title={t("admin.paymentMethods.deleteDialogTitle")}
+            variant="destructive"
+            onConfirm={onDelete}
+          />
         )}
       </div>
     </div>
@@ -154,8 +165,6 @@ export function PaymentMethodManager({ methods }: { methods: MethodData[] }) {
                 router.refresh();
               }}
               onDelete={async () => {
-                if (!confirm(t("admin.paymentMethods.confirmDelete", { name: method.name })))
-                  return;
                 await api(`/api/admin/payment-methods/${method.id}`, { method: "DELETE" });
                 router.refresh();
               }}

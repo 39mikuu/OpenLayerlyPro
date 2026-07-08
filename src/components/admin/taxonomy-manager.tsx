@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { ConfirmActionButton } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -89,17 +90,22 @@ function TaxonomyEditor({
           {item ? t("admin.common.save") : t("admin.common.create")}
         </Button>
         {item && (
-          <Button
-            size="sm"
-            variant="destructive"
+          <ConfirmActionButton
+            actionLabel={t("admin.common.delete")}
+            cancelLabel={t("admin.common.cancel")}
+            closeLabel={t("admin.common.close")}
+            confirmLabel={t("admin.common.delete")}
+            description={t("admin.taxonomy.deleteDialogDescription", { name: item.name })}
             disabled={loading}
-            onClick={() => {
-              if (!confirm(t("admin.taxonomy.confirmDelete", { name: item.name }))) return;
-              void run(() => api(endpoint, { method: "DELETE" }));
+            errorFallback={t("admin.common.deleteFailed")}
+            loadingLabel={t("admin.common.deleting")}
+            title={t("admin.taxonomy.deleteDialogTitle")}
+            variant="destructive"
+            onConfirm={async () => {
+              await api(endpoint, { method: "DELETE" });
+              onDone();
             }}
-          >
-            {t("admin.common.delete")}
-          </Button>
+          />
         )}
       </div>
     </div>

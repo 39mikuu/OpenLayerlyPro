@@ -72,7 +72,10 @@ export default async function AdminFilesPage({
                   <TableCell className="text-right">
                     <DeleteButton
                       path={`/api/admin/files/${f.id}`}
-                      confirmText={t("admin.files.confirmDelete", { name: f.originalName })}
+                      title={t("admin.files.deleteDialogTitle")}
+                      description={t("admin.files.deleteDialogDescription", {
+                        name: f.originalName,
+                      })}
                     />
                   </TableCell>
                 </TableRow>
@@ -91,7 +94,10 @@ export default async function AdminFilesPage({
             actions={
               <DeleteButton
                 path={`/api/admin/files/${f.id}`}
-                confirmText={t("admin.files.confirmDelete", { name: f.originalName })}
+                title={t("admin.files.deleteDialogTitle")}
+                description={t("admin.files.deleteDialogDescription", {
+                  name: f.originalName,
+                })}
               />
             }
           >
