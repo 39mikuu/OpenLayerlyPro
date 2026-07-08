@@ -3,6 +3,9 @@ import { eq, inArray, like, sql } from "drizzle-orm";
 
 import { closeDb, getDb } from "../src/db";
 import {
+  downloadLogs,
+  files,
+  memberships,
   membershipTiers,
   paymentRequests,
   posts,
@@ -70,6 +73,14 @@ async function cleanupFixtures() {
       ${paymentRequests.userId} in (select id from users where email like 'admin-shell-%@example.com')
       or ${paymentRequests.tierId} in (select id from membership_tiers where slug = ${TIER_SLUG})
     `);
+    await tx.delete(downloadLogs).where(sql`
+      ${downloadLogs.userId} in (select id from users where email like 'admin-shell-%@example.com')
+      or ${downloadLogs.fileId} in (select id from files where object_key like 'admin-shell-e2e/%')
+    `);
+    await tx.delete(memberships).where(sql`
+      ${memberships.userId} in (select id from users where email like 'admin-shell-%@example.com')
+      or ${memberships.tierId} in (select id from membership_tiers where slug = ${TIER_SLUG})
+    `);
     await tx
       .delete(sessions)
       .where(
@@ -77,6 +88,7 @@ async function cleanupFixtures() {
       );
     await tx.delete(posts).where(eq(posts.slug, POST_SLUG));
     await tx.delete(tasks).where(like(tasks.dedupeKey, "admin-shell-e2e%"));
+    await tx.delete(files).where(like(files.objectKey, "admin-shell-e2e/%"));
     await tx.delete(users).where(like(users.email, "admin-shell-%@example.com"));
     await tx.delete(membershipTiers).where(eq(membershipTiers.slug, TIER_SLUG));
     await tx.delete(siteSettings).where(inArray(siteSettings.key, [...SEEDED_SETTING_KEYS]));
@@ -127,6 +139,35 @@ async function seedFixtures() {
     originalLocale: "en",
     visibility: "public",
     status: "draft",
+  });
+  await getDb()
+    .insert(memberships)
+    .values({
+      userId: member.id,
+      tierId: tier.id,
+      source: "manual",
+      startsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      endsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      status: "active",
+    });
+  const [file] = await getDb()
+    .insert(files)
+    .values({
+      storageDriver: "local",
+      objectKey: "admin-shell-e2e/long-responsive-file-name.png",
+      originalName: "admin-shell-e2e-long-file-name-for-mobile-card-responsive-checks.png",
+      mimeType: "image/png",
+      sizeBytes: 2048,
+      purpose: "content_attachment",
+      createdBy: admin.id,
+    })
+    .returning({ id: files.id });
+  await getDb().insert(downloadLogs).values({
+    userId: member.id,
+    fileId: file.id,
+    ip: "203.0.113.8",
+    userAgent: "admin-shell-e2e",
+    storageDriver: "local",
   });
   await getDb().insert(paymentRequests).values({
     userId: member.id,
@@ -206,9 +247,16 @@ async function assertShellWidthSmoke(page: Page, width: number, route: string) {
   } else {
     expect(mainWidth).toBeGreaterThan(0);
   }
-  for (const table of await page.locator('[data-slot="table-container"]').all()) {
-    await expect(table).toBeVisible();
-    await expect(table).toHaveCSS("overflow-x", "auto");
+  const tableContainers = page.locator('[data-slot="table-container"]');
+  const mobileCards = page.locator('[data-slot="admin-mobile-data-card"]');
+  if (width < 768 && (await mobileCards.count()) > 0) {
+    await expect(mobileCards.first()).toBeVisible();
+    await expect(tableContainers.first()).toBeHidden();
+  } else {
+    for (const table of await tableContainers.all()) {
+      await expect(table).toBeVisible();
+      await expect(table).toHaveCSS("overflow-x", "auto");
+    }
   }
 }
 
@@ -412,5 +460,33 @@ test("admin shell gives five representative pages full mobile/tablet width witho
         await expect(page.getByTestId("admin-desktop-sidebar")).toBeVisible();
       }
     }
+  }
+});
+
+test("representative admin tables switch to mobile cards below md", async ({ page }) => {
+  test.setTimeout(120_000);
+  const routes = [
+    "/admin/payments/reviews",
+    "/admin/posts",
+    "/admin/files",
+    "/admin/tasks",
+    "/admin/users",
+    "/admin/memberships",
+    "/admin/downloads",
+  ];
+
+  for (const route of routes) {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(route);
+    await expect(page.locator("h1")).toBeVisible();
+    await expectNoDocumentOverflow(page);
+    await expect(page.locator('[data-slot="admin-mobile-data-card"]').first()).toBeVisible();
+    await expect(page.locator('[data-slot="table-container"]').first()).toBeHidden();
+
+    await page.setViewportSize({ width: 768, height: 900 });
+    await page.goto(route);
+    await expect(page.locator("h1")).toBeVisible();
+    await expectNoDocumentOverflow(page);
+    await expect(page.locator('[data-slot="table-container"]').first()).toBeVisible();
   }
 });

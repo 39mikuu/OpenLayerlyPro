@@ -111,7 +111,10 @@ async function seedFixtures() {
 }
 
 function seededPaymentReviewRow(page: Page) {
-  return page.getByRole("row").filter({ hasText: MEMBER_EMAIL }).filter({ hasText: LONG_NOTE });
+  return page
+    .locator('[data-slot="admin-mobile-data-card"]')
+    .filter({ hasText: MEMBER_EMAIL })
+    .filter({ hasText: LONG_NOTE });
 }
 
 async function installAdminSession(page: Page, adminId: string) {

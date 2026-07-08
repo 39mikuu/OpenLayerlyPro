@@ -1,3 +1,4 @@
+import { MobileDataCard, MobileDataField, ResponsiveDataView } from "@/components/admin/primitives";
 import { ReviewActions } from "@/components/admin/review-actions";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -107,72 +108,137 @@ function RequestTable({
     return <p className="text-sm text-muted-foreground">{t("admin.common.empty")}</p>;
   }
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>{t("admin.reviews.fanEmail")}</TableHead>
-          <TableHead>{t("admin.reviews.tier")}</TableHead>
-          <TableHead>{t("admin.reviews.price")}</TableHead>
-          <TableHead>{t("admin.reviews.proof")}</TableHead>
-          <TableHead>{t("admin.reviews.note")}</TableHead>
-          <TableHead>{t("admin.reviews.submittedAt")}</TableHead>
-          <TableHead>{t("admin.common.status")}</TableHead>
-          {showActions && <TableHead>{t("admin.common.actions")}</TableHead>}
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map(({ request, tier, userEmail }) => {
-          const status = STATUS_KEYS[request.status];
-          return (
-            <TableRow key={request.id}>
-              <TableCell>{userEmail}</TableCell>
-              <TableCell>{tier.name}</TableCell>
-              <TableCell>{request.amountLabel}</TableCell>
-              <TableCell>
-                {request.proofFileId ? (
-                  <a
-                    href={`/api/files/${request.proofFileId}/download`}
-                    target="_blank"
-                    className="text-primary underline"
-                  >
-                    {t("admin.reviews.viewProof")}
-                  </a>
-                ) : (
-                  <span className="text-muted-foreground">{t("admin.common.none")}</span>
-                )}
-              </TableCell>
-              <TableCell className="max-w-40 truncate text-muted-foreground">
-                {request.note ?? "—"}
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {formatDateTime(request.createdAt)}
-              </TableCell>
-              <TableCell>
-                <Badge variant={status.variant}>{t(status.key)}</Badge>
-              </TableCell>
-              {showActions && (
-                <TableCell>
-                  <ReviewActions
-                    context={{
-                      amountLabel: request.amountLabel,
-                      note: request.note,
-                      proofHref: request.proofFileId
-                        ? `/api/files/${request.proofFileId}/download`
-                        : null,
-                      requestId: request.id,
-                      submittedAtLabel: formatDateTime(request.createdAt),
-                      tierName: tier.name,
-                      userEmail,
-                    }}
-                  />
-                </TableCell>
-              )}
+    <ResponsiveDataView
+      table={
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>{t("admin.reviews.fanEmail")}</TableHead>
+              <TableHead>{t("admin.reviews.tier")}</TableHead>
+              <TableHead>{t("admin.reviews.price")}</TableHead>
+              <TableHead>{t("admin.reviews.proof")}</TableHead>
+              <TableHead>{t("admin.reviews.note")}</TableHead>
+              <TableHead>{t("admin.reviews.submittedAt")}</TableHead>
+              <TableHead>{t("admin.common.status")}</TableHead>
+              {showActions && <TableHead>{t("admin.common.actions")}</TableHead>}
             </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+          </TableHeader>
+          <TableBody>
+            {rows.map(({ request, tier, userEmail }) => {
+              const status = STATUS_KEYS[request.status];
+              return (
+                <TableRow key={request.id}>
+                  <TableCell className="max-w-64 whitespace-normal break-all">
+                    {userEmail}
+                  </TableCell>
+                  <TableCell className="max-w-48 whitespace-normal break-words">
+                    {tier.name}
+                  </TableCell>
+                  <TableCell>{request.amountLabel}</TableCell>
+                  <TableCell>
+                    {request.proofFileId ? (
+                      <a
+                        href={`/api/files/${request.proofFileId}/download`}
+                        target="_blank"
+                        className="text-primary underline"
+                      >
+                        {t("admin.reviews.viewProof")}
+                      </a>
+                    ) : (
+                      <span className="text-muted-foreground">{t("admin.common.none")}</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="max-w-60 whitespace-normal text-muted-foreground">
+                    {request.note ?? "—"}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {formatDateTime(request.createdAt)}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={status.variant}>{t(status.key)}</Badge>
+                  </TableCell>
+                  {showActions && (
+                    <TableCell>
+                      <ReviewActions
+                        context={reviewContext({ request, tierName: tier.name, userEmail })}
+                      />
+                    </TableCell>
+                  )}
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      }
+      cards={rows.map(({ request, tier, userEmail }) => {
+        const status = STATUS_KEYS[request.status];
+        return (
+          <MobileDataCard
+            key={request.id}
+            title={userEmail}
+            eyebrow={t("admin.reviews.fanEmail")}
+            actions={
+              showActions ? (
+                <ReviewActions
+                  context={reviewContext({ request, tierName: tier.name, userEmail })}
+                />
+              ) : null
+            }
+          >
+            <div className="flex flex-wrap gap-2">
+              <Badge variant={status.variant}>{t(status.key)}</Badge>
+              <Badge variant="outline">{request.amountLabel}</Badge>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <MobileDataField label={t("admin.reviews.tier")}>{tier.name}</MobileDataField>
+              <MobileDataField
+                label={t("admin.reviews.submittedAt")}
+                valueClassName="text-muted-foreground"
+              >
+                {formatDateTime(request.createdAt)}
+              </MobileDataField>
+            </div>
+            <MobileDataField label={t("admin.reviews.proof")}>
+              {request.proofFileId ? (
+                <a
+                  href={`/api/files/${request.proofFileId}/download`}
+                  target="_blank"
+                  className="text-primary underline"
+                >
+                  {t("admin.reviews.viewProof")}
+                </a>
+              ) : (
+                <span className="text-muted-foreground">{t("admin.common.none")}</span>
+              )}
+            </MobileDataField>
+            <MobileDataField label={t("admin.reviews.note")} valueClassName="text-muted-foreground">
+              {request.note ?? "—"}
+            </MobileDataField>
+          </MobileDataCard>
+        );
+      })}
+    />
   );
+}
+
+function reviewContext({
+  request,
+  tierName,
+  userEmail,
+}: {
+  request: PaymentRequestDetail["request"];
+  tierName: string;
+  userEmail: string;
+}) {
+  return {
+    amountLabel: request.amountLabel,
+    note: request.note,
+    proofHref: request.proofFileId ? `/api/files/${request.proofFileId}/download` : null,
+    requestId: request.id,
+    submittedAtLabel: formatDateTime(request.createdAt),
+    tierName,
+    userEmail,
+  };
 }
 
 export function paymentPageHref(

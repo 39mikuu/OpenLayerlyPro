@@ -1,5 +1,6 @@
 import { MembershipActions } from "@/components/admin/membership-actions";
 import { MembershipGrantForm } from "@/components/admin/membership-grant-form";
+import { MobileDataCard, MobileDataField, ResponsiveDataView } from "@/components/admin/primitives";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -51,45 +52,78 @@ export default async function AdminMembershipsPage({
     <div className="space-y-6">
       <h1 className="text-xl font-bold">{t("admin.memberships.title")}</h1>
       <MembershipGrantForm tiers={tiers.map((t) => ({ id: t.id, name: t.name }))} />
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>{t("admin.memberships.user")}</TableHead>
-            <TableHead>{t("admin.memberships.tier")}</TableHead>
-            <TableHead>{t("admin.common.source")}</TableHead>
-            <TableHead>{t("admin.memberships.validity")}</TableHead>
-            <TableHead>{t("admin.common.status")}</TableHead>
-            <TableHead></TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {records.map(({ membership, tier, userEmail }) => {
-            const state = getMembershipDisplayState(membership);
-            return (
-              <TableRow key={membership.id}>
-                <TableCell>{userEmail}</TableCell>
-                <TableCell>{tier.name}</TableCell>
-                <TableCell className="text-muted-foreground">
+      <ResponsiveDataView
+        table={
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("admin.memberships.user")}</TableHead>
+                <TableHead>{t("admin.memberships.tier")}</TableHead>
+                <TableHead>{t("admin.common.source")}</TableHead>
+                <TableHead>{t("admin.memberships.validity")}</TableHead>
+                <TableHead>{t("admin.common.status")}</TableHead>
+                <TableHead></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {records.map(({ membership, tier, userEmail }) => {
+                const state = getMembershipDisplayState(membership);
+                return (
+                  <TableRow key={membership.id}>
+                    <TableCell className="max-w-64 whitespace-normal break-all font-medium">
+                      {userEmail}
+                    </TableCell>
+                    <TableCell className="max-w-56 whitespace-normal break-words">
+                      {tier.name}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {SOURCE_KEYS[membership.source]
+                        ? t(SOURCE_KEYS[membership.source])
+                        : membership.source}
+                    </TableCell>
+                    <TableCell>
+                      {formatDate(membership.startsAt)} ~ {formatDate(membership.endsAt)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={state === "active" ? "default" : "secondary"}>
+                        {t(STATE_KEYS[state])}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <MembershipActions membershipId={membership.id} />
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        }
+        cards={records.map(({ membership, tier, userEmail }) => {
+          const state = getMembershipDisplayState(membership);
+          return (
+            <MobileDataCard
+              key={membership.id}
+              title={userEmail}
+              actions={<MembershipActions membershipId={membership.id} />}
+            >
+              <div className="flex flex-wrap gap-2">
+                <Badge variant={state === "active" ? "default" : "secondary"}>
+                  {t(STATE_KEYS[state])}
+                </Badge>
+                <Badge variant="outline">
                   {SOURCE_KEYS[membership.source]
                     ? t(SOURCE_KEYS[membership.source])
                     : membership.source}
-                </TableCell>
-                <TableCell>
-                  {formatDate(membership.startsAt)} ~ {formatDate(membership.endsAt)}
-                </TableCell>
-                <TableCell>
-                  <Badge variant={state === "active" ? "default" : "secondary"}>
-                    {t(STATE_KEYS[state])}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <MembershipActions membershipId={membership.id} />
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
+                </Badge>
+              </div>
+              <MobileDataField label={t("admin.memberships.tier")}>{tier.name}</MobileDataField>
+              <MobileDataField label={t("admin.memberships.validity")}>
+                {formatDate(membership.startsAt)} ~ {formatDate(membership.endsAt)}
+              </MobileDataField>
+            </MobileDataCard>
+          );
+        })}
+      />
       {records.length === 0 && (
         <p className="text-sm text-muted-foreground">{t("admin.memberships.empty")}</p>
       )}

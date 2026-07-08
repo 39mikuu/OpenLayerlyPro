@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { MobileDataCard, MobileDataField, ResponsiveDataView } from "@/components/admin/primitives";
 import { TaskRetryButton } from "@/components/admin/task-retry-button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -88,42 +89,78 @@ export default async function AdminTasksPage({
         ))}
       </div>
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>{t("admin.tasks.kind")}</TableHead>
-            <TableHead>{t("admin.common.status")}</TableHead>
-            <TableHead>{t("admin.tasks.attempts")}</TableHead>
-            <TableHead>{t("admin.tasks.runAfter")}</TableHead>
-            <TableHead>{t("admin.tasks.lastError")}</TableHead>
-            <TableHead>{t("admin.common.actions")}</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {records.map((task) => (
-            <TableRow key={task.id}>
-              <TableCell>{task.kind}</TableCell>
-              <TableCell>
-                <Badge variant={STATUS_VARIANTS[task.status]}>
-                  {t(`admin.tasks.status${task.status}`)}
-                </Badge>
-              </TableCell>
-              <TableCell>
+      <ResponsiveDataView
+        table={
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("admin.tasks.kind")}</TableHead>
+                <TableHead>{t("admin.common.status")}</TableHead>
+                <TableHead>{t("admin.tasks.attempts")}</TableHead>
+                <TableHead>{t("admin.tasks.runAfter")}</TableHead>
+                <TableHead>{t("admin.tasks.lastError")}</TableHead>
+                <TableHead>{t("admin.common.actions")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {records.map((task) => (
+                <TableRow key={task.id}>
+                  <TableCell>{task.kind}</TableCell>
+                  <TableCell>
+                    <Badge variant={STATUS_VARIANTS[task.status]}>
+                      {t(`admin.tasks.status${task.status}`)}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {task.attempts} / {task.maxAttempts}
+                  </TableCell>
+                  <TableCell>{formatDateTime(task.runAfter)}</TableCell>
+                  <TableCell className="max-w-80 whitespace-normal text-muted-foreground">
+                    {task.lastError ?? t("admin.common.none")}
+                  </TableCell>
+                  <TableCell>
+                    {(task.status === "failed" || task.status === "dead") && (
+                      <TaskRetryButton taskId={task.id} />
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        }
+        cards={records.map((task) => (
+          <MobileDataCard
+            key={task.id}
+            title={task.kind}
+            actions={
+              (task.status === "failed" || task.status === "dead") && (
+                <TaskRetryButton taskId={task.id} />
+              )
+            }
+          >
+            <div className="flex flex-wrap gap-2">
+              <Badge variant={STATUS_VARIANTS[task.status]}>
+                {t(`admin.tasks.status${task.status}`)}
+              </Badge>
+              <Badge variant="outline">
                 {task.attempts} / {task.maxAttempts}
-              </TableCell>
-              <TableCell>{formatDateTime(task.runAfter)}</TableCell>
-              <TableCell className="max-w-80 whitespace-normal text-muted-foreground">
-                {task.lastError ?? t("admin.common.none")}
-              </TableCell>
-              <TableCell>
-                {(task.status === "failed" || task.status === "dead") && (
-                  <TaskRetryButton taskId={task.id} />
-                )}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+              </Badge>
+            </div>
+            <MobileDataField
+              label={t("admin.tasks.runAfter")}
+              valueClassName="text-muted-foreground"
+            >
+              {formatDateTime(task.runAfter)}
+            </MobileDataField>
+            <MobileDataField
+              label={t("admin.tasks.lastError")}
+              valueClassName="text-muted-foreground"
+            >
+              {task.lastError ?? t("admin.common.none")}
+            </MobileDataField>
+          </MobileDataCard>
+        ))}
+      />
       {records.length === 0 && (
         <p className="text-sm text-muted-foreground">{t("admin.tasks.empty")}</p>
       )}
