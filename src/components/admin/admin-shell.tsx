@@ -148,7 +148,7 @@ export function AdminShell({
             <DialogContent
               id="admin-mobile-navigation"
               data-testid="admin-mobile-nav"
-              className="left-0 top-0 h-dvh max-h-dvh w-80 max-w-[calc(100vw-2rem)] translate-x-0 translate-y-0 gap-0 overflow-hidden rounded-none border-r p-0 shadow-xl sm:max-w-xs"
+              className="left-0 top-0 flex h-dvh max-h-dvh w-80 max-w-[calc(100vw-2rem)] translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-r p-0 shadow-xl sm:max-w-xs"
               showCloseButton={false}
             >
               <DialogHeader className="border-b px-4 py-3">
@@ -170,7 +170,10 @@ export function AdminShell({
                   </DialogClose>
                 </div>
               </DialogHeader>
-              <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+              <div
+                className="min-h-0 flex-1 overflow-y-auto px-3 py-4"
+                data-testid="admin-mobile-nav-scroll"
+              >
                 <AdminNav
                   activeHref={activeHref}
                   ariaLabel={labels.navigation}
@@ -178,7 +181,7 @@ export function AdminShell({
                   onNavigate={() => setMobileNavOpen(false)}
                 />
               </div>
-              <div className="border-t p-4">
+              <div className="border-t p-4" data-testid="admin-mobile-account-actions">
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   {labels.account}
                 </p>

@@ -289,6 +289,30 @@ test("mobile drawer closes after route navigation and nested pages activate thei
   await expect(page.getByTestId("admin-mobile-nav")).toBeHidden();
 });
 
+test("mobile drawer constrains the nav pane and keeps account actions reachable", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 568 });
+  await page.goto("/admin/tasks");
+  await page.getByTestId("admin-mobile-menu-button").click();
+
+  const drawer = page.getByTestId("admin-mobile-nav");
+  await expect(drawer).toBeVisible();
+  await expect(drawer).toHaveCSS("display", "flex");
+  await expect(drawer).toHaveCSS("flex-direction", "column");
+
+  const navPane = page.getByTestId("admin-mobile-nav-scroll");
+  await expect(navPane).toHaveCSS("overflow-y", "auto");
+  const navPaneMetrics = await navPane.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }));
+  expect(navPaneMetrics.clientHeight).toBeGreaterThan(0);
+  expect(navPaneMetrics.scrollHeight).toBeGreaterThan(navPaneMetrics.clientHeight);
+
+  await expect(page.getByTestId("admin-mobile-account-actions")).toBeVisible();
+});
+
 test("mobile drawer closes without restoring focus to hidden trigger when resized to desktop", async ({
   page,
 }) => {
