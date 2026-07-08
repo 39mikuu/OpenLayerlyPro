@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { ConfigSourceSummary } from "@/components/admin/config-source-summary";
+import { FormField, Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -137,32 +138,28 @@ export function StorageConfigForm({ initial }: { initial: StorageAdminView }) {
 
       {driver === "s3" && (
         <div className="space-y-4 rounded-lg border p-4">
-          <div className="space-y-2">
-            <Label>Endpoint</Label>
+          <FormField id="storage-endpoint" label="Endpoint">
             <Input
               value={endpoint}
               onChange={(event) => setEndpoint(event.target.value)}
               placeholder="https://<account-id>.r2.cloudflarestorage.com"
             />
-          </div>
-          <div className="space-y-2">
-            <Label>Region</Label>
+          </FormField>
+          <FormField id="storage-region" label="Region">
             <Input
               value={region}
               onChange={(event) => setRegion(event.target.value)}
               placeholder={t("admin.storage.regionHint")}
             />
-          </div>
-          <div className="space-y-2">
-            <Label>Bucket</Label>
+          </FormField>
+          <FormField id="storage-bucket" label="Bucket">
             <Input
               value={bucket}
               onChange={(event) => setBucket(event.target.value)}
               placeholder={t("admin.storage.bucketHint")}
             />
-          </div>
-          <div className="space-y-2">
-            <Label>Access Key ID</Label>
+          </FormField>
+          <FormField id="storage-access-key-id" label="Access Key ID">
             <Input
               type="password"
               value={accessKeyId}
@@ -174,9 +171,8 @@ export function StorageConfigForm({ initial }: { initial: StorageAdminView }) {
               }
               autoComplete="new-password"
             />
-          </div>
-          <div className="space-y-2">
-            <Label>Secret Access Key</Label>
+          </FormField>
+          <FormField id="storage-secret-access-key" label="Secret Access Key">
             <Input
               type="password"
               value={secretAccessKey}
@@ -188,7 +184,7 @@ export function StorageConfigForm({ initial }: { initial: StorageAdminView }) {
               }
               autoComplete="new-password"
             />
-          </div>
+          </FormField>
           <Label className="flex items-center gap-2">
             <input
               type="checkbox"
@@ -209,7 +205,7 @@ export function StorageConfigForm({ initial }: { initial: StorageAdminView }) {
         supportsEnvironmentFallback
       />
       <p className="text-xs text-muted-foreground">{t("admin.storage.driverHint")}</p>
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+      {message && <Notice>{message}</Notice>}
 
       <div className="flex flex-wrap gap-2">
         <Button disabled={loading || testing} onClick={save}>

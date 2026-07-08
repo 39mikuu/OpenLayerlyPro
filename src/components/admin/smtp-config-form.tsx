@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { ConfigSourceSummary } from "@/components/admin/config-source-summary";
 import { IntegrationTestButton } from "@/components/admin/integration-test-button";
+import { FormField, Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -98,56 +99,51 @@ export function SmtpConfigForm({ initial }: { initial: SmtpAdminView }) {
 
   return (
     <div className="max-w-xl space-y-4">
-      <div className="space-y-2">
-        <Label>{t("admin.smtp.host")}</Label>
+      <FormField id="smtp-host" label={t("admin.smtp.host")}>
         <Input
           value={host}
           onChange={(e) => setHost(e.target.value)}
           placeholder="smtp.example.com"
         />
-      </div>
+      </FormField>
       <div className="flex gap-4">
-        <div className="space-y-2 w-32">
-          <Label>{t("admin.smtp.port")}</Label>
+        <FormField id="smtp-port" className="w-32" label={t("admin.smtp.port")}>
           <Input
             type="number"
             value={port}
             onChange={(e) => setPort(e.target.value)}
             placeholder="587"
           />
-        </div>
-        <div className="space-y-2 flex-1">
+        </FormField>
+        <div className="flex-1 space-y-2">
           <Label className="flex items-center gap-2">
             <input type="checkbox" checked={secure} onChange={(e) => setSecure(e.target.checked)} />
             {t("admin.smtp.secure")}
           </Label>
         </div>
       </div>
-      <div className="space-y-2">
-        <Label>{t("admin.smtp.username")}</Label>
+      <FormField id="smtp-username" label={t("admin.smtp.username")}>
         <Input
           value={user}
           onChange={(e) => setUser(e.target.value)}
           placeholder={t("admin.smtp.optional")}
         />
-      </div>
-      <div className="space-y-2">
-        <Label>{t("admin.smtp.password")}</Label>
+      </FormField>
+      <FormField id="smtp-password" label={t("admin.smtp.password")}>
         <Input
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder={initial.passwordSet ? t("admin.smtp.passwordSet") : t("admin.smtp.optional")}
         />
-      </div>
-      <div className="space-y-2">
-        <Label>{t("admin.smtp.from")}</Label>
+      </FormField>
+      <FormField id="smtp-from" label={t("admin.smtp.from")}>
         <Input
           value={from}
           onChange={(e) => setFrom(e.target.value)}
           placeholder="Artist Site <no-reply@example.com>"
         />
-      </div>
+      </FormField>
 
       <ConfigSourceSummary
         hasEnvironmentImportAction
@@ -156,7 +152,7 @@ export function SmtpConfigForm({ initial }: { initial: SmtpAdminView }) {
         source={initial.hasDbOverride ? "database" : "environment"}
         supportsEnvironmentFallback
       />
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+      {message && <Notice>{message}</Notice>}
 
       <div className="flex flex-wrap gap-2">
         <Button disabled={loading} onClick={save}>
@@ -174,7 +170,7 @@ export function SmtpConfigForm({ initial }: { initial: SmtpAdminView }) {
         </Button>
       </div>
 
-      <div className="border-t pt-4 space-y-2">
+      <div className="space-y-2 border-t pt-4">
         <Label>{t("admin.smtp.test")}</Label>
         <IntegrationTestButton
           integrationId="smtp"

@@ -440,7 +440,7 @@ export function MarkdownEditor({
           if (!open) setVideoError(null);
         }}
       >
-        <DialogContent>
+        <DialogContent closeLabel={t("admin.common.close")}>
           <form
             className="grid gap-4"
             onSubmit={(event) => {
@@ -459,6 +459,7 @@ export function MarkdownEditor({
                 type="url"
                 value={videoUrl}
                 placeholder="https://www.youtube.com/watch?v=..."
+                aria-describedby={videoError ? "markdown-video-url-error" : undefined}
                 aria-invalid={Boolean(videoError)}
                 autoFocus
                 onChange={(event) => {
@@ -466,7 +467,11 @@ export function MarkdownEditor({
                   setVideoError(null);
                 }}
               />
-              {videoError && <p className="text-sm text-destructive">{videoError}</p>}
+              {videoError && (
+                <p id="markdown-video-url-error" role="alert" className="text-sm text-destructive">
+                  {videoError}
+                </p>
+              )}
             </div>
             <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
               <p>{t("admin.markdown.thirdPartyNotMemberOnly")}</p>

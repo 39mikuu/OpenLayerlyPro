@@ -279,6 +279,7 @@ export const en: Messages = {
       status: "Status",
       actions: "Actions",
       cancel: "Cancel",
+      close: "Close",
       environment: "Environment variables",
       dbOverride: "Admin settings currently override environment variables.",
       envSource: "Environment variables are the current configuration source.",

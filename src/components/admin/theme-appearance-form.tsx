@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -123,7 +124,7 @@ export function ThemeAppearanceForm({
           <p className="text-xs text-muted-foreground">{t("admin.site.hueHelp")}</p>
         </div>
       ) : null}
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+      {message && <Notice>{message}</Notice>}
       <Button disabled={loading} onClick={save}>
         {t("admin.common.save")}
       </Button>

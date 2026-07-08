@@ -129,6 +129,7 @@ export function ReviewActions({ context }: { context: ReviewActionsContext }) {
       >
         <DialogContent
           className="max-h-[calc(100dvh-2rem)] overflow-y-auto"
+          closeLabel={t("admin.common.close")}
           showCloseButton={!loading}
         >
           <DialogHeader>
