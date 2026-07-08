@@ -11,8 +11,15 @@ export function LogoutButton() {
       variant="ghost"
       size="sm"
       onClick={async () => {
-        await api("/api/auth/logout", { method: "POST" });
-        window.location.assign("/");
+        const beforeLogout = new Event("admin:before-logout", { cancelable: true });
+        if (!window.dispatchEvent(beforeLogout)) return;
+        try {
+          await api("/api/auth/logout", { method: "POST" });
+          window.location.assign("/");
+        } catch (error) {
+          window.dispatchEvent(new Event("admin:logout-aborted"));
+          throw error;
+        }
       }}
     >
       {t("common.logout")}

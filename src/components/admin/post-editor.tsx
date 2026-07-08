@@ -1,10 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { MarkdownEditor } from "@/components/admin/markdown-editor";
 import { PostTranslationEditor } from "@/components/admin/post-translation-editor";
+import { Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,6 +36,27 @@ type AttachedFile = {
   sizeBytes: number;
 };
 
+type EditablePostForm = {
+  body: string;
+  coverFileId: string | null;
+  requiredTierId: string;
+  slug: string;
+  summary: string;
+  title: string;
+  visibility: "public" | "login" | "member";
+};
+
+function formSnapshot(form: EditablePostForm): string {
+  return JSON.stringify({
+    ...form,
+    requiredTierId: form.visibility === "member" ? form.requiredTierId : "",
+  });
+}
+
+function taxonomySnapshot(categoryIds: string[], tagIds: string[]): string {
+  return JSON.stringify({ categoryIds: [...categoryIds].sort(), tagIds: [...tagIds].sort() });
+}
+
 export function PostEditor({
   post,
   tiers,
@@ -56,12 +78,12 @@ export function PostEditor({
   const t = useT();
   const isNew = !post;
   const isPublished = post?.status === "published";
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<EditablePostForm>({
     title: post?.title ?? "",
     slug: post?.slug ?? "",
     summary: post?.summary ?? "",
     body: post?.body ?? "",
-    visibility: post?.visibility ?? ("public" as const),
+    visibility: post?.visibility ?? "public",
     requiredTierId: post?.requiredTierId ?? "",
     coverFileId: post?.coverFileId ?? null,
   });
@@ -69,6 +91,142 @@ export function PostEditor({
   const [message, setMessage] = useState<string | null>(null);
   const [categoryIds, setCategoryIds] = useState(selectedCategoryIds);
   const [tagIds, setTagIds] = useState(selectedTagIds);
+  const [savedFormSnapshot, setSavedFormSnapshot] = useState(() => formSnapshot(form));
+  const [savedTaxonomySnapshot, setSavedTaxonomySnapshot] = useState(() =>
+    taxonomySnapshot(selectedCategoryIds, selectedTagIds),
+  );
+  const currentFormSnapshot = useMemo(() => formSnapshot(form), [form]);
+  const currentTaxonomySnapshot = useMemo(
+    () => taxonomySnapshot(categoryIds, tagIds),
+    [categoryIds, tagIds],
+  );
+  const hasUnsavedFormChanges = currentFormSnapshot !== savedFormSnapshot;
+  const hasUnsavedTaxonomyChanges = currentTaxonomySnapshot !== savedTaxonomySnapshot;
+  const hasUnsavedChanges = hasUnsavedFormChanges || hasUnsavedTaxonomyChanges;
+  const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
+  const unsavedChangesConfirmMessageRef = useRef(t("admin.posts.unsavedChangesConfirm"));
+  const allowNextPopStateRef = useRef(false);
+  const suppressBeforeUnloadRef = useRef(false);
+  hasUnsavedChangesRef.current = hasUnsavedChanges;
+  unsavedChangesConfirmMessageRef.current = t("admin.posts.unsavedChangesConfirm");
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (suppressBeforeUnloadRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+
+    allowNextPopStateRef.current = false;
+
+    const confirmNavigation = () => window.confirm(unsavedChangesConfirmMessageRef.current);
+    const shouldGuardUrl = (url?: string | URL | null) => {
+      if (url === undefined || url === null) return false;
+      try {
+        const nextUrl = new URL(url, window.location.href);
+        if (nextUrl.origin !== window.location.origin) return false;
+        return (
+          nextUrl.pathname !== window.location.pathname || nextUrl.search !== window.location.search
+        );
+      } catch {
+        return false;
+      }
+    };
+    const isDirtyGuardHistoryEntry = () => {
+      const currentState = window.history.state;
+      return (
+        currentState &&
+        typeof currentState === "object" &&
+        currentState.__adminPostEditorDirtyGuard === true
+      );
+    };
+    const pushDirtyGuardHistoryEntry = () => {
+      const currentState = window.history.state;
+      const currentStateObject =
+        currentState && typeof currentState === "object" ? currentState : {};
+      window.history.pushState(
+        { ...currentStateObject, __adminPostEditorDirtyGuard: true },
+        "",
+        window.location.href,
+      );
+    };
+    const collapseDirtyGuardHistoryEntry = () => {
+      if (!isDirtyGuardHistoryEntry()) return;
+      window.history.back();
+      // The popstate listener has already been removed during cleanup, so do not
+      // let the synthetic-back bypass leak into the next dirty editing session.
+      allowNextPopStateRef.current = false;
+    };
+
+    pushDirtyGuardHistoryEntry();
+
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = target.closest<HTMLAnchorElement>("a[href]");
+      if (!anchor || anchor.target || anchor.hasAttribute("download")) return;
+      if (!shouldGuardUrl(anchor.href)) return;
+      if (!confirmNavigation()) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+
+    const handleBeforeLogout = (event: Event) => {
+      if (!confirmNavigation()) {
+        event.preventDefault();
+        return;
+      }
+      suppressBeforeUnloadRef.current = true;
+    };
+
+    const handleLogoutAborted = () => {
+      suppressBeforeUnloadRef.current = false;
+    };
+
+    const handlePopState = (event: PopStateEvent) => {
+      if (allowNextPopStateRef.current) {
+        allowNextPopStateRef.current = false;
+        return;
+      }
+      event.stopImmediatePropagation();
+      if (confirmNavigation()) {
+        allowNextPopStateRef.current = true;
+        window.setTimeout(() => window.history.back(), 0);
+        return;
+      }
+      window.setTimeout(pushDirtyGuardHistoryEntry, 0);
+    };
+
+    document.addEventListener("click", handleDocumentClick, true);
+    window.addEventListener("admin:before-logout", handleBeforeLogout);
+    window.addEventListener("admin:logout-aborted", handleLogoutAborted);
+    window.addEventListener("popstate", handlePopState, true);
+    return () => {
+      document.removeEventListener("click", handleDocumentClick, true);
+      window.removeEventListener("admin:before-logout", handleBeforeLogout);
+      window.removeEventListener("admin:logout-aborted", handleLogoutAborted);
+      window.removeEventListener("popstate", handlePopState, true);
+      if (!hasUnsavedChangesRef.current) collapseDirtyGuardHistoryEntry();
+    };
+  }, [hasUnsavedChanges]);
 
   async function run(fn: () => Promise<void>) {
     setLoading(true);
@@ -80,6 +238,11 @@ export function PostEditor({
     } finally {
       setLoading(false);
     }
+  }
+
+  function markCurrentStateSaved() {
+    setSavedFormSnapshot(formSnapshot(form));
+    setSavedTaxonomySnapshot(taxonomySnapshot(categoryIds, tagIds));
   }
 
   function payload() {
@@ -103,6 +266,7 @@ export function PostEditor({
           method: "POST",
           body: payload(),
         });
+        markCurrentStateSaved();
         router.push(`/admin/posts/${created.id}`);
         router.refresh();
       } else {
@@ -113,6 +277,11 @@ export function PostEditor({
           });
         } else {
           await api(`/api/admin/posts/${post.id}`, { method: "PUT", body: payload() });
+        }
+        if (isPublished) {
+          setSavedFormSnapshot(formSnapshot(form));
+        } else {
+          markCurrentStateSaved();
         }
         setMessage(t("admin.common.saved"));
         router.refresh();
@@ -127,6 +296,7 @@ export function PostEditor({
         method: "PUT",
         body: { categoryIds, tagIds },
       });
+      setSavedTaxonomySnapshot(taxonomySnapshot(categoryIds, tagIds));
       setMessage(t("admin.taxonomy.saved"));
       router.refresh();
     });
@@ -161,6 +331,13 @@ export function PostEditor({
   return (
     <div className="max-w-2xl space-y-6">
       <div className="space-y-4">
+        {hasUnsavedChanges ? (
+          <Notice variant="warning">{t("admin.posts.unsavedChanges")}</Notice>
+        ) : (
+          <p aria-live="polite" className="text-sm text-muted-foreground">
+            {t("admin.posts.allChangesSaved")}
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
             <Label>{t("admin.posts.titleColumn")}</Label>
@@ -319,10 +496,21 @@ export function PostEditor({
             }}
           />
         </div>
-        {message && <p className="text-sm text-muted-foreground">{message}</p>}
-        <div className="flex gap-2">
-          <Button disabled={loading || !form.title || !form.slug} onClick={save}>
-            {isNew ? t("admin.posts.createDraft") : t("admin.common.save")}
+        {message && (
+          <p aria-live="polite" className="text-sm text-muted-foreground">
+            {message}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          <Button
+            disabled={loading || !form.title || !form.slug || (!isNew && !hasUnsavedChanges)}
+            onClick={save}
+          >
+            {loading
+              ? t("admin.common.saving")
+              : isNew
+                ? t("admin.posts.createDraft")
+                : t("admin.common.save")}
           </Button>
           {!isNew && post.status !== "published" && (
             <Button
@@ -330,6 +518,11 @@ export function PostEditor({
               disabled={loading}
               onClick={() =>
                 run(async () => {
+                  if (hasUnsavedChanges) {
+                    setMessage(t("admin.posts.saveBeforePublish"));
+                    return;
+                  }
+                  if (!window.confirm(t("admin.posts.confirmPublish"))) return;
                   await api(`/api/admin/posts/${post.id}/publish`, { method: "POST" });
                   setMessage(t("admin.posts.published"));
                   router.refresh();
@@ -345,6 +538,11 @@ export function PostEditor({
               disabled={loading}
               onClick={() =>
                 run(async () => {
+                  if (hasUnsavedChanges) {
+                    setMessage(t("admin.posts.saveBeforeArchive"));
+                    return;
+                  }
+                  if (!window.confirm(t("admin.posts.confirmArchive"))) return;
                   await api(`/api/admin/posts/${post.id}/archive`, { method: "POST" });
                   setMessage(t("admin.posts.archived"));
                   router.refresh();
@@ -355,7 +553,11 @@ export function PostEditor({
             </Button>
           )}
           {!isNew && (
-            <Button variant="outline" disabled={loading || isPublished} onClick={saveTaxonomy}>
+            <Button
+              variant="outline"
+              disabled={loading || isPublished || !hasUnsavedTaxonomyChanges}
+              onClick={saveTaxonomy}
+            >
               {t("admin.taxonomy.saveAssociations")}
             </Button>
           )}
