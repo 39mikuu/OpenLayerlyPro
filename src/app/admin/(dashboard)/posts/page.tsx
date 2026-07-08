@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { Badge } from "@/components/ui/badge";
+import { Notice, PageHeader, StatusBadge } from "@/components/admin/primitives";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -28,17 +28,32 @@ const VISIBILITY_KEYS: Record<string, string> = {
   member: "admin.posts.member",
 };
 
+const STATUS_TONES: Record<string, "neutral" | "success" | "warning"> = {
+  archived: "neutral",
+  draft: "warning",
+  published: "success",
+};
+
+const VISIBILITY_TONES: Record<string, "info" | "neutral" | "warning"> = {
+  login: "warning",
+  member: "neutral",
+  public: "info",
+};
+
 export default async function AdminPostsPage() {
   const posts = await listPosts();
   const t = await getT();
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">{t("admin.posts.title")}</h1>
-        <Button asChild>
-          <Link href="/admin/posts/new">{t("admin.posts.new")}</Link>
-        </Button>
-      </div>
+      <PageHeader
+        actions={
+          <Button asChild>
+            <Link href="/admin/posts/new">{t("admin.posts.new")}</Link>
+          </Button>
+        }
+        description={t("admin.posts.description")}
+        title={t("admin.posts.title")}
+      />
       <Table>
         <TableHeader>
           <TableRow>
@@ -54,12 +69,14 @@ export default async function AdminPostsPage() {
             <TableRow key={post.id}>
               <TableCell>{post.title}</TableCell>
               <TableCell>
-                <Badge variant="secondary">{t(VISIBILITY_KEYS[post.visibility])}</Badge>
+                <StatusBadge tone={VISIBILITY_TONES[post.visibility]}>
+                  {t(VISIBILITY_KEYS[post.visibility])}
+                </StatusBadge>
               </TableCell>
               <TableCell>
-                <Badge variant={post.status === "published" ? "default" : "outline"}>
+                <StatusBadge tone={STATUS_TONES[post.status]}>
                   {t(STATUS_KEYS[post.status])}
-                </Badge>
+                </StatusBadge>
               </TableCell>
               <TableCell className="text-muted-foreground">
                 {formatDateTime(post.updatedAt)}
@@ -73,9 +90,7 @@ export default async function AdminPostsPage() {
           ))}
         </TableBody>
       </Table>
-      {posts.length === 0 && (
-        <p className="text-sm text-muted-foreground">{t("admin.posts.empty")}</p>
-      )}
+      {posts.length === 0 && <Notice>{t("admin.posts.empty")}</Notice>}
     </div>
   );
 }

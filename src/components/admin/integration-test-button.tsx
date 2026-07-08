@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 
+import { LoadingButton, Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
-import { Button } from "@/components/ui/button";
 import { api } from "@/lib/client";
 import type { IntegrationId } from "@/modules/integration";
 
@@ -26,9 +26,10 @@ export function IntegrationTestButton({
 
   return (
     <div className="space-y-2">
-      <Button
+      <LoadingButton
         size="sm"
-        disabled={disabled || loading}
+        loading={loading}
+        disabled={disabled}
         onClick={async () => {
           setLoading(true);
           setMessage(null);
@@ -41,12 +42,11 @@ export function IntegrationTestButton({
             setLoading(false);
           }
         }}
+        loadingText={pendingLabel ?? t("admin.integrationTest.pending")}
       >
-        {loading
-          ? (pendingLabel ?? t("admin.integrationTest.pending"))
-          : (label ?? t("admin.integrationTest.label"))}
-      </Button>
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+        {label ?? t("admin.integrationTest.label")}
+      </LoadingButton>
+      {message && <Notice>{message}</Notice>}
     </div>
   );
 }

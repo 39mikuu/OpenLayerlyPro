@@ -273,6 +273,7 @@ export const en: Messages = {
       uploadFailed: "Upload failed",
       deleteFailed: "Delete failed",
       saved: "Saved",
+      saving: "Saving...",
       sortOrder: "Sort order",
       source: "Source",
       status: "Status",
@@ -513,6 +514,7 @@ export const en: Messages = {
     },
     posts: {
       title: "Content",
+      description: "Create, edit, and publish public, sign-in-only, or members-only content.",
       new: "New content",
       editTitle: "Edit content",
       titleColumn: "Title",
@@ -643,6 +645,7 @@ export const en: Messages = {
       publicSecurity: "Public page security and integrations",
       publicSecurityDescription:
         "Safe footer markup, verification metadata, and nonce-authorized integrations are configured separately.",
+      publicSecurityConfigurationErrors: "Public page security configuration errors",
       cspStatus: "Configured CSP mode: {configured}; effective browser mode: {effective}.",
       customFooterMarkup: "Safe footer markup",
       safeMarkupHelp:
@@ -691,6 +694,8 @@ export const en: Messages = {
     },
     settings: {
       title: "System settings",
+      description:
+        "Manage third-party integrations, upload limits, and runtime configuration sources.",
       smtp: "SMTP email",
       smtpDescription:
         "Admin settings override environment variables (admin > environment > defaults). Secrets are encrypted.",

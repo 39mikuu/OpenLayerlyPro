@@ -4,8 +4,8 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { IntegrationTestButton } from "@/components/admin/integration-test-button";
+import { FormField, LoadingButton, Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/client";
@@ -48,26 +48,26 @@ export function StripeConfigForm({ initial }: { initial: StripeAdminView }) {
         />
         {t("admin.stripe.enable")}
       </Label>
-      <div className="space-y-2">
-        <Label>{t("admin.stripe.currency")}</Label>
+      <FormField id="stripe-currency" label={t("admin.stripe.currency")}>
         <Input
+          id="stripe-currency"
           maxLength={3}
           value={currency}
           onChange={(event) => setCurrency(event.target.value.toLowerCase())}
           placeholder="usd"
         />
-      </div>
-      <div className="space-y-2">
-        <Label>{t("admin.stripe.publishableKey")}</Label>
+      </FormField>
+      <FormField id="stripe-publishable-key" label={t("admin.stripe.publishableKey")}>
         <Input
+          id="stripe-publishable-key"
           value={publishableKey}
           onChange={(event) => setPublishableKey(event.target.value)}
           placeholder="pk_test_..."
         />
-      </div>
-      <div className="space-y-2">
-        <Label>{t("admin.stripe.secretKey")}</Label>
+      </FormField>
+      <FormField id="stripe-secret-key" label={t("admin.stripe.secretKey")}>
         <Input
+          id="stripe-secret-key"
           type="password"
           autoComplete="new-password"
           value={secretKey}
@@ -78,10 +78,10 @@ export function StripeConfigForm({ initial }: { initial: StripeAdminView }) {
               : t("admin.stripe.secretKeyPlaceholder")
           }
         />
-      </div>
-      <div className="space-y-2">
-        <Label>{t("admin.stripe.webhookSecret")}</Label>
+      </FormField>
+      <FormField id="stripe-webhook-secret" label={t("admin.stripe.webhookSecret")}>
         <Input
+          id="stripe-webhook-secret"
           type="password"
           autoComplete="new-password"
           value={webhookSecret}
@@ -92,12 +92,12 @@ export function StripeConfigForm({ initial }: { initial: StripeAdminView }) {
               : t("admin.stripe.webhookSecretPlaceholder")
           }
         />
-      </div>
-      <p className="text-xs text-muted-foreground">{t("admin.stripe.securityHint")}</p>
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+      </FormField>
+      <Notice>{t("admin.stripe.securityHint")}</Notice>
+      {message && <Notice>{message}</Notice>}
       <div className="flex flex-wrap gap-2">
-        <Button
-          disabled={loading}
+        <LoadingButton
+          loading={loading}
           onClick={() =>
             void run(
               () =>
@@ -116,10 +116,11 @@ export function StripeConfigForm({ initial }: { initial: StripeAdminView }) {
           }
         >
           {t("admin.common.save")}
-        </Button>
-        <Button
+        </LoadingButton>
+        <LoadingButton
           variant="outline"
-          disabled={loading || !initial.hasDbOverride}
+          loading={loading}
+          disabled={!initial.hasDbOverride}
           onClick={() =>
             void run(
               () => api("/api/admin/config/stripe", { method: "DELETE" }),
@@ -128,7 +129,7 @@ export function StripeConfigForm({ initial }: { initial: StripeAdminView }) {
           }
         >
           {t("admin.stripe.clear")}
-        </Button>
+        </LoadingButton>
         <IntegrationTestButton
           integrationId="stripe"
           disabled={!initial.configured}

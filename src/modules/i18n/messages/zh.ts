@@ -265,6 +265,7 @@ export const zh = {
       uploadFailed: "上传失败",
       deleteFailed: "删除失败",
       saved: "已保存",
+      saving: "保存中...",
       sortOrder: "排序",
       source: "来源",
       status: "状态",
@@ -501,6 +502,7 @@ export const zh = {
     },
     posts: {
       title: "内容管理",
+      description: "创建、编辑和发布公开、登录可见或会员可见内容。",
       new: "新建内容",
       editTitle: "编辑内容",
       titleColumn: "标题",
@@ -628,6 +630,7 @@ export const zh = {
       clearIcon: "清除 Icon",
       publicSecurity: "公开页安全与集成",
       publicSecurityDescription: "安全页脚标记、站点验证元数据与 nonce 授权集成分别配置。",
+      publicSecurityConfigurationErrors: "公开页安全配置错误",
       cspStatus: "配置的 CSP 模式：{configured}；浏览器实际模式：{effective}。",
       customFooterMarkup: "安全页脚标记",
       safeMarkupHelp:
@@ -672,6 +675,7 @@ export const zh = {
     },
     settings: {
       title: "系统配置",
+      description: "集中管理第三方集成、上传限制和运行时配置来源。",
       smtp: "邮件 SMTP",
       smtpDescription:
         "后台配置优先于环境变量（优先级：后台 ＞ 环境变量 ＞ 默认）。敏感信息加密存储。",
