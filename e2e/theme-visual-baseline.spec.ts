@@ -55,6 +55,10 @@ const mutatedSettingKeys = [
 ] as const;
 type SettingSnapshot = Record<string, unknown | undefined>;
 let originalSettings: SettingSnapshot = {};
+type HiddenPostSnapshot = { id: string };
+type HiddenTierSnapshot = { id: string };
+let hiddenPublishedPosts: HiddenPostSnapshot[] = [];
+let hiddenActiveTiers: HiddenTierSnapshot[] = [];
 
 type ThemeId = "builtin" | "blog" | "wordpress";
 type ThemeMode = "light" | "dark";
@@ -117,6 +121,74 @@ async function cleanupFixtures() {
     await tx.delete(membershipTiers).where(inArray(membershipTiers.slug, [...fixtureTierSlugs]));
   });
 }
+
+async function hideNonVisualFixtureContent() {
+  await getDb().transaction(async (tx) => {
+    hiddenPublishedPosts = await tx
+      .select({ id: posts.id })
+      .from(posts)
+      .where(sql`${posts.slug} <> ${POST_SLUG} and ${posts.status} = 'published'`);
+    hiddenActiveTiers = await tx
+      .select({ id: membershipTiers.id })
+      .from(membershipTiers)
+      .where(
+        sql`${membershipTiers.slug} not in (${sql.join(
+          fixtureTierSlugs.map((slug) => sql`${slug}`),
+          sql`, `,
+        )}) and ${membershipTiers.isActive} = true`,
+      );
+
+    if (hiddenPublishedPosts.length > 0) {
+      await tx
+        .update(posts)
+        .set({ status: "archived" })
+        .where(
+          inArray(
+            posts.id,
+            hiddenPublishedPosts.map((post) => post.id),
+          ),
+        );
+    }
+    if (hiddenActiveTiers.length > 0) {
+      await tx
+        .update(membershipTiers)
+        .set({ isActive: false })
+        .where(
+          inArray(
+            membershipTiers.id,
+            hiddenActiveTiers.map((tier) => tier.id),
+          ),
+        );
+    }
+  });
+}
+
+async function restoreNonVisualFixtureContent() {
+  await getDb().transaction(async (tx) => {
+    if (hiddenPublishedPosts.length > 0) {
+      await tx
+        .update(posts)
+        .set({ status: "published" })
+        .where(
+          inArray(
+            posts.id,
+            hiddenPublishedPosts.map((post) => post.id),
+          ),
+        );
+    }
+    if (hiddenActiveTiers.length > 0) {
+      await tx
+        .update(membershipTiers)
+        .set({ isActive: true })
+        .where(
+          inArray(
+            membershipTiers.id,
+            hiddenActiveTiers.map((tier) => tier.id),
+          ),
+        );
+    }
+  });
+}
 async function upsertSetting(key: string, valueJson: unknown) {
   await getDb()
     .insert(siteSettings)
@@ -136,6 +208,7 @@ test.beforeAll(async () => {
   originalSettings = await snapshotSettings(mutatedSettingKeys);
 
   await cleanupFixtures();
+  await hideNonVisualFixtureContent();
   await db.transaction(async (tx) => {
     // Other e2e specs (e.g. s6-security-headers.spec.ts, which runs first) can leave
     // artist_avatar_file_id/site_logo_file_id/site_icon_file_id pointing at files that
@@ -248,6 +321,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await cleanupFixtures();
+  await restoreNonVisualFixtureContent();
   await restoreSettings(originalSettings);
   await closeDb();
 });
