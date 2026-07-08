@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { MarkdownEditor } from "@/components/admin/markdown-editor";
 import { PostTranslationEditor } from "@/components/admin/post-translation-editor";
@@ -103,6 +103,9 @@ export function PostEditor({
   const hasUnsavedFormChanges = currentFormSnapshot !== savedFormSnapshot;
   const hasUnsavedTaxonomyChanges = currentTaxonomySnapshot !== savedTaxonomySnapshot;
   const hasUnsavedChanges = hasUnsavedFormChanges || hasUnsavedTaxonomyChanges;
+  const unsavedChangesConfirmMessageRef = useRef(t("admin.posts.unsavedChangesConfirm"));
+  const allowNextPopStateRef = useRef(false);
+  unsavedChangesConfirmMessageRef.current = t("admin.posts.unsavedChangesConfirm");
 
   useEffect(() => {
     if (!hasUnsavedChanges) return;
@@ -116,6 +119,33 @@ export function PostEditor({
 
   useEffect(() => {
     if (!hasUnsavedChanges) return;
+
+    const confirmNavigation = () => window.confirm(unsavedChangesConfirmMessageRef.current);
+    const shouldGuardUrl = (url?: string | URL | null) => {
+      if (url === undefined || url === null) return false;
+      try {
+        const nextUrl = new URL(url, window.location.href);
+        if (nextUrl.origin !== window.location.origin) return false;
+        return (
+          nextUrl.pathname !== window.location.pathname || nextUrl.search !== window.location.search
+        );
+      } catch {
+        return false;
+      }
+    };
+    const pushDirtyGuardHistoryEntry = () => {
+      const currentState = window.history.state;
+      const currentStateObject =
+        currentState && typeof currentState === "object" ? currentState : {};
+      window.history.pushState(
+        { ...currentStateObject, __adminPostEditorDirtyGuard: true },
+        "",
+        window.location.href,
+      );
+    };
+
+    pushDirtyGuardHistoryEntry();
+
     const handleDocumentClick = (event: MouseEvent) => {
       if (
         event.defaultPrevented ||
@@ -131,21 +161,34 @@ export function PostEditor({
       if (!(target instanceof Element)) return;
       const anchor = target.closest<HTMLAnchorElement>("a[href]");
       if (!anchor || anchor.target || anchor.hasAttribute("download")) return;
-      const nextUrl = new URL(anchor.href, window.location.href);
-      if (nextUrl.origin !== window.location.origin) return;
-      if (
-        nextUrl.pathname === window.location.pathname &&
-        nextUrl.search === window.location.search
-      )
-        return;
-      if (!window.confirm(t("admin.posts.unsavedChangesConfirm"))) {
+      if (!shouldGuardUrl(anchor.href)) return;
+      if (!confirmNavigation()) {
         event.preventDefault();
         event.stopPropagation();
       }
     };
+
+    const handlePopState = (event: PopStateEvent) => {
+      if (allowNextPopStateRef.current) {
+        allowNextPopStateRef.current = false;
+        return;
+      }
+      event.stopImmediatePropagation();
+      if (confirmNavigation()) {
+        allowNextPopStateRef.current = true;
+        window.setTimeout(() => window.history.back(), 0);
+        return;
+      }
+      window.setTimeout(pushDirtyGuardHistoryEntry, 0);
+    };
+
     document.addEventListener("click", handleDocumentClick, true);
-    return () => document.removeEventListener("click", handleDocumentClick, true);
-  }, [hasUnsavedChanges, t]);
+    window.addEventListener("popstate", handlePopState, true);
+    return () => {
+      document.removeEventListener("click", handleDocumentClick, true);
+      window.removeEventListener("popstate", handlePopState, true);
+    };
+  }, [hasUnsavedChanges]);
 
   async function run(fn: () => Promise<void>) {
     setLoading(true);
