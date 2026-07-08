@@ -61,6 +61,7 @@ export function ReviewActions({ context }: { context: ReviewActionsContext }) {
   }
 
   function closeDialog() {
+    if (loading) return;
     setDialog(null);
     window.setTimeout(() => restoreFocusRef.current?.focus(), 0);
   }
@@ -128,8 +129,16 @@ export function ReviewActions({ context }: { context: ReviewActionsContext }) {
         </p>
       ) : null}
 
-      <Dialog open={dialog !== null} onOpenChange={(open) => (!open ? closeDialog() : undefined)}>
-        <DialogContent>
+      <Dialog
+        open={dialog !== null}
+        onOpenChange={(open) => {
+          if (!open) closeDialog();
+        }}
+      >
+        <DialogContent
+          className="max-h-[calc(100dvh-2rem)] overflow-y-auto"
+          showCloseButton={!loading}
+        >
           <DialogHeader>
             <DialogTitle>
               {dialog === "approve"
