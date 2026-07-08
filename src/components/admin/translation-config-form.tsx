@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { ConfigSourceSummary } from "@/components/admin/config-source-summary";
+import { Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -154,7 +155,7 @@ export function TranslationConfigForm({ initial }: { initial: TranslationAdminVi
         source={initial.hasDbOverride ? "database" : "none"}
         supportsEnvironmentFallback={false}
       />
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+      {message && <Notice>{message}</Notice>}
       <Button disabled={loading} onClick={save}>
         {t("admin.common.save")}
       </Button>

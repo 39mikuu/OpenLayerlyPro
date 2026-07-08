@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+import { Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -152,7 +153,10 @@ export function MembershipActions({ membershipId }: { membershipId: string }) {
       <DialogTrigger render={<Button size="sm" variant="outline" />}>
         {t("admin.memberships.details")}
       </DialogTrigger>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent
+        className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"
+        closeLabel={t("admin.common.close")}
+      >
         <DialogHeader>
           <DialogTitle>{t("admin.memberships.detailsTitle")}</DialogTitle>
           <DialogDescription>
@@ -318,8 +322,8 @@ export function MembershipActions({ membershipId }: { membershipId: string }) {
           </div>
         )}
 
-        {message && <p className="text-sm text-emerald-600">{message}</p>}
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {message && <Notice variant="success">{message}</Notice>}
+        {error && <Notice variant="error">{error}</Notice>}
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => setOpen(false)}>
             {t("admin.memberships.close")}

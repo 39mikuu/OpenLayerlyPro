@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { FormField, Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,16 +21,16 @@ export function MembershipGrantForm({ tiers }: { tiers: { id: string; name: stri
   const [message, setMessage] = useState<string | null>(null);
 
   return (
-    <div className="border rounded-lg p-4 space-y-3 max-w-xl">
-      <h2 className="font-semibold text-sm">{t("admin.memberships.grantTitle")}</h2>
+    <div className="space-y-3 rounded-lg border p-4 max-w-xl">
+      <h2 className="text-sm font-semibold">{t("admin.memberships.grantTitle")}</h2>
       <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1">
-          <Label>{t("admin.memberships.fanEmail")}</Label>
+        <FormField id="membership-grant-email" label={t("admin.memberships.fanEmail")}>
           <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-        </div>
+        </FormField>
         <div className="space-y-1">
-          <Label>{t("admin.memberships.tier")}</Label>
+          <Label htmlFor="membership-grant-tier">{t("admin.memberships.tier")}</Label>
           <select
+            id="membership-grant-tier"
             className="border rounded-md h-9 px-2 w-full bg-transparent text-sm"
             value={tierId}
             onChange={(e) => setTierId(e.target.value)}
@@ -41,16 +42,14 @@ export function MembershipGrantForm({ tiers }: { tiers: { id: string; name: stri
             ))}
           </select>
         </div>
-        <div className="space-y-1">
-          <Label>{t("admin.memberships.days")}</Label>
+        <FormField id="membership-grant-days" label={t("admin.memberships.days")}>
           <Input type="number" value={days} onChange={(e) => setDays(e.target.value)} />
-        </div>
-        <div className="space-y-1">
-          <Label>{t("admin.memberships.note")}</Label>
+        </FormField>
+        <FormField id="membership-grant-note" label={t("admin.memberships.note")}>
           <Input value={note} onChange={(e) => setNote(e.target.value)} />
-        </div>
+        </FormField>
       </div>
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+      {message && <Notice>{message}</Notice>}
       <Button
         size="sm"
         disabled={loading || !email || !tierId}

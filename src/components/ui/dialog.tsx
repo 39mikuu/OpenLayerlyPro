@@ -39,9 +39,11 @@ function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) 
 function DialogContent({
   className,
   children,
+  closeLabel = "Close",
   showCloseButton = true,
   ...props
 }: DialogPrimitive.Popup.Props & {
+  closeLabel?: React.ReactNode;
   showCloseButton?: boolean;
 }) {
   return (
@@ -62,7 +64,7 @@ function DialogContent({
             render={<Button variant="ghost" className="absolute top-2 right-2" size="icon-sm" />}
           >
             <XIcon />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">{closeLabel}</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Popup>

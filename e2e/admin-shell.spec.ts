@@ -314,6 +314,13 @@ test("settings page explains configuration source and saved test semantics on mo
     page.getByText("连接测试使用已保存的有效配置，而不是当前未保存的表单内容。").first(),
   ).toBeVisible();
   await expect(page.getByText("此集成没有环境变量回退", { exact: false }).first()).toBeVisible();
+  await expect(page.getByLabel("SMTP 主机")).toBeVisible();
+  await expect(page.getByLabel("端口")).toBeVisible();
+  await expect(page.getByLabel("内容附件上限（MB）")).toHaveAttribute(
+    "aria-describedby",
+    /max-upload-size-description/,
+  );
+  await expect(page.locator("#max-upload-size-description")).toContainText("环境变量默认");
   await expectNoDocumentOverflow(page);
 });
 

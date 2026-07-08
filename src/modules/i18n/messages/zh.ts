@@ -271,6 +271,7 @@ export const zh = {
       status: "状态",
       actions: "操作",
       cancel: "取消",
+      close: "关闭",
       environment: "环境变量",
       dbOverride: "当前由后台配置覆盖环境变量。",
       envSource: "当前使用环境变量作为配置来源。",

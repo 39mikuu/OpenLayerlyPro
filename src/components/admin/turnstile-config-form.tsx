@@ -4,17 +4,14 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { ConfigSourceSummary } from "@/components/admin/config-source-summary";
+import { FormField, Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/client";
 
-type TurnstileEnvDefaults = {
-  enabled: boolean;
-  siteKey?: string;
-  secretKeySet: boolean;
-};
+type TurnstileEnvDefaults = { enabled: boolean; siteKey?: string; secretKeySet: boolean };
 
 export type TurnstileAdminView = {
   enabled: boolean;
@@ -88,17 +85,15 @@ export function TurnstileConfigForm({ initial }: { initial: TurnstileAdminView }
         {t("admin.turnstile.enable")}
       </Label>
 
-      <div className="space-y-2">
-        <Label>Site Key</Label>
+      <FormField id="turnstile-site-key" label="Site Key">
         <Input
           value={siteKey}
           onChange={(event) => setSiteKey(event.target.value)}
           placeholder={t("admin.turnstile.publicKey")}
         />
-      </div>
+      </FormField>
 
-      <div className="space-y-2">
-        <Label>Secret Key</Label>
+      <FormField id="turnstile-secret-key" label="Secret Key">
         <Input
           type="password"
           value={secretKey}
@@ -107,7 +102,7 @@ export function TurnstileConfigForm({ initial }: { initial: TurnstileAdminView }
             initial.secretKeySet ? t("admin.turnstile.secretSet") : t("admin.turnstile.secretHint")
           }
         />
-      </div>
+      </FormField>
 
       <ConfigSourceSummary
         hasEnvironmentImportAction
@@ -116,7 +111,7 @@ export function TurnstileConfigForm({ initial }: { initial: TurnstileAdminView }
         source={initial.hasDbOverride ? "database" : "environment"}
         supportsEnvironmentFallback
       />
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+      {message && <Notice>{message}</Notice>}
 
       <div className="flex flex-wrap gap-2">
         <Button disabled={loading} onClick={save}>

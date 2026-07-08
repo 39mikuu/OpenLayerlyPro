@@ -4,10 +4,10 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { ConfigSourceSummary } from "@/components/admin/config-source-summary";
+import { FormField, Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { api } from "@/lib/client";
 
 export type UploadAdminView = {
@@ -76,40 +76,40 @@ export function UploadConfigForm({ initial }: { initial: UploadAdminView }) {
 
   return (
     <div className="max-w-xl space-y-4">
-      <div className="space-y-2">
-        <Label htmlFor="max-upload-size">{t("admin.upload.contentLimit")}</Label>
+      <FormField
+        id="max-upload-size"
+        label={t("admin.upload.contentLimit")}
+        description={t("admin.upload.contentHint", { size: initial.envDefaults.maxUploadSizeMb })}
+      >
         <Input
-          id="max-upload-size"
           type="number"
           min={1}
           value={maxUploadSizeMb}
           onChange={(event) => setMaxUploadSizeMb(event.target.value)}
         />
-        <p className="text-xs text-muted-foreground">
-          {t("admin.upload.contentHint", { size: initial.envDefaults.maxUploadSizeMb })}
-        </p>
-      </div>
+      </FormField>
 
-      <div className="space-y-2">
-        <Label htmlFor="payment-proof-size">{t("admin.upload.proofLimit")}</Label>
+      <FormField
+        id="payment-proof-size"
+        label={t("admin.upload.proofLimit")}
+        description={t("admin.upload.proofHint", {
+          size: initial.envDefaults.paymentProofMaxSizeMb,
+        })}
+      >
         <Input
-          id="payment-proof-size"
           type="number"
           min={1}
           value={paymentProofMaxSizeMb}
           onChange={(event) => setPaymentProofMaxSizeMb(event.target.value)}
         />
-        <p className="text-xs text-muted-foreground">
-          {t("admin.upload.proofHint", { size: initial.envDefaults.paymentProofMaxSizeMb })}
-        </p>
-      </div>
+      </FormField>
 
       <ConfigSourceSummary
         extraDetail={t("admin.upload.applyHint")}
         source={initial.hasDbOverride ? "database" : "environment"}
         supportsEnvironmentFallback
       />
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+      {message && <Notice>{message}</Notice>}
 
       <div className="flex flex-wrap gap-2">
         <Button disabled={loading} onClick={save}>

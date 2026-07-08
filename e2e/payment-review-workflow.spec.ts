@@ -262,6 +262,7 @@ test("sends a stable reject reason code instead of the administrator locale text
 
   const dialog = page.getByRole("dialog", { name: "支払い申請を却下" });
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "閉じる" })).toBeVisible();
 
   let requestBody: unknown;
   await page.route(/\/api\/admin\/payment-requests\/[^/]+\/reject$/, async (route) => {
