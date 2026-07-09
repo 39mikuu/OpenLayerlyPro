@@ -19,7 +19,7 @@ async function themeOption(theme: Theme) {
   return {
     id: theme.id,
     name: theme.name,
-    // 只返回预设 id/name 与 hue 数字，不暴露完整 CSS 变量 map。
+    // 只返回预设 id/name，不暴露完整 CSS 变量 map。
     presets: theme.colorPresets.map((p) => ({ id: p.id, name: p.name })),
     supportsCustomColor: typeof theme.colorVarsFromHue === "function",
     colorPreset: config.colorPreset,

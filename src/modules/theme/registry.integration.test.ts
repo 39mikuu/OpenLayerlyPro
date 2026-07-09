@@ -109,12 +109,13 @@ describeWithDatabase("theme registry transactional updates", () => {
     LOCK_TEST_TIMEOUT_MS,
   );
 
-  it("preserves both themes' config when different themes update concurrently", async () => {
+  it("preserves all themes' config when different themes update concurrently", async () => {
     await db.insert(siteSettings).values({
       key: THEME_CONFIG_SETTING_KEY,
       valueJson: {
         builtin: { colorPreset: "neutral", customHue: 256 },
         blog: { colorPreset: "ink", customHue: 275 },
+        wordpress: { colorPreset: "gofun-seiji", customHue: 0 },
       },
     });
 
@@ -129,18 +130,25 @@ describeWithDatabase("theme registry transactional updates", () => {
         { colorPreset: "indigo", customHue: 314 },
         { switchActiveTheme: false, actor },
       ),
+      applyThemeUpdate(
+        themes.wordpress,
+        { colorPreset: "layer-seal", customHue: 99 },
+        { switchActiveTheme: false, actor },
+      ),
     ]);
 
     expect(await settingValue(THEME_CONFIG_SETTING_KEY)).toEqual({
       builtin: { colorPreset: "custom", customHue: 42 },
       blog: { colorPreset: "indigo", customHue: 314 },
+      wordpress: { colorPreset: "layer-seal", customHue: 99 },
     });
     const audits = await db
       .select()
       .from(auditEvents)
       .where(eq(auditEvents.action, "theme_updated"));
-    expect(audits).toHaveLength(2);
+    expect(audits).toHaveLength(3);
     expect(audits.map((event) => event.entityType)).toEqual([
+      "site_theme_config",
       "site_theme_config",
       "site_theme_config",
     ]);
@@ -148,18 +156,20 @@ describeWithDatabase("theme registry transactional updates", () => {
 
   it("updates config, switches active theme, and records audit atomically", async () => {
     const result = await applyThemeUpdate(
-      themes.blog,
-      { colorPreset: "custom", customHue: 123 },
+      themes.wordpress,
+      { colorPreset: "layer-seal", customHue: 123 },
       { switchActiveTheme: true, actor },
     );
 
-    expect(result).toEqual({ colorPreset: "custom", customHue: 123 });
+    expect(result).toEqual({ colorPreset: "layer-seal", customHue: 123 });
     const [themeConfig] = await db
       .select({ id: siteSettings.id, valueJson: siteSettings.valueJson })
       .from(siteSettings)
       .where(eq(siteSettings.key, THEME_CONFIG_SETTING_KEY));
-    expect(themeConfig?.valueJson).toEqual({ blog: { colorPreset: "custom", customHue: 123 } });
-    expect(await settingValue(ACTIVE_THEME_SETTING_KEY)).toBe("blog");
+    expect(themeConfig?.valueJson).toEqual({
+      wordpress: { colorPreset: "layer-seal", customHue: 123 },
+    });
+    expect(await settingValue(ACTIVE_THEME_SETTING_KEY)).toBe("wordpress");
 
     const audits = await db
       .select()
@@ -172,10 +182,10 @@ describeWithDatabase("theme registry transactional updates", () => {
       actorType: "admin",
       actorId: actor.id,
     });
-    expect(audits[0]!.beforeJson).toEqual({ themeId: "blog" });
+    expect(audits[0]!.beforeJson).toEqual({ themeId: "wordpress" });
     expect(audits[0]!.afterJson).toEqual({
-      themeId: "blog",
-      colorPreset: "custom",
+      themeId: "wordpress",
+      colorPreset: "layer-seal",
       customHue: 123,
       activeThemeSwitched: true,
     });

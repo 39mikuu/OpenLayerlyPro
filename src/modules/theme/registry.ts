@@ -10,6 +10,7 @@ import { type AuditActor, recordAudit } from "@/modules/audit";
 import { getSetting } from "@/modules/site";
 import { blogTheme } from "@/themes/blog";
 import { builtinTheme } from "@/themes/builtin";
+import { wordpressTheme } from "@/themes/wordpress";
 
 import type { Theme, ThemeConfig, ThemeId } from "./types";
 
@@ -19,6 +20,7 @@ export const DEFAULT_THEME_ID: ThemeId = "builtin";
 export const themes: Record<ThemeId, Theme> = {
   builtin: builtinTheme,
   blog: blogTheme,
+  wordpress: wordpressTheme,
 };
 
 /** site_settings 中存放活动主题 id 的键。 */
@@ -28,8 +30,14 @@ export const THEME_CONFIG_SETTING_KEY = "theme_config";
 /** 访客明暗偏好 cookie（仅访客偏好，不入 site_settings）。 */
 export const THEME_MODE_COOKIE = "theme_mode";
 
+function presetHue(theme: Theme, presetId: string): number | null {
+  const preset = theme.colorPresets.find((candidate) => candidate.id === presetId);
+  if (!preset || preset.kind !== "hue") return null;
+  return preset.hue;
+}
+
 function defaultCustomHue(theme: Theme): number {
-  return theme.colorPresets.find((preset) => preset.hue !== null)?.hue ?? 0;
+  return theme.colorPresets.find((preset) => preset.kind === "hue")?.hue ?? 0;
 }
 
 export function normalizeHue(value: unknown, fallback: number): number {
@@ -61,7 +69,7 @@ type StoredThemeEntry = { colorPreset?: string; customHue?: number };
 
 /**
  * 从存储值中取出指定主题的配置条目。
- * 新形态按主题 id 分键：`{ builtin: {...}, blog: {...} }`；
+ * 新形态按主题 id 分键：`{ builtin: {...}, blog: {...}, wordpress: {...} }`；
  * 旧平铺形态 `{ colorPreset, customHue }` 只可能由单主题时期写入，归属默认主题。
  */
 function extractThemeEntry(stored: unknown, themeId: ThemeId): StoredThemeEntry | null {
@@ -173,13 +181,13 @@ export async function applyThemeUpdate(
   });
 }
 
-/** 把具名预设或 custom 配置解析为最终 hue；neutral / 未知配置不生成覆盖。 */
+/** 把 hue/custom 配置解析为最终 hue；none / vars / 未知配置不走 hue 覆盖。 */
 export function resolveColorHue(theme: Theme, config: ThemeConfig): number | null {
   if (config.colorPreset === "custom") {
     if (typeof theme.colorVarsFromHue !== "function") return null;
     return normalizeHue(config.customHue, defaultCustomHue(theme));
   }
-  return theme.colorPresets.find((preset) => preset.id === config.colorPreset)?.hue ?? null;
+  return presetHue(theme, config.colorPreset);
 }
 
 function declarations(vars: Record<string, string>): string {
@@ -189,13 +197,21 @@ function declarations(vars: Record<string, string>): string {
 }
 
 /**
- * 由主题取色模板生成**作用域限定**的 CSS（`.site-theme` / `.dark .site-theme`）。
- * 只影响公开站点、不影响 admin；neutral、未知预设或不支持自由取色的主题返回 null。
+ * 由主题取色模板或精确变量预设生成**作用域限定**的 CSS（`.site-theme` / `.dark .site-theme`）。
+ * 只影响公开站点、不影响 admin；none、未知预设或不支持自由取色的 custom 返回 null。
  */
 export function buildColorPresetCss(theme: Theme, config: ThemeConfig): string | null {
-  const hue = resolveColorHue(theme, config);
-  if (hue === null || typeof theme.colorVarsFromHue !== "function") return null;
-  const { light, dark } = theme.colorVarsFromHue(hue);
+  const preset = theme.colorPresets.find((candidate) => candidate.id === config.colorPreset);
+  const vars =
+    preset?.kind === "vars"
+      ? preset.cssVars
+      : (() => {
+          const hue = resolveColorHue(theme, config);
+          if (hue === null || typeof theme.colorVarsFromHue !== "function") return null;
+          return theme.colorVarsFromHue(hue);
+        })();
+  if (!vars) return null;
+  const { light, dark } = vars;
   const lightKeys = Object.keys(light);
   const darkKeys = Object.keys(dark);
   if (lightKeys.length === 0 && darkKeys.length === 0) return null;

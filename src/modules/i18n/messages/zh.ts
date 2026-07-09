@@ -18,6 +18,15 @@ export const zh = {
   theme: {
     toLight: "切换为浅色",
     toDark: "切换为深色",
+    wordpress: {
+      label: "WordPress 经典",
+      classicBlog: "经典博客",
+      archive: "归档",
+      postInfo: "文章信息",
+      thisPost: "这篇内容",
+      pageCategories: "本页分类",
+      pageTags: "本页标签",
+    },
   },
   locale: {
     label: "语言",

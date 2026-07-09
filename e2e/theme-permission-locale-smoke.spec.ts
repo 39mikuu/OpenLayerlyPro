@@ -23,6 +23,7 @@ const ACTIVE_THEME_SETTING_KEY = "theme";
 const THEME_CONFIG_SETTING_KEY = "theme_config";
 
 const ADMIN_EMAIL = "blog-theme-admin@example.com";
+const smokeThemes = ["blog", "wordpress"] as const;
 const ADMIN_PASSWORD = "blog-theme-admin-password";
 const PUBLIC_SLUG = "blog-theme-public-smoke";
 const LOGIN_SLUG = "blog-theme-login-smoke";
@@ -34,6 +35,27 @@ const PUBLIC_BODY = "Public body visible under the blog theme.";
 const LOGIN_BODY = "Login gated body visible only after session preflight.";
 const MEMBER_BODY = "Member gated body visible only with an active tier entitlement.";
 const MEMBER_TIER_NAME = "Smoke Supporter";
+const fixtureSlugs = [PUBLIC_SLUG, LOGIN_SLUG, MEMBER_SLUG] as const;
+const fixtureTierSlug = "blog-theme-smoke-supporter";
+const mutatedSettingKeys = [
+  "initialized",
+  "site_name",
+  "artist_name",
+  "artist_bio",
+  "social_links",
+  "custom_footer_markup",
+  "custom_footer_html",
+  "site_verification",
+  "public_integrations",
+  "public_csp_revision",
+  ACTIVE_THEME_SETTING_KEY,
+  THEME_CONFIG_SETTING_KEY,
+  "artist_avatar_file_id",
+  "site_logo_file_id",
+  "site_icon_file_id",
+] as const;
+type SettingSnapshot = Record<string, unknown | undefined>;
+let originalSettings: SettingSnapshot = {};
 
 const localeCases: ReadonlyArray<{
   locale: Locale;
@@ -65,6 +87,56 @@ const localeCases: ReadonlyArray<{
   },
 ];
 
+async function snapshotSettings(keys: readonly string[]): Promise<SettingSnapshot> {
+  const rows = await getDb()
+    .select({ key: siteSettings.key, valueJson: siteSettings.valueJson })
+    .from(siteSettings)
+    .where(inArray(siteSettings.key, [...keys]));
+  const snapshot: SettingSnapshot = Object.fromEntries(keys.map((key) => [key, undefined]));
+  for (const row of rows) snapshot[row.key] = row.valueJson;
+  return snapshot;
+}
+
+async function restoreSettings(snapshot: SettingSnapshot) {
+  const db = getDb();
+  for (const [key, valueJson] of Object.entries(snapshot)) {
+    if (valueJson === undefined) {
+      await db.delete(siteSettings).where(eq(siteSettings.key, key));
+    } else {
+      await db
+        .insert(siteSettings)
+        .values({ key, valueJson })
+        .onConflictDoUpdate({
+          target: siteSettings.key,
+          set: { valueJson, updatedAt: new Date() },
+        });
+    }
+  }
+}
+
+async function cleanupFixtures() {
+  await getDb().transaction(async (tx) => {
+    await tx
+      .delete(memberships)
+      .where(
+        sql`${memberships.userId} in (select id from users where email like 'blog-theme-%@example.com')`,
+      );
+    await tx
+      .delete(sessions)
+      .where(
+        sql`${sessions.userId} in (select id from users where email like 'blog-theme-%@example.com')`,
+      );
+    await tx.delete(postTranslations).where(
+      sql`${postTranslations.postId} in (select id from posts where slug in (${sql.join(
+        fixtureSlugs.map((slug) => sql`${slug}`),
+        sql`, `,
+      )}))`,
+    );
+    await tx.delete(posts).where(inArray(posts.slug, [...fixtureSlugs]));
+    await tx.delete(membershipTiers).where(eq(membershipTiers.slug, fixtureTierSlug));
+    await tx.delete(users).where(like(users.email, "blog-theme-%@example.com"));
+  });
+}
 async function upsertSetting(key: string, valueJson: unknown) {
   await getDb()
     .insert(siteSettings)
@@ -73,6 +145,10 @@ async function upsertSetting(key: string, valueJson: unknown) {
       target: siteSettings.key,
       set: { valueJson, updatedAt: new Date() },
     });
+}
+
+async function setActiveTheme(theme: (typeof smokeThemes)[number]) {
+  await upsertSetting(ACTIVE_THEME_SETTING_KEY, theme);
 }
 
 async function seedUser(input: { email: string; role: "admin" | "member" }) {
@@ -160,40 +236,16 @@ async function seedAdminSessionViaLogin(page: Page, email: string) {
 
 async function seedFixtures() {
   const db = getDb();
-  await db.transaction(async (tx) => {
-    const fixtureSlugs = [PUBLIC_SLUG, LOGIN_SLUG, MEMBER_SLUG];
-    const fixtureTierSlug = "blog-theme-smoke-supporter";
-
-    await tx
-      .delete(memberships)
-      .where(
-        sql`${memberships.userId} in (select id from users where email like 'blog-theme-%@example.com')`,
-      );
-    await tx
-      .delete(sessions)
-      .where(
-        sql`${sessions.userId} in (select id from users where email like 'blog-theme-%@example.com')`,
-      );
-    await tx.delete(postTranslations).where(
-      sql`${postTranslations.postId} in (select id from posts where slug in (${sql.join(
-        fixtureSlugs.map((slug) => sql`${slug}`),
-        sql`, `,
-      )}))`,
+  await cleanupFixtures();
+  await db
+    .delete(siteSettings)
+    .where(
+      inArray(siteSettings.key, [
+        "artist_avatar_file_id",
+        "site_logo_file_id",
+        "site_icon_file_id",
+      ]),
     );
-    await tx.delete(posts).where(inArray(posts.slug, fixtureSlugs));
-    await tx.delete(membershipTiers).where(eq(membershipTiers.slug, fixtureTierSlug));
-    await tx.delete(users).where(like(users.email, "blog-theme-%@example.com"));
-    await tx
-      .delete(siteSettings)
-      .where(
-        inArray(siteSettings.key, [
-          "artist_avatar_file_id",
-          "site_logo_file_id",
-          "site_icon_file_id",
-        ]),
-      );
-  });
-
   await upsertSetting("initialized", true);
   await upsertSetting("site_name", "Blog Theme Smoke Site");
   await upsertSetting("artist_name", "Blog Theme Smoke Artist");
@@ -212,6 +264,7 @@ async function seedFixtures() {
   await upsertSetting(THEME_CONFIG_SETTING_KEY, {
     builtin: { colorPreset: "blue" },
     blog: { colorPreset: "ink" },
+    wordpress: { colorPreset: "gofun-seiji" },
   });
 
   const [tier] = await db
@@ -291,80 +344,103 @@ async function seedFixtures() {
   ]);
 }
 
-test.describe.serial("blog theme functional permission and locale smoke", () => {
+test.describe.serial("theme functional permission and locale smoke", () => {
   test.beforeAll(async () => {
+    originalSettings = await snapshotSettings(mutatedSettingKeys);
     await seedFixtures();
   });
 
   test.afterAll(async () => {
+    await cleanupFixtures();
+    await restoreSettings(originalSettings);
     await closeDb();
   });
 
-  test("keeps public content visible for anonymous visitors", async ({ page, context }) => {
-    await context.addCookies([{ name: LOCALE_COOKIE, value: "en", url: BASE_URL }]);
-    const response = await page.goto(`/posts/${PUBLIC_SLUG}`);
-    expect(response?.status()).toBe(200);
-    await expect(page.getByRole("heading", { name: PUBLIC_TITLE })).toBeVisible();
-    await expect(page.getByText(PUBLIC_BODY)).toBeVisible();
-  });
-
-  test("keeps login-gated post body hidden from anonymous visitors and visible to signed-in users", async ({
-    page,
-    context,
-  }) => {
-    await context.addCookies([{ name: LOCALE_COOKIE, value: "en", url: BASE_URL }]);
-    await page.goto(`/posts/${LOGIN_SLUG}`);
-    await expect(page.getByRole("heading", { name: LOGIN_TITLE })).toBeVisible();
-    await expect(page.getByText(LOGIN_BODY)).toBeHidden();
-    await expect(page.getByText(en.post.lockedLogin)).toBeVisible();
-
-    await seedSession(page, { email: "blog-theme-login-user@example.com", role: "member" });
-    await page.goto(`/posts/${LOGIN_SLUG}`);
-    await expect(page.getByText(LOGIN_BODY)).toBeVisible();
-    await expect(page.getByText(en.post.lockedLogin)).toBeHidden();
-  });
-
-  test("keeps member-gated post body hidden from non-members and visible to active members", async ({
-    page,
-    context,
-  }) => {
-    await context.addCookies([{ name: LOCALE_COOKIE, value: "en", url: BASE_URL }]);
-    await seedSession(page, { email: "blog-theme-non-member@example.com", role: "member" });
-    await page.goto(`/posts/${MEMBER_SLUG}`);
-    await expect(page.getByRole("heading", { name: MEMBER_TITLE })).toBeVisible();
-    await expect(page.getByText(MEMBER_BODY)).toBeHidden();
-    await expect(
-      page.getByText(en.post.lockedMember.replace("{tier}", MEMBER_TIER_NAME)),
-    ).toBeVisible();
-
-    const activeMember = await seedSession(page, {
-      email: "blog-theme-active-member@example.com",
-      role: "member",
+  for (const smokeTheme of smokeThemes) {
+    test(`keeps public content visible for anonymous visitors under ${smokeTheme}`, async ({
+      page,
+      context,
+    }) => {
+      await upsertSetting(ACTIVE_THEME_SETTING_KEY, smokeTheme);
+      await context.addCookies([{ name: LOCALE_COOKIE, value: "en", url: BASE_URL }]);
+      const response = await page.goto(`/posts/${PUBLIC_SLUG}`);
+      expect(response?.status()).toBe(200);
+      await expect(page.getByRole("heading", { name: PUBLIC_TITLE })).toBeVisible();
+      await expect(page.getByText(PUBLIC_BODY)).toBeVisible();
     });
-    const [tier] = await getDb()
-      .select({ id: membershipTiers.id })
-      .from(membershipTiers)
-      .where(eq(membershipTiers.slug, "blog-theme-smoke-supporter"))
-      .limit(1);
-    expect(tier).toBeTruthy();
-    await getDb()
-      .insert(memberships)
-      .values({
-        userId: activeMember.id,
-        tierId: tier.id,
-        source: "manual",
-        status: "active",
-        startsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
-        endsAt: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
-        note: "Blog theme smoke active membership",
+  }
+
+  for (const smokeTheme of smokeThemes) {
+    test(`keeps login-gated post body hidden from anonymous visitors and visible to signed-in users under ${smokeTheme}`, async ({
+      page,
+      context,
+    }) => {
+      await upsertSetting(ACTIVE_THEME_SETTING_KEY, smokeTheme);
+      await context.addCookies([{ name: LOCALE_COOKIE, value: "en", url: BASE_URL }]);
+      await page.goto(`/posts/${LOGIN_SLUG}`);
+      await expect(page.getByRole("heading", { name: LOGIN_TITLE })).toBeVisible();
+      await expect(page.getByText(LOGIN_BODY)).toBeHidden();
+      await expect(page.getByText(en.post.lockedLogin)).toBeVisible();
+
+      await seedSession(page, {
+        email: `blog-theme-login-user-${smokeTheme}@example.com`,
+        role: "member",
       });
+      await page.goto(`/posts/${LOGIN_SLUG}`);
+      await expect(page.getByText(LOGIN_BODY)).toBeVisible();
+      await expect(page.getByText(en.post.lockedLogin)).toBeHidden();
+    });
+  }
 
-    await page.goto(`/posts/${MEMBER_SLUG}`);
-    await expect(page.getByText(MEMBER_BODY)).toBeVisible();
-    await expect(page.getByText(en.post.lockedTitle)).toBeHidden();
-  });
+  for (const smokeTheme of smokeThemes) {
+    test(`keeps member-gated post body hidden from non-members and visible to active members under ${smokeTheme}`, async ({
+      page,
+      context,
+    }) => {
+      await upsertSetting(ACTIVE_THEME_SETTING_KEY, smokeTheme);
+      await context.addCookies([{ name: LOCALE_COOKIE, value: "en", url: BASE_URL }]);
+      await seedSession(page, {
+        email: `blog-theme-non-member-${smokeTheme}@example.com`,
+        role: "member",
+      });
+      await page.goto(`/posts/${MEMBER_SLUG}`);
+      await expect(page.getByRole("heading", { name: MEMBER_TITLE })).toBeVisible();
+      await expect(page.getByText(MEMBER_BODY)).toBeHidden();
+      await expect(
+        page.getByText(en.post.lockedMember.replace("{tier}", MEMBER_TIER_NAME)),
+      ).toBeVisible();
 
-  test("keeps admin-only API decisions unchanged under the blog theme", async ({ page }) => {
+      const activeMember = await seedSession(page, {
+        email: `blog-theme-active-member-${smokeTheme}@example.com`,
+        role: "member",
+      });
+      const [tier] = await getDb()
+        .select({ id: membershipTiers.id })
+        .from(membershipTiers)
+        .where(eq(membershipTiers.slug, "blog-theme-smoke-supporter"))
+        .limit(1);
+      expect(tier).toBeTruthy();
+      await getDb()
+        .insert(memberships)
+        .values({
+          userId: activeMember.id,
+          tierId: tier.id,
+          source: "manual",
+          status: "active",
+          startsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+          endsAt: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+          note: `Theme smoke active membership for ${smokeTheme}`,
+        });
+
+      await page.goto(`/posts/${MEMBER_SLUG}`);
+      await expect(page.getByText(MEMBER_BODY)).toBeVisible();
+      await expect(page.getByText(en.post.lockedTitle)).toBeHidden();
+    });
+  }
+
+  test("keeps admin-only API decisions unchanged and returns all themes", async ({ page }) => {
+    await setActiveTheme("blog");
+
     const anonymousResponse = await page.request.get("/api/admin/theme");
     expect(anonymousResponse.status()).toBe(401);
 
@@ -375,10 +451,12 @@ test.describe.serial("blog theme functional permission and locale smoke", () => 
     await seedAdminSessionViaLogin(page, ADMIN_EMAIL);
     const adminResponse = await page.request.get("/api/admin/theme");
     expect(adminResponse.ok(), await adminResponse.text()).toBe(true);
-    await expect(adminResponse.json()).resolves.toMatchObject({
+    const body = await adminResponse.json();
+    expect(body).toMatchObject({
       ok: true,
       data: { activeTheme: "blog" },
     });
+    expect(JSON.stringify(body)).toContain("wordpress");
   });
 
   for (const { locale, publicText, publicTitle, themeLabel, themeHelp } of localeCases) {

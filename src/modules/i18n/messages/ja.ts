@@ -16,6 +16,15 @@ export const ja: Messages = {
   theme: {
     toLight: "ライトモードに切り替え",
     toDark: "ダークモードに切り替え",
+    wordpress: {
+      label: "WordPress クラシック",
+      classicBlog: "クラシックブログ",
+      archive: "アーカイブ",
+      postInfo: "投稿情報",
+      thisPost: "この投稿",
+      pageCategories: "ページ内カテゴリー",
+      pageTags: "ページ内タグ",
+    },
   },
   locale: {
     label: "言語",

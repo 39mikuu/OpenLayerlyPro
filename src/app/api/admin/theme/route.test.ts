@@ -2,18 +2,43 @@ import type { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { requireAdmin } from "@/modules/auth/session";
-import { applyThemeUpdate, getActiveTheme } from "@/modules/theme";
+import { applyThemeUpdate, getActiveTheme, getThemeConfig } from "@/modules/theme";
 
-import { PUT } from "./route";
+import { GET, PUT } from "./route";
 
 const builtin = {
   id: "builtin",
   name: "内置主题",
   colorPresets: [
-    { id: "neutral", name: "中性", hue: null },
-    { id: "blue", name: "蓝", hue: 256 },
+    { id: "neutral", name: "中性", kind: "none" },
+    { id: "blue", name: "蓝", kind: "hue", hue: 256 },
   ],
   colorVarsFromHue: vi.fn(),
+};
+
+const wordpress = {
+  id: "wordpress",
+  name: "WordPress 经典",
+  colorPresets: [
+    {
+      id: "gofun-seiji",
+      name: "胡粉 × 墨 × 青磁",
+      kind: "vars",
+      cssVars: {
+        light: { "--primary": "oklch(0.52 0.09 195)" },
+        dark: { "--primary": "oklch(0.72 0.10 190)" },
+      },
+    },
+    {
+      id: "layer-seal",
+      name: "層印品牌",
+      kind: "vars",
+      cssVars: {
+        light: { "--wordpress-seal": "oklch(0.53 0.17 18)" },
+        dark: { "--wordpress-seal": "oklch(0.70 0.15 18)" },
+      },
+    },
+  ],
 };
 
 vi.mock("@/modules/auth/session", () => ({ requireAdmin: vi.fn() }));
@@ -26,8 +51,8 @@ vi.mock("@/modules/theme", () => ({
       id: "builtin",
       name: "内置主题",
       colorPresets: [
-        { id: "neutral", name: "中性", hue: null },
-        { id: "blue", name: "蓝", hue: 256 },
+        { id: "neutral", name: "中性", kind: "none" },
+        { id: "blue", name: "蓝", kind: "hue", hue: 256 },
       ],
       colorVarsFromHue: vi.fn(),
     },
@@ -35,10 +60,34 @@ vi.mock("@/modules/theme", () => ({
       id: "blog",
       name: "博客主题",
       colorPresets: [
-        { id: "ink", name: "墨", hue: null },
-        { id: "indigo", name: "靛蓝", hue: 275 },
+        { id: "ink", name: "墨", kind: "none" },
+        { id: "indigo", name: "靛蓝", kind: "hue", hue: 275 },
       ],
       colorVarsFromHue: vi.fn(),
+    },
+    wordpress: {
+      id: "wordpress",
+      name: "WordPress 经典",
+      colorPresets: [
+        {
+          id: "gofun-seiji",
+          name: "胡粉 × 墨 × 青磁",
+          kind: "vars",
+          cssVars: {
+            light: { "--primary": "oklch(0.52 0.09 195)" },
+            dark: { "--primary": "oklch(0.72 0.10 190)" },
+          },
+        },
+        {
+          id: "layer-seal",
+          name: "層印品牌",
+          kind: "vars",
+          cssVars: {
+            light: { "--wordpress-seal": "oklch(0.53 0.17 18)" },
+            dark: { "--wordpress-seal": "oklch(0.70 0.15 18)" },
+          },
+        },
+      ],
     },
   },
 }));
@@ -54,10 +103,44 @@ function request(body: unknown): NextRequest {
 async function responseBody(response: Response) {
   return response.json() as Promise<{
     ok: boolean;
-    data?: { theme: string; colorPreset: string; customHue: number };
+    data?: unknown;
     error?: string;
   }>;
 }
+
+describe("GET /api/admin/theme", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(requireAdmin).mockResolvedValue({
+      id: "00000000-0000-4000-8000-000000000001",
+      email: "admin@example.com",
+      passwordHash: null,
+      displayName: null,
+      role: "admin",
+      locale: "zh",
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+      lastLoginAt: null,
+    });
+    vi.mocked(getActiveTheme).mockResolvedValue(wordpress as never);
+    vi.mocked(getThemeConfig).mockImplementation(async (theme: { id: string }) => {
+      if (theme.id === "wordpress") return { colorPreset: "gofun-seiji", customHue: 0 };
+      if (theme.id === "blog") return { colorPreset: "ink", customHue: 275 };
+      return { colorPreset: "blue", customHue: 256 };
+    });
+  });
+
+  it("returns three themes without leaking exact cssVars", async () => {
+    const response = await GET();
+    expect(response.status).toBe(200);
+    const body = await responseBody(response);
+    expect(body).toMatchObject({ ok: true });
+    expect(JSON.stringify(body)).toContain("wordpress");
+    expect(JSON.stringify(body)).toContain("gofun-seiji");
+    expect(JSON.stringify(body)).not.toContain("cssVars");
+    expect(JSON.stringify(body)).not.toContain("--wordpress-seal");
+  });
+});
 
 describe("PUT /api/admin/theme", () => {
   beforeEach(() => {
@@ -134,7 +217,6 @@ describe("PUT /api/admin/theme", () => {
         actor: { type: "admin", id: "00000000-0000-4000-8000-000000000001" },
       },
     );
-    // 未提交 theme 字段：只改配色，不写活动主题。
     expect(await responseBody(response)).toEqual({
       ok: true,
       data: { theme: "builtin", colorPreset: "custom", customHue: 42 },
@@ -176,6 +258,29 @@ describe("PUT /api/admin/theme", () => {
       ok: true,
       data: { theme: "blog", colorPreset: "indigo", customHue: 275 },
     });
+  });
+
+  it.each(["gofun-seiji", "layer-seal"])("accepts wordpress preset %s", async (colorPreset) => {
+    vi.mocked(applyThemeUpdate).mockResolvedValue({ colorPreset, customHue: 0 });
+
+    const response = await PUT(request({ theme: "wordpress", colorPreset }));
+
+    expect(response.status).toBe(200);
+    expect(applyThemeUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "wordpress" }),
+      { colorPreset, customHue: undefined },
+      expect.objectContaining({ switchActiveTheme: true }),
+    );
+  });
+
+  it("rejects wordpress custom colors", async () => {
+    const response = await PUT(
+      request({ theme: "wordpress", colorPreset: "custom", customHue: 42 }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await responseBody(response)).toMatchObject({ ok: false });
+    expect(applyThemeUpdate).not.toHaveBeenCalled();
   });
 
   it("rejects presets that belong to a different theme when switching", async () => {

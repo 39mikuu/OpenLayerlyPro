@@ -27,4 +27,8 @@ the migration and browser observation before enforcing CSP. See
 
 ## Theme Configuration
 
-The active theme (`builtin` or `blog`, selectable from the appearance card) reads public identity plus its own `theme_config` color settings. Theme configuration is presentation-only and cannot change membership, payment, content visibility, file authorization, or integration secrets.
+The active theme (`builtin`, `blog`, or `wordpress`, selectable from the appearance card) reads public identity plus its own `theme_config` color settings. Theme configuration is presentation-only and cannot change membership, payment, content visibility, file authorization, or integration secrets.
+
+## WordPress 经典主题
+
+The `wordpress` theme is a built-in classic blog theme with a main content column and right sidebar. It offers two fixed color presets, `gofun-seiji` and `layer-seal`; admins can select the preset from the appearance card, but the API does not expose or accept raw CSS variables.

@@ -3,7 +3,7 @@ import type { ComponentType, ReactNode } from "react";
 import type { Translate } from "@/modules/i18n";
 
 /** 站内已注册的主题 id；后续新增主题在此扩展。 */
-export type ThemeId = "builtin" | "blog";
+export type ThemeId = "builtin" | "blog" | "wordpress";
 
 export type PostVisibility = "public" | "login" | "member";
 export type TaxonomyLinkView = { name: string; slug: string };
@@ -177,12 +177,30 @@ export type ThemeComponents = {
   Checkout: ComponentType<{ view: CheckoutView; t: Translate }>;
 };
 
-/** 主题自带的颜色预设；hue=null 表示零覆盖（如默认 neutral）。 */
-export type ThemeColorPreset = {
-  id: string;
-  name: string;
-  hue: number | null;
+export type ThemeColorVars = {
+  light: Record<string, string>;
+  dark: Record<string, string>;
 };
+
+/** 主题自带的颜色预设；none 不覆盖，hue 走主题模板，vars 使用精确变量。 */
+export type ThemeColorPreset =
+  | {
+      id: string;
+      name: string;
+      kind: "none";
+    }
+  | {
+      id: string;
+      name: string;
+      kind: "hue";
+      hue: number;
+    }
+  | {
+      id: string;
+      name: string;
+      kind: "vars";
+      cssVars: ThemeColorVars;
+    };
 
 /** 站点级主题配置（存 `site_settings.theme_config`）。 */
 export type ThemeConfig = {
@@ -200,8 +218,5 @@ export type Theme = {
   /** 未配置时使用的预设 id。 */
   defaultColorPresetId: string;
   /** 可选的主题取色模板；只接收 hue，CSS 变量和值完全由主题生成。 */
-  colorVarsFromHue?: (hue: number) => {
-    light: Record<string, string>;
-    dark: Record<string, string>;
-  };
+  colorVarsFromHue?: (hue: number) => ThemeColorVars;
 };

@@ -28,10 +28,10 @@ export function colorVarsFromHue(hue: number) {
  * `neutral` 的 hue=null，表示零覆盖；builtin 未配置时默认使用 blue。
  */
 export const BUILTIN_COLOR_PRESETS: ThemeColorPreset[] = [
-  { id: "neutral", name: "中性", hue: null },
-  { id: "blue", name: "蓝", hue: 256 },
-  { id: "green", name: "绿", hue: 150 },
-  { id: "rose", name: "玫红", hue: 12 },
+  { id: "neutral", name: "中性", kind: "none" },
+  { id: "blue", name: "蓝", kind: "hue", hue: 256 },
+  { id: "green", name: "绿", kind: "hue", hue: 150 },
+  { id: "rose", name: "玫红", kind: "hue", hue: 12 },
 ];
 
 export const BUILTIN_DEFAULT_COLOR_PRESET_ID = "blue";
