@@ -46,7 +46,7 @@ function DetailSidebar({ view, t }: { view: PostDetailView; t: Translate }) {
       )}
       <section className="rounded-2xl border bg-card p-5 shadow-sm">
         <h2 className="text-sm font-semibold">{t("home.supportPlans")}</h2>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">{t("post.attachmentsHint")}</p>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">{t("home.supportPlansHint")}</p>
         <Button asChild className="mt-4 w-full" variant="outline">
           <Link href="/tiers">{t("post.openMembership")}</Link>
         </Button>
