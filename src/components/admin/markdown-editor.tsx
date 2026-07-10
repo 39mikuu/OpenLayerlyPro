@@ -386,7 +386,7 @@ export function MarkdownEditor({
           <Textarea
             ref={textareaRef}
             aria-label={ariaLabel ?? t("admin.markdown.ariaLabel")}
-            className="min-h-64 resize-y rounded-none border-0 font-mono focus-visible:ring-0"
+            className="field-sizing-fixed min-h-64 max-h-[60vh] resize-y overflow-y-auto rounded-none border-0 font-mono focus-visible:ring-0"
             rows={rows}
             value={value}
             disabled={disabled}

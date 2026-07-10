@@ -12,8 +12,21 @@ export default defineConfig({
   use: {
     baseURL: process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001",
     trace: "retain-on-failure",
-    ...devices["Desktop Chrome"],
   },
+  projects: [
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "webkit-iphone",
+      testMatch: /ios-ime-freeze/,
+      use: {
+        ...devices["iPhone 13"],
+        locale: "zh-CN",
+      },
+    },
+  ],
   webServer: {
     command: "pnpm start --port 3001",
     url: "http://127.0.0.1:3001/api/health",
