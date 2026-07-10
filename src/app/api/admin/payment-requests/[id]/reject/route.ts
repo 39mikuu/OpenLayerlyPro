@@ -6,7 +6,10 @@ import { getEnv } from "@/lib/env";
 import { readJsonWithLimitOrDefault } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { rejectPaymentRequest } from "@/modules/payment";
-import { PAYMENT_REJECT_REASON_CODES } from "@/modules/payment/rejection-note";
+import {
+  PAYMENT_REJECT_REASON_CODES,
+  serializePaymentRequestForApi,
+} from "@/modules/payment/rejection-note";
 
 export const runtime = "nodejs";
 
@@ -31,7 +34,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       admin.id,
       rejectReasonCode ? { rejectReasonCode, rejectDetails } : { reviewNote },
     );
-    return jsonOk(updated);
+    return jsonOk(serializePaymentRequestForApi(updated));
   } catch (err) {
     return handleApiError(err);
   }

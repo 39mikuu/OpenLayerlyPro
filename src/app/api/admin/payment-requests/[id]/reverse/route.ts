@@ -6,6 +6,7 @@ import { getEnv } from "@/lib/env";
 import { readJsonWithLimitOrDefault } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { reversePaymentApproval } from "@/modules/payment";
+import { serializePaymentRequestForApi } from "@/modules/payment/rejection-note";
 
 export const runtime = "nodejs";
 
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     );
     const { id } = await ctx.params;
     const updated = await reversePaymentApproval(id, admin.id, reason);
-    return jsonOk(updated);
+    return jsonOk(serializePaymentRequestForApi(updated));
   } catch (err) {
     return handleApiError(err);
   }

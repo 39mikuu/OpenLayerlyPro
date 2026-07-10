@@ -20,6 +20,8 @@ export type ResolvedUploadConfig = {
 export type UploadAdminView = {
   maxUploadSizeMb: number;
   paymentProofMaxSizeMb: number;
+  paymentProofConfiguredMb: number;
+  paymentProofIsClamped: boolean;
   hasDbOverride: boolean;
   envDefaults: {
     maxUploadSizeMb: number;
@@ -40,7 +42,7 @@ function resolveUploadConfig(stored: UploadConfigInput): ResolvedUploadConfig {
   };
 }
 
-/** 解析最终生效的上传限制，优先级为 DB ＞ 环境变量 ＞ 默认值。 */
+/** Resolve upload limits. Payment-proof settings cannot exceed the deployment ceiling. */
 export async function getUploadConfig(): Promise<ResolvedUploadConfig> {
   const stored = (await getStoredGroup<UploadConfigInput>(UPLOAD_GROUP)) ?? {};
   return resolveUploadConfig(stored);
@@ -56,6 +58,10 @@ export async function getUploadAdminView(): Promise<UploadAdminView> {
   return {
     maxUploadSizeMb: effective.maxUploadSizeMb,
     paymentProofMaxSizeMb: effective.paymentProofMaxSizeMb,
+    paymentProofConfiguredMb: stored?.paymentProofMaxSizeMb ?? env.PAYMENT_PROOF_MAX_SIZE_MB,
+    paymentProofIsClamped:
+      (stored?.paymentProofMaxSizeMb ?? env.PAYMENT_PROOF_MAX_SIZE_MB) >
+      effective.paymentProofMaxSizeMb,
     hasDbOverride: stored !== null,
     envDefaults: {
       maxUploadSizeMb: env.MAX_UPLOAD_SIZE_MB,

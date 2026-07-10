@@ -4,6 +4,7 @@ import { ApiError, handleApiError, jsonOk } from "@/lib/api";
 import { parseAdminPageSize } from "@/modules/admin/pagination";
 import { requireAdmin } from "@/modules/auth/session";
 import { listPaymentRequestsPage } from "@/modules/payment";
+import { serializePaymentRequestContainerForApi } from "@/modules/payment/rejection-note";
 
 export const runtime = "nodejs";
 
@@ -15,22 +16,26 @@ export async function GET(req: NextRequest) {
     const cursor = req.nextUrl.searchParams.get("cursor");
     const limit = parseAdminPageSize(req.nextUrl.searchParams.get("limit"));
     if (statusParam === "pending_review" && excludeStatusParam === null) {
-      return jsonOk(
-        await listPaymentRequestsPage({
-          status: "pending_review",
-          cursor,
-          limit,
-        }),
-      );
+      const page = await listPaymentRequestsPage({
+        status: "pending_review",
+        cursor,
+        limit,
+      });
+      return jsonOk({
+        ...page,
+        items: page.items.map(serializePaymentRequestContainerForApi),
+      });
     }
     if (statusParam === null && excludeStatusParam === "pending_review") {
-      return jsonOk(
-        await listPaymentRequestsPage({
-          excludeStatus: "pending_review",
-          cursor,
-          limit,
-        }),
-      );
+      const page = await listPaymentRequestsPage({
+        excludeStatus: "pending_review",
+        cursor,
+        limit,
+      });
+      return jsonOk({
+        ...page,
+        items: page.items.map(serializePaymentRequestContainerForApi),
+      });
     }
     throw new ApiError(400, cursor ? "invalidCursor" : "invalidRequest");
   } catch (err) {

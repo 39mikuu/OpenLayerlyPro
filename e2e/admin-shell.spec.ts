@@ -505,6 +505,9 @@ test("representative admin tables switch to mobile cards below md", async ({ pag
     await expectNoDocumentOverflow(page);
     await expect(page.locator('[data-slot="admin-mobile-data-card"]').first()).toBeVisible();
     await expect(page.locator('[data-slot="table-container"]').first()).toBeHidden();
+    if (route === "/admin/tasks") {
+      await expect(page.getByLabel(/^尝试次数: \d+ \/ \d+$/).first()).toBeVisible();
+    }
 
     await page.setViewportSize({ width: 768, height: 900 });
     await page.goto(route);

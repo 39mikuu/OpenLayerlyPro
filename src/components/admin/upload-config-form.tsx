@@ -13,6 +13,8 @@ import { api } from "@/lib/client";
 export type UploadAdminView = {
   maxUploadSizeMb: number;
   paymentProofMaxSizeMb: number;
+  paymentProofConfiguredMb: number;
+  paymentProofIsClamped: boolean;
   hasDbOverride: boolean;
   envDefaults: {
     maxUploadSizeMb: number;
@@ -25,10 +27,14 @@ export function UploadConfigForm({ initial }: { initial: UploadAdminView }) {
   const t = useT();
   const [maxUploadSizeMb, setMaxUploadSizeMb] = useState(String(initial.maxUploadSizeMb));
   const [paymentProofMaxSizeMb, setPaymentProofMaxSizeMb] = useState(
-    String(initial.paymentProofMaxSizeMb),
+    String(initial.paymentProofConfiguredMb),
   );
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [paymentProofEffectiveMb, setPaymentProofEffectiveMb] = useState(
+    initial.paymentProofMaxSizeMb,
+  );
+  const [paymentProofIsClamped, setPaymentProofIsClamped] = useState(initial.paymentProofIsClamped);
 
   async function run(fn: () => Promise<void>, okMessage: string) {
     setLoading(true);
@@ -56,14 +62,16 @@ export function UploadConfigForm({ initial }: { initial: UploadAdminView }) {
       setMessage(t("admin.upload.invalid"));
       return;
     }
-    return run(
-      () =>
-        api("/api/admin/config/upload", {
-          method: "PUT",
-          body: { maxUploadSizeMb: max, paymentProofMaxSizeMb: proof },
-        }),
-      t("admin.upload.saved"),
-    );
+    return run(async () => {
+      const fresh = await api<UploadAdminView>("/api/admin/config/upload", {
+        method: "PUT",
+        body: { maxUploadSizeMb: max, paymentProofMaxSizeMb: proof },
+      });
+      setMaxUploadSizeMb(String(fresh.maxUploadSizeMb));
+      setPaymentProofMaxSizeMb(String(fresh.paymentProofConfiguredMb));
+      setPaymentProofEffectiveMb(fresh.paymentProofMaxSizeMb);
+      setPaymentProofIsClamped(fresh.paymentProofIsClamped);
+    }, t("admin.upload.saved"));
   }
 
   function restoreToEnv() {
@@ -71,6 +79,8 @@ export function UploadConfigForm({ initial }: { initial: UploadAdminView }) {
       await api("/api/admin/config/upload", { method: "DELETE" });
       setMaxUploadSizeMb(String(initial.envDefaults.maxUploadSizeMb));
       setPaymentProofMaxSizeMb(String(initial.envDefaults.paymentProofMaxSizeMb));
+      setPaymentProofEffectiveMb(initial.envDefaults.paymentProofMaxSizeMb);
+      setPaymentProofIsClamped(false);
     }, t("admin.common.restoredEnv"));
   }
 
@@ -92,9 +102,16 @@ export function UploadConfigForm({ initial }: { initial: UploadAdminView }) {
       <FormField
         id="payment-proof-size"
         label={t("admin.upload.proofLimit")}
-        description={t("admin.upload.proofHint", {
-          size: initial.envDefaults.paymentProofMaxSizeMb,
-        })}
+        description={
+          paymentProofIsClamped
+            ? t("admin.upload.proofHintClamped", {
+                size: initial.envDefaults.paymentProofMaxSizeMb,
+                effective: paymentProofEffectiveMb,
+              })
+            : t("admin.upload.proofHint", {
+                size: initial.envDefaults.paymentProofMaxSizeMb,
+              })
+        }
       >
         <Input
           type="number"

@@ -142,7 +142,10 @@ export default async function AdminTasksPage({
               <Badge variant={STATUS_VARIANTS[task.status]}>
                 {t(`admin.tasks.status${task.status}`)}
               </Badge>
-              <Badge variant="outline">
+              <Badge
+                variant="outline"
+                aria-label={`${t("admin.tasks.attempts")}: ${task.attempts} / ${task.maxAttempts}`}
+              >
                 {task.attempts} / {task.maxAttempts}
               </Badge>
             </div>

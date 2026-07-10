@@ -6,6 +6,7 @@ import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
 import { requireUser } from "@/modules/auth/session";
 import { createPaymentRequest } from "@/modules/payment";
+import { serializePaymentRequestForApi } from "@/modules/payment/rejection-note";
 
 export const runtime = "nodejs";
 
@@ -21,7 +22,7 @@ export async function POST(req: NextRequest) {
     const user = await requireUser();
     const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const request = await createPaymentRequest({ userId: user.id, ...input });
-    return jsonOk(request);
+    return jsonOk(serializePaymentRequestForApi(request));
   } catch (err) {
     return handleApiError(err);
   }

@@ -19,7 +19,14 @@ const STRUCTURED_REVIEW_NOTE_PREFIX = "payment_rejection:v1:";
 
 type ParsedPaymentRejectionNote =
   | { kind: "structured"; rejectReasonCode: PaymentRejectReasonCode; rejectDetails: string | null }
-  | { kind: "legacy"; reviewNote: string | null };
+  | { kind: "legacy"; reviewNote: string | null }
+  | { kind: "redacted" };
+
+type PaymentRequestApiFields = {
+  rejectReasonCode: PaymentRejectReasonCode | null;
+  rejectDetails: string | null;
+  reviewNote: string | null;
+};
 
 function isPaymentRejectReasonCode(value: unknown): value is PaymentRejectReasonCode {
   return (
@@ -46,9 +53,10 @@ export function parsePaymentRejectionReviewNote(
   reviewNote: string | null | undefined,
 ): ParsedPaymentRejectionNote {
   if (!reviewNote) return { kind: "legacy", reviewNote: null };
-  if (!reviewNote.startsWith(STRUCTURED_REVIEW_NOTE_PREFIX)) {
+  if (!reviewNote.startsWith("payment_rejection:")) {
     return { kind: "legacy", reviewNote };
   }
+  if (!reviewNote.startsWith(STRUCTURED_REVIEW_NOTE_PREFIX)) return { kind: "redacted" };
 
   try {
     const parsed = JSON.parse(reviewNote.slice(STRUCTURED_REVIEW_NOTE_PREFIX.length)) as {
@@ -56,7 +64,7 @@ export function parsePaymentRejectionReviewNote(
       rejectDetails?: unknown;
     };
     if (!isPaymentRejectReasonCode(parsed.rejectReasonCode)) {
-      return { kind: "legacy", reviewNote };
+      return { kind: "redacted" };
     }
     return {
       kind: "structured",
@@ -65,7 +73,7 @@ export function parsePaymentRejectionReviewNote(
         typeof parsed.rejectDetails === "string" ? cleanDetails(parsed.rejectDetails) : null,
     };
   } catch {
-    return { kind: "legacy", reviewNote };
+    return { kind: "redacted" };
   }
 }
 
@@ -82,6 +90,7 @@ export function formatPaymentRejectionReviewNote(
 ): string | null {
   const parsed = parsePaymentRejectionReviewNote(reviewNote);
   if (parsed.kind === "legacy") return parsed.reviewNote;
+  if (parsed.kind === "redacted") return null;
 
   const reason = paymentRejectReasonLabel(parsed.rejectReasonCode, t);
   return parsed.rejectDetails ? `${reason}: ${parsed.rejectDetails}` : reason;
@@ -95,4 +104,37 @@ export function paymentRejectionAuditReason(
     return details ? `${input.rejectReasonCode}: ${details}` : input.rejectReasonCode;
   }
   return input.reviewNote?.trim() || null;
+}
+
+export function serializePaymentRequestForApi<T extends { reviewNote: string | null }>(
+  request: T,
+): Omit<T, keyof PaymentRequestApiFields> & PaymentRequestApiFields {
+  const parsed = parsePaymentRejectionReviewNote(request.reviewNote);
+  if (parsed.kind === "structured") {
+    return {
+      ...request,
+      rejectReasonCode: parsed.rejectReasonCode,
+      rejectDetails: parsed.rejectDetails,
+      reviewNote: paymentRejectionAuditReason(parsed),
+    };
+  }
+  if (parsed.kind === "redacted") {
+    return { ...request, rejectReasonCode: null, rejectDetails: null, reviewNote: null };
+  }
+  return {
+    ...request,
+    rejectReasonCode: null,
+    rejectDetails: null,
+    reviewNote: parsed.reviewNote,
+  };
+}
+
+export function serializePaymentRequestContainerForApi<
+  T extends { request: { reviewNote: string | null } },
+>(
+  entry: T,
+): Omit<T, "request"> & {
+  request: ReturnType<typeof serializePaymentRequestForApi<T["request"]>>;
+} {
+  return { ...entry, request: serializePaymentRequestForApi(entry.request) };
 }

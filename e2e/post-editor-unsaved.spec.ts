@@ -211,6 +211,16 @@ test("dirty editor guards logout, internal navigation, browser back, and clean b
     }
   });
   expect(confirmedLogoutState).toEqual({ allowed: true, beforeUnloadPrevented: false });
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          (window.history.state as { __adminPostEditorDirtyGuard?: unknown } | null)
+            ?.__adminPostEditorDirtyGuard,
+        ),
+      ),
+    )
+    .toBe(true);
 
   page.once("dialog", async (dialog) => {
     expect(dialog.type()).toBe("confirm");
@@ -281,4 +291,76 @@ test("dirty editor guards logout, internal navigation, browser back, and clean b
     .toBe(false);
   await page.goBack();
   await expect(page).toHaveURL(/\/admin\/posts$/);
+});
+
+test("confirmed link navigation collapses the guard entry - back returns in one step", async ({
+  page,
+}) => {
+  const postId = await openDraftEditor(page);
+  await page
+    .getByRole("textbox", { name: "正文", exact: true })
+    .fill("未保存正文内容，确认离开后历史不应残留守卫记录");
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.type()).toBe("confirm");
+    await dialog.accept();
+  });
+  await page.getByRole("link", { name: "文件管理" }).click();
+  await expect(page).toHaveURL(/\/admin\/files$/);
+
+  // One back step must land on the editor (guard entry collapsed), not a duplicate.
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`/admin/posts/${postId}$`));
+});
+
+test("translation-only edits guard navigation and locale switching", async ({ page }) => {
+  const postId = await openDraftEditor(page);
+  const parentSave = page.getByRole("button", { name: "保存", exact: true });
+  await page.getByRole("textbox", { name: "译文标题" }).fill("未保存译文标题");
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+  await expect(parentSave).toBeDisabled();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          (window.history.state as { __adminPostEditorDirtyGuard?: unknown } | null)
+            ?.__adminPostEditorDirtyGuard,
+        ),
+      ),
+    )
+    .toBe(true);
+
+  const navigationDialogPromise = page.waitForEvent("dialog");
+  const navigationClickPromise = page.getByRole("link", { name: "文件管理" }).click();
+  const navigationDialog = await navigationDialogPromise;
+  expect(navigationDialog.type()).toBe("confirm");
+  await navigationDialog.dismiss();
+  await navigationClickPromise;
+  await expect(page).toHaveURL(new RegExp(`/admin/posts/${postId}$`));
+
+  const localeSelect = page.locator("#translation-locale");
+  const originalLocale = await localeSelect.inputValue();
+  const nextLocale = await localeSelect
+    .locator("option")
+    .evaluateAll(
+      (options, current) =>
+        options
+          .map((option) => (option as HTMLOptionElement).value)
+          .find((value) => value !== current),
+      originalLocale,
+    );
+  expect(nextLocale).toBeTruthy();
+  const cancelLocaleDialogPromise = page.waitForEvent("dialog");
+  const cancelLocalePromise = localeSelect.selectOption(nextLocale!);
+  const cancelLocaleDialog = await cancelLocaleDialogPromise;
+  await cancelLocaleDialog.dismiss();
+  await cancelLocalePromise;
+  await expect(localeSelect).toHaveValue(originalLocale);
+  const confirmLocaleDialogPromise = page.waitForEvent("dialog");
+  const confirmLocalePromise = localeSelect.selectOption(nextLocale!);
+  const confirmLocaleDialog = await confirmLocaleDialogPromise;
+  await confirmLocaleDialog.accept();
+  await confirmLocalePromise;
+  await expect(localeSelect).toHaveValue(nextLocale!);
 });

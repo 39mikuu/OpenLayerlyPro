@@ -1,7 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import type { ReactNode, RefObject } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Notice } from "@/components/admin/primitives/notice";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,7 @@ export function ConfirmActionButton({
   description,
   disabled,
   errorFallback,
+  finalFocusFallbackRef,
   loadingLabel,
   onConfirm,
   onOpenChange,
@@ -47,6 +48,7 @@ export function ConfirmActionButton({
   description: ReactNode;
   disabled?: boolean;
   errorFallback: string;
+  finalFocusFallbackRef?: RefObject<HTMLElement | null>;
   loadingLabel?: ReactNode;
   onConfirm: () => Promise<void>;
   onOpenChange?: (open: boolean) => void;
@@ -60,6 +62,7 @@ export function ConfirmActionButton({
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const actionButtonRef = useRef<HTMLButtonElement>(null);
   const open = controlledOpen ?? uncontrolledOpen;
 
   function setDialogOpen(nextOpen: boolean) {
@@ -97,6 +100,7 @@ export function ConfirmActionButton({
         <DialogTrigger
           render={
             <Button
+              ref={actionButtonRef}
               className={className}
               disabled={disabled || loading}
               size={size}
@@ -109,6 +113,7 @@ export function ConfirmActionButton({
         </DialogTrigger>
       ) : (
         <Button
+          ref={actionButtonRef}
           className={className}
           disabled={disabled || loading}
           size={size}
@@ -121,6 +126,11 @@ export function ConfirmActionButton({
       <DialogContent
         className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-md"
         closeLabel={closeLabel}
+        finalFocus={() => {
+          const actionButton = actionButtonRef.current;
+          if (actionButton && !actionButton.disabled) return actionButton;
+          return finalFocusFallbackRef?.current ?? actionButton;
+        }}
         showCloseButton={!loading}
       >
         <DialogHeader>

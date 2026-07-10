@@ -11,8 +11,13 @@ export function LogoutButton() {
       variant="ghost"
       size="sm"
       onClick={async () => {
-        const beforeLogout = new Event("admin:before-logout", { cancelable: true });
+        const pending: Promise<void>[] = [];
+        const beforeLogout = new CustomEvent("admin:before-logout", {
+          cancelable: true,
+          detail: { waitUntil: (promise: Promise<void>) => pending.push(promise) },
+        });
         if (!window.dispatchEvent(beforeLogout)) return;
+        await Promise.all(pending);
         try {
           await api("/api/auth/logout", { method: "POST" });
           window.location.assign("/");

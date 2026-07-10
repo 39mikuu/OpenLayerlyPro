@@ -6,6 +6,7 @@ import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
 import { requireUser } from "@/modules/auth/session";
 import { resubmitPaymentProof } from "@/modules/payment";
+import { serializePaymentRequestForApi } from "@/modules/payment/rejection-note";
 
 export const runtime = "nodejs";
 
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       userId: user.id,
       proofFileId,
     });
-    return jsonOk(updated);
+    return jsonOk(serializePaymentRequestForApi(updated));
   } catch (err) {
     return handleApiError(err);
   }

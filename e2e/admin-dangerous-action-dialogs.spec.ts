@@ -267,9 +267,9 @@ test("admin account dangerous actions use guarded confirmation dialogs", async (
   await page.locator("#new-password").press("Enter");
   await expect(page.getByRole("dialog", { name: "Change administrator password" })).toBeVisible();
   await page.getByRole("button", { name: "Cancel" }).click();
-  await page.getByTestId("admin-main").getByRole("button", { name: "Update password" }).click();
-  await expect(page.getByRole("dialog", { name: "Change administrator password" })).toBeVisible();
-  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(
+    page.getByTestId("admin-main").getByRole("button", { name: "Update password" }),
+  ).toBeFocused();
 
   await page.locator("#new-email").fill("not-an-email");
   await page.locator("#email-password").fill("current-password");
@@ -295,6 +295,18 @@ test("admin account dangerous actions use guarded confirmation dialogs", async (
   await otherSessionRow.getByRole("button", { name: "Revoke" }).click();
   await expect(page.getByRole("dialog", { name: "Revoke login session" })).toBeVisible();
   await page.getByRole("button", { name: "Cancel" }).click();
+
+  await page.getByTestId("admin-main").getByRole("button", { name: "Update password" }).click();
+  await expect(page.getByRole("dialog", { name: "Change administrator password" })).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Update password" }).click();
+  await expect(page.locator("#current-password")).toBeFocused();
+
+  await page.locator("#new-email").fill("new-admin-dangerous-actions@example.com");
+  await page.locator("#email-password").fill("new-secure-password");
+  await page.getByTestId("admin-main").getByRole("button", { name: "Update email" }).click();
+  await expect(page.getByRole("dialog", { name: "Change administrator email" })).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Update email" }).click();
+  await expect(page.locator("#email-password")).toBeFocused();
 
   expect(nativeDialogs).toEqual([]);
 });

@@ -898,7 +898,9 @@ export const zh = {
       contentLimit: "内容附件上限（MB）",
       contentHint: "高清图 / PSD / ZIP / 笔刷包等内容附件的单文件上限。环境变量默认：{size} MB。",
       proofLimit: "付款截图 / 收款码上限（MB）",
-      proofHint: "付款截图与收款码图片的单文件上限。环境变量默认：{size} MB。",
+      proofHint: "付款截图与收款码图片的单文件上限。环境变量 {size} MB 是不可超过的硬上限。",
+      proofHintClamped:
+        "环境变量 {size} MB 是不可超过的硬上限；高于该值的已保存配置会被限制，当前生效值为 {effective} MB。",
       applyHint: "修改后立即对新上传生效，无需重启。请确保上限与部署机器可用内存匹配。",
       invalid: "上传上限必须为正整数 MB",
       saved: "已保存，新上传会立即按当前上限校验",
