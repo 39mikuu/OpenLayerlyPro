@@ -293,6 +293,27 @@ test("dirty editor guards logout, internal navigation, browser back, and clean b
   await expect(page).toHaveURL(/\/admin\/posts$/);
 });
 
+test("confirmed link navigation collapses the guard entry - back returns in one step", async ({
+  page,
+}) => {
+  const postId = await openDraftEditor(page);
+  await page
+    .getByRole("textbox", { name: "正文", exact: true })
+    .fill("未保存正文内容，确认离开后历史不应残留守卫记录");
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.type()).toBe("confirm");
+    await dialog.accept();
+  });
+  await page.getByRole("link", { name: "文件管理" }).click();
+  await expect(page).toHaveURL(/\/admin\/files$/);
+
+  // One back step must land on the editor (guard entry collapsed), not a duplicate.
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`/admin/posts/${postId}$`));
+});
+
 test("translation-only edits guard navigation and locale switching", async ({ page }) => {
   const postId = await openDraftEditor(page);
   const parentSave = page.getByRole("button", { name: "保存", exact: true });

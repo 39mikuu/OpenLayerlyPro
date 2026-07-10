@@ -27,7 +27,7 @@ export function UploadConfigForm({ initial }: { initial: UploadAdminView }) {
   const t = useT();
   const [maxUploadSizeMb, setMaxUploadSizeMb] = useState(String(initial.maxUploadSizeMb));
   const [paymentProofMaxSizeMb, setPaymentProofMaxSizeMb] = useState(
-    String(initial.paymentProofMaxSizeMb),
+    String(initial.paymentProofConfiguredMb),
   );
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -68,7 +68,7 @@ export function UploadConfigForm({ initial }: { initial: UploadAdminView }) {
         body: { maxUploadSizeMb: max, paymentProofMaxSizeMb: proof },
       });
       setMaxUploadSizeMb(String(fresh.maxUploadSizeMb));
-      setPaymentProofMaxSizeMb(String(fresh.paymentProofMaxSizeMb));
+      setPaymentProofMaxSizeMb(String(fresh.paymentProofConfiguredMb));
       setPaymentProofEffectiveMb(fresh.paymentProofMaxSizeMb);
       setPaymentProofIsClamped(fresh.paymentProofIsClamped);
     }, t("admin.upload.saved"));
