@@ -942,7 +942,9 @@ export const en: Messages = {
         "Per-file limit for images, PSD, ZIP and brush packs. Environment default: {size} MB.",
       proofLimit: "Payment screenshot / QR limit (MB)",
       proofHint:
-        "Per-file limit for payment screenshots and QR images. Environment default: {size} MB.",
+        "Per-file limit for payment screenshots and QR images. The {size} MB environment value is a hard upper bound.",
+      proofHintClamped:
+        "The {size} MB environment value is a hard upper bound; saved values above it are clamped. The effective value is {effective} MB.",
       applyHint:
         "Changes apply to new uploads immediately. Keep limits appropriate for available memory.",
       invalid: "Upload limits must be positive integers in MB",

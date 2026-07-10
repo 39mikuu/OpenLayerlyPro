@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { MarkdownEditor } from "@/components/admin/markdown-editor";
 import {
@@ -43,9 +43,11 @@ const STATUS_KEYS: Record<TranslationEditorStatus, string> = {
 export function PostTranslationEditor({
   postId,
   originalLocale,
+  onDirtyChange,
 }: {
   postId: string;
   originalLocale: string;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const t = useT();
   const locales = useMemo(
@@ -55,6 +57,7 @@ export function PostTranslationEditor({
   const [locale, setLocale] = useState<Locale>(locales[0] ?? "en");
   const [translations, setTranslations] = useState<TranslationVersion[]>([]);
   const [form, setForm] = useState({ title: "", summary: "", body: "" });
+  const [savedSnapshot, setSavedSnapshot] = useState(() => JSON.stringify(form));
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -63,6 +66,17 @@ export function PostTranslationEditor({
     [locale, translations],
   );
   const status = translationEditorStatus(versions);
+  const currentSnapshot = useMemo(() => JSON.stringify(form), [form]);
+  const dirty = currentSnapshot !== savedSnapshot;
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  const replaceForm = useCallback((nextForm: typeof form) => {
+    setForm(nextForm);
+    setSavedSnapshot(JSON.stringify(nextForm));
+  }, []);
 
   async function load(preferredLocale = locale) {
     const overview = await api<TranslationOverview>(`/api/admin/posts/${postId}/translations`);
@@ -71,7 +85,9 @@ export function PostTranslationEditor({
     if (!nextLocale) return;
     setTranslations(overview.translations);
     setLocale(nextLocale);
-    setForm(editableTranslation(translationVersionsForLocale(overview.translations, nextLocale)));
+    replaceForm(
+      editableTranslation(translationVersionsForLocale(overview.translations, nextLocale)),
+    );
   }
 
   useEffect(() => {
@@ -85,7 +101,7 @@ export function PostTranslationEditor({
         setTranslations(overview.translations);
         if (nextLocale) {
           setLocale(nextLocale);
-          setForm(
+          replaceForm(
             editableTranslation(translationVersionsForLocale(overview.translations, nextLocale)),
           );
         }
@@ -101,12 +117,13 @@ export function PostTranslationEditor({
     return () => {
       active = false;
     };
-  }, [postId, t]);
+  }, [postId, replaceForm, t]);
 
   function selectLocale(nextLocale: Locale) {
+    if (dirty && !window.confirm(t("admin.posts.unsavedChangesConfirm"))) return;
     setLocale(nextLocale);
     setMessage(null);
-    setForm(editableTranslation(translationVersionsForLocale(translations, nextLocale)));
+    replaceForm(editableTranslation(translationVersionsForLocale(translations, nextLocale)));
   }
 
   async function run(action: () => Promise<void>) {
@@ -177,6 +194,7 @@ export function PostTranslationEditor({
           <Label htmlFor={`translation-title-${locale}`}>{t("admin.posts.translationTitle")}</Label>
           <Input
             id={`translation-title-${locale}`}
+            disabled={loading}
             value={form.title}
             onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
           />
@@ -187,6 +205,7 @@ export function PostTranslationEditor({
           </Label>
           <Input
             id={`translation-summary-${locale}`}
+            disabled={loading}
             value={form.summary}
             onChange={(event) =>
               setForm((current) => ({
@@ -247,6 +266,7 @@ export function PostTranslationEditor({
               disabled={loading}
               onClick={() =>
                 run(async () => {
+                  if (dirty && !window.confirm(t("admin.posts.unsavedChangesConfirm"))) return;
                   await api(`/api/admin/posts/${postId}/translations/${locale}/unpublish`, {
                     method: "POST",
                   });

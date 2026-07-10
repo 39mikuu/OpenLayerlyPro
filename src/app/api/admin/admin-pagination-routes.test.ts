@@ -129,4 +129,30 @@ describe("admin pagination API cursor validation", () => {
       ),
     );
   });
+
+  it("sanitizes structured rejection notes in admin payment responses", async () => {
+    mocks.listPaymentRequestsPage.mockResolvedValue({
+      items: [
+        {
+          request: {
+            id: "request-1",
+            reviewNote:
+              'payment_rejection:v1:{"rejectReasonCode":"proof_unclear","rejectDetails":"cropped"}',
+          },
+          tier: {},
+          userEmail: "fan@example.com",
+        },
+      ],
+      nextCursor: null,
+    });
+    const json = await (
+      await getPayments(request("/api/admin/payment-requests", { status: "pending_review" }))
+    ).json();
+    expect(json.data.items[0].request).toMatchObject({
+      reviewNote: "proof_unclear: cropped",
+      rejectReasonCode: "proof_unclear",
+      rejectDetails: "cropped",
+    });
+    expect(JSON.stringify(json)).not.toContain("payment_rejection:");
+  });
 });

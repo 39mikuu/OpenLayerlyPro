@@ -95,6 +95,7 @@ export function PostEditor({
   const [savedTaxonomySnapshot, setSavedTaxonomySnapshot] = useState(() =>
     taxonomySnapshot(selectedCategoryIds, selectedTagIds),
   );
+  const [translationDirty, setTranslationDirty] = useState(false);
   const currentFormSnapshot = useMemo(() => formSnapshot(form), [form]);
   const currentTaxonomySnapshot = useMemo(
     () => taxonomySnapshot(categoryIds, tagIds),
@@ -103,15 +104,16 @@ export function PostEditor({
   const hasUnsavedFormChanges = currentFormSnapshot !== savedFormSnapshot;
   const hasUnsavedTaxonomyChanges = currentTaxonomySnapshot !== savedTaxonomySnapshot;
   const hasUnsavedChanges = hasUnsavedFormChanges || hasUnsavedTaxonomyChanges;
-  const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
+  const hasAnyUnsavedChanges = hasUnsavedChanges || translationDirty;
+  const hasUnsavedChangesRef = useRef(hasAnyUnsavedChanges);
   const unsavedChangesConfirmMessageRef = useRef(t("admin.posts.unsavedChangesConfirm"));
   const allowNextPopStateRef = useRef(false);
   const suppressBeforeUnloadRef = useRef(false);
-  hasUnsavedChangesRef.current = hasUnsavedChanges;
+  hasUnsavedChangesRef.current = hasAnyUnsavedChanges;
   unsavedChangesConfirmMessageRef.current = t("admin.posts.unsavedChangesConfirm");
 
   useEffect(() => {
-    if (!hasUnsavedChanges) return;
+    if (!hasAnyUnsavedChanges) return;
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       if (suppressBeforeUnloadRef.current) return;
       event.preventDefault();
@@ -119,10 +121,10 @@ export function PostEditor({
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [hasUnsavedChanges]);
+  }, [hasAnyUnsavedChanges]);
 
   useEffect(() => {
-    if (!hasUnsavedChanges) return;
+    if (!hasAnyUnsavedChanges) return;
 
     allowNextPopStateRef.current = false;
 
@@ -158,12 +160,15 @@ export function PostEditor({
       );
     };
     const collapseDirtyGuardHistoryEntry = () => {
-      if (!isDirtyGuardHistoryEntry()) return;
-      window.history.back();
-      // The popstate listener has already been removed during cleanup, so do not
-      // let the synthetic-back bypass leak into the next dirty editing session.
-      allowNextPopStateRef.current = false;
+      if (!isDirtyGuardHistoryEntry()) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        pendingCollapseResolve = resolve;
+        allowNextPopStateRef.current = true;
+        window.history.back();
+      });
     };
+    let logoutCollapsePromise: Promise<void> | null = null;
+    let pendingCollapseResolve: (() => void) | null = null;
 
     pushDirtyGuardHistoryEntry();
 
@@ -183,10 +188,14 @@ export function PostEditor({
       const anchor = target.closest<HTMLAnchorElement>("a[href]");
       if (!anchor || anchor.target || anchor.hasAttribute("download")) return;
       if (!shouldGuardUrl(anchor.href)) return;
-      if (!confirmNavigation()) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (!confirmNavigation()) return;
+      void collapseDirtyGuardHistoryEntry().then(() => {
+        suppressBeforeUnloadRef.current = true;
+        const nextUrl = new URL(anchor.href);
+        router.push(`${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+      });
     };
 
     const handleBeforeLogout = (event: Event) => {
@@ -194,16 +203,39 @@ export function PostEditor({
         event.preventDefault();
         return;
       }
-      suppressBeforeUnloadRef.current = true;
+      logoutCollapsePromise = collapseDirtyGuardHistoryEntry().then(() => {
+        suppressBeforeUnloadRef.current = true;
+      });
+      const waitUntil = (event as CustomEvent<{ waitUntil?: (promise: Promise<void>) => void }>)
+        .detail?.waitUntil;
+      if (waitUntil) waitUntil(logoutCollapsePromise);
+      else suppressBeforeUnloadRef.current = true;
     };
 
     const handleLogoutAborted = () => {
       suppressBeforeUnloadRef.current = false;
+      const collapsed = logoutCollapsePromise ?? Promise.resolve();
+      logoutCollapsePromise = null;
+      void collapsed.then(() => {
+        allowNextPopStateRef.current = false;
+        if (hasUnsavedChangesRef.current && !isDirtyGuardHistoryEntry()) {
+          pushDirtyGuardHistoryEntry();
+        }
+      });
     };
 
     const handlePopState = (event: PopStateEvent) => {
       if (allowNextPopStateRef.current) {
         allowNextPopStateRef.current = false;
+        const resolveCollapse = pendingCollapseResolve;
+        if (resolveCollapse) {
+          // A guard-entry collapse pops the same URL; keep it invisible to the
+          // Next.js router, whose own popstate handling would asynchronously
+          // replaceState and wipe a freshly re-pushed guard entry.
+          event.stopImmediatePropagation();
+          pendingCollapseResolve = null;
+          resolveCollapse();
+        }
         return;
       }
       event.stopImmediatePropagation();
@@ -224,9 +256,9 @@ export function PostEditor({
       window.removeEventListener("admin:before-logout", handleBeforeLogout);
       window.removeEventListener("admin:logout-aborted", handleLogoutAborted);
       window.removeEventListener("popstate", handlePopState, true);
-      if (!hasUnsavedChangesRef.current) collapseDirtyGuardHistoryEntry();
+      if (!hasUnsavedChangesRef.current) void collapseDirtyGuardHistoryEntry();
     };
-  }, [hasUnsavedChanges]);
+  }, [hasAnyUnsavedChanges, router]);
 
   async function run(fn: () => Promise<void>) {
     setLoading(true);
@@ -331,7 +363,7 @@ export function PostEditor({
   return (
     <div className="max-w-2xl space-y-6">
       <div className="space-y-4">
-        {hasUnsavedChanges ? (
+        {hasAnyUnsavedChanges ? (
           <Notice variant="warning">{t("admin.posts.unsavedChanges")}</Notice>
         ) : (
           <p aria-live="polite" className="text-sm text-muted-foreground">
@@ -518,7 +550,7 @@ export function PostEditor({
               disabled={loading}
               onClick={() =>
                 run(async () => {
-                  if (hasUnsavedChanges) {
+                  if (hasAnyUnsavedChanges) {
                     setMessage(t("admin.posts.saveBeforePublish"));
                     return;
                   }
@@ -538,7 +570,7 @@ export function PostEditor({
               disabled={loading}
               onClick={() =>
                 run(async () => {
-                  if (hasUnsavedChanges) {
+                  if (hasAnyUnsavedChanges) {
                     setMessage(t("admin.posts.saveBeforeArchive"));
                     return;
                   }
@@ -580,7 +612,13 @@ export function PostEditor({
         </div>
       </div>
 
-      {!isNew && <PostTranslationEditor postId={post.id} originalLocale={post.originalLocale} />}
+      {!isNew && (
+        <PostTranslationEditor
+          postId={post.id}
+          originalLocale={post.originalLocale}
+          onDirtyChange={setTranslationDirty}
+        />
+      )}
 
       {!isNew && (
         <Card>

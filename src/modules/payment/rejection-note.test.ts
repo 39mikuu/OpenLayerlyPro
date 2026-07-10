@@ -7,6 +7,7 @@ import {
   parsePaymentRejectionReviewNote,
   paymentRejectionAuditReason,
   serializePaymentRejectionReviewNote,
+  serializePaymentRequestForApi,
 } from "./rejection-note";
 
 describe("payment rejection review notes", () => {
@@ -52,5 +53,33 @@ describe("payment rejection review notes", () => {
         rejectDetails: "Expected $99.",
       }),
     ).toBe("wrong_amount: Expected $99.");
+  });
+
+  it("serializes structured notes without exposing the storage prefix", () => {
+    const stored = serializePaymentRejectionReviewNote({
+      rejectReasonCode: "proof_unclear",
+      rejectDetails: "receipt cropped",
+    });
+    const result = serializePaymentRequestForApi({ id: "request-1", reviewNote: stored });
+    expect(result).toEqual({
+      id: "request-1",
+      reviewNote: "proof_unclear: receipt cropped",
+      rejectReasonCode: "proof_unclear",
+      rejectDetails: "receipt cropped",
+    });
+    expect(JSON.stringify(result)).not.toContain("payment_rejection:");
+  });
+
+  it("passes legacy notes through and redacts malformed prefixed values", () => {
+    expect(serializePaymentRequestForApi({ reviewNote: "legacy note" })).toMatchObject({
+      reviewNote: "legacy note",
+      rejectReasonCode: null,
+      rejectDetails: null,
+    });
+    expect(serializePaymentRequestForApi({ reviewNote: "payment_rejection:v2:not-json" })).toEqual({
+      reviewNote: null,
+      rejectReasonCode: null,
+      rejectDetails: null,
+    });
   });
 });

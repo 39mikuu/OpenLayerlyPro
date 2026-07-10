@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { ConfirmActionButton } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
@@ -53,6 +53,8 @@ export function AdminAccountManager({
   const [message, setMessage] = useState<string | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
+  const currentPasswordRef = useRef<HTMLInputElement>(null);
+  const emailPasswordRef = useRef<HTMLInputElement>(null);
 
   async function runConfirmed(action: () => Promise<void>) {
     setLoading(true);
@@ -127,6 +129,7 @@ export function AdminAccountManager({
               <div className="space-y-1">
                 <Label htmlFor="current-password">{t("admin.account.currentPassword")}</Label>
                 <Input
+                  ref={currentPasswordRef}
                   id="current-password"
                   type="password"
                   autoComplete="current-password"
@@ -155,6 +158,7 @@ export function AdminAccountManager({
                 description={t("admin.account.passwordDialogDescription")}
                 disabled={loading || !currentPassword || newPassword.length < 8}
                 errorFallback={t("admin.common.operationFailed")}
+                finalFocusFallbackRef={currentPasswordRef}
                 loadingLabel={t("admin.common.saving")}
                 onOpenChange={setPasswordDialogOpen}
                 open={passwordDialogOpen}
@@ -184,6 +188,7 @@ export function AdminAccountManager({
               <div className="space-y-1">
                 <Label htmlFor="new-email">{t("admin.account.newEmail")}</Label>
                 <Input
+                  ref={emailPasswordRef}
                   id="new-email"
                   type="email"
                   value={newEmail}
@@ -209,6 +214,7 @@ export function AdminAccountManager({
                 description={t("admin.account.emailDialogDescription", { email: newEmail })}
                 disabled={loading || !emailPassword || !newEmail}
                 errorFallback={t("admin.common.operationFailed")}
+                finalFocusFallbackRef={emailPasswordRef}
                 loadingLabel={t("admin.common.saving")}
                 onOpenChange={setEmailDialogOpen}
                 open={emailDialogOpen}

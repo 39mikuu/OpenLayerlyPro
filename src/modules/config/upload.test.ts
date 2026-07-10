@@ -82,8 +82,20 @@ describe("Upload 后台读写", () => {
     expect(view).toEqual({
       maxUploadSizeMb: 200,
       paymentProofMaxSizeMb: 10,
+      paymentProofConfiguredMb: 10,
+      paymentProofIsClamped: false,
       hasDbOverride: true,
       envDefaults: { maxUploadSizeMb: 500, paymentProofMaxSizeMb: 10 },
+    });
+  });
+
+  it("admin view reports payment-proof clamping", async () => {
+    mockedGet.mockResolvedValue({ paymentProofMaxSizeMb: 50 });
+    const { getUploadAdminView } = await import("./upload");
+    await expect(getUploadAdminView()).resolves.toMatchObject({
+      paymentProofMaxSizeMb: 10,
+      paymentProofConfiguredMb: 50,
+      paymentProofIsClamped: true,
     });
   });
 
