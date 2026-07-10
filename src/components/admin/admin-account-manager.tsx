@@ -188,7 +188,6 @@ export function AdminAccountManager({
               <div className="space-y-1">
                 <Label htmlFor="new-email">{t("admin.account.newEmail")}</Label>
                 <Input
-                  ref={emailPasswordRef}
                   id="new-email"
                   type="email"
                   value={newEmail}
@@ -198,6 +197,7 @@ export function AdminAccountManager({
               <div className="space-y-1">
                 <Label htmlFor="email-password">{t("admin.account.currentPassword")}</Label>
                 <Input
+                  ref={emailPasswordRef}
                   id="email-password"
                   type="password"
                   autoComplete="current-password"
