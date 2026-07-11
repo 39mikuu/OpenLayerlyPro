@@ -59,12 +59,18 @@ describe("document security middleware", () => {
     ]);
   });
 
-  it("excludes feed.xml from document middleware while matching public pages", () => {
+  it("excludes public XML/text crawler routes while matching public pages", () => {
     const matcher = config.matcher[0]!;
     const pattern = new RegExp(`^${matcher}$`);
 
     expect(pattern.test("/feed.xml")).toBe(false);
+    expect(pattern.test("/robots.txt")).toBe(false);
+    expect(pattern.test("/sitemap.xml")).toBe(false);
+    expect(pattern.test("/sitemaps/static.xml")).toBe(false);
+    expect(pattern.test("/sitemaps/posts/0.xml")).toBe(false);
     expect(pattern.test("/posts")).toBe(true);
+    expect(pattern.test("/posts/public-title")).toBe(true);
+    expect(pattern.test("/admin")).toBe(true);
   });
 
   it("uses one nonce and policy for the forwarded request and browser response", async () => {

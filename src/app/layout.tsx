@@ -8,6 +8,8 @@ import {
   IntegrationScriptElements,
   VerificationMetaElements,
 } from "@/components/public-security-elements";
+import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
+import { DEFAULT_SITE_DESCRIPTION } from "@/modules/content/seo";
 import { resolveLocale } from "@/modules/i18n/server";
 import { getPublicSiteInfo } from "@/modules/site";
 import {
@@ -25,17 +27,33 @@ import {
 
 const defaultMetadata: Metadata = {
   title: "Artist Member Site",
-  description: "开源画师会员站系统",
+  description: DEFAULT_SITE_DESCRIPTION,
 };
+const DEFAULT_SITE_TITLE = "Artist Member Site";
 
 export async function generateMetadata(): Promise<Metadata> {
   try {
     const site = await getPublicSiteInfo();
+    const baseUrl = getPublicBaseUrl();
     const iconUrl = site.siteIconFileId ? `/api/files/${site.siteIconFileId}/download` : undefined;
+    const title = site.siteName || DEFAULT_SITE_TITLE;
+    const description = site.artistBio.trim() || DEFAULT_SITE_DESCRIPTION;
     return {
       ...defaultMetadata,
-      title: site.siteName || defaultMetadata.title,
+      metadataBase: new URL(baseUrl),
+      title,
+      description,
       icons: iconUrl ? { icon: iconUrl, apple: iconUrl } : undefined,
+      openGraph: {
+        siteName: title,
+        description,
+        url: buildPublicUrl(baseUrl, "/"),
+      },
+      twitter: {
+        card: "summary",
+        title,
+        description,
+      },
     };
   } catch {
     return defaultMetadata;

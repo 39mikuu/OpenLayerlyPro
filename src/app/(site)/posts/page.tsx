@@ -1,9 +1,19 @@
+import type { Metadata } from "next";
+
 import { listPublishedPostsPage, localizePostCards } from "@/modules/content";
+import { buildSiteMetadata } from "@/modules/content/seo";
 import { getT, resolveLocale } from "@/modules/i18n/server";
 import { getPostsTaxonomy } from "@/modules/taxonomy";
 import { getActiveTheme, type PostCardView } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  return buildSiteMetadata("/posts", {
+    title: "Posts",
+    description: "Latest public posts and member updates.",
+  });
+}
 
 export default async function PostsPage({
   searchParams,

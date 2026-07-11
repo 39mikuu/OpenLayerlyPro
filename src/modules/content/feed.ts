@@ -3,15 +3,28 @@ import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
-import { getEnv } from "@/lib/env";
 import { DEFAULT_LOCALE } from "@/modules/i18n/config";
 import { readPublicSiteInfoWithMetadata } from "@/modules/site";
 
+import {
+  buildPostUrl,
+  buildPublicUrl,
+  escapeXml,
+  getPublicBaseUrl,
+  isPublicHttpResourceNotModified,
+  maxPublicDate,
+  PUBLIC_EMPTY_LAST_MODIFIED,
+  PUBLIC_SEO_CACHE_CONTROL,
+  publicXmlHeaders,
+  sanitizeXml10,
+  toDate,
+  trimPublicSummary,
+} from "./public-projection";
+
 export const PUBLIC_ATOM_FEED_LIMIT = 100;
-export const PUBLIC_ATOM_CACHE_CONTROL =
-  "public, max-age=0, s-maxage=300, stale-while-revalidate=60";
+export const PUBLIC_ATOM_CACHE_CONTROL = PUBLIC_SEO_CACHE_CONTROL;
 export const PUBLIC_ATOM_CONTENT_TYPE = "application/atom+xml; charset=utf-8";
-export const PUBLIC_ATOM_EMPTY_LAST_MODIFIED = new Date(0);
+export const PUBLIC_ATOM_EMPTY_LAST_MODIFIED = PUBLIC_EMPTY_LAST_MODIFIED;
 
 type PublicFeedRow = {
   id: string;
@@ -101,21 +114,8 @@ export type PublicAtomFeed = {
   lastModified: string;
 };
 
-export function getFeedBaseUrl(appUrl = getEnv().APP_URL): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(appUrl);
-  } catch {
-    throw new Error("APP_URL must be an absolute http(s) URL for /feed.xml");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("APP_URL must use http or https for /feed.xml");
-  }
-  if (parsed.search || parsed.hash) {
-    throw new Error("APP_URL must not include query or hash for /feed.xml");
-  }
-  parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
-  return parsed.toString().replace(/\/$/, "");
+export function getFeedBaseUrl(appUrl?: string): string {
+  return getPublicBaseUrl(appUrl);
 }
 
 export function buildPostGuid(postId: string): string {
@@ -125,72 +125,16 @@ export function buildPostGuid(postId: string): string {
   return `urn:openlayerlypro:post:v1:${digest}`;
 }
 
-function buildFeedPath(baseUrl: string, path: string): string {
-  const parsed = new URL(`${baseUrl}/`);
-  const basePath = parsed.pathname.replace(/\/+$/, "");
-  parsed.pathname = `${basePath}${path}`;
-  return parsed.toString();
-}
+const buildFeedPath = buildPublicUrl;
 
 export function buildPostFeedUrl(baseUrl: string, slug: string): string {
-  return buildFeedPath(baseUrl, `/posts/${encodeURIComponent(slug)}`);
+  return buildPostUrl(baseUrl, slug);
 }
 
-function isXml10CodeUnitAllowed(code: number): boolean {
-  return (
-    code === 0x9 ||
-    code === 0xa ||
-    code === 0xd ||
-    (code >= 0x20 && code <= 0xd7ff) ||
-    (code >= 0xe000 && code <= 0xfffd)
-  );
-}
+export { escapeXml, sanitizeXml10 };
 
-export function sanitizeXml10(value: string): string {
-  let output = "";
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        output += value[index] + value[index + 1];
-        index += 1;
-      }
-      continue;
-    }
-    if (code >= 0xdc00 && code <= 0xdfff) continue;
-    if (isXml10CodeUnitAllowed(code)) output += value[index];
-  }
-  return output;
-}
-
-export function escapeXml(value: string): string {
-  return sanitizeXml10(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&apos;");
-}
-
-// Raw sql`` rows come back from postgres.js without drizzle's column mappers,
-// so timestamp columns arrive as strings and must be coerced here.
-function toDate(value: Date | string | null | undefined): Date | null {
-  if (value == null) return null;
-  return value instanceof Date ? value : new Date(value);
-}
-
-function maxDate(...dates: Array<Date | null | undefined>): Date {
-  return dates.reduce<Date>((max, date) => {
-    if (!date) return max;
-    return date.getTime() > max.getTime() ? date : max;
-  }, PUBLIC_ATOM_EMPTY_LAST_MODIFIED);
-}
-
-function trimSummary(summary: string | null): string | null {
-  const trimmed = summary?.trim();
-  return trimmed ? trimmed : null;
-}
+const maxDate = maxPublicDate;
+const trimSummary = trimPublicSummary;
 
 function rowToFeedEntry(row: PublicFeedRow): PublicAtomFeedEntry {
   const hasTranslation = row.translationId !== null;
@@ -301,30 +245,9 @@ export async function buildPublicAtomFeed(dbc: DbClient = getDb()): Promise<Publ
 }
 
 export function isPublicAtomFeedNotModified(headers: Headers, feed: PublicAtomFeed): boolean {
-  const ifNoneMatch = headers.get("if-none-match");
-  if (ifNoneMatch) {
-    // RFC 9110 §13.1.2: If-None-Match uses weak comparison for GET, and "*"
-    // matches any existing representation.
-    if (ifNoneMatch.trim() === "*") return true;
-    return ifNoneMatch
-      .split(",")
-      .map((value) => value.trim().replace(/^W\//, ""))
-      .includes(feed.etag);
-  }
-
-  const ifModifiedSince = headers.get("if-modified-since");
-  if (!ifModifiedSince) return false;
-  const since = Date.parse(ifModifiedSince);
-  if (!Number.isFinite(since)) return false;
-  return since >= feed.lastModifiedAt.getTime();
+  return isPublicHttpResourceNotModified(headers, { ...feed, body: feed.xml });
 }
 
 export function publicAtomFeedHeaders(feed: PublicAtomFeed): Headers {
-  return new Headers({
-    "content-type": PUBLIC_ATOM_CONTENT_TYPE,
-    "cache-control": PUBLIC_ATOM_CACHE_CONTROL,
-    etag: feed.etag,
-    "last-modified": feed.lastModified,
-    "x-content-type-options": "nosniff",
-  });
+  return publicXmlHeaders({ ...feed, body: feed.xml }, PUBLIC_ATOM_CONTENT_TYPE);
 }

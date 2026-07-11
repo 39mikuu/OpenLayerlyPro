@@ -1,11 +1,18 @@
+import type { Metadata } from "next";
+
 import { getCurrentUser } from "@/modules/auth/session";
 import { listPublishedPostsPage, localizePostCards, POSTS_PAGE_SIZE } from "@/modules/content";
+import { buildSiteMetadata } from "@/modules/content/seo";
 import { getT, resolveLocale } from "@/modules/i18n/server";
 import { listTiers } from "@/modules/membership";
 import { getPublicSiteInfo } from "@/modules/site";
 import { getActiveTheme, type HomePostView, type TierCardView } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  return buildSiteMetadata("/");
+}
 
 export default async function HomePage() {
   const [site, postPage, tiers, user, theme, t, locale] = await Promise.all([
