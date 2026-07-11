@@ -349,6 +349,38 @@ test("dirty guard pushes only its own marker, without re-copying stale history.s
     .toBe(true);
 });
 
+test("a real guarded-anchor click still shows the unsaved-changes dialog even with an active text selection", async ({
+  page,
+}) => {
+  // Regression test for a bypass found in independent review: an earlier
+  // revision of the click handler skipped the guard entirely whenever any
+  // text selection was active, which would let a real "leave the page"
+  // click on a guarded link through unconfirmed if the user happened to
+  // have unrelated text selected. The selection check must only affect the
+  // popstate handler (iOS edge-swipe-back noise), never a genuine click on
+  // a guarded anchor.
+  await openDraftEditor(page);
+  const textarea = page.getByRole("textbox", { name: "正文", exact: true });
+  await textarea.fill("验证有选区时真实链接点击仍会弹出未保存提示");
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+
+  await page.evaluate(() => {
+    const el = document.querySelector('textarea[aria-label="正文"]') as HTMLTextAreaElement;
+    el.focus();
+    el.setSelectionRange(0, 4);
+  });
+
+  const dialogPromise = page.waitForEvent("dialog");
+  const clickPromise = page.getByRole("link", { name: "文件管理" }).click();
+  const dialog = await dialogPromise;
+  expect(dialog.type()).toBe("confirm");
+  await dialog.dismiss();
+  await clickPromise;
+
+  // Dismissing the confirm must keep the user on the editor, unsaved.
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+});
+
 test("an active text selection suppresses the unsaved-changes dialog on click and popstate", async ({
   page,
 }) => {

@@ -137,6 +137,12 @@ export function PostEditor({
     // real iPhone Safari this previously surfaced as an unprompted
     // "unsaved changes" confirm() dialog and a blocked clipboard copy;
     // treat these as noise, not navigation intent.
+    // Only consulted by the popstate handler (iOS edge-swipe-back can fire a
+    // spurious history pop while the user is mid-selection/copy) -- NOT by
+    // the click handler. A real click on a guarded anchor must still be
+    // guarded even if unrelated text happens to be selected elsewhere on the
+    // page; bypassing the guard there would silently drop unsaved-changes
+    // protection on a genuine "leave the page" click.
     const hasActiveTextSelection = () => {
       const selection = window.getSelection?.();
       if (selection && !selection.isCollapsed && selection.toString().length > 0) return true;
@@ -220,8 +226,7 @@ export function PostEditor({
         event.metaKey ||
         event.ctrlKey ||
         event.shiftKey ||
-        event.altKey ||
-        hasActiveTextSelection()
+        event.altKey
       ) {
         return;
       }

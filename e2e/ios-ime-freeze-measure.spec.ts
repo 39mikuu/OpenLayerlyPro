@@ -11,15 +11,35 @@ import { LOCALE_COOKIE } from "../src/modules/i18n/config";
 // editor freeze. This is NOT a pass/fail regression test — it collects
 // timing/structural metrics printed to stdout for manual comparison across
 // controlled variants (A/B/C/D). Run with: pnpm exec playwright test
-// e2e/ios-ime-freeze-measure.spec.ts --project=webkit-iphone
+// --config=playwright.ios-ime-freeze.config.ts e2e/ios-ime-freeze-measure.spec.ts
 
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001";
 const ADMIN_EMAIL = "ios-ime-freeze-e2e-admin@example.com";
 const POST_SLUG_PREFIX = "ios-ime-freeze-e2e";
 const SEEDED_SETTING_KEYS = ["initialized", "site_name", "artist_name", "artist_bio"] as const;
 
+type SiteSettingsSnapshot = Map<string, unknown>;
+let originalSiteSettings: SiteSettingsSnapshot | null = null;
 let adminId: string;
 let postCounter = 0;
+
+async function snapshotSiteSettings(): Promise<SiteSettingsSnapshot> {
+  const rows = await getDb()
+    .select({ key: siteSettings.key, valueJson: siteSettings.valueJson })
+    .from(siteSettings)
+    .where(inArray(siteSettings.key, [...SEEDED_SETTING_KEYS]));
+  return new Map(rows.map((row) => [row.key, row.valueJson]));
+}
+
+async function restoreSiteSettings(snapshot: SiteSettingsSnapshot) {
+  const db = getDb();
+  await db.transaction(async (tx) => {
+    await tx.delete(siteSettings).where(inArray(siteSettings.key, [...SEEDED_SETTING_KEYS]));
+    for (const [key, valueJson] of snapshot) {
+      await tx.insert(siteSettings).values({ key, valueJson });
+    }
+  });
+}
 
 async function upsertSetting(key: string, valueJson: unknown) {
   await getDb()
@@ -36,11 +56,11 @@ async function cleanupFixtures() {
     )`);
     await tx.delete(posts).where(like(posts.slug, `${POST_SLUG_PREFIX}%`));
     await tx.delete(users).where(eq(users.email, ADMIN_EMAIL));
-    await tx.delete(siteSettings).where(inArray(siteSettings.key, [...SEEDED_SETTING_KEYS]));
   });
 }
 
 async function seedFixtures() {
+  originalSiteSettings = await snapshotSiteSettings();
   await cleanupFixtures();
   await upsertSetting("initialized", true);
   await upsertSetting("site_name", "iOS IME Freeze E2E");
@@ -102,6 +122,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   try {
     await cleanupFixtures();
+    if (originalSiteSettings) await restoreSiteSettings(originalSiteSettings);
   } finally {
     await closeDb();
   }
