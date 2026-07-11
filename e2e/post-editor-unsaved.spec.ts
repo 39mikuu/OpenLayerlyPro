@@ -381,6 +381,50 @@ test("a real guarded-anchor click still shows the unsaved-changes dialog even wi
   await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
 });
 
+test("a same-entry selection popstate does not stack a duplicate guard entry", async ({ page }) => {
+  // Regression test for a P2 found in independent PR review
+  // (github.com/39mikuu/OpenLayerlyPro/pull/159#discussion_r3563500275):
+  // the selection-tolerant popstate branch used to unconditionally push a
+  // fresh guard entry, even when the popstate never actually moved
+  // window.history.state off the guard entry (e.g. a synthetic/same-entry
+  // popstate fired during a selection gesture). That stacked a duplicate
+  // same-URL guard entry, so a later confirmed Back would only collapse the
+  // top duplicate and leave the user stuck on the editor for one extra
+  // back/confirm cycle. Only a pop that actually left the guard entry
+  // should trigger a fresh push.
+  await openDraftEditor(page);
+  const textarea = page.getByRole("textbox", { name: "正文", exact: true });
+  await textarea.fill("验证同一历史记录条目上的选区弹出不会堆叠重复守卫");
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+
+  const lengthBefore = await page.evaluate(() => window.history.length);
+
+  await page.evaluate(() => {
+    const el = document.querySelector('textarea[aria-label="正文"]') as HTMLTextAreaElement;
+    el.focus();
+    el.setSelectionRange(0, 4);
+  });
+
+  // Dispatch a popstate WITHOUT changing window.history.state -- it is
+  // still the live guard entry, simulating a same-entry/synthetic pop.
+  await page.evaluate(() =>
+    window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state })),
+  );
+  await page.waitForTimeout(200);
+
+  await expect.poll(() => page.evaluate(() => window.history.length)).toBe(lengthBefore);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          (window.history.state as { __adminPostEditorDirtyGuard?: unknown } | null)
+            ?.__adminPostEditorDirtyGuard,
+        ),
+      ),
+    )
+    .toBe(true);
+});
+
 test("an active text selection suppresses the unsaved-changes dialog on click and popstate", async ({
   page,
 }) => {

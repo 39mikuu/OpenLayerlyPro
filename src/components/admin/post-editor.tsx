@@ -291,8 +291,13 @@ export function PostEditor({
         // gesture rather than deliberate back navigation. Silently restore
         // the guard entry without showing a confirm() dialog, since a
         // synchronous confirm() here has been observed on-device to abort
-        // an in-flight native copy gesture.
-        window.setTimeout(pushDirtyGuardHistoryEntry, 0);
+        // an in-flight native copy gesture. Only push a fresh entry if the
+        // pop actually moved off the guard entry -- some selection-related
+        // popstate events fire without changing window.history.state at
+        // all, and unconditionally pushing here would stack duplicate
+        // same-URL guard entries, requiring an extra back/confirm cycle to
+        // actually leave once the selection is cleared.
+        if (!isDirtyGuardHistoryEntry()) window.setTimeout(pushDirtyGuardHistoryEntry, 0);
         return;
       }
       if (confirmNavigation()) {
