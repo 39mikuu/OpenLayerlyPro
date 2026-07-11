@@ -153,6 +153,36 @@ describe("public Atom feed helpers", () => {
     );
   });
 
+  it("advances feed-level <updated> when identity changes after all entries", () => {
+    const entries = [entry({ updatedAt: new Date("2026-07-10T12:00:01.000Z") })];
+    const identityUpdatedAt = new Date("2026-07-11T00:00:00.000Z");
+
+    const withoutIdentity = renderPublicAtomFeed({
+      baseUrl: "https://site.example",
+      siteName: "Site",
+      authorName: "Artist",
+      entries,
+    });
+    const withIdentity = renderPublicAtomFeed({
+      baseUrl: "https://site.example",
+      siteName: "Site",
+      authorName: "Artist",
+      entries,
+      identityUpdatedAt,
+    });
+    const emptyWithIdentity = renderPublicAtomFeed({
+      baseUrl: "https://site.example",
+      siteName: "Site",
+      authorName: "Artist",
+      entries: [],
+      identityUpdatedAt,
+    });
+
+    expect(withoutIdentity).toContain("<updated>2026-07-10T12:00:01.000Z</updated>");
+    expect(withIdentity).toContain("<updated>2026-07-11T00:00:00.000Z</updated>");
+    expect(emptyWithIdentity).toContain("<updated>2026-07-11T00:00:00.000Z</updated>");
+  });
+
   it("changes XML and ETag when the feed title changes", () => {
     const entries = [entry()];
     const firstXml = renderPublicAtomFeed({

@@ -230,10 +230,14 @@ export function renderPublicAtomFeed(input: {
   siteName: string;
   authorName: string;
   entries: PublicAtomFeedEntry[];
+  identityUpdatedAt?: Date | null;
 }): string {
   const feedUrl = buildFeedPath(input.baseUrl, "/feed.xml");
   const homeUrl = buildFeedPath(input.baseUrl, "/");
-  const feedUpdatedAt = maxDate(...input.entries.map((entry) => entry.updatedAt));
+  const feedUpdatedAt = maxDate(
+    input.identityUpdatedAt,
+    ...input.entries.map((entry) => entry.updatedAt),
+  );
   const lines = [
     '<?xml version="1.0" encoding="utf-8"?>',
     '<feed xmlns="http://www.w3.org/2005/Atom">',
@@ -282,6 +286,7 @@ export async function buildPublicAtomFeed(dbc: DbClient = getDb()): Promise<Publ
     siteName: site.siteName,
     authorName: site.artistName || site.siteName || "Artist Member Site",
     entries,
+    identityUpdatedAt: site.feedIdentityUpdatedAt,
   });
   // Known accepted limitation: this is derived only from rows still visible in
   // the feed, so removing an entry (unpublish, visibility change, translation

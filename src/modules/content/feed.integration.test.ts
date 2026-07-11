@@ -134,8 +134,13 @@ function entryLinks(xml: string): string[] {
   );
 }
 
-function walkPlan(plan: PlanNode): PlanNode[] {
-  return [plan, ...(plan.Plans ?? []).flatMap(walkPlan)];
+function findPlanPath(plan: PlanNode, predicate: (node: PlanNode) => boolean): PlanNode[] | null {
+  if (predicate(plan)) return [plan];
+  for (const child of plan.Plans ?? []) {
+    const path = findPlanPath(child, predicate);
+    if (path) return [plan, ...path];
+  }
+  return null;
 }
 
 describeWithDatabase("public Atom feed integration", () => {
@@ -394,20 +399,22 @@ describeWithDatabase("public Atom feed integration", () => {
         ${PUBLIC_ATOM_FEED_SQL}
       `);
       const plan = rows[0]!["QUERY PLAN"][0]!.Plan;
-      const nodes = walkPlan(plan);
-      const indexNodeIndex = nodes.findIndex(
+
+      expect(publicAtomFeedSqlText()).not.toMatch(/\boffset\b/i);
+
+      // The plan must reach the partial index through a Limit with no Sort in
+      // between: the top-100 subquery is satisfied by index order, never by
+      // sorting an unbounded scan. Exact node adjacency is planner-dependent
+      // (joins can sit between Limit and the scan), so assert on the path.
+      const pathToIndexScan = findPlanPath(
+        plan,
         (node) => node["Index Name"] === "posts_public_feed_idx",
       );
-
-      expect(indexNodeIndex).toBeGreaterThanOrEqual(0);
-      expect(publicAtomFeedSqlText()).not.toMatch(/\boffset\b/i);
-      const scanLimitIndex = nodes.findIndex((node, index) => {
-        const next = nodes[index + 1];
-        return node["Node Type"] === "Limit" && next?.["Index Name"] === "posts_public_feed_idx";
-      });
-      expect(scanLimitIndex).toBeGreaterThanOrEqual(0);
-      for (let index = scanLimitIndex + 1; index <= indexNodeIndex; index += 1) {
-        expect(nodes[index]?.["Node Type"]).not.toBe("Sort");
+      expect(pathToIndexScan).not.toBeNull();
+      const limitIndex = pathToIndexScan!.findLastIndex((node) => node["Node Type"] === "Limit");
+      expect(limitIndex).toBeGreaterThanOrEqual(0);
+      for (const node of pathToIndexScan!.slice(limitIndex + 1)) {
+        expect(node["Node Type"]).not.toBe("Sort");
       }
     });
   });
