@@ -1,32 +1,20 @@
-# Plugin RFC
+# Plugin RFC（已取消）
 
-Third-party plugin execution remains future work and is not part of the v1.0 release path.
+OpenLayerlyPro no longer plans a generic third-party plugin runtime.
 
-## Current Status
+## Current Decision
 
 - A first-party Integration registry exists for SMTP, Storage, Turnstile, Tunnel, Stripe, and Translation status/test boundaries.
 - A first-party `PaymentProvider` adapter boundary is implemented and used by Stripe one-time Checkout and subscriptions.
 - Translation uses an admin-only OpenAI-compatible provider abstraction.
-- There is no third-party plugin loading or execution runtime.
-- There is no plugin marketplace or Hub runtime.
-- Storage and theme registration points are internal first-party architecture, not installable plugin APIs.
+- No third-party plugin loading or execution runtime is planned.
+- No plugin marketplace or Hub runtime is planned.
+- Storage and theme registration points remain internal first-party architecture, not installable plugin APIs.
 
 The existing adapters must not be described as a general plugin system: they are compiled into the trusted application and do not provide installation, isolation, capability negotiation, or third-party lifecycle management.
 
-## Future Direction
+## Rationale
 
-Potential plugin areas:
+Generic plugins would require a durable capability model, secret isolation, install/update lifecycle, failure isolation, compatibility guarantees, audit logging, and a much larger test matrix. That complexity is too high for the current single-creator self-hosted product direction.
 
-- additional payment providers
-- translation providers
-- storage providers
-- theme packages
-- analytics integrations
-
-Security requirements before plugin runtime:
-
-- explicit capability model
-- secret isolation
-- clear admin install/update flow
-- no visitor-triggered creator cost by default
-- audit logging for plugin actions
+Future extensions should be designed as first-party Core / Theme / Integration features with explicit product scope and normal release validation.
