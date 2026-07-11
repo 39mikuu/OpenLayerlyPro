@@ -23,7 +23,7 @@ Core 负责且仅 Core 负责：
 | 全局安全响应头 | per-request nonce CSP、动态来源与 legacy footer 迁移 | ✅ #86 |
 | 恢复一致性 | archive integrity、schema probe、任务中和、文件 backfill 与 DB↔存储收敛 | ✅ #87 |
 
-不属于 Core 的：主题布局与视觉实现（Theme）、第三方扩展机制（Plugin）、跨站聚合发现（Hub）和多实例编排。Integration 是官方内置 adapter；其调用必须经过 Core 的事务、权限、审计和幂等边界。
+不属于 Core 的：主题布局与视觉实现（Theme）、聚合发现（Hub，暂不规划）和多实例编排。项目不再规划通用第三方 Plugin runtime。Integration 是官方内置 adapter；其调用必须经过 Core 的事务、权限、审计和幂等边界。
 
 ## 代码结构（现状）
 

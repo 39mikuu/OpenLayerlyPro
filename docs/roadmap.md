@@ -6,14 +6,14 @@
 
 `v1.0.0` 已于 2026-07-06 正式发布（tag、GitHub Release、验收证据均已归档；#88、#64 已关闭）。发布后的审计复查（dead-letter 可见性、provider event fencing/ownership、translation 硬化、文档准确性、membership 分页、restore drills 上 CI、session-secret 符号链接加固等）已全部完成并合并，详见 CHANGELOG。
 
-按原计划，`v1.1` 新功能工作包（WP1–WP6）应在发布后 4–6 周稳定窗口结束再启动，范围、产品优先级、实施顺序与发布门槛见 [release-v1.1-plan.md](./release-v1.1-plan.md)。**维护者已于 2026-07-07（发布次日）明确决定提前启动 WP1**，不再等待窗口结束；这是对该计划前置条件的一次显式例外。WP1 已实现并完成验收，PR #123 已合并；其余 WP（WP2–WP6）的时机仍按计划书执行，不因此次例外自动提前。
+`v1.1` 新功能工作包不再等待固定发布后窗口。维护者已明确决定继续提高产品完成度，避免真实使用者长期停留在半成品状态；后续 WP 按需求明确度、实现风险和验收质量串行推进。范围、产品优先级、实施顺序与发布门槛见 [release-v1.1-plan.md](./release-v1.1-plan.md)。
 
 固定顺序：
 
 ```text
 v1.0.0 发布 + 发布后审计硬化 ✅
-→ WP1 第二主题 + 后台主题选择器（提前启动，维护者例外授权，已实现并完成验收，PR #123 已合并）
-→ WP1 follow-up 第三内置主题 WordPress 经典（维护者单独授权，本 PR 实现）
+→ WP1 第二主题 + 后台主题选择器（已实现并完成验收，PR #123 已合并）
+→ WP1 follow-up 第三内置主题 WordPress 经典
 → WP2–WP6 按 release-v1.1-plan.md §4 里程碑顺序
 ```
 
@@ -49,9 +49,9 @@ v1.0.0 发布 + 发布后审计硬化 ✅
 
 - 第一方 Integration 注册表、状态页与统一测试契约。
 - SMTP、Storage、Stripe、Turnstile、Tunnel、Translation 状态收口。
-- Stripe payment adapter 与 Translation provider 已存在，但它们是应用内第一方能力，不是通用 Plugin runtime。
+- Stripe payment adapter 与 Translation provider 已存在，但它们是应用内第一方能力，不是通用第三方 Plugin runtime。
 
-**⏸ 后续：** 通用启停开关和第三方集成生命周期。
+**⏸ 后续：** 只在出现真实统一需求时再评估通用启停开关；不规划第三方集成生命周期。
 
 ## Phase 5：Theme v1 基座 ✅
 
@@ -59,7 +59,7 @@ v1.0.0 发布 + 发布后审计硬化 ✅
 - 明暗模式、字体、颜色预设与受约束自由取色。
 - Theme 不负责权限、数据库访问或服务端 secret。
 
-**✅ WP1 已完成验收并合并：** 第二主题（Blog）与后台主题选择器，v1.1 WP1，见 [release-v1.1-plan.md](./release-v1.1-plan.md)。**当前状态：** v1.0.0 发布后的稳定窗口 / dogfood；WP2–WP6 尚未获得提前启动授权，仍按计划等待稳定窗口结束后串行启动。**WP1 follow-up（维护者单独授权）：** 第三内置主题 WordPress 经典。**⏸ 仍推迟：** 主题包上传/主题市场/第三方主题生命周期（Plugin 生命周期问题，不进入 v1.1）。
+**✅ WP1 已完成验收并合并：** 第二主题（Blog）与后台主题选择器，v1.1 WP1，见 [release-v1.1-plan.md](./release-v1.1-plan.md)。**当前状态：** 继续提高 v1.1 完成度；WP2–WP6 不再等待固定时间窗口，按计划书里程碑串行推进。**WP1 follow-up：** 第三内置主题 WordPress 经典。**⏸ 仍推迟：** 主题包上传/主题市场；不规划第三方主题生命周期。
 
 详见 [Theme 架构](./architecture/theme-system.md)。
 
@@ -102,13 +102,26 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 - **最终验收与发布 ✅**：#88、#64 已关闭；真实环境验证、三个 one-off artifact、`v1.0.0` tag 与 GitHub Release 均已完成（2026-07-06）。
 - **发布后审计硬化 ✅**：provider event 处理 dead-letter 可见性与 ownership 修复、translation 措辞与 URL 硬化、文档准确性刷新、Stripe post-basil 兼容 fixtures、dispatcher claim 查询性能、session-secret TOCTOU/符号链接加固、membership 历史分页、restore drills 上 CI。详见 CHANGELOG。
 
-## Phase 8：Plugin v0 🚧
+## Phase 8：运营完成度与官方内置能力 🚧
 
-- 能力模型、隔离、生命周期与审计。
+- 不再规划通用第三方 Plugin runtime。插件加载、生命周期、权限边界、兼容性与测试矩阵会显著抬高项目复杂度，不符合当前单创作者自托管产品主线。
+- 后续扩展优先以官方内置能力交付：主题、Integration adapter、邮件、SEO、统计、内容组织与运营工具都随 Core 版本一起维护和验收。
+- 若出现强需求，先以明确的 Core/Integration 功能设计进入路线图，不引入第三方任意扩展点。
 
-## Phase 9：Hub official plugin 🚧
+**Core Auth 候选项**：
 
-- 聚合发现平台以官方插件形式提供。
+- 邮件 Magic Link 登录：在现有邮箱验证码登录基础上增加一次性登录链接；保留验证码 fallback。实现时必须覆盖 token 哈希存储、短有效期、单次使用、重放保护、redirect allowlist、邮件客户端预取防误登录、Turnstile/限流复用与审计记录。
+- Google / GitHub OAuth：作为粉丝登录补充入口；后台加密配置 client secret，Integration 状态展示 provider 启用/配置状态。管理员登录第一版继续使用邮箱 + 密码。
+
+**Membership 候选项**：
+
+- Membership Bundle（会员权益组合）：在 `membership_tiers` 上配置一组可审计、白名单化的 entitlements，用于表达阅读、不同附件下载、提前观看、Beta 内容、邮件通讯等权益。第一版保留现有 tier level / required tier 兼容逻辑，不引入通用 `EntitlementGrant`，也不把 PPV/Tips 作为前置。
+- 后续如要让内容或文件声明精细权益要求，应先扩 Core 授权 helper 和下载鉴权测试，再逐步从 `requiredTierId` 过渡，避免绕过现有 `canAccessPost()` / `canAccessFile()` 保护。
+
+## Phase 9：Hub / 聚合发现暂不规划 ⏸
+
+- 不做多创作者平台，也不在 Core 内置内容广场 / 推荐流。
+- Hub / 聚合发现能力暂不规划；未来只有在真实运营证明需要跨站发现时，再作为独立产品方向重新评估。
 
 ## Phase 10：负载均衡与高可用 🚧
 

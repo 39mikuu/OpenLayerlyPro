@@ -48,8 +48,8 @@ Current status: **v1.0.0 released** (tag `v1.0.0`). The application includes the
 - 多画师入驻平台
 - 内容广场或推荐流
 - 评论、点赞、收藏、关注
-- OAuth 或粉丝密码注册
-- 插件 runtime 或主题市场
+- 粉丝密码注册（Google / GitHub OAuth 作为后续 Core Auth 候选，不属于当前已实现能力）
+- 第三方插件 runtime、插件市场或主题市场
 - 完整视频媒体处理（封面、时长、缩略图、转码、HLS/DASH、multipart Range）
 - 多实例共享限流与高可用编排
 - 移动 App
