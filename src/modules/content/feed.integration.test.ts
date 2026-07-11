@@ -392,6 +392,10 @@ describeWithDatabase("public Atom feed integration", () => {
       });
     }
 
+    // Refresh planner statistics so the plan shape is deterministic even when
+    // earlier suites churned the posts table in the same database.
+    await db.execute(sql`analyze posts`);
+
     await db.transaction(async (tx) => {
       await tx.execute(sql`set local enable_seqscan = off`);
       const rows = await tx.execute<ExplainRow>(sql`
