@@ -155,6 +155,13 @@
       "when": 1783361146258,
       "tag": "0021_tired_human_fly",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1783900800000,
+      "tag": "0022_public_feed_index",
+      "breakpoints": true
     }
   ]
 }

@@ -21,7 +21,7 @@ vi.mock("@/modules/site/public-security", () => ({
   readPublicSecurityState: mocks.readPublicSecurityState,
 }));
 
-import { middleware } from "./middleware";
+import { config, middleware } from "./middleware";
 
 const emptySources = {
   script: [],
@@ -57,6 +57,14 @@ describe("document security middleware", () => {
     mocks.getConfiguredStorageCspSources.mockResolvedValue([
       "https://artist-media.objects.example",
     ]);
+  });
+
+  it("excludes feed.xml from document middleware while matching public pages", () => {
+    const matcher = config.matcher[0]!;
+    const pattern = new RegExp(`^${matcher}$`);
+
+    expect(pattern.test("/feed.xml")).toBe(false);
+    expect(pattern.test("/posts")).toBe(true);
   });
 
   it("uses one nonce and policy for the forwarded request and browser response", async () => {
