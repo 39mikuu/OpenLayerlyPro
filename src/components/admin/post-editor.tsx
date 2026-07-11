@@ -129,6 +129,29 @@ export function PostEditor({
     allowNextPopStateRef.current = false;
 
     const confirmNavigation = () => window.confirm(unsavedChangesConfirmMessageRef.current);
+    // A non-collapsed text selection at the moment of a click/popstate means
+    // the user is very likely mid-selection or using the native
+    // selection/Copy callout (or, on iOS Safari, triggered the edge
+    // swipe-back gesture while dragging a selection handle near the screen
+    // edge) rather than intentionally clicking a link or pressing back. On
+    // real iPhone Safari this previously surfaced as an unprompted
+    // "unsaved changes" confirm() dialog and a blocked clipboard copy;
+    // treat these as noise, not navigation intent.
+    const hasActiveTextSelection = () => {
+      const selection = window.getSelection?.();
+      if (selection && !selection.isCollapsed && selection.toString().length > 0) return true;
+      // The document Selection/Range API does not report selections made
+      // inside a focused <textarea>/<input> (e.g. the markdown body editor);
+      // those expose selection only via selectionStart/selectionEnd.
+      const active = document.activeElement;
+      if (
+        active instanceof HTMLTextAreaElement ||
+        (active instanceof HTMLInputElement && active.type === "text")
+      ) {
+        return (active.selectionStart ?? 0) !== (active.selectionEnd ?? 0);
+      }
+      return false;
+    };
     const shouldGuardUrl = (url?: string | URL | null) => {
       if (url === undefined || url === null) return false;
       try {
@@ -149,15 +172,33 @@ export function PostEditor({
         currentState.__adminPostEditorDirtyGuard === true
       );
     };
+    // Deliberately minimal on our end: earlier revisions manually spread the
+    // entire current window.history.state (including whatever Next.js
+    // internal router/route-tree payload was already present) into a new
+    // object before pushing. On-device Safari testing showed an immediate
+    // white screen on backgrounding-then-foregrounding the tab while this
+    // guard entry was live -- Safari-only, not reproduced in other iOS
+    // WKWebView-based browsers -- consistent with Safari's own
+    // tab-session-restore snapshotting reacting badly to this entry.
+    //
+    // IMPORTANT, verified by direct instrumentation: this app's Next.js App
+    // Router client runtime globally patches window.history.pushState, so
+    // __NA and __PRIVATE_NEXTJS_INTERNALS_TREE end up attached to every
+    // pushState call in this app -- including this one -- regardless of what
+    // is passed here. A truly Next-tree-free history entry is therefore not
+    // achievable from component code without patching Next's own history
+    // integration, which is out of scope (and would risk breaking App
+    // Router back/forward). What this change still buys: we no longer
+    // manually re-copy/duplicate a snapshot of the previous entry's state
+    // ourselves on top of that -- we defer entirely to Next's own patched
+    // pushState as the single source of truth for its bookkeeping, rather
+    // than echoing back a second, independently-drifting copy of it. This
+    // entry only needs to be recognizable as "ours" on popstate; this
+    // effect always intercepts and suppresses popstate (via
+    // stopImmediatePropagation) while any unsaved changes exist, so Next's
+    // router never needs to read route-tree state off this entry directly.
     const pushDirtyGuardHistoryEntry = () => {
-      const currentState = window.history.state;
-      const currentStateObject =
-        currentState && typeof currentState === "object" ? currentState : {};
-      window.history.pushState(
-        { ...currentStateObject, __adminPostEditorDirtyGuard: true },
-        "",
-        window.location.href,
-      );
+      window.history.pushState({ __adminPostEditorDirtyGuard: true }, "", window.location.href);
     };
     const collapseDirtyGuardHistoryEntry = () => {
       if (!isDirtyGuardHistoryEntry()) return Promise.resolve();
@@ -179,7 +220,8 @@ export function PostEditor({
         event.metaKey ||
         event.ctrlKey ||
         event.shiftKey ||
-        event.altKey
+        event.altKey ||
+        hasActiveTextSelection()
       ) {
         return;
       }
@@ -239,6 +281,15 @@ export function PostEditor({
         return;
       }
       event.stopImmediatePropagation();
+      if (hasActiveTextSelection()) {
+        // Likely an accidental history pop from a selection/edge-swipe
+        // gesture rather than deliberate back navigation. Silently restore
+        // the guard entry without showing a confirm() dialog, since a
+        // synchronous confirm() here has been observed on-device to abort
+        // an in-flight native copy gesture.
+        window.setTimeout(pushDirtyGuardHistoryEntry, 0);
+        return;
+      }
       if (confirmNavigation()) {
         allowNextPopStateRef.current = true;
         window.setTimeout(() => window.history.back(), 0);

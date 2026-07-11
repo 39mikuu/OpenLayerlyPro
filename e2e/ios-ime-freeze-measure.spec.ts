@@ -288,3 +288,46 @@ for (const condition of CONDITIONS) {
     });
   }
 }
+
+// LABELED APPROXIMATION, NOT A REAL REPRO of "background Safari, then
+// foreground it" (real on-device Safari testing showed an immediate white
+// screen on resume, Safari-only, not reproduced in other iOS WKWebView
+// browsers). Linux WebKit has no WebContent-process suspension and no
+// Safari tab-session snapshot/restore layer at all, so this can only fire
+// the same page-lifecycle *events* a real cycle would (visibilitychange,
+// pagehide, pageshow) and check the page doesn't error/blank out in
+// response to those events + the dirty-guard's history entry being active.
+// A clean pass here says nothing about whether Safari's real snapshot/
+// restore layer is affected — it only rules out a page-lifecycle-event
+// handler bug in this app's own JS, which is a much narrower claim.
+test("approximate background/foreground cycle while dirty (Linux WebKit, not a real repro)", async ({
+  page,
+}) => {
+  await installAdminSession(page);
+  const id = await seedPost("long");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/admin/posts/${id}`);
+  const textarea = page.getByRole("textbox", { name: "正文", exact: true });
+  await textarea.click();
+  await textarea.type("你", { delay: 50 });
+  await expect(textarea).toBeVisible();
+
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(String(err)));
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+  });
+  await page.waitForTimeout(200);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  await page.waitForTimeout(200);
+
+  await expect(textarea).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
