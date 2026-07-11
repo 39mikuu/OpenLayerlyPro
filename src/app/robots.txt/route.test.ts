@@ -25,8 +25,8 @@ describe("robots.txt route", () => {
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("set-cookie")).toBeNull();
     expect(response.headers.get("vary")).toBeNull();
-    expect(body).toContain("Allow: /");
-    expect(body).toContain("Disallow: /api/");
+    expect(body).toContain("Allow: /base/");
+    expect(body).toContain("Disallow: /base/api/");
     expect(body).toContain("Sitemap: https://site.example/base/sitemap.xml");
     expect(body).not.toContain("Disallow: /posts");
   });

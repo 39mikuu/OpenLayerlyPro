@@ -108,6 +108,10 @@ export async function buildSitemapIndexResource(
     1,
     countPublicSitemapPostShards(postCount, opts.shardSize ?? PUBLIC_SITEMAP_URL_LIMIT),
   );
+  // Known accepted limitation (same ruling as the feed): derived from rows
+  // still in the public projection, so removals can move it backward and an
+  // If-Modified-Since-only client may briefly get a stale 304. The strong
+  // ETag is the authoritative validator and If-None-Match takes precedence.
   const lastModifiedAt = maxPublicDate(site.feedIdentityUpdatedAt, latestPostUpdatedAt);
   const entries: SitemapEntry[] = [
     {
@@ -166,16 +170,23 @@ export async function buildPostSitemapShardResource(opts: {
   );
 }
 
+const ROBOTS_DISALLOW_PATHS = [
+  "/admin/",
+  "/api/",
+  "/download/",
+  "/me/",
+  "/checkout/",
+  "/login",
+] as const;
+
 export function buildRobotsTxt(baseUrl = getPublicBaseUrl()): PublicHttpResource {
+  // Robots directives match the full request path, so a base-path deployment
+  // (APP_URL like https://site.example/base) must disallow /base/admin/ etc.
+  const basePath = new URL(`${baseUrl}/`).pathname.replace(/\/+$/, "");
   const body = [
     "User-agent: *",
-    "Allow: /",
-    "Disallow: /admin/",
-    "Disallow: /api/",
-    "Disallow: /download/",
-    "Disallow: /me/",
-    "Disallow: /checkout/",
-    "Disallow: /login",
+    `Allow: ${basePath || "/"}${basePath ? "/" : ""}`,
+    ...ROBOTS_DISALLOW_PATHS.map((path) => `Disallow: ${basePath}${path}`),
     `Sitemap: ${buildPublicUrl(baseUrl, "/sitemap.xml")}`,
     "",
   ].join("\n");
