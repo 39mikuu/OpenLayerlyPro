@@ -314,6 +314,164 @@ test("confirmed link navigation collapses the guard entry - back returns in one 
   await expect(page).toHaveURL(new RegExp(`/admin/posts/${postId}$`));
 });
 
+test("dirty guard pushes only its own marker, without re-copying stale history.state itself", async ({
+  page,
+}) => {
+  await openDraftEditor(page);
+
+  // Verified by direct instrumentation (see investigation notes in
+  // post-editor.tsx): this app's Next.js App Router client runtime
+  // globally patches window.history.pushState so that EVERY call --
+  // including this component's -- has __NA and
+  // __PRIVATE_NEXTJS_INTERNALS_TREE attached before it reaches the real
+  // browser API, regardless of what the caller passes in. That means no
+  // component-level code in this app can push a history entry that omits
+  // Next's route-tree payload; a true byte-for-byte "minimal" entry is not
+  // achievable without patching Next's own history integration, which is
+  // out of scope here (and would risk breaking App Router back/forward).
+  //
+  // What IS within this component's control, and what changed here: the
+  // guard no longer manually re-spreads whatever was in window.history.state
+  // at push time into a new object. Confirm the guard-detection contract
+  // still holds regardless of Next's own state-augmentation.
+  await page.getByRole("textbox", { name: "正文", exact: true }).fill("最小化历史状态验证正文");
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          (window.history.state as { __adminPostEditorDirtyGuard?: unknown } | null)
+            ?.__adminPostEditorDirtyGuard,
+        ),
+      ),
+    )
+    .toBe(true);
+});
+
+test("a real guarded-anchor click still shows the unsaved-changes dialog even with an active text selection", async ({
+  page,
+}) => {
+  // Regression test for a bypass found in independent review: an earlier
+  // revision of the click handler skipped the guard entirely whenever any
+  // text selection was active, which would let a real "leave the page"
+  // click on a guarded link through unconfirmed if the user happened to
+  // have unrelated text selected. The selection check must only affect the
+  // popstate handler (iOS edge-swipe-back noise), never a genuine click on
+  // a guarded anchor.
+  await openDraftEditor(page);
+  const textarea = page.getByRole("textbox", { name: "正文", exact: true });
+  await textarea.fill("验证有选区时真实链接点击仍会弹出未保存提示");
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+
+  await page.evaluate(() => {
+    const el = document.querySelector('textarea[aria-label="正文"]') as HTMLTextAreaElement;
+    el.focus();
+    el.setSelectionRange(0, 4);
+  });
+
+  const dialogPromise = page.waitForEvent("dialog");
+  const clickPromise = page.getByRole("link", { name: "文件管理" }).click();
+  const dialog = await dialogPromise;
+  expect(dialog.type()).toBe("confirm");
+  await dialog.dismiss();
+  await clickPromise;
+
+  // Dismissing the confirm must keep the user on the editor, unsaved.
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+});
+
+test("a same-entry selection popstate does not stack a duplicate guard entry", async ({ page }) => {
+  // Regression test for a P2 found in independent PR review
+  // (github.com/39mikuu/OpenLayerlyPro/pull/159#discussion_r3563500275):
+  // the selection-tolerant popstate branch used to unconditionally push a
+  // fresh guard entry, even when the popstate never actually moved
+  // window.history.state off the guard entry (e.g. a synthetic/same-entry
+  // popstate fired during a selection gesture). That stacked a duplicate
+  // same-URL guard entry, so a later confirmed Back would only collapse the
+  // top duplicate and leave the user stuck on the editor for one extra
+  // back/confirm cycle. Only a pop that actually left the guard entry
+  // should trigger a fresh push.
+  await openDraftEditor(page);
+  const textarea = page.getByRole("textbox", { name: "正文", exact: true });
+  await textarea.fill("验证同一历史记录条目上的选区弹出不会堆叠重复守卫");
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+
+  const lengthBefore = await page.evaluate(() => window.history.length);
+
+  await page.evaluate(() => {
+    const el = document.querySelector('textarea[aria-label="正文"]') as HTMLTextAreaElement;
+    el.focus();
+    el.setSelectionRange(0, 4);
+  });
+
+  // Dispatch a popstate WITHOUT changing window.history.state -- it is
+  // still the live guard entry, simulating a same-entry/synthetic pop.
+  await page.evaluate(() =>
+    window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state })),
+  );
+  await page.waitForTimeout(200);
+
+  await expect.poll(() => page.evaluate(() => window.history.length)).toBe(lengthBefore);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          (window.history.state as { __adminPostEditorDirtyGuard?: unknown } | null)
+            ?.__adminPostEditorDirtyGuard,
+        ),
+      ),
+    )
+    .toBe(true);
+});
+
+test("an active text selection suppresses the unsaved-changes dialog on click and popstate", async ({
+  page,
+}) => {
+  await openDraftEditor(page);
+  const textarea = page.getByRole("textbox", { name: "正文", exact: true });
+  await textarea.fill("用于验证选区不会触发未保存提示的正文内容");
+  await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
+
+  // Simulate a native text selection (e.g. long-press-to-select on iOS)
+  // inside the body editor. The document Selection/Range API does not
+  // report selections made inside a focused <textarea> (only
+  // selectionStart/selectionEnd do), so focus the field and set a
+  // non-collapsed selection range the same way iOS text selection would.
+  // This must NOT show the unsaved-changes confirm() dialog, since on real
+  // iPhone Safari a synchronous confirm() during an in-flight
+  // selection/copy gesture was observed to block the copy.
+  await page.evaluate(() => {
+    const el = document.querySelector('textarea[aria-label="正文"]') as HTMLTextAreaElement;
+    el.focus();
+    el.setSelectionRange(0, 4);
+  });
+
+  let dialogShown = false;
+  page.once("dialog", async (dialog) => {
+    dialogShown = true;
+    await dialog.dismiss();
+  });
+  // A same-URL popstate while a selection is active (approximating an
+  // accidental edge-swipe-back gesture during selection-drag on iOS).
+  await page.evaluate(() => window.history.state);
+  await page.evaluate(() => window.dispatchEvent(new PopStateEvent("popstate", { state: null })));
+  await page.waitForTimeout(200);
+  expect(dialogShown).toBe(false);
+
+  // The guard entry must still be intact after this no-op popstate.
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          (window.history.state as { __adminPostEditorDirtyGuard?: unknown } | null)
+            ?.__adminPostEditorDirtyGuard,
+        ),
+      ),
+    )
+    .toBe(true);
+});
+
 test("translation-only edits guard navigation and locale switching", async ({ page }) => {
   const postId = await openDraftEditor(page);
   const parentSave = page.getByRole("button", { name: "保存", exact: true });

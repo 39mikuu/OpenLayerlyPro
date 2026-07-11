@@ -2,6 +2,10 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
+  // The iOS Safari Chinese-IME investigation harness runs under its own
+  // config (playwright.ios-ime-freeze.config.ts) with a WebKit/iPhone
+  // device profile; keep it out of the default Desktop Chrome suite.
+  testIgnore: "**/ios-ime-freeze*",
   fullyParallel: false,
   workers: 1,
   retries: 0,
