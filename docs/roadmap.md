@@ -118,7 +118,7 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 - Membership Bundle（会员权益组合）：在 `membership_tiers` 上配置一组可审计、白名单化的 entitlements，用于表达阅读、不同附件下载、提前观看、Beta 内容、邮件通讯等权益。第一版保留现有 tier level / required tier 兼容逻辑，不引入通用 `EntitlementGrant`，也不把 PPV/Tips 作为前置。
 - 后续如要让内容或文件声明精细权益要求，应先扩 Core 授权 helper 和下载鉴权测试，再逐步从 `requiredTierId` 过渡，避免绕过现有 `canAccessPost()` / `canAccessFile()` 保护。
 
-## Phase 9：Hub / 聚合发现暂不规划 🚧
+## Phase 9：Hub / 聚合发现暂不规划 ⏸
 
 - 不做多创作者平台，也不在 Core 内置内容广场 / 推荐流。
 - Hub / 聚合发现能力暂不规划；未来只有在真实运营证明需要跨站发现时，再作为独立产品方向重新评估。
