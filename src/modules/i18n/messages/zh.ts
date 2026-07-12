@@ -1057,6 +1057,12 @@ export const zh = {
     rejectedRetry: "你可以登录站点重新提交付款截图。",
     testSubject: "测试邮件",
     testBody: "这是一封测试邮件，说明站点 SMTP 配置成功。",
+    newPostSubject: "新内容：{title}",
+    newPostIntro: "创作者发布了新内容。",
+    newPostTitle: "标题：{title}",
+    newPostSummary: "摘要：{summary}",
+    newPostOpen: "阅读：{url}",
+    newPostUnsubscribe: "退订新内容邮件：{url}",
   },
 };
 

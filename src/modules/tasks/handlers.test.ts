@@ -18,6 +18,10 @@ const mocks = vi.hoisted(() => ({
   deliverLoginCodeEmailTask: vi.fn(),
   reconcileSubscriptions: vi.fn(),
   nextSubscriptionReconcileAt: vi.fn(),
+  handleCampaignExpandTask: vi.fn(),
+  handleCampaignFinalizeTask: vi.fn(),
+  handleNotificationDeliveryTask: vi.fn(),
+  createCampaignForPublishedPostTx: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/login-code", () => ({
@@ -38,6 +42,12 @@ vi.mock("@/modules/payment/subscriptions", () => ({
   dispatchPaymentProviderEvent: mocks.dispatchPaymentProviderEvent,
   reconcileSubscriptions: mocks.reconcileSubscriptions,
   nextSubscriptionReconcileAt: mocks.nextSubscriptionReconcileAt,
+}));
+vi.mock("@/modules/notifications", () => ({
+  createCampaignForPublishedPostTx: mocks.createCampaignForPublishedPostTx,
+  handleCampaignExpandTask: mocks.handleCampaignExpandTask,
+  handleCampaignFinalizeTask: mocks.handleCampaignFinalizeTask,
+  handleNotificationDeliveryTask: mocks.handleNotificationDeliveryTask,
 }));
 
 import type { Task } from "@/db/schema";
@@ -82,6 +92,10 @@ describe("task handlers", () => {
     mocks.deliverLoginCodeEmailTask.mockResolvedValue(undefined);
     mocks.reconcileSubscriptions.mockResolvedValue(0);
     mocks.nextSubscriptionReconcileAt.mockReturnValue(new Date("2026-06-25T08:00:00.000Z"));
+    mocks.handleCampaignExpandTask.mockResolvedValue({});
+    mocks.handleCampaignFinalizeTask.mockResolvedValue({});
+    mocks.handleNotificationDeliveryTask.mockResolvedValue({});
+    mocks.createCampaignForPublishedPostTx.mockResolvedValue(null);
   });
 
   it("defers missing SMTP configuration without marking the task succeeded", async () => {

@@ -22,7 +22,11 @@ import {
   handleRenewalReminder,
   shouldSendRenewalReminderEmail,
 } from "@/modules/membership/renewal-reminders";
-import { handleCampaignExpandTask, handleCampaignFinalizeTask } from "@/modules/notifications";
+import {
+  handleCampaignExpandTask,
+  handleCampaignFinalizeTask,
+  handleNotificationDeliveryTask,
+} from "@/modules/notifications";
 import { cleanupPaymentProof } from "@/modules/payment/proof-lifecycle";
 import {
   dispatchPaymentProviderEvent,
@@ -274,6 +278,8 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
     }
     case "notification.campaign_expand":
       return handleCampaignExpandTask(task.payloadJson);
+    case "notification.deliver":
+      return handleNotificationDeliveryTask(task);
     case "notification.campaign_finalize":
       return handleCampaignFinalizeTask(task.payloadJson);
     default:

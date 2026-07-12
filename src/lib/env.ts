@@ -84,6 +84,18 @@ const envSchema = z.object({
     .min(1)
     .max(3_650)
     .default(180),
+  NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID: z.string().optional(),
+  NOTIFICATION_SUPPRESSION_DIGEST_SECRET: z.string().optional(),
+  NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE: z.string().optional(),
+  NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID: z.string().optional(),
+  NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET: z.string().optional(),
+  NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE: z.string().optional(),
+  NOTIFICATION_UNSUBSCRIBE_KEY_ID: z.string().optional(),
+  NOTIFICATION_UNSUBSCRIBE_SECRET: z.string().optional(),
+  NOTIFICATION_UNSUBSCRIBE_SECRET_FILE: z.string().optional(),
+  NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID: z.string().optional(),
+  NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET: z.string().optional(),
+  NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE: z.string().optional(),
 
   STORAGE_DRIVER: z.enum(["local", "s3"]).default("local"),
   UPLOAD_DIR: z.string().default("./uploads"),

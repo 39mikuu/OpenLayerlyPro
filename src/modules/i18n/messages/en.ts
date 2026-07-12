@@ -1111,5 +1111,11 @@ export const en: Messages = {
     rejectedRetry: "Sign in to submit a new payment screenshot.",
     testSubject: "Test email",
     testBody: "This test email confirms that the site SMTP configuration works.",
+    newPostSubject: "New post: {title}",
+    newPostIntro: "The creator published a new post.",
+    newPostTitle: "Title: {title}",
+    newPostSummary: "Summary: {summary}",
+    newPostOpen: "Read: {url}",
+    newPostUnsubscribe: "Unsubscribe from new-post emails: {url}",
   },
 };

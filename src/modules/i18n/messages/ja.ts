@@ -1099,5 +1099,11 @@ export const ja: Messages = {
     rejectedRetry: "サイトにログインして、新しい支払いスクリーンショットを送信できます。",
     testSubject: "テストメール",
     testBody: "このテストメールは、サイトの SMTP 設定が正常に動作していることを示します。",
+    newPostSubject: "新しい投稿：{title}",
+    newPostIntro: "クリエイターが新しい投稿を公開しました。",
+    newPostTitle: "タイトル：{title}",
+    newPostSummary: "概要：{summary}",
+    newPostOpen: "読む：{url}",
+    newPostUnsubscribe: "新着投稿メールを解除：{url}",
   },
 };

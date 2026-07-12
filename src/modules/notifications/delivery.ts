@@ -1,0 +1,780 @@
+import { createHash } from "crypto";
+import { and, eq, sql } from "drizzle-orm";
+import { z } from "zod";
+
+import { type DbClient, getDb } from "@/db";
+import {
+  memberships,
+  membershipTiers,
+  notificationCampaigns,
+  notificationDeliveries,
+  notificationDeliveryAttempts,
+  notificationPreferences,
+  notificationQuotaWindows,
+  notificationSuppressions,
+  posts,
+  postTranslations,
+  type Task,
+  users,
+} from "@/db/schema";
+import { getEnv } from "@/lib/env";
+import { getSmtpConfig } from "@/modules/config";
+import { isLocale, type Locale } from "@/modules/i18n";
+import { renderNewPostNotificationEmail, sendNewPostNotificationEmail } from "@/modules/mail";
+import {
+  classifyMailError,
+  MailDeliveryError,
+  type MailFailureKind,
+} from "@/modules/mail/delivery";
+import { enqueueCampaignFinalizeForDeliveryTx } from "@/modules/notifications/expansion";
+import { generateNotificationUnsubscribeToken } from "@/modules/notifications/unsubscribe-token";
+import {
+  createNotificationSuppressionDigest,
+  createNotificationSuppressionDigestCandidates,
+  getNotificationSuppressionDigestKeys,
+} from "@/modules/security/notification-suppression-key";
+import { getNotificationUnsubscribeKeys } from "@/modules/security/notification-unsubscribe-key";
+import { PermanentTaskError } from "@/modules/tasks/errors";
+import type { TaskHandlerResult } from "@/modules/tasks/handlers";
+
+const notificationDeliveryPayloadSchema = z.object({
+  version: z.literal(1),
+  userId: z.string().uuid(),
+});
+
+export type NotificationDeliveryPayload = z.infer<typeof notificationDeliveryPayloadSchema>;
+
+type TerminalDeliveryStatus = "accepted" | "suppressed" | "skipped" | "dead";
+type DeliveryOutcome =
+  | "started"
+  | "accepted"
+  | "permanent_failure"
+  | "transient_failure"
+  | "needs_operator_defer"
+  | "budget_defer"
+  | "pacing_defer"
+  | "suppressed_skip"
+  | "stale_skip"
+  | "post_not_published_skip"
+  | "access_lost_skip"
+  | "preference_disabled_skip"
+  | "user_missing_skip";
+
+type PreparedMessage = {
+  attemptId: string;
+  deliveryId: string;
+  campaignId: string;
+  recipientEmail: string;
+  recipientLocale: Locale;
+  recipientDigest: string;
+  title: string;
+  summary: string | null;
+  postUrl: string;
+  unsubscribeUrl: string;
+  siteName: string;
+};
+
+type DeliveryPreparation =
+  | { kind: "send"; message: PreparedMessage }
+  | { kind: "done" }
+  | { kind: "defer"; deferUntil: Date };
+
+const NONTERMINAL_DELIVERY_STATUSES = ["queued", "sending", "deferred", "failed"] as const;
+
+function utcDayStart(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function utcMinuteStart(date: Date): Date {
+  return new Date(
+    Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate(),
+      date.getUTCHours(),
+      date.getUTCMinutes(),
+    ),
+  );
+}
+
+function deterministicJitterMs(id: string, maxMs: number): number {
+  const digest = createHash("sha256").update(id).digest();
+  return digest.readUInt32BE(0) % maxMs;
+}
+
+function nextUtcMidnightWithJitter(now: Date, id: string): Date {
+  return new Date(
+    utcDayStart(new Date(now.getTime() + 24 * 60 * 60 * 1000)).getTime() +
+      deterministicJitterMs(id, 60_000),
+  );
+}
+
+function nextMinuteWithJitter(now: Date, id: string): Date {
+  const next = utcMinuteStart(new Date(now.getTime() + 60_000));
+  return new Date(next.getTime() + deterministicJitterMs(id, 5_000));
+}
+
+function operatorDeferUntil(now: Date): Date {
+  return new Date(now.getTime() + getEnv().EMAIL_RETRY_RECHECK_MINUTES * 60_000);
+}
+
+function expired(createdAt: Date, now: Date): boolean {
+  return (
+    now.getTime() - createdAt.getTime() >
+    getEnv().NOTIFICATION_DELIVERY_MAX_AGE_HOURS * 60 * 60 * 1000
+  );
+}
+
+function absoluteUrl(path: string): string {
+  return new URL(path, getEnv().APP_URL).toString();
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function insertAttemptAndSetDeliveryTx(
+  tx: DbClient,
+  input: {
+    deliveryId: string;
+    campaignId: string;
+    userId: string;
+    taskId: string;
+    outcome: DeliveryOutcome;
+    status: typeof notificationDeliveries.$inferSelect.status;
+    smtpAttempted?: boolean;
+    recipientLocale?: string | null;
+    recipientDigestKeyId?: string | null;
+    recipientDigest?: string | null;
+    messageSnapshot?: Record<string, unknown> | null;
+    errorKind?: string | null;
+    nextAttemptAfter?: Date | null;
+    lastError?: string | null;
+    completed?: boolean;
+  },
+) {
+  const [delivery] = await tx
+    .update(notificationDeliveries)
+    .set({
+      attemptCount: sql`${notificationDeliveries.attemptCount} + 1`,
+      status: input.status,
+      lastAttemptAt: sql`now()`,
+      nextAttemptAfter: input.nextAttemptAfter ?? null,
+      lastOutcome: input.outcome,
+      lastError: input.lastError ?? null,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(notificationDeliveries.id, input.deliveryId))
+    .returning({ attemptCount: notificationDeliveries.attemptCount });
+  if (!delivery) throw new PermanentTaskError("Notification delivery missing during attempt");
+
+  const [attempt] = await tx
+    .insert(notificationDeliveryAttempts)
+    .values({
+      deliveryId: input.deliveryId,
+      campaignId: input.campaignId,
+      userId: input.userId,
+      taskId: input.taskId,
+      attemptNumber: delivery.attemptCount,
+      attemptUtcDay: sql`(now() at time zone 'utc')::date`,
+      attemptMinute: sql`date_trunc('minute', now())`,
+      smtpAttempted: input.smtpAttempted ?? false,
+      outcome: input.outcome,
+      recipientLocale: input.recipientLocale ?? null,
+      recipientDigestKeyId: input.recipientDigestKeyId ?? null,
+      recipientDigest: input.recipientDigest ?? null,
+      messageSnapshot: input.messageSnapshot ?? null,
+      errorKind: input.errorKind ?? null,
+      completedAt: input.completed ? sql`now()` : null,
+    })
+    .returning({
+      id: notificationDeliveryAttempts.id,
+      attemptNumber: notificationDeliveryAttempts.attemptNumber,
+    });
+  if (!attempt) throw new Error("Notification delivery attempt insert failed");
+  return attempt;
+}
+
+async function lockDeliveryGraphTx(tx: DbClient, task: Task, userId: string) {
+  const [deliveryLink] = await tx
+    .select({
+      id: notificationDeliveries.id,
+      campaignId: notificationDeliveries.campaignId,
+    })
+    .from(notificationDeliveries)
+    .where(
+      and(eq(notificationDeliveries.taskId, task.id), eq(notificationDeliveries.userId, userId)),
+    )
+    .limit(1);
+  if (!deliveryLink) throw new PermanentTaskError("Notification delivery link missing");
+
+  const [campaign] = await tx
+    .select()
+    .from(notificationCampaigns)
+    .where(eq(notificationCampaigns.id, deliveryLink.campaignId))
+    .limit(1)
+    .for("update");
+  if (!campaign) throw new PermanentTaskError("Notification campaign link missing");
+
+  const [delivery] = await tx
+    .select()
+    .from(notificationDeliveries)
+    .where(
+      and(
+        eq(notificationDeliveries.id, deliveryLink.id),
+        eq(notificationDeliveries.userId, userId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (!delivery) throw new PermanentTaskError("Notification delivery link missing");
+
+  const [user] = await tx.select().from(users).where(eq(users.id, userId)).limit(1).for("update");
+  const [preference] = await tx
+    .select()
+    .from(notificationPreferences)
+    .where(eq(notificationPreferences.userId, userId))
+    .limit(1)
+    .for("update");
+  const [post] = await tx
+    .select()
+    .from(posts)
+    .where(eq(posts.id, campaign.postId))
+    .limit(1)
+    .for("update");
+
+  return { campaign, delivery, user, preference, post };
+}
+
+async function hasCurrentAccessTx(
+  tx: DbClient,
+  post: typeof posts.$inferSelect,
+  userId: string,
+): Promise<boolean> {
+  if (post.visibility !== "member") return true;
+  if (!post.requiredTierId) return false;
+  const [requiredTier] = await tx
+    .select({ level: membershipTiers.level })
+    .from(membershipTiers)
+    .where(eq(membershipTiers.id, post.requiredTierId))
+    .limit(1)
+    .for("update");
+  if (!requiredTier) return false;
+  const [membership] = await tx
+    .select({ id: memberships.id })
+    .from(memberships)
+    .innerJoin(membershipTiers, eq(membershipTiers.id, memberships.tierId))
+    .where(
+      and(
+        eq(memberships.userId, userId),
+        eq(memberships.status, "active"),
+        sql`${memberships.startsAt} <= now()`,
+        sql`${memberships.endsAt} > now()`,
+        sql`${membershipTiers.level} >= ${requiredTier.level}`,
+      ),
+    )
+    .limit(1)
+    .for("update");
+  return Boolean(membership);
+}
+
+async function resolveLocalizedPostTx(
+  tx: DbClient,
+  post: typeof posts.$inferSelect,
+  locale: Locale,
+): Promise<{ title: string; summary: string | null }> {
+  if (post.originalLocale === locale) return { title: post.title, summary: post.summary };
+  const [translation] = await tx
+    .select()
+    .from(postTranslations)
+    .where(
+      and(
+        eq(postTranslations.postId, post.id),
+        eq(postTranslations.locale, locale),
+        eq(postTranslations.status, "published"),
+      ),
+    )
+    .limit(1);
+  return {
+    title: translation?.title ?? post.title,
+    summary: translation?.summary ?? post.summary,
+  };
+}
+
+async function findSuppressionTx(tx: DbClient, email: string): Promise<boolean> {
+  const candidates = createNotificationSuppressionDigestCandidates(email);
+  if (candidates.length === 0) return false;
+  const condition = candidates
+    .map(
+      (candidate) =>
+        sql`(${notificationSuppressions.emailDigestKeyId} = ${candidate.keyId} AND ${notificationSuppressions.emailDigest} = ${candidate.digest})`,
+    )
+    .reduce((left, right) => sql`${left} OR ${right}`);
+  const rows = await tx
+    .select({ id: notificationSuppressions.id })
+    .from(notificationSuppressions)
+    .where(condition)
+    .limit(1)
+    .for("update");
+  return rows.length > 0;
+}
+
+async function reserveQuotaTx(
+  tx: DbClient,
+  input: { now: Date; deliveryId: string },
+): Promise<
+  { ok: true } | { ok: false; outcome: "budget_defer" | "pacing_defer"; deferUntil: Date }
+> {
+  const env = getEnv();
+  const dayStart = utcDayStart(input.now);
+  const minuteStart = utcMinuteStart(input.now);
+  await tx
+    .insert(notificationQuotaWindows)
+    .values([
+      { windowKind: "utc_day", windowStart: dayStart, attemptedCount: 0 },
+      { windowKind: "utc_minute", windowStart: minuteStart, attemptedCount: 0 },
+    ])
+    .onConflictDoNothing();
+
+  const rows = await tx.execute<{
+    window_kind: "utc_day" | "utc_minute";
+    attempted_count: number;
+  }>(sql`
+    SELECT window_kind, attempted_count
+    FROM notification_quota_windows
+    WHERE (window_kind, window_start) IN (
+      ('utc_day', ${dayStart.toISOString()}::timestamptz),
+      ('utc_minute', ${minuteStart.toISOString()}::timestamptz)
+    )
+    ORDER BY window_kind ASC, window_start ASC
+    FOR UPDATE
+  `);
+  const day = rows.find((row) => row.window_kind === "utc_day");
+  const minute = rows.find((row) => row.window_kind === "utc_minute");
+  if (!day || !minute) throw new Error("Notification quota window lock failed");
+
+  if (day.attempted_count >= env.NOTIFICATION_EMAIL_DAILY_BUDGET) {
+    return {
+      ok: false,
+      outcome: "budget_defer",
+      deferUntil: nextUtcMidnightWithJitter(input.now, input.deliveryId),
+    };
+  }
+  if (minute.attempted_count >= env.NOTIFICATION_EMAIL_PACING_PER_MINUTE) {
+    return {
+      ok: false,
+      outcome: "pacing_defer",
+      deferUntil: nextMinuteWithJitter(input.now, input.deliveryId),
+    };
+  }
+
+  await tx.execute(sql`
+    UPDATE notification_quota_windows
+    SET attempted_count = attempted_count + 1,
+        updated_at = now()
+    WHERE (window_kind, window_start) IN (
+      ('utc_day', ${dayStart.toISOString()}::timestamptz),
+      ('utc_minute', ${minuteStart.toISOString()}::timestamptz)
+    )
+  `);
+  return { ok: true };
+}
+
+async function preflightNeedsOperatorTx(
+  task: Task,
+  userId: string,
+  reason = "SMTP unavailable; delivery deferred",
+): Promise<DeliveryPreparation> {
+  const now = new Date();
+  return getDb().transaction(async (tx) => {
+    const { campaign, delivery } = await lockDeliveryGraphTx(tx, task, userId);
+    if (
+      !NONTERMINAL_DELIVERY_STATUSES.includes(
+        delivery.status as (typeof NONTERMINAL_DELIVERY_STATUSES)[number],
+      )
+    )
+      return { kind: "done" };
+    const terminal = expired(delivery.createdAt, now);
+    const deferUntil = operatorDeferUntil(now);
+    await insertAttemptAndSetDeliveryTx(tx, {
+      deliveryId: delivery.id,
+      campaignId: campaign.id,
+      userId: delivery.userId,
+      taskId: task.id,
+      outcome: "needs_operator_defer",
+      status: terminal ? "dead" : "deferred",
+      smtpAttempted: false,
+      nextAttemptAfter: terminal ? null : deferUntil,
+      lastError: terminal ? `${reason}; notification delivery expired` : reason,
+      completed: terminal,
+    });
+    if (terminal) {
+      await enqueueCampaignFinalizeForDeliveryTx(tx, campaign.id);
+      return { kind: "done" };
+    }
+    return { kind: "defer", deferUntil };
+  });
+}
+
+async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPreparation> {
+  const now = new Date();
+  return getDb().transaction(async (tx) => {
+    const { campaign, delivery, user, preference, post } = await lockDeliveryGraphTx(
+      tx,
+      task,
+      userId,
+    );
+    if (
+      !NONTERMINAL_DELIVERY_STATUSES.includes(
+        delivery.status as (typeof NONTERMINAL_DELIVERY_STATUSES)[number],
+      )
+    )
+      return { kind: "done" };
+
+    async function terminalSkip(
+      outcome: DeliveryOutcome,
+      status: TerminalDeliveryStatus,
+      lastError: string,
+    ) {
+      await insertAttemptAndSetDeliveryTx(tx, {
+        deliveryId: delivery.id,
+        campaignId: campaign.id,
+        userId: delivery.userId,
+        taskId: task.id,
+        outcome,
+        status,
+        smtpAttempted: false,
+        lastError,
+        completed: true,
+      });
+      await enqueueCampaignFinalizeForDeliveryTx(tx, campaign.id);
+      return { kind: "done" as const };
+    }
+
+    if (!user) return terminalSkip("user_missing_skip", "skipped", "recipient user missing");
+    if (!preference?.newPostEmailEnabled)
+      return terminalSkip(
+        "preference_disabled_skip",
+        "skipped",
+        "recipient notification preference disabled",
+      );
+
+    const currentDigest = createNotificationSuppressionDigest(user.email);
+    if (await findSuppressionTx(tx, user.email)) {
+      await insertAttemptAndSetDeliveryTx(tx, {
+        deliveryId: delivery.id,
+        campaignId: campaign.id,
+        userId: delivery.userId,
+        taskId: task.id,
+        outcome: "suppressed_skip",
+        status: "suppressed",
+        smtpAttempted: false,
+        recipientDigestKeyId: currentDigest.keyId,
+        recipientDigest: currentDigest.digest,
+        lastError: "recipient is suppressed for notification email",
+        completed: true,
+      });
+      await enqueueCampaignFinalizeForDeliveryTx(tx, campaign.id);
+      return { kind: "done" };
+    }
+
+    if (!post || post.status !== "published") {
+      return terminalSkip("post_not_published_skip", "skipped", "post not published at send time");
+    }
+    if (!(await hasCurrentAccessTx(tx, post, user.id))) {
+      return terminalSkip("access_lost_skip", "skipped", "recipient lost access before send");
+    }
+    if (expired(delivery.createdAt, now)) {
+      return terminalSkip("stale_skip", "skipped", "notification delivery expired before send");
+    }
+
+    const locale: Locale = isLocale(user.locale) ? user.locale : "zh";
+    const localized = await resolveLocalizedPostTx(tx, post, locale);
+    const token = generateNotificationUnsubscribeToken({
+      userId: user.id,
+      preferenceVersion: preference.version,
+      issuedAt: now,
+    });
+    const unsubscribeUrl = absoluteUrl(`/api/notifications/unsubscribe/${token}`);
+    const postUrl = absoluteUrl(`/posts/${post.slug}`);
+    const siteName = getEnv().APP_NAME;
+    const rendered = renderNewPostNotificationEmail(
+      {
+        title: localized.title,
+        summary: localized.summary,
+        postUrl,
+        unsubscribeUrl,
+        siteName,
+      },
+      locale,
+    );
+
+    const quota = await reserveQuotaTx(tx, { now, deliveryId: delivery.id });
+    if (!quota.ok) {
+      await insertAttemptAndSetDeliveryTx(tx, {
+        deliveryId: delivery.id,
+        campaignId: campaign.id,
+        userId: delivery.userId,
+        taskId: task.id,
+        outcome: quota.outcome,
+        status: "deferred",
+        smtpAttempted: false,
+        recipientLocale: locale,
+        recipientDigestKeyId: currentDigest.keyId,
+        recipientDigest: currentDigest.digest,
+        nextAttemptAfter: quota.deferUntil,
+        lastError:
+          quota.outcome === "budget_defer"
+            ? "notification daily budget exhausted"
+            : "notification pacing exhausted",
+      });
+      return { kind: "defer", deferUntil: quota.deferUntil };
+    }
+
+    const snapshot = {
+      version: 1,
+      campaignId: campaign.id,
+      postId: post.id,
+      recipientLocale: locale,
+      titleHash: hashText(localized.title),
+      titleLength: localized.title.length,
+      summaryHash: localized.summary ? hashText(localized.summary) : null,
+      summaryLength: localized.summary?.length ?? 0,
+      subjectHash: hashText(rendered.subject),
+      subjectLength: rendered.subject.length,
+      textHash: hashText(rendered.text),
+      textLength: rendered.text.length,
+      postUrlHash: hashText(postUrl),
+      unsubscribeUrlHash: hashText(unsubscribeUrl),
+    };
+
+    const attempt = await insertAttemptAndSetDeliveryTx(tx, {
+      deliveryId: delivery.id,
+      campaignId: campaign.id,
+      userId: delivery.userId,
+      taskId: task.id,
+      outcome: "started",
+      status: "sending",
+      smtpAttempted: false,
+      recipientLocale: locale,
+      recipientDigestKeyId: currentDigest.keyId,
+      recipientDigest: currentDigest.digest,
+      messageSnapshot: snapshot,
+    });
+
+    await tx
+      .update(notificationDeliveryAttempts)
+      .set({ smtpAttempted: true })
+      .where(eq(notificationDeliveryAttempts.id, attempt.id));
+
+    return {
+      kind: "send",
+      message: {
+        attemptId: attempt.id,
+        deliveryId: delivery.id,
+        campaignId: campaign.id,
+        recipientEmail: user.email,
+        recipientLocale: locale,
+        recipientDigest: currentDigest.digest,
+        title: localized.title,
+        summary: localized.summary,
+        postUrl,
+        unsubscribeUrl,
+        siteName,
+      },
+    };
+  });
+}
+
+async function finishAcceptedTx(message: PreparedMessage): Promise<void> {
+  await getDb().transaction(async (tx) => {
+    await tx
+      .update(notificationDeliveryAttempts)
+      .set({ outcome: "accepted", completedAt: sql`now()` })
+      .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+    await tx
+      .update(notificationDeliveries)
+      .set({
+        status: "accepted",
+        lastOutcome: "accepted",
+        lastError: null,
+        nextAttemptAfter: null,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(notificationDeliveries.id, message.deliveryId));
+    await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
+  });
+}
+
+async function finishFailureTx(
+  message: PreparedMessage,
+  kind: MailFailureKind,
+): Promise<TaskHandlerResult> {
+  const now = new Date();
+  if (kind === "permanent") {
+    await getDb().transaction(async (tx) => {
+      await tx
+        .update(notificationDeliveryAttempts)
+        .set({ outcome: "permanent_failure", errorKind: "permanent", completedAt: sql`now()` })
+        .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+      await tx
+        .update(notificationDeliveries)
+        .set({
+          status: "dead",
+          lastOutcome: "permanent_failure",
+          lastError: "SMTP permanent rejection",
+          nextAttemptAfter: null,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(notificationDeliveries.id, message.deliveryId));
+      const digest = createNotificationSuppressionDigest(message.recipientEmail);
+      await tx
+        .insert(notificationSuppressions)
+        .values({
+          emailDigestKeyId: digest.keyId,
+          emailDigest: digest.digest,
+          reason: "smtp_permanent_5xx",
+          firstDeliveryId: message.deliveryId,
+          lastDeliveryId: message.deliveryId,
+        })
+        .onConflictDoUpdate({
+          target: [notificationSuppressions.emailDigestKeyId, notificationSuppressions.emailDigest],
+          set: { lastDeliveryId: message.deliveryId, updatedAt: sql`now()` },
+        });
+      await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
+    });
+    throw new PermanentTaskError("Notification email delivery failed permanently", {
+      classification: "permanent",
+    });
+  }
+
+  if (kind === "needs_operator") {
+    const deferUntil = operatorDeferUntil(now);
+    await getDb().transaction(async (tx) => {
+      const [delivery] = await tx
+        .select({ createdAt: notificationDeliveries.createdAt })
+        .from(notificationDeliveries)
+        .where(eq(notificationDeliveries.id, message.deliveryId))
+        .limit(1)
+        .for("update");
+      const [attempt] = await tx
+        .select({
+          smtpAttempted: notificationDeliveryAttempts.smtpAttempted,
+          attemptUtcDay: notificationDeliveryAttempts.attemptUtcDay,
+          attemptMinute: notificationDeliveryAttempts.attemptMinute,
+        })
+        .from(notificationDeliveryAttempts)
+        .where(eq(notificationDeliveryAttempts.id, message.attemptId))
+        .limit(1)
+        .for("update");
+      const terminal = delivery ? expired(delivery.createdAt, now) : false;
+      if (attempt?.smtpAttempted) {
+        await tx.execute(sql`
+          UPDATE notification_quota_windows
+          SET attempted_count = greatest(attempted_count - 1, 0),
+              updated_at = now()
+          WHERE (window_kind = 'utc_day' AND window_start = ${utcDayStart(attempt.attemptUtcDay).toISOString()}::timestamptz)
+             OR (window_kind = 'utc_minute' AND window_start = ${attempt.attemptMinute?.toISOString() ?? null}::timestamptz)
+        `);
+      }
+      await tx
+        .update(notificationDeliveryAttempts)
+        .set({
+          smtpAttempted: false,
+          outcome: "needs_operator_defer",
+          errorKind: "needs_operator",
+          completedAt: sql`now()`,
+        })
+        .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+      await tx
+        .update(notificationDeliveries)
+        .set({
+          status: terminal ? "dead" : "deferred",
+          lastOutcome: "needs_operator_defer",
+          lastError: terminal
+            ? "SMTP operator issue; notification expired"
+            : "SMTP operator issue; delivery deferred",
+          nextAttemptAfter: terminal ? null : deferUntil,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(notificationDeliveries.id, message.deliveryId));
+      if (terminal) await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
+    });
+    return { deferUntil };
+  }
+
+  await getDb().transaction(async (tx) => {
+    await tx
+      .update(notificationDeliveryAttempts)
+      .set({ outcome: "transient_failure", errorKind: "transient", completedAt: sql`now()` })
+      .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+    await tx
+      .update(notificationDeliveries)
+      .set({
+        status: "failed",
+        lastOutcome: "transient_failure",
+        lastError: "SMTP transient failure",
+        updatedAt: sql`now()`,
+      })
+      .where(eq(notificationDeliveries.id, message.deliveryId));
+  });
+  throw new MailDeliveryError("transient");
+}
+
+export async function handleNotificationDeliveryTask(task: Task): Promise<TaskHandlerResult> {
+  const parsed = notificationDeliveryPayloadSchema.safeParse(task.payloadJson);
+  if (!parsed.success) throw new PermanentTaskError("Invalid notification delivery payload");
+
+  const smtpConfig = await getSmtpConfig();
+  if (!smtpConfig.configured) {
+    const preflight = await preflightNeedsOperatorTx(task, parsed.data.userId);
+    return preflight.kind === "defer" ? { deferUntil: preflight.deferUntil } : {};
+  }
+
+  try {
+    getNotificationSuppressionDigestKeys();
+    getNotificationUnsubscribeKeys();
+  } catch {
+    const preflight = await preflightNeedsOperatorTx(
+      task,
+      parsed.data.userId,
+      "notification email key unavailable; delivery deferred",
+    );
+    return preflight.kind === "defer" ? { deferUntil: preflight.deferUntil } : {};
+  }
+
+  const prepared = await prepareDeliveryTx(task, parsed.data.userId);
+  if (prepared.kind === "defer") return { deferUntil: prepared.deferUntil };
+  if (prepared.kind === "done") return {};
+
+  const message = prepared.message;
+  try {
+    // SMTP accepted is at-least-once, not exactly-once. If the worker crashes
+    // after the SMTP server accepts but before the post-SMTP transaction or task
+    // success, a stale lease retry may send a duplicate and record a new attempt.
+    await sendNewPostNotificationEmail(
+      message.recipientEmail,
+      {
+        title: message.title,
+        summary: message.summary,
+        postUrl: message.postUrl,
+        unsubscribeUrl: message.unsubscribeUrl,
+        siteName: message.siteName,
+      },
+      message.recipientLocale,
+      {},
+      {
+        template: "new_post_notification",
+        category: "notification",
+        campaignId: message.campaignId,
+        deliveryId: message.deliveryId,
+        attemptId: message.attemptId,
+        recipientDigest: message.recipientDigest,
+      },
+    );
+  } catch (error) {
+    return finishFailureTx(message, classifyMailError(error));
+  }
+  await finishAcceptedTx(message);
+  return {};
+}
