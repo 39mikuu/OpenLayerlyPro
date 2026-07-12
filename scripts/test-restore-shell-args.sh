@@ -907,6 +907,38 @@ printf '%s' "$key_id_mismatch_output" \
   | grep -F "does not match archived notification unsubscribe current key id" >/dev/null \
   || fail "notification key id mismatch error was not explicit"
 
+# Upgraded Compose deployments may leave the current key-id env unset and rely
+# on the entrypoint default of "current"; the target check must honor the same
+# default instead of blocking the restore.
+DOCKER_INSPECT_ENV_JSON=$(node -e '
+  const values = {
+    APP_VERSION: "image-version",
+    SOURCE_COMMIT: process.argv[1],
+    BUILD_TIMESTAMP: "2026-07-05T00:00:00Z",
+    NOTIFICATION_UNSUBSCRIBE_SECRET: "",
+  };
+  process.stdout.write(JSON.stringify(Object.entries(values).map(([k, v]) => `${k}=${v}`)));
+' "$VALID_COMMIT")
+verify_target_notification_key_env \
+  file current "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256" \
+  NOTIFICATION_UNSUBSCRIBE_KEY_ID NOTIFICATION_UNSUBSCRIBE_SECRET \
+  "notification unsubscribe current" current \
+  || fail "unset target key id did not fall back to the entrypoint default"
+set +e
+missing_key_id_output=$(
+  verify_target_notification_key_env \
+    file "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_ID" "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256" \
+    NOTIFICATION_UNSUBSCRIBE_KEY_ID NOTIFICATION_UNSUBSCRIBE_SECRET \
+    "notification unsubscribe current" 2>&1
+)
+missing_key_id_status=$?
+set -e
+[ "$missing_key_id_status" -ne 0 ] \
+  || fail "unset target key id without a default unexpectedly passed"
+printf '%s' "$missing_key_id_output" \
+  | grep -F "archive requires target NOTIFICATION_UNSUBSCRIBE_KEY_ID" >/dev/null \
+  || fail "missing key id error was not explicit"
+
 DOCKER_INSPECT_ENV_JSON=$(node -e '
   const values = {
     APP_VERSION: "image-version",

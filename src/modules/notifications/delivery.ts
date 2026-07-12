@@ -211,38 +211,43 @@ async function insertAttemptAndSetDeliveryTx(
 }
 
 async function lockDeliveryGraphTx(tx: DbClient, task: Task, userId: string) {
-  const [deliveryLink] = await tx
-    .select({
-      id: notificationDeliveries.id,
-      campaignId: notificationDeliveries.campaignId,
-    })
-    .from(notificationDeliveries)
+  // Task ownership fence first: a worker whose lease was reclaimed must stop
+  // before any attempt, quota, or SMTP work — finish fencing alone cannot
+  // recall a mail that was already handed to the SMTP server. This also pins
+  // the global lock order (task -> delivery -> campaign -> attempt) shared
+  // with the final-attempt sweep; taking campaign before delivery here while
+  // the sweep does the opposite is a real 40P01 deadlock.
+  const [ownedTask] = await tx
+    .select({ id: tasks.id })
+    .from(tasks)
     .where(
-      and(eq(notificationDeliveries.taskId, task.id), eq(notificationDeliveries.userId, userId)),
+      and(
+        eq(tasks.id, task.id),
+        eq(tasks.status, "processing"),
+        eq(tasks.lockedBy, task.lockedBy ?? ""),
+      ),
     )
-    .limit(1);
-  if (!deliveryLink) throw new PermanentTaskError("Notification delivery link missing");
-
-  const [campaign] = await tx
-    .select()
-    .from(notificationCampaigns)
-    .where(eq(notificationCampaigns.id, deliveryLink.campaignId))
     .limit(1)
     .for("update");
-  if (!campaign) throw new PermanentTaskError("Notification campaign link missing");
+  if (!ownedTask) return null;
 
   const [delivery] = await tx
     .select()
     .from(notificationDeliveries)
     .where(
-      and(
-        eq(notificationDeliveries.id, deliveryLink.id),
-        eq(notificationDeliveries.userId, userId),
-      ),
+      and(eq(notificationDeliveries.taskId, task.id), eq(notificationDeliveries.userId, userId)),
     )
     .limit(1)
     .for("update");
   if (!delivery) throw new PermanentTaskError("Notification delivery link missing");
+
+  const [campaign] = await tx
+    .select()
+    .from(notificationCampaigns)
+    .where(eq(notificationCampaigns.id, delivery.campaignId))
+    .limit(1)
+    .for("update");
+  if (!campaign) throw new PermanentTaskError("Notification campaign link missing");
 
   const [user] = await tx.select().from(users).where(eq(users.id, userId)).limit(1).for("update");
   const [preference] = await tx
@@ -484,7 +489,9 @@ async function preflightNeedsOperatorTx(
 ): Promise<DeliveryPreparation> {
   const now = new Date();
   return getDb().transaction(async (tx) => {
-    const { campaign, delivery } = await lockDeliveryGraphTx(tx, task, userId);
+    const graph = await lockDeliveryGraphTx(tx, task, userId);
+    if (!graph) return { kind: "done" };
+    const { campaign, delivery } = graph;
     if (
       !NONTERMINAL_DELIVERY_STATUSES.includes(
         delivery.status as (typeof NONTERMINAL_DELIVERY_STATUSES)[number],
@@ -512,11 +519,9 @@ async function preflightNeedsOperatorTx(
 async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPreparation> {
   const now = new Date();
   return getDb().transaction(async (tx) => {
-    const { campaign, delivery, user, preference, post } = await lockDeliveryGraphTx(
-      tx,
-      task,
-      userId,
-    );
+    const graph = await lockDeliveryGraphTx(tx, task, userId);
+    if (!graph) return { kind: "done" };
+    const { campaign, delivery, user, preference, post } = graph;
     if (
       !NONTERMINAL_DELIVERY_STATUSES.includes(
         delivery.status as (typeof NONTERMINAL_DELIVERY_STATUSES)[number],
@@ -796,6 +801,7 @@ async function finishFailureTx(
 
   if (kind === "needs_operator") {
     const deferUntil = operatorDeferUntil(now);
+    let terminal = false;
     await getDb().transaction(async (tx) => {
       // Same task -> delivery -> attempt lock order as the sweep.
       const active = await isLatestAttemptHeldByTaskTx(tx, message);
@@ -805,41 +811,19 @@ async function finishFailureTx(
         .where(eq(notificationDeliveries.id, message.deliveryId))
         .limit(1)
         .for("update");
-      const [attempt] = await tx
-        .select({
-          smtpAttempted: notificationDeliveryAttempts.smtpAttempted,
-          reservedUtcDay: notificationDeliveryAttempts.reservedUtcDay,
-          reservedMinute: notificationDeliveryAttempts.reservedMinute,
-        })
-        .from(notificationDeliveryAttempts)
-        .where(eq(notificationDeliveryAttempts.id, message.attemptId))
-        .limit(1)
-        .for("update");
-      const terminal = delivery ? expired(delivery.createdAt, now) : false;
-      if (active && attempt?.smtpAttempted && attempt.reservedUtcDay && attempt.reservedMinute) {
-        await tx.execute(sql`
-          UPDATE notification_quota_windows
-          SET attempted_count = greatest(attempted_count - 1, 0),
-              updated_at = now()
-          WHERE (window_kind = 'utc_day' AND window_start = ${utcDayStart(attempt.reservedUtcDay).toISOString()}::timestamptz)
-             OR (window_kind = 'utc_minute' AND window_start = ${attempt.reservedMinute.toISOString()}::timestamptz)
-        `);
-      }
-      const attemptUpdate = active
-        ? {
-            smtpAttempted: false,
-            outcome: "needs_operator_defer" as const,
-            errorKind: "needs_operator",
-            completedAt: sql`now()`,
-          }
-        : {
-            outcome: "needs_operator_defer" as const,
-            errorKind: "needs_operator",
-            completedAt: sql`now()`,
-          };
+      terminal = active && delivery ? expired(delivery.createdAt, now) : false;
+      // This branch only runs after the transport was invoked (e.g. EAUTH),
+      // so the attempt consumed a real SMTP connection: keep
+      // smtpAttempted=true and do not refund the day/minute quota windows —
+      // otherwise a broken SMTP config lets a large campaign hammer the
+      // server far past the configured pacing and daily budget.
       await tx
         .update(notificationDeliveryAttempts)
-        .set(attemptUpdate)
+        .set({
+          outcome: "needs_operator_defer",
+          errorKind: "needs_operator",
+          completedAt: sql`now()`,
+        })
         .where(
           and(
             eq(notificationDeliveryAttempts.id, message.attemptId),
@@ -861,7 +845,9 @@ async function finishFailureTx(
         .where(eq(notificationDeliveries.id, message.deliveryId));
       if (terminal) await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
     });
-    return { deferUntil };
+    // A terminal delivery is done: returning a defer here would re-pend the
+    // task and run it once more against an already-dead delivery.
+    return terminal ? {} : { deferUntil };
   }
 
   await getDb().transaction(async (tx) => {

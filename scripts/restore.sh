@@ -360,7 +360,8 @@ if [ "$FORMAT_VERSION" = "4" ]; then
     "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256" \
     NOTIFICATION_UNSUBSCRIBE_KEY_ID \
     NOTIFICATION_UNSUBSCRIBE_SECRET \
-    "notification unsubscribe current"
+    "notification unsubscribe current" \
+    current
   verify_target_notification_key_env \
     "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" \
     "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID" \
@@ -374,7 +375,8 @@ if [ "$FORMAT_VERSION" = "4" ]; then
     "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256" \
     NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID \
     NOTIFICATION_SUPPRESSION_DIGEST_SECRET \
-    "notification suppression current"
+    "notification suppression current" \
+    current
   verify_target_notification_key_env \
     "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" \
     "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID" \

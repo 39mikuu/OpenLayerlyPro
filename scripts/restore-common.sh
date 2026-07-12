@@ -129,12 +129,17 @@ notification_secret_sha256_from_env() {
 
 notification_key_id_from_env() {
   env_name=$1
+  # Mirror entrypoint_configure_secret_environment: upgraded Compose envs may
+  # leave the current key-id variables unset and rely on the entrypoint
+  # default, which `--entrypoint node` bypasses here.
+  default_value=${2:-}
   compose run --rm -T --no-deps --entrypoint node app -e '
     const name = process.argv[1];
-    const value = process.env[name];
-    if (!value || !/^[A-Za-z0-9_-]+$/.test(value.trim())) process.exit(1);
-    process.stdout.write(value.trim());
-  ' "$env_name"
+    const fallback = process.argv[2] ?? "";
+    const value = (process.env[name] ?? "").trim() || fallback;
+    if (!value || !/^[A-Za-z0-9_-]+$/.test(value)) process.exit(1);
+    process.stdout.write(value);
+  ' "$env_name" "$default_value"
 }
 
 notification_direct_env_is_unset() {
@@ -1199,6 +1204,7 @@ verify_target_notification_key_env() {
   key_id_env=$4
   secret_env=$5
   label=$6
+  key_id_default=${7:-}
 
   case "$source" in
     none)
@@ -1213,7 +1219,7 @@ verify_target_notification_key_env() {
     *) fail "unsupported $label source=$source" ;;
   esac
 
-  actual_key_id=$(notification_key_id_from_env "$key_id_env") \
+  actual_key_id=$(notification_key_id_from_env "$key_id_env" "$key_id_default") \
     || fail "archive requires target $key_id_env to match $label key id"
   [ "$actual_key_id" = "$expected_key_id" ] \
     || fail "target $key_id_env does not match archived $label key id"

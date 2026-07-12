@@ -459,7 +459,7 @@ describeWithDatabase("notification delivery", () => {
     expect(stored).toMatchObject({ status: "deferred", attemptCount: 1 });
   });
 
-  it("refunds needs-operator SMTP failures using the reserved quota windows", async () => {
+  it("keeps quota consumed for post-transport operator failures (no EAUTH refund)", async () => {
     mocks.sendNewPostNotificationEmail.mockRejectedValue(new MailDeliveryError("needs_operator"));
     const { delivery, task } = await seedDelivery();
 
@@ -467,18 +467,119 @@ describeWithDatabase("notification delivery", () => {
       deferUntil: expect.any(Date),
     });
 
+    // The transport was invoked, so the ledger must record a real attempt and
+    // the day/minute windows must stay consumed.
     const [attempt] = await deliveryAttempts(delivery.id);
     expect(attempt).toMatchObject({
       outcome: "needs_operator_defer",
-      smtpAttempted: false,
+      smtpAttempted: true,
     });
-    expect(attempt!.reservedUtcDay).toBeInstanceOf(Date);
-    expect(attempt!.reservedMinute).toBeInstanceOf(Date);
     const quota = await db.select().from(notificationQuotaWindows);
     expect(quota.map((row) => [row.windowKind, row.attemptedCount]).sort()).toEqual([
-      ["utc_day", 0],
-      ["utc_minute", 0],
+      ["utc_day", 1],
+      ["utc_minute", 1],
     ]);
+  });
+
+  it("pacing fences a second delivery after an EAUTH-style operator failure", async () => {
+    const now = new Date();
+    // One pacing slot left in the current minute.
+    await db.insert(notificationQuotaWindows).values([
+      { windowKind: "utc_day", windowStart: utcDayStart(now), attemptedCount: 0 },
+      { windowKind: "utc_minute", windowStart: utcMinuteStart(now), attemptedCount: 29 },
+    ]);
+    mocks.sendNewPostNotificationEmail.mockRejectedValue(new MailDeliveryError("needs_operator"));
+    const first = await seedDelivery();
+    const second = await seedDelivery();
+
+    await expect(handleNotificationDeliveryTask(first.task)).resolves.toMatchObject({
+      deferUntil: expect.any(Date),
+    });
+    await expect(handleNotificationDeliveryTask(second.task)).resolves.toMatchObject({
+      deferUntil: expect.any(Date),
+    });
+
+    // Only the first delivery may reach SMTP; the second must pacing-defer
+    // because the failed connection attempt was not refunded.
+    expect(mocks.sendNewPostNotificationEmail).toHaveBeenCalledTimes(1);
+    const [firstAttempt] = await deliveryAttempts(first.delivery.id);
+    expect(firstAttempt).toMatchObject({ outcome: "needs_operator_defer", smtpAttempted: true });
+    const [secondAttempt] = await deliveryAttempts(second.delivery.id);
+    expect(secondAttempt).toMatchObject({ outcome: "pacing_defer", smtpAttempted: false });
+    const minute = (
+      await db
+        .select()
+        .from(notificationQuotaWindows)
+        .where(eq(notificationQuotaWindows.windowKind, "utc_minute"))
+    )[0];
+    expect(minute?.attemptedCount).toBe(30);
+  });
+
+  it("completes the task when a post-transport operator failure is terminal", async () => {
+    const { campaign, delivery, task } = await seedDelivery();
+    const slowSend = deferred<void>();
+    mocks.sendNewPostNotificationEmail.mockImplementationOnce(() => slowSend.promise);
+    const run = handleNotificationDeliveryTask(task);
+    await waitForSendCalls(1);
+    // The delivery crosses NOTIFICATION_DELIVERY_MAX_AGE_HOURS while the SMTP
+    // call is in flight, so the operator failure lands terminal.
+    await db
+      .update(notificationDeliveries)
+      .set({ createdAt: sql`now() - interval '169 hours'` })
+      .where(eq(notificationDeliveries.id, delivery.id));
+    slowSend.reject(new MailDeliveryError("needs_operator"));
+
+    // A defer here would re-pend the task against an already-dead delivery.
+    await expect(run).resolves.toEqual({});
+
+    const [stored] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, delivery.id));
+    expect(stored).toMatchObject({
+      status: "dead",
+      lastOutcome: "needs_operator_defer",
+      nextAttemptAfter: null,
+    });
+    const [finalizeTask] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.kind, "notification.campaign_finalize"));
+    expect(finalizeTask).toBeDefined();
+    await expect(handleCampaignFinalizeTask(finalizeTask!.payloadJson)).resolves.toEqual({});
+    const [storedCampaign] = await db
+      .select()
+      .from(notificationCampaigns)
+      .where(eq(notificationCampaigns.id, campaign.id));
+    expect(storedCampaign).toMatchObject({ status: "completed" });
+  });
+
+  it("stops a worker that lost its task lease before any attempt or SMTP work", async () => {
+    const { delivery, task } = await seedDelivery();
+    // Worker B reclaimed the task with a new lock token while worker A (the
+    // caller below, still holding the old token) was about to prepare.
+    await db
+      .update(tasks)
+      .set({ lockedBy: "worker-2", leaseUntil: sql`now() + interval '1 minute'` })
+      .where(eq(tasks.id, task.id));
+
+    await expect(handleNotificationDeliveryTask(task)).resolves.toEqual({});
+
+    expect(mocks.sendNewPostNotificationEmail).not.toHaveBeenCalled();
+    await expect(deliveryAttempts(delivery.id)).resolves.toHaveLength(0);
+    await expect(db.select().from(notificationQuotaWindows)).resolves.toHaveLength(0);
+  });
+
+  it("stops a lease-lost worker in the SMTP-unconfigured preflight as well", async () => {
+    mocks.getSmtpConfig.mockResolvedValue({ configured: false });
+    const { delivery, task } = await seedDelivery();
+    await db
+      .update(tasks)
+      .set({ lockedBy: "worker-2", leaseUntil: sql`now() + interval '1 minute'` })
+      .where(eq(tasks.id, task.id));
+
+    await expect(handleNotificationDeliveryTask(task)).resolves.toEqual({});
+    await expect(deliveryAttempts(delivery.id)).resolves.toHaveLength(0);
   });
 
   it("suppression skips notification sends but does not affect transactional mail", async () => {
@@ -886,6 +987,72 @@ describeWithDatabase("notification delivery", () => {
       .where(eq(notificationCampaigns.id, campaign.id));
     expect(storedCampaign).toMatchObject({ status: "completed" });
   });
+
+  // Provokes the prepare-vs-sweep lock-order contract: a third transaction
+  // holds the delivery row so the sweep (holding the task row) queues on it
+  // while prepare arrives. With the pre-fix campaign-first prepare order this
+  // interleaving is a 40P01 deadlock (prepare holds campaign and waits on the
+  // delivery, the sweep holds the delivery and waits on the campaign); with
+  // the task-first fence prepare just queues on the task and exits cleanly.
+  async function raceSweepAgainstPrepare(smtpConfigured: boolean) {
+    if (!smtpConfigured) mocks.getSmtpConfig.mockResolvedValue({ configured: false });
+    const { delivery, task } = await seedDelivery();
+    await db
+      .update(tasks)
+      .set({ attempts: 5, maxAttempts: 5, leaseUntil: sql`now() - interval '1 second'` })
+      .where(eq(tasks.id, task.id));
+
+    const lockAcquired = deferred<void>();
+    const releaseHold = deferred<void>();
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`
+        SELECT id FROM notification_deliveries WHERE id = ${delivery.id} FOR UPDATE
+      `);
+      lockAcquired.resolve();
+      await releaseHold.promise;
+    });
+    await lockAcquired.promise;
+
+    // The sweep locks the task row, then queues on the held delivery row.
+    const sweep = sweepExpiredFinalAttemptTasksAt(new Date());
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Prepare (or the SMTP-unconfigured preflight) races it.
+    const prepare = handleNotificationDeliveryTask(task);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    releaseHold.resolve();
+    await holder;
+
+    // No 40P01: the sweep wins the task and prepare exits at the fence.
+    await expect(sweep).resolves.toMatchObject([{ id: task.id, kind: "notification.deliver" }]);
+    await expect(prepare).resolves.toEqual({});
+
+    expect(mocks.sendNewPostNotificationEmail).not.toHaveBeenCalled();
+    const attempts = await deliveryAttempts(delivery.id);
+    expect(attempts.map((attempt) => attempt.outcome)).toEqual(["lease_expired"]);
+    const [storedDelivery] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, delivery.id));
+    expect(storedDelivery).toMatchObject({
+      status: "dead",
+      lastOutcome: "lease_expired",
+      attemptCount: 1,
+    });
+  }
+
+  it("does not deadlock when the sweep races prepare", { timeout: 20_000 }, async () => {
+    await raceSweepAgainstPrepare(true);
+  });
+
+  it(
+    "does not deadlock when the sweep races the SMTP-unconfigured preflight",
+    { timeout: 20_000 },
+    async () => {
+      await raceSweepAgainstPrepare(false);
+    },
+  );
 
   it("sweeps expired final-attempt sends to terminal deliveries and finalizes campaigns", async () => {
     const now = new Date("2026-07-12T12:00:00.000Z");

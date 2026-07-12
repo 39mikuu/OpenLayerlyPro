@@ -196,6 +196,19 @@ async function sweepExpiredFinalAttemptTasksInternal(options: {
       const payload = task?.payloadJson as NotificationDeliverPayload | null | undefined;
       const userId = typeof payload?.userId === "string" ? payload.userId : null;
 
+      // Global lock order is task -> delivery -> campaign -> attempt (shared
+      // with lockDeliveryGraphTx), so lock the campaign before any attempt
+      // row.
+      await tx
+        .update(notificationCampaigns)
+        .set({ status: "sending", updatedAt })
+        .where(
+          and(
+            eq(notificationCampaigns.id, delivery.campaignId),
+            inArray(notificationCampaigns.status, ["expanded", "sending"]),
+          ),
+        );
+
       const [openAttempt] = await tx
         .select({ id: notificationDeliveryAttempts.id })
         .from(notificationDeliveryAttempts)
@@ -243,15 +256,6 @@ async function sweepExpiredFinalAttemptTasksInternal(options: {
         });
       }
 
-      await tx
-        .update(notificationCampaigns)
-        .set({ status: "sending", updatedAt })
-        .where(
-          and(
-            eq(notificationCampaigns.id, delivery.campaignId),
-            inArray(notificationCampaigns.status, ["expanded", "sending"]),
-          ),
-        );
       await enqueueTask(tx, {
         kind: "notification.campaign_finalize",
         dedupeKey: `notification:campaign_finalize:${delivery.campaignId}`,
