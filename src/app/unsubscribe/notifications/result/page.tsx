@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
+import { getEnv } from "@/lib/env";
+import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
 import { getT } from "@/modules/i18n/server";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +25,8 @@ export default async function NotificationUnsubscribeResultPage({
 }) {
   const [params, t] = await Promise.all([searchParams, getT()]);
   const status = normalizeStatus(params.status);
+  // Keep an APP_URL path prefix on the home link (subpath deployments).
+  const homeHref = buildPublicUrl(getPublicBaseUrl(getEnv().APP_URL), "/");
 
   return (
     <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center px-6 py-12">
@@ -37,7 +41,7 @@ export default async function NotificationUnsubscribeResultPage({
           {t(`unsubscribe.notifications.resultDescription${status}`)}
         </p>
         <Button className="mt-6" asChild>
-          <Link href="/">{t("unsubscribe.notifications.homeAction")}</Link>
+          <Link href={homeHref}>{t("unsubscribe.notifications.homeAction")}</Link>
         </Button>
       </section>
     </main>

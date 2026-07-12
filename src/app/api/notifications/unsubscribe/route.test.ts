@@ -2,13 +2,14 @@ import type { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  appUrl: "https://artist.example",
   readBoundedRawBody: vi.fn(),
   readFormDataWithLimit: vi.fn(),
   unsubscribeNotificationToken: vi.fn(),
 }));
 
 vi.mock("@/lib/env", () => ({
-  getEnv: () => ({ APP_URL: "https://artist.example", REQUEST_JSON_MAX_BYTES: 65_536 }),
+  getEnv: () => ({ APP_URL: mocks.appUrl, REQUEST_JSON_MAX_BYTES: 65_536 }),
 }));
 vi.mock("@/lib/request-body", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/lib/request-body")>();
@@ -36,6 +37,7 @@ function headers(response: Response) {
 describe("notification unsubscribe routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.appUrl = "https://artist.example";
     mocks.readBoundedRawBody.mockResolvedValue(Buffer.alloc(0));
     mocks.readFormDataWithLimit.mockResolvedValue(new FormData());
     mocks.unsubscribeNotificationToken.mockResolvedValue("success");
@@ -109,5 +111,25 @@ describe("notification unsubscribe routes", () => {
     );
     expect(response.headers.get("location")).not.toContain("token-value");
     expect(mocks.unsubscribeNotificationToken).toHaveBeenCalledWith("token-value");
+  });
+
+  it("browser confirmation redirect keeps an APP_URL path prefix", async () => {
+    mocks.appUrl = "https://artist.example/base";
+    const form = new FormData();
+    form.set("token", "token-value");
+    mocks.readFormDataWithLimit.mockResolvedValue(form);
+    mocks.unsubscribeNotificationToken.mockResolvedValue("already-disabled");
+
+    const response = await CONFIRM_POST(
+      new Request("http://localhost/base/api/notifications/unsubscribe", {
+        method: "POST",
+      }) as NextRequest,
+    );
+
+    expect(response.status).toBe(303);
+    // The prefix survives and the status stays a normal query parameter.
+    expect(response.headers.get("location")).toBe(
+      "https://artist.example/base/unsubscribe/notifications/result?status=already-disabled",
+    );
   });
 });

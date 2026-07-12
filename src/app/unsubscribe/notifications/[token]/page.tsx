@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
+import { getEnv } from "@/lib/env";
+import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
 import { getT } from "@/modules/i18n/server";
 import { verifyNotificationUnsubscribeToken } from "@/modules/notifications";
 
@@ -18,6 +20,11 @@ export default async function NotificationUnsubscribePage({
   const [{ token }, t] = await Promise.all([params, getT()]);
   const verification = await verifyNotificationUnsubscribeToken(token);
   const valid = verification.valid;
+  // Absolute URLs via buildPublicUrl keep an APP_URL path prefix; a root-
+  // relative action or href would escape a /base-scoped reverse proxy.
+  const publicBaseUrl = getPublicBaseUrl(getEnv().APP_URL);
+  const unsubscribeAction = buildPublicUrl(publicBaseUrl, "/api/notifications/unsubscribe");
+  const homeHref = buildPublicUrl(publicBaseUrl, "/");
 
   return (
     <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center px-6 py-12">
@@ -36,13 +43,13 @@ export default async function NotificationUnsubscribePage({
             : t("unsubscribe.notifications.invalidDescription")}
         </p>
         {valid ? (
-          <form className="mt-6" action="/api/notifications/unsubscribe" method="post">
+          <form className="mt-6" action={unsubscribeAction} method="post">
             <input type="hidden" name="token" value={token} />
             <Button type="submit">{t("unsubscribe.notifications.confirmAction")}</Button>
           </form>
         ) : (
           <Button className="mt-6" asChild>
-            <Link href="/">{t("unsubscribe.notifications.homeAction")}</Link>
+            <Link href={homeHref}>{t("unsubscribe.notifications.homeAction")}</Link>
           </Button>
         )}
       </section>

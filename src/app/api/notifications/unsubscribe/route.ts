@@ -4,6 +4,7 @@ import { z } from "zod";
 import { handleApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { readFormDataWithLimit } from "@/lib/request-body";
+import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
 import { unsubscribeNotificationToken } from "@/modules/notifications";
 
 export const runtime = "nodejs";
@@ -13,10 +14,13 @@ const bodySchema = z.object({
 });
 
 function resultUrl(status: string): URL {
-  return new URL(
-    `/unsubscribe/notifications/result?status=${encodeURIComponent(status)}`,
-    getEnv().APP_URL,
+  // buildPublicUrl preserves an APP_URL path prefix; the query is added via
+  // searchParams so the "?" is never treated as pathname content.
+  const url = new URL(
+    buildPublicUrl(getPublicBaseUrl(getEnv().APP_URL), "/unsubscribe/notifications/result"),
   );
+  url.searchParams.set("status", status);
+  return url;
 }
 
 function tokenHeaders(): Headers {
