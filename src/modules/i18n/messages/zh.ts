@@ -56,6 +56,8 @@ export const zh = {
   posts: {
     title: "作品",
     subtitle: "查看创作者最近发布的内容与会员更新。",
+    seoTitle: "作品",
+    seoDescription: "查看创作者最近发布的公开内容与会员更新。",
     empty: "还没有发布作品。",
     nextPage: "下一页",
   },
@@ -79,6 +81,8 @@ export const zh = {
   tiers: {
     title: "会员等级",
     subtitle: "选择会员等级，扫码付款并上传截图，审核通过后自动开通。",
+    seoTitle: "会员等级",
+    seoDescription: "选择会员等级，支持创作者持续发布内容。",
     currentPrefix: "当前会员：",
     validUntil: "，有效期至 {date}",
     duration: "有效期 {days} 天",

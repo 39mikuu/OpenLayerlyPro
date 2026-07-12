@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { getCurrentUser } from "@/modules/auth/session";
@@ -10,6 +11,7 @@ import {
   listPostFiles,
 } from "@/modules/content";
 import { renderMarkdown } from "@/modules/content/markdown";
+import { buildPublicPostMetadata } from "@/modules/content/seo";
 import { isInlineVideoMime } from "@/modules/download/video";
 import { getT, resolveLocale } from "@/modules/i18n/server";
 import { getPostTaxonomy } from "@/modules/taxonomy";
@@ -17,6 +19,15 @@ import { getActiveTheme, type PostAttachmentView, type PostImageView } from "@/m
 import { shouldShowMachineTranslationLabel } from "@/modules/translation/policy";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}): Promise<Metadata> {
+  const { slug } = await params;
+  return buildPublicPostMetadata(slug);
+}
 
 export default async function PostDetailPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;

@@ -1,9 +1,16 @@
+import type { Metadata } from "next";
+
 import { getCurrentUser } from "@/modules/auth/session";
+import { buildListPageSeoCopy, buildSiteMetadata } from "@/modules/content/seo";
 import { getT } from "@/modules/i18n/server";
 import { getActiveMembership, listTiers } from "@/modules/membership";
 import { getActiveTheme, type TierCardView } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  return buildSiteMetadata("/tiers", buildListPageSeoCopy("tiers"));
+}
 
 export default async function TiersPage() {
   const user = await getCurrentUser();

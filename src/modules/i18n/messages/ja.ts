@@ -54,6 +54,8 @@ export const ja: Messages = {
   posts: {
     title: "作品",
     subtitle: "クリエイターの最近の投稿やメンバー向け更新を確認できます。",
+    seoTitle: "作品",
+    seoDescription: "クリエイターの最新の公開投稿やメンバー向け更新を確認できます。",
     empty: "公開されている作品はまだありません。",
     nextPage: "次のページ",
   },
@@ -78,6 +80,8 @@ export const ja: Messages = {
     title: "メンバーシッププラン",
     subtitle:
       "プランを選び、QR コードで支払ってスクリーンショットを送信してください。確認後に利用できます。",
+    seoTitle: "メンバーシッププラン",
+    seoDescription: "プランを選んで、クリエイターの継続的な活動を支援できます。",
     currentPrefix: "現在のメンバーシップ：",
     validUntil: "、{date} まで有効",
     duration: "{days} 日間有効",

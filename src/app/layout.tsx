@@ -8,6 +8,7 @@ import {
   IntegrationScriptElements,
   VerificationMetaElements,
 } from "@/components/public-security-elements";
+import { buildRootMetadataFromSite, ROOT_DEFAULT_METADATA } from "@/modules/content/root-metadata";
 import { resolveLocale } from "@/modules/i18n/server";
 import { getPublicSiteInfo } from "@/modules/site";
 import {
@@ -23,22 +24,12 @@ import {
   THEME_MODE_COOKIE,
 } from "@/modules/theme";
 
-const defaultMetadata: Metadata = {
-  title: "Artist Member Site",
-  description: "开源画师会员站系统",
-};
-
 export async function generateMetadata(): Promise<Metadata> {
   try {
     const site = await getPublicSiteInfo();
-    const iconUrl = site.siteIconFileId ? `/api/files/${site.siteIconFileId}/download` : undefined;
-    return {
-      ...defaultMetadata,
-      title: site.siteName || defaultMetadata.title,
-      icons: iconUrl ? { icon: iconUrl, apple: iconUrl } : undefined,
-    };
+    return buildRootMetadataFromSite(site);
   } catch {
-    return defaultMetadata;
+    return ROOT_DEFAULT_METADATA;
   }
 }
 

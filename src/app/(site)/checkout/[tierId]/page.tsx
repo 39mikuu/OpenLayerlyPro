@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 
 import { getCurrentUser } from "@/modules/auth/session";
@@ -8,6 +9,9 @@ import { listPaymentMethods } from "@/modules/payment";
 import { type CheckoutMethodView, getActiveTheme } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = {
+  robots: { index: false, follow: false },
+};
 
 export default async function CheckoutPage({ params }: { params: Promise<{ tierId: string }> }) {
   const user = await getCurrentUser();

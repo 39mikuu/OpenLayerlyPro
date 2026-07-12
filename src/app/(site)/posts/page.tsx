@@ -1,9 +1,16 @@
+import type { Metadata } from "next";
+
 import { listPublishedPostsPage, localizePostCards } from "@/modules/content";
+import { buildListPageSeoCopy, buildSiteMetadata } from "@/modules/content/seo";
 import { getT, resolveLocale } from "@/modules/i18n/server";
 import { getPostsTaxonomy } from "@/modules/taxonomy";
 import { getActiveTheme, type PostCardView } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  return buildSiteMetadata("/posts", buildListPageSeoCopy("posts"));
+}
 
 export default async function PostsPage({
   searchParams,
