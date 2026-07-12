@@ -19,7 +19,9 @@ cp .env.example .env
 ```env
 SESSION_SECRET=replace-with-a-strong-random-value
 NOTIFICATION_UNSUBSCRIBE_KEY_ID=current
+NOTIFICATION_UNSUBSCRIBE_SECRET_FILE=/app/secrets/notification-unsubscribe-secret
 NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID=current
+NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE=/app/secrets/notification-suppression-digest-secret
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 SMTP_USER=your_smtp_user
@@ -27,11 +29,20 @@ SMTP_PASSWORD=your_smtp_password
 SMTP_FROM="Artist Site <no-reply@example.com>"
 EMAIL_RETRY_RECHECK_MINUTES=15
 EMAIL_DELIVERY_MAX_AGE_HOURS=24
+TASK_TRANSACTIONAL_RESERVED_PER_BATCH=8
+TASK_NOTIFICATION_MIN_PER_BATCH=2
+TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH=2
+TASK_MAINTENANCE_MAX_PER_BATCH=2
+NOTIFICATION_EMAIL_DAILY_BUDGET=500
+NOTIFICATION_EMAIL_PACING_PER_MINUTE=30
+NOTIFICATION_CAMPAIGN_EXPANSION_BATCH_SIZE=500
+NOTIFICATION_DELIVERY_MAX_AGE_HOURS=168
+NOTIFICATION_UNSUBSCRIBE_TOKEN_MAX_AGE_DAYS=180
 ```
 
 > SMTP 是粉丝验证码登录的必要条件。业务邮件遇到未配置或需运维修复的错误时，会按 `EMAIL_RETRY_RECHECK_MINUTES` 延迟重投且不消耗 attempts；超过 `EMAIL_DELIVERY_MAX_AGE_HOURS` 后进入 dead。登录码因 TTL 很短会直接进入 dead。建议同时修改 Compose 中 PostgreSQL 默认密码并同步 `DATABASE_URL`。
 >
-> Docker entrypoint 会在生产 Compose 模式下为文件型当前退订 key 与 suppression digest key 生成 `/app/secrets/notification-unsubscribe-secret` 和 `/app/secrets/notification-suppression-digest-secret`（`0600`），但不会自动生成 previous keys。key id 仍应在 `.env` 中稳定配置。退订 previous key 要保留到旧 token 过期；suppression previous key 要保留到有明确 rehash/migration 程序。
+> Docker entrypoint 会在生产 Compose 模式下为文件型当前退订 key 与 suppression digest key 生成 `/app/secrets/notification-unsubscribe-secret` 和 `/app/secrets/notification-suppression-digest-secret`（`0600`），但不会自动生成 previous keys。key id 仍应在 `.env` 中稳定配置；直接设置非空 `NOTIFICATION_*_SECRET` 时会优先于对应 `*_SECRET_FILE`。退订 previous key 要保留到旧 token 过期；suppression previous key 要保留到有明确 rehash/migration 程序。
 
 ### 认证限流与可信 IP
 
@@ -42,7 +53,7 @@ EMAIL_DELIVERY_MAX_AGE_HOURS=24
 - 登录码使用持久投递 fence；已有 active code 对应 pending/processing/retryable failed task 时，不创建替换码。
 - claim/fence 在短事务内完成，SMTP 在事务/advisory lock 外执行；SMTP 接受后进程崩溃仍可能导致同一码 at-least-once 重发。
 - S5 业务邮件使用失败分类、operator defer/dead、稳定 Message-ID、delivery ledger 与后台重试；业务 dedupeKey 只防重复入队，不能让 SMTP 本身 exactly-once。
-- WP2 批量通知默认关闭，需要用户显式 opt-in；SMTP accepted 只表示服务商接收中继，不代表最终邮箱投递。通知投递为 at-least-once，归档/取消发布内容会在发送前跳过，同步 permanent SMTP 失败才写入通知 suppression。
+- WP2 批量通知默认关闭，需要用户显式 opt-in；SMTP accepted 只表示服务商接收中继，不代表最终邮箱投递。通知投递为 at-least-once，不承诺不重复投递；归档/取消发布内容会在发送前跳过，同步 SMTP permanent rejection 才写入通知 suppression。这不是异步 DSN/provider 处理。
 - `SESSION_SECRET` 也影响在途登录码 task 解密。轮换后旧任务会 permanent fail，用户需重新申请。
 
 ## 3. 启动

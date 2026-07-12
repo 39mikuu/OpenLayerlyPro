@@ -1,10 +1,22 @@
 # Changelog
 
-## v1.0.0 — 2026-07-05 (release candidate; tag pending #88)
+## Unreleased
 
-OpenLayerlyPro v1.0.0 is feature- and hardening-complete. Payment, subscription, content, file, theme, translation, S6 security response headers (#86), S7 backup/restore consistency (#87), and the post-acceptance hardening line through PR #128 are all on `main`, and the package version is frozen at 1.0.0.
+### v1.1 WP2 Email Notifications
 
-The production `v1.0.0` tag and GitHub Release are created only after the real-environment acceptance checklist (#88 / `docs/release-v1.0-checklist.md`) passes on the exact release build. Do not tag before that.
+- Added opt-in new-post email notifications with default-off user preferences, campaign creation on first publish/scheduled publish, recipient expansion, delivery tasks, campaign finalization, and an admin `/admin/notifications` observability page.
+- Added notification queue class/priority handling so notification backlog has progress while transactional login/payment/membership/renewal email keeps reserved dispatcher capacity.
+- Added notification delivery quota windows, UTC daily budget, per-minute pacing, attempt ledger, safe logging metadata, `List-Unsubscribe` / `List-Unsubscribe-Post` headers, and at-least-once product semantics. SMTP accepted means relay acceptance, not final mailbox delivery; the product wording is `不承诺不重复投递`.
+- Added POST-first one-click unsubscribe tokens with dedicated current/previous unsubscribe keyring, tokenless result redirects, no-store/no-referrer/noindex token-bearing responses, and settings UI/API re-enable behavior that invalidates old tokens.
+- Added notification suppression for synchronous SMTP permanent rejection from `notification.deliver` only. This is not asynchronous DSN/provider processing, and transactional email ignores the suppression list.
+- Completed known-gaps G1 convergence: transactional `email` tasks now use v2 domain-reference payloads, unsafe retryable legacy rows are dead-lettered/redacted, terminal rows are redacted, and login-code tasks remain email-free.
+- Upgraded backup archives to manifest v4 for notification unsubscribe/suppression key continuity, archives file-backed current/previous notification keys, validates external fingerprints before destructive restore, and neutralizes restored notification/business email tasks so unknown outcomes are not replayed.
+
+Pending release-gate evidence remains real SMTP accepted/permanent/operator-defer testing, deployed dogfood, v1.0.0 upgrade, and backup/restore drills with notification keys.
+
+## v1.0.0 — 2026-07-06
+
+OpenLayerlyPro v1.0.0 is released. Payment, subscription, content, file, theme, translation, S6 security response headers (#86), S7 backup/restore consistency (#87), and the post-acceptance hardening line through PR #128 are all included in the `v1.0.0` release tag.
 
 ### Final-Acceptance Hardening (after the first release-candidate report)
 

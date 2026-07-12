@@ -268,6 +268,23 @@ previous unsubscribe keys until all still-valid tokens signed by that key have e
 Retain previous suppression digest keys until an explicit suppression rehash/migration
 procedure exists, because raw recipient addresses are not stored.
 
+The runtime key environment is:
+
+- `NOTIFICATION_UNSUBSCRIBE_KEY_ID` with `NOTIFICATION_UNSUBSCRIBE_SECRET` or `NOTIFICATION_UNSUBSCRIBE_SECRET_FILE`;
+- optional `NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID` with `NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET` or `NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE`;
+- `NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID` with `NOTIFICATION_SUPPRESSION_DIGEST_SECRET` or `NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE`;
+- optional `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID` with `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET` or `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE`.
+
+A direct non-empty secret env value wins over its file variant. The Docker entrypoint
+generates only current file-backed unsubscribe and suppression digest secrets, under
+`/app/secrets/` by default, with `0600` permissions. It does not generate previous keys;
+operators must preserve or configure those explicitly during rotation.
+
+Restored notification tasks are deliberately neutralized: nonterminal
+`notification.deliver`, `notification.campaign_expand`, and `notification.campaign_finalize`
+tasks are dead-lettered, and resolvable deliveries/campaigns are marked dead. This
+prevents unsafe replay after restore when the original SMTP outcome is unknown.
+
 ### Stripe residual risk
 
 After restore, review payment/subscription/dispute state near the archive timestamp. Provider events are re-armed from the DB snapshot; reconcile runs afterward, but DB and live Stripe state are not atomically identical.

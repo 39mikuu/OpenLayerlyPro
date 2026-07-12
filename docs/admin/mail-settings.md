@@ -10,6 +10,7 @@ SMTP is required for production fan email-code login and for transactional notif
 - membership activation and revocation notifications;
 - payment rejection notifications;
 - manual renewal reminders;
+- opt-in new-post email notification campaigns;
 - SMTP test emails.
 
 ## Configuration and Secret Handling
@@ -68,3 +69,18 @@ SMTP does not provide exactly-once delivery. If the provider accepts a message a
 Bulk post notifications are opt-in by default off. They render in the recipient's current locale, skip archived/unpublished posts at send time, and write suppression records only for synchronous permanent SMTP rejection from notification delivery. Suppression does not affect login codes, payment emails, membership emails, or renewal reminders.
 
 Operators should monitor the task dashboard, deferred/dead counts, and delivery ledger rather than treating task enqueue as proof of inbox arrival.
+
+## Notification Campaign Observability
+
+Admin path: `/admin/notifications`.
+
+The notifications page lists the latest campaign summaries with campaign id, post title/slug, source, status, publish/expansion/completion timestamps, expansion cursor, safe last error, delivery status counts, attempt outcome counts, and suppression count. The backing APIs are:
+
+- `GET /api/admin/notification-campaigns`
+- `GET /api/admin/notification-campaigns/[id]`
+
+These surfaces are aggregate and operator-safe. They must not expose raw task payload JSON, recipient email addresses, SMTP provider responses, rendered subjects/bodies, or unsubscribe tokens.
+
+Suppression count means "synchronous SMTP permanent rejection from `notification.deliver`." It is not asynchronous DSN/provider processing. SMTP accepted means the SMTP server accepted the message for relay, not that the final mailbox delivered it.
+
+Notification delivery is at-least-once: `不承诺不重复投递`. A worker crash after SMTP accepted but before task success may cause the same logical notification to be retried.

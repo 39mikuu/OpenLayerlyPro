@@ -45,7 +45,7 @@
 
 ## 已完成
 
-- **G1**：随 v1.1 WP2 Phase 5 完成。业务邮件任务 payload 改为 v2 domain-reference 格式；worker 在发送时根据业务行重新解析最新邮箱和 locale。迁移会移除 `kind='email'` 任务里的 `payload_json.to`：可安全还原业务事件的 retryable 行改写为 v2，不能安全还原的 retryable 行 dead-letter 并脱敏，terminal 行脱敏保留。登录码任务保持不存收件人地址。
+- **G1**：随 v1.1 WP2 Phase 5 完成并移入本节。业务邮件任务 payload 改为 v2 domain-reference 格式；worker 在发送时根据业务行重新解析最新邮箱和 locale。迁移会移除 `kind='email'` 任务里的 `payload_json.to`：可安全还原业务事件的 retryable 行改写为 v2，不能安全还原的 retryable 行 dead-letter 并脱敏，terminal 行脱敏保留。登录码任务保持不存收件人地址。
 - **G4**：随 PR #123 完成，exact-head CI run #554 通过。`src/modules/i18n/key-completeness.test.ts` 递归比较 zh/en/ja 完整 key 路径集合，一次性报出所有 missing/extra；`tsc --noEmit` 已隐式保护多余/缺失 key（本条目把这层保护改为显式、具名、CI 可见，防止未来重构悄悄移除）。
 - **G6**：随 PR #123 完成，exact-head CI run #554 通过。`e2e/theme-visual-baseline.spec.ts` 覆盖 12 张截图（Home/Posts/PostDetail × 明暗 × `builtin`/`blog`，各主题用自己的真实默认预设）。过程中发现并修复：CI 渲染环境字体度量与本地不同（基线改为直接采集 CI 实际渲染结果，而非本地近似）、页脚年份（`new Date().getFullYear()`）会导致基线逐年失效（已加 mask）。**范围说明**：视觉基线集中覆盖主题实际存在布局分歧的三个页面和默认预设；直接复用 builtin 正文组件的页面由组件身份断言与代表性权限 smoke 提供证据；全部具名预设/custom hue 由参数化功能测试覆盖；zh/en/ja 由 G4 key 完整性与逐语言浏览器 smoke 覆盖。不是全页面 × 权限 × 预设 × 语言的组合视觉矩阵，见 `release-v1.1-plan.md` §3 WP1 验收项。
 
