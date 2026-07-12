@@ -12,3 +12,16 @@ export {
   handleCampaignExpandTask,
   handleCampaignFinalizeTask,
 } from "./expansion";
+export {
+  getNotificationPreference,
+  type NotificationPreferenceView,
+  type NotificationUnsubscribeResult,
+  setNotificationPreference,
+  unsubscribeNotificationToken,
+} from "./preferences";
+export {
+  generateNotificationUnsubscribeToken,
+  type NotificationUnsubscribeTokenPayload,
+  type NotificationUnsubscribeVerification,
+  verifyNotificationUnsubscribeToken,
+} from "./unsubscribe-token";

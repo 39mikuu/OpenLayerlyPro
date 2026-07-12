@@ -123,6 +123,15 @@ export const ja: Messages = {
     disableRenewalReminder: "期限通知をオフにする",
     renewalReminderSaving: "保存中…",
     renewalReminderFailed: "期限通知を更新できませんでした",
+    newPostEmailTitle: "新着投稿メール通知",
+    newPostEmailDescription:
+      "有効にすると、クリエイターが新しいコンテンツを公開したときにメールで通知します。既定では無効で、いつでも解除できます。",
+    enableNewPostEmail: "新着投稿メールを有効にする",
+    disableNewPostEmail: "新着投稿メールをオフにする",
+    newPostEmailSaving: "保存中…",
+    newPostEmailFailed: "新着投稿メール設定を更新できませんでした",
+    newPostEmailOn: "現在有効です",
+    newPostEmailOff: "現在無効です",
     quickLinks: "メニュー",
     renew: "更新・アップグレード",
     open: "メンバーになる",
@@ -245,6 +254,7 @@ export const ja: Messages = {
       paymentMethods: "支払い方法",
       paymentReviews: "支払い確認",
       downloads: "ダウンロード",
+      notifications: "メール通知",
       tasks: "バックグラウンドタスク",
       settings: "システム設定",
       system: "システム状態",
@@ -492,6 +502,16 @@ export const ja: Messages = {
       statussucceeded: "成功",
       statusfailed: "失敗",
       statusdead: "停止",
+    },
+    notifications: {
+      title: "メール通知",
+      description: "新着投稿メールキャンペーンの展開、配信、安全な集計状態を確認します。",
+      campaign: "キャンペーン ID",
+      post: "投稿",
+      deliveryCounts: "配信状態",
+      attemptCounts: "試行結果",
+      expansion: "展開状況",
+      empty: "通知キャンペーンはまだありません。",
     },
     taxonomy: {
       title: "カテゴリーとタグ",
@@ -1050,6 +1070,7 @@ export const ja: Messages = {
       "この承認にはメンバーシップ付与の関連付けがないため、安全に取り消せません",
     reviewReasonRequired: "支払い承認の取り消し理由を入力してください",
     taskNotRetryable: "このタスクは再試行できる状態ではありません",
+    notificationCampaignNotFound: "通知キャンペーンが見つかりません",
     siteInitialized: "サイトはすでに初期設定されています",
     accessDenied: "このファイルにアクセスする権限がありません",
     fileUnlinked: "このファイルはコンテンツに関連付けられていません",
@@ -1076,6 +1097,26 @@ export const ja: Messages = {
     tierInUse:
       "このプランは使用中です（メンバーシップ：{memberships}、支払い申請：{payments}、コンテンツ：{posts}）。削除せず無効にしてください。",
     userCreateFailed: "ユーザーの作成に失敗しました",
+  },
+  unsubscribe: {
+    notifications: {
+      eyebrow: "メール通知",
+      confirmTitle: "新着投稿メールを解除しますか？",
+      confirmDescription:
+        "確認後、新着投稿メール通知の送信を停止します。ログインすれば後から再度有効にできます。",
+      confirmAction: "解除を確認",
+      invalidTitle: "解除リンクは利用できません",
+      invalidDescription:
+        "この解除リンクは期限切れ、使用済み、または現在のメール設定と一致していません。",
+      homeAction: "ホームへ戻る",
+      resultTitlesuccess: "解除しました",
+      resultDescriptionsuccess: "新着投稿メール通知は今後送信されません。",
+      "resultTitlealready-disabled": "すでに解除済みです",
+      "resultDescriptionalready-disabled": "新着投稿メール通知はすでにオフです。",
+      resultTitleinvalid: "解除できませんでした",
+      resultDescriptioninvalid:
+        "このリンクは利用できません。ログインして通知設定を確認してください。",
+    },
   },
   mail: {
     loginSubject: "ログイン認証コード",

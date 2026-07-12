@@ -111,6 +111,10 @@ export type LoginView = {
 export type MeView = {
   email: string;
   isAdmin: boolean;
+  notificationPreferences: {
+    newPostEmailEnabled: boolean;
+    version: number;
+  };
   membership:
     | (MembershipSummary & {
         tierId: string;

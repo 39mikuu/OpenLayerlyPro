@@ -5,6 +5,7 @@ import { getCurrentUser } from "@/modules/auth/session";
 import { getT } from "@/modules/i18n/server";
 import { getActiveMembership } from "@/modules/membership";
 import { getManualReminderTiers } from "@/modules/membership/renewal-reminders";
+import { getNotificationPreference } from "@/modules/notifications";
 import { getCurrentStripeSubscription } from "@/modules/payment/subscriptions";
 import { getActiveTheme } from "@/modules/theme";
 
@@ -16,13 +17,15 @@ export const metadata: Metadata = {
 export default async function MePage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const [active, subscription, reminderTiers, theme, t] = await Promise.all([
-    getActiveMembership(user.id),
-    getCurrentStripeSubscription(user.id),
-    getManualReminderTiers(user.id),
-    getActiveTheme(),
-    getT(),
-  ]);
+  const [active, subscription, reminderTiers, notificationPreferences, theme, t] =
+    await Promise.all([
+      getActiveMembership(user.id),
+      getCurrentStripeSubscription(user.id),
+      getManualReminderTiers(user.id),
+      getNotificationPreference(user.id),
+      getActiveTheme(),
+      getT(),
+    ]);
   const Me = theme.components.Me;
   return (
     <Me
@@ -30,6 +33,7 @@ export default async function MePage() {
       view={{
         email: user.email,
         isAdmin: user.role === "admin",
+        notificationPreferences,
         membership: active
           ? {
               tierId: active.tier.id,

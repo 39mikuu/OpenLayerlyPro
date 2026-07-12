@@ -123,6 +123,15 @@ export const en: Messages = {
     disableRenewalReminder: "Turn off expiry reminder",
     renewalReminderSaving: "Saving…",
     renewalReminderFailed: "Failed to update the expiry reminder",
+    newPostEmailTitle: "New post email notifications",
+    newPostEmailDescription:
+      "When enabled, you receive an email when the creator publishes new content. This is off by default and can be unsubscribed anytime.",
+    enableNewPostEmail: "Enable new post email",
+    disableNewPostEmail: "Turn off new post email",
+    newPostEmailSaving: "Saving…",
+    newPostEmailFailed: "Failed to update new post email settings",
+    newPostEmailOn: "Currently enabled",
+    newPostEmailOff: "Currently disabled",
     quickLinks: "Quick links",
     renew: "Renew / upgrade",
     open: "Become a member",
@@ -247,6 +256,7 @@ export const en: Messages = {
       paymentMethods: "Payment methods",
       paymentReviews: "Payment reviews",
       downloads: "Downloads",
+      notifications: "Email notifications",
       tasks: "Tasks",
       settings: "System settings",
       system: "System status",
@@ -498,6 +508,17 @@ export const en: Messages = {
       statussucceeded: "Succeeded",
       statusfailed: "Failed",
       statusdead: "Dead",
+    },
+    notifications: {
+      title: "Email notifications",
+      description:
+        "Monitor new-post email campaign expansion, delivery, and safe aggregate status.",
+      campaign: "Campaign ID",
+      post: "Post",
+      deliveryCounts: "Delivery status",
+      attemptCounts: "Attempt outcomes",
+      expansion: "Expansion progress",
+      empty: "No notification campaigns yet.",
     },
     taxonomy: {
       title: "Categories & tags",
@@ -1062,6 +1083,7 @@ export const en: Messages = {
       "This approval is missing its membership grant link and cannot be reversed safely",
     reviewReasonRequired: "A reason is required to reverse a payment approval",
     taskNotRetryable: "This task is not in a retryable state",
+    notificationCampaignNotFound: "Notification campaign not found",
     siteInitialized: "The site is already initialized",
     accessDenied: "You do not have access to this file",
     fileUnlinked: "This file is not linked to any content",
@@ -1088,6 +1110,25 @@ export const en: Messages = {
     tierInUse:
       "This tier is still referenced (memberships: {memberships}, payment requests: {payments}, content: {posts}) and cannot be deleted. Disable it instead.",
     userCreateFailed: "User creation failed",
+  },
+  unsubscribe: {
+    notifications: {
+      eyebrow: "Email notifications",
+      confirmTitle: "Unsubscribe from new post emails?",
+      confirmDescription:
+        "After confirmation, we will stop sending you new-post email notifications. You can sign in and turn them back on later.",
+      confirmAction: "Confirm unsubscribe",
+      invalidTitle: "Unsubscribe link unavailable",
+      invalidDescription:
+        "This unsubscribe link is expired, already used, or no longer matches your current email settings.",
+      homeAction: "Return home",
+      resultTitlesuccess: "Unsubscribed",
+      resultDescriptionsuccess: "You will no longer receive new-post email notifications.",
+      "resultTitlealready-disabled": "Already unsubscribed",
+      "resultDescriptionalready-disabled": "New-post email notifications are already turned off.",
+      resultTitleinvalid: "Unsubscribe not completed",
+      resultDescriptioninvalid: "This link is unavailable. Sign in to check notification settings.",
+    },
   },
   mail: {
     loginSubject: "Your sign-in code",

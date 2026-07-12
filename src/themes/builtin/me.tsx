@@ -1,7 +1,8 @@
-import { CalendarDays, FileText, Home, Mail, Newspaper, Sparkles } from "lucide-react";
+import { Bell, CalendarDays, FileText, Home, Mail, Newspaper, Sparkles } from "lucide-react";
 import Link from "next/link";
 
 import { RenewalReminderToggle } from "@/components/membership/renewal-reminder-toggle";
+import { NewPostEmailToggle } from "@/components/notifications/new-post-email-toggle";
 import { SubscriptionCancelButton } from "@/components/payment/subscription-cancel-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,32 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
             <Badge variant="secondary" className="mt-2">
               {view.isAdmin ? t("me.roleAdmin") : t("me.roleFan")}
             </Badge>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border bg-card p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)] sm:p-6">
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+              <Bell className="size-4" />
+            </span>
+            <div>
+              <p className="text-sm font-semibold">{t("me.newPostEmailTitle")}</p>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                {t("me.newPostEmailDescription")}
+              </p>
+            </div>
+          </div>
+          <div className="sm:text-right">
+            <NewPostEmailToggle enabled={view.notificationPreferences.newPostEmailEnabled} />
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t(
+                view.notificationPreferences.newPostEmailEnabled
+                  ? "me.newPostEmailOn"
+                  : "me.newPostEmailOff",
+              )}
+            </p>
           </div>
         </div>
       </section>
