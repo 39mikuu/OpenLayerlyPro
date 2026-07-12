@@ -324,53 +324,51 @@ case "$SESSION_SECRET_SOURCE" in
 esac
 
 if [ "$FORMAT_VERSION" = "4" ]; then
-  case "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" in
-    file)
-      [ -s "$WORK_DIR/secrets/notification-unsubscribe-secret" ] \
-        || fail "archive declares a file-backed notification unsubscribe key but the file is missing"
-      ;;
-    external)
-      EXPECTED_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256=$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256
-      ;;
-    *) fail "unsupported NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE=$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" ;;
-  esac
+  archive_notification_key_has_file \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" \
+    "$WORK_DIR/secrets/notification-unsubscribe-secret" \
+    "notification unsubscribe key" >/dev/null || [ "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" != file ]
+  archive_notification_key_has_file \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" \
+    "$WORK_DIR/secrets/notification-unsubscribe-previous-secret" \
+    "notification unsubscribe previous key" >/dev/null || [ "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" != file ]
+  archive_notification_key_has_file \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" \
+    "$WORK_DIR/secrets/notification-suppression-digest-secret" \
+    "notification suppression key" >/dev/null || [ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" != file ]
+  archive_notification_key_has_file \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" \
+    "$WORK_DIR/secrets/notification-suppression-digest-previous-secret" \
+    "notification suppression previous key" >/dev/null || [ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" != file ]
 
-  case "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" in
-    file)
-      [ -s "$WORK_DIR/secrets/notification-suppression-digest-secret" ] \
-        || fail "archive declares a file-backed notification suppression key but the file is missing"
-      ;;
-    external)
-      EXPECTED_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256=$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256
-      ;;
-    *) fail "unsupported NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE=$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" ;;
-  esac
-
-  if [ "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" = external ]; then
-    actual_unsubscribe_sha256=$(
-      compose run --rm -T --no-deps --entrypoint node app -e '
-        const { createHash } = require("crypto");
-        const value = process.env.NOTIFICATION_UNSUBSCRIBE_SECRET;
-        if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) process.exit(1);
-        process.stdout.write(createHash("sha256").update(value).digest("hex"));
-      '
-    ) || fail "archive requires an explicit externally managed NOTIFICATION_UNSUBSCRIBE_SECRET"
-    [ "$actual_unsubscribe_sha256" = "$EXPECTED_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256" ] \
-      || fail "externally managed NOTIFICATION_UNSUBSCRIBE_SECRET does not match the archive fingerprint"
-  fi
-
-  if [ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" = external ]; then
-    actual_suppression_sha256=$(
-      compose run --rm -T --no-deps --entrypoint node app -e '
-        const { createHash } = require("crypto");
-        const value = process.env.NOTIFICATION_SUPPRESSION_DIGEST_SECRET;
-        if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) process.exit(1);
-        process.stdout.write(createHash("sha256").update(value).digest("hex"));
-      '
-    ) || fail "archive requires an explicit externally managed NOTIFICATION_SUPPRESSION_DIGEST_SECRET"
-    [ "$actual_suppression_sha256" = "$EXPECTED_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256" ] \
-      || fail "externally managed NOTIFICATION_SUPPRESSION_DIGEST_SECRET does not match the archive fingerprint"
-  fi
+  verify_target_notification_key_env \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_ID" \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256" \
+    NOTIFICATION_UNSUBSCRIBE_KEY_ID \
+    NOTIFICATION_UNSUBSCRIBE_SECRET \
+    "notification unsubscribe current"
+  verify_target_notification_key_env \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID" \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SHA256" \
+    NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID \
+    NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET \
+    "notification unsubscribe previous"
+  verify_target_notification_key_env \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID" \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256" \
+    NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID \
+    NOTIFICATION_SUPPRESSION_DIGEST_SECRET \
+    "notification suppression current"
+  verify_target_notification_key_env \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID" \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256" \
+    NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID \
+    NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET \
+    "notification suppression previous"
 fi
 
 echo "Starting PostgreSQL for the target Compose project..."
@@ -520,7 +518,7 @@ if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURC
 fi
 
 TARGET_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE=""
-if [ "$FORMAT_VERSION" = "4" ] && [ -s "$WORK_DIR/secrets/notification-unsubscribe-previous-secret" ]; then
+if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" = file ]; then
   echo "Preflighting notification unsubscribe previous secret restore target before database replacement..."
   TARGET_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE=$(
     container_env_value "$RESTORE_APP_ENV_JSON" NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE "/app/secrets/notification-unsubscribe-previous-secret" | tr -d '\r'
@@ -540,7 +538,7 @@ if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KE
 fi
 
 TARGET_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE=""
-if [ "$FORMAT_VERSION" = "4" ] && [ -s "$WORK_DIR/secrets/notification-suppression-digest-previous-secret" ]; then
+if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" = file ]; then
   echo "Preflighting notification suppression digest previous secret restore target before database replacement..."
   TARGET_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE=$(
     container_env_value "$RESTORE_APP_ENV_JSON" NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE "/app/secrets/notification-suppression-digest-previous-secret" | tr -d '\r'
@@ -596,7 +594,7 @@ if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURC
     "$TARGET_NOTIFICATION_UNSUBSCRIBE_SECRET_FILE" NOTIFICATION_UNSUBSCRIBE_SECRET_FILE
 fi
 
-if [ "$FORMAT_VERSION" = "4" ] && [ -s "$WORK_DIR/secrets/notification-unsubscribe-previous-secret" ]; then
+if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" = file ]; then
   echo "Restoring notification unsubscribe previous secret file..."
   docker_cmd cp \
     "$WORK_DIR/secrets/notification-unsubscribe-previous-secret" \
@@ -614,7 +612,7 @@ if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KE
     "$TARGET_NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE" NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE
 fi
 
-if [ "$FORMAT_VERSION" = "4" ] && [ -s "$WORK_DIR/secrets/notification-suppression-digest-previous-secret" ]; then
+if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" = file ]; then
   echo "Restoring notification suppression digest previous secret file..."
   docker_cmd cp \
     "$WORK_DIR/secrets/notification-suppression-digest-previous-secret" \

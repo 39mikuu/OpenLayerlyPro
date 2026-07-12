@@ -8,9 +8,9 @@ vi.hoisted(() => {
     SESSION_SECRET: "notification-delivery-test-session-secret",
     APP_URL: "https://example.test",
     NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID: "supp-current",
-    NOTIFICATION_SUPPRESSION_DIGEST_SECRET: "suppression-secret",
+    NOTIFICATION_SUPPRESSION_DIGEST_SECRET: "suppression-secret-0123456789012345",
     NOTIFICATION_UNSUBSCRIBE_KEY_ID: "unsub-current",
-    NOTIFICATION_UNSUBSCRIBE_SECRET: "unsubscribe-secret",
+    NOTIFICATION_UNSUBSCRIBE_SECRET: "unsubscribe-secret-0123456789012345",
   });
 });
 
@@ -48,8 +48,9 @@ import {
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { MailDeliveryError } from "@/modules/mail/delivery";
 import { handleNotificationDeliveryTask } from "@/modules/notifications";
+import { handleCampaignFinalizeTask } from "@/modules/notifications/expansion";
 import { createNotificationSuppressionDigest } from "@/modules/security/notification-suppression-key";
-import { PermanentTaskError } from "@/modules/tasks";
+import { PermanentTaskError, sweepExpiredFinalAttemptTasksAt } from "@/modules/tasks";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -68,6 +69,24 @@ function utcMinuteStart(date: Date): Date {
       date.getUTCMinutes(),
     ),
   );
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitForSendCalls(count: number): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (mocks.sendNewPostNotificationEmail.mock.calls.length >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`timed out waiting for ${count} notification send call(s)`);
 }
 
 describeWithDatabase("notification delivery", () => {
@@ -402,6 +421,66 @@ describeWithDatabase("notification delivery", () => {
     await expect(db.select().from(notificationQuotaWindows)).resolves.toHaveLength(0);
   });
 
+  it("coalesces repeated operator rechecks into one open attempt row", async () => {
+    mocks.getSmtpConfig.mockResolvedValue({ configured: false });
+    const { delivery, task } = await seedDelivery();
+
+    await expect(handleNotificationDeliveryTask(task)).resolves.toMatchObject({
+      deferUntil: expect.any(Date),
+    });
+
+    for (const lockToken of ["worker-2", "worker-3"]) {
+      await db
+        .update(tasks)
+        .set({
+          status: "processing",
+          lockedBy: lockToken,
+          leaseUntil: sql`now() + interval '1 minute'`,
+        })
+        .where(eq(tasks.id, task.id));
+      const [retryTask] = await db.select().from(tasks).where(eq(tasks.id, task.id));
+      if (!retryTask) throw new Error("retry task missing");
+      await expect(handleNotificationDeliveryTask(retryTask as Task)).resolves.toMatchObject({
+        deferUntil: expect.any(Date),
+      });
+    }
+
+    const attempts = await deliveryAttempts(delivery.id);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({
+      outcome: "needs_operator_defer",
+      operatorRecheckCount: 3,
+      completedAt: null,
+    });
+    const [stored] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, delivery.id));
+    expect(stored).toMatchObject({ status: "deferred", attemptCount: 1 });
+  });
+
+  it("refunds needs-operator SMTP failures using the reserved quota windows", async () => {
+    mocks.sendNewPostNotificationEmail.mockRejectedValue(new MailDeliveryError("needs_operator"));
+    const { delivery, task } = await seedDelivery();
+
+    await expect(handleNotificationDeliveryTask(task)).resolves.toMatchObject({
+      deferUntil: expect.any(Date),
+    });
+
+    const [attempt] = await deliveryAttempts(delivery.id);
+    expect(attempt).toMatchObject({
+      outcome: "needs_operator_defer",
+      smtpAttempted: false,
+    });
+    expect(attempt!.reservedUtcDay).toBeInstanceOf(Date);
+    expect(attempt!.reservedMinute).toBeInstanceOf(Date);
+    const quota = await db.select().from(notificationQuotaWindows);
+    expect(quota.map((row) => [row.windowKind, row.attemptedCount]).sort()).toEqual([
+      ["utc_day", 0],
+      ["utc_minute", 0],
+    ]);
+  });
+
   it("suppression skips notification sends but does not affect transactional mail", async () => {
     const user = await seedUser({ optIn: true });
     const digest = createNotificationSuppressionDigest(user.email);
@@ -454,5 +533,141 @@ describeWithDatabase("notification delivery", () => {
     expect(attempts).toHaveLength(2);
     expect(attempts.map((attempt) => attempt.attemptNumber)).toEqual([1, 2]);
     expect(mocks.sendNewPostNotificationEmail).toHaveBeenCalledTimes(2);
+  });
+
+  it("fences a stale permanent failure after a newer retry is accepted", async () => {
+    const first = await seedDelivery();
+    const firstSend = deferred<void>();
+    mocks.sendNewPostNotificationEmail
+      .mockImplementationOnce(() => firstSend.promise)
+      .mockResolvedValueOnce(undefined);
+
+    const staleRun = handleNotificationDeliveryTask(first.task);
+    await waitForSendCalls(1);
+
+    await db
+      .update(tasks)
+      .set({
+        status: "processing",
+        lockedBy: "worker-2",
+        leaseUntil: sql`now() + interval '1 minute'`,
+      })
+      .where(eq(tasks.id, first.task.id));
+    const [retryTask] = await db.select().from(tasks).where(eq(tasks.id, first.task.id));
+    if (!retryTask) throw new Error("retry task missing");
+
+    await expect(handleNotificationDeliveryTask(retryTask as Task)).resolves.toEqual({});
+    firstSend.reject(new MailDeliveryError("permanent"));
+    await expect(staleRun).rejects.toMatchObject({
+      message: "Notification email delivery failed permanently",
+      classification: "permanent",
+    } satisfies Partial<PermanentTaskError>);
+
+    const [stored] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, first.delivery.id));
+    expect(stored).toMatchObject({ status: "accepted", lastOutcome: "accepted", attemptCount: 2 });
+    const attempts = await deliveryAttempts(first.delivery.id);
+    expect(attempts.map((attempt) => attempt.outcome)).toEqual(["permanent_failure", "accepted"]);
+    await expect(db.select().from(notificationSuppressions)).resolves.toHaveLength(0);
+  });
+
+  it("fences a stale accepted send after a newer retry is permanently rejected", async () => {
+    const first = await seedDelivery();
+    const firstSend = deferred<void>();
+    mocks.sendNewPostNotificationEmail
+      .mockImplementationOnce(() => firstSend.promise)
+      .mockRejectedValueOnce(new MailDeliveryError("permanent"));
+
+    const staleRun = handleNotificationDeliveryTask(first.task);
+    await waitForSendCalls(1);
+
+    await db
+      .update(tasks)
+      .set({
+        status: "processing",
+        lockedBy: "worker-2",
+        leaseUntil: sql`now() + interval '1 minute'`,
+      })
+      .where(eq(tasks.id, first.task.id));
+    const [retryTask] = await db.select().from(tasks).where(eq(tasks.id, first.task.id));
+    if (!retryTask) throw new Error("retry task missing");
+
+    await expect(handleNotificationDeliveryTask(retryTask as Task)).rejects.toMatchObject({
+      message: "Notification email delivery failed permanently",
+      classification: "permanent",
+    } satisfies Partial<PermanentTaskError>);
+    firstSend.resolve();
+    await expect(staleRun).resolves.toEqual({});
+
+    const [stored] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, first.delivery.id));
+    expect(stored).toMatchObject({
+      status: "dead",
+      lastOutcome: "permanent_failure",
+      attemptCount: 2,
+    });
+    const attempts = await deliveryAttempts(first.delivery.id);
+    expect(attempts.map((attempt) => attempt.outcome)).toEqual(["accepted", "permanent_failure"]);
+    await expect(db.select().from(notificationSuppressions)).resolves.toHaveLength(1);
+  });
+
+  it("sweeps expired final-attempt sends to terminal deliveries and finalizes campaigns", async () => {
+    const now = new Date("2026-07-12T12:00:00.000Z");
+    const { campaign, delivery, task, user } = await seedDelivery();
+    await db
+      .update(tasks)
+      .set({
+        attempts: 5,
+        maxAttempts: 5,
+        lockedBy: "crashed-worker",
+        lockedAt: new Date(now.getTime() - 120_000),
+        leaseUntil: new Date(now.getTime() - 1_000),
+      })
+      .where(eq(tasks.id, task.id));
+    await db
+      .update(notificationDeliveries)
+      .set({ status: "sending", attemptCount: 1, lastOutcome: "started" })
+      .where(eq(notificationDeliveries.id, delivery.id));
+    await db.insert(notificationDeliveryAttempts).values({
+      deliveryId: delivery.id,
+      campaignId: campaign.id,
+      userId: user.id,
+      taskId: task.id,
+      attemptNumber: 1,
+      attemptUtcDay: now,
+      attemptMinute: now,
+      smtpAttempted: true,
+      outcome: "started",
+    });
+
+    await expect(sweepExpiredFinalAttemptTasksAt(now)).resolves.toMatchObject([
+      { id: task.id, kind: "notification.deliver", attempts: 5 },
+    ]);
+
+    const [storedDelivery] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, delivery.id));
+    expect(storedDelivery).toMatchObject({ status: "dead", lastOutcome: "lease_expired" });
+    const [attempt] = await deliveryAttempts(delivery.id);
+    expect(attempt).toMatchObject({ outcome: "lease_expired", errorKind: "lease_expired" });
+    expect(attempt!.completedAt).toBeInstanceOf(Date);
+
+    const [finalizeTask] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.kind, "notification.campaign_finalize"));
+    expect(finalizeTask).toBeDefined();
+    await expect(handleCampaignFinalizeTask(finalizeTask!.payloadJson)).resolves.toEqual({});
+    const [storedCampaign] = await db
+      .select()
+      .from(notificationCampaigns)
+      .where(eq(notificationCampaigns.id, campaign.id));
+    expect(storedCampaign).toMatchObject({ status: "completed", lastError: null });
+    expect(storedCampaign!.completedAt).toBeInstanceOf(Date);
   });
 });

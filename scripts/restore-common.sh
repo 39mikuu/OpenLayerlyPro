@@ -116,6 +116,35 @@ sha256_trimmed_file() {
   ' "$file_path"
 }
 
+notification_secret_sha256_from_env() {
+  env_name=$1
+  compose run --rm -T --no-deps --entrypoint node app -e '
+    const { createHash } = require("crypto");
+    const name = process.argv[1];
+    const value = process.env[name];
+    if (!value || value.trim().length < 32 || value.trim() === "change-me") process.exit(1);
+    process.stdout.write(createHash("sha256").update(value.trim()).digest("hex"));
+  ' "$env_name"
+}
+
+notification_key_id_from_env() {
+  env_name=$1
+  compose run --rm -T --no-deps --entrypoint node app -e '
+    const name = process.argv[1];
+    const value = process.env[name];
+    if (!value || !/^[A-Za-z0-9_-]+$/.test(value.trim())) process.exit(1);
+    process.stdout.write(value.trim());
+  ' "$env_name"
+}
+
+notification_direct_env_is_unset() {
+  env_name=$1
+  compose run --rm -T --no-deps --entrypoint node app -e '
+    const value = process.env[process.argv[1]];
+    if (value !== undefined && value.length > 0) process.exit(1);
+  ' "$env_name"
+}
+
 config_encryption_key_format_from_file() {
   file_path=$1
   node -e '
@@ -765,10 +794,12 @@ validate_v3_manifest_file() {
       manifestFormatVersion === "4" ? { ...baseSpecs, ...notificationSpecs } : baseSpecs;
     const optionalSpecs = {
       NOTIFICATION_UNSUBSCRIBE_KEY_ARCHIVE_PATH: { validator: "archive_path", maxLength: 200 },
+      NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE: { validator: "previous_source", maxLength: 20 },
       NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID: { validator: "kid", maxLength: 200 },
       NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SHA256: { validator: "sha256", maxLength: 200 },
       NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ARCHIVE_PATH: { validator: "archive_path", maxLength: 200 },
       NOTIFICATION_SUPPRESSION_DIGEST_KEY_ARCHIVE_PATH: { validator: "archive_path", maxLength: 200 },
+      NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE: { validator: "previous_source", maxLength: 20 },
       NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID: { validator: "kid", maxLength: 200 },
       NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256: { validator: "sha256", maxLength: 200 },
       NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ARCHIVE_PATH: { validator: "archive_path", maxLength: 200 },
@@ -825,9 +856,14 @@ validate_v3_manifest_file() {
             fail(`FORMAT_VERSION=3 archive manifest ${key} must be file or external`);
           }
           break;
+        case "previous_source":
+          if (value !== "none" && value !== "file" && value !== "external") {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must be none, file, or external`);
+          }
+          break;
         case "kid":
-          if (!/^[!-~]+$/.test(value)) {
-            fail(`FORMAT_VERSION=3 archive manifest ${key} must be printable single-line ASCII without whitespace`);
+          if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+            fail(`FORMAT_VERSION=3 archive manifest ${key} must contain only letters, numbers, underscore, or hyphen`);
           }
           break;
         case "archive_path":
@@ -877,15 +913,24 @@ read_archive_provenance_v3() {
   ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE ?? "legacy")' "$provenance_json")
   ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_ID=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_UNSUBSCRIBE_KEY_ID ?? "unknown")' "$provenance_json")
   ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_UNSUBSCRIBE_KEY_SHA256 ?? "unknown")' "$provenance_json")
+  ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE ?? "none")' "$provenance_json")
+  ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID ?? "")' "$provenance_json")
+  ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SHA256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SHA256 ?? "")' "$provenance_json")
   ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE ?? "legacy")' "$provenance_json")
   ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID ?? "unknown")' "$provenance_json")
   ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256 ?? "unknown")' "$provenance_json")
+  ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE ?? "none")' "$provenance_json")
+  ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID ?? "")' "$provenance_json")
+  ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256 ?? "")' "$provenance_json")
   : "$ARCHIVE_RUNTIME_APP_VERSION" "$ARCHIVE_RUNTIME_SOURCE_COMMIT" "$ARCHIVE_RUNTIME_IMAGE_ID" \
     "$ARCHIVE_BUILD_TIMESTAMP" "$ARCHIVE_BACKUP_TOOL_COMMIT" "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256" \
     "$ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256" "$ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT" \
     "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_ID" \
-    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256" "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" \
-    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID" "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256"
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256" "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID" "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SHA256" \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID" \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256" "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID" "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256"
 }
 
 read_archive_provenance() {
@@ -908,9 +953,15 @@ read_archive_provenance() {
   ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE=legacy
   ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_ID=unknown
   ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256=unknown
+  ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE=none
+  ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID=
+  ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SHA256=
   ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE=legacy
   ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID=unknown
   ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256=unknown
+  ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE=none
+  ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID=
+  ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256=
   : "$ARCHIVE_RUNTIME_APP_VERSION" "$ARCHIVE_RUNTIME_SOURCE_COMMIT" "$ARCHIVE_RUNTIME_IMAGE_ID" \
     "$ARCHIVE_BUILD_TIMESTAMP" "$ARCHIVE_BACKUP_TOOL_COMMIT" "$ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256" \
     "$ARCHIVE_CONFIG_ENCRYPTION_KEY_SHA256" "$ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT" \
@@ -991,16 +1042,21 @@ verify_archive_notification_key_fingerprints() {
         fail(`${label} source is invalid`);
       }
     };
-    const hasPrevious = (prefix) =>
-      Boolean(
-        manifest[`${prefix}_ID`] ||
-          manifest[`${prefix}_SHA256`] ||
-          manifest[`${prefix}_ARCHIVE_PATH`],
-      );
-    const checkPreviousFile = (prefix, label) => {
-      if (!hasPrevious(prefix)) return;
+    const checkPrevious = (prefix, label) => {
+      const source = manifest[`${prefix}_SOURCE`] ?? "none";
       const expected = manifest[`${prefix}_SHA256`];
       const archivePath = manifest[`${prefix}_ARCHIVE_PATH`];
+      const keyId = manifest[`${prefix}_ID`];
+      if (source === "none") {
+        if (keyId || expected || archivePath) fail(`${label} source is none but manifest includes key material`);
+        return;
+      }
+      if (!keyId || !expected) fail(`${label} manifest incomplete`);
+      if (source === "external") {
+        if (archivePath) fail(`${label} external source must not include archive path`);
+        return;
+      }
+      if (source !== "file") fail(`${label} source is invalid`);
       if (!expected || !archivePath) fail(`${label} manifest incomplete`);
       const path = `${payloadDir}/${archivePath}`;
       const metadata = lstatSync(path);
@@ -1013,8 +1069,8 @@ verify_archive_notification_key_fingerprints() {
     };
     check("NOTIFICATION_UNSUBSCRIBE_KEY", "notification unsubscribe key");
     check("NOTIFICATION_SUPPRESSION_DIGEST_KEY", "notification suppression digest key");
-    checkPreviousFile("NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY", "notification unsubscribe previous key");
-    checkPreviousFile(
+    checkPrevious("NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY", "notification unsubscribe previous key");
+    checkPrevious(
       "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY",
       "notification suppression digest previous key",
     );
@@ -1081,6 +1137,57 @@ verify_container_notification_secret_file() {
     chmod 600 "$1"
   ' "$target_secret_file" \
     || fail "restored $label is invalid"
+}
+
+verify_target_notification_key_env() {
+  source=$1
+  expected_key_id=$2
+  expected_sha256=$3
+  key_id_env=$4
+  secret_env=$5
+  label=$6
+
+  case "$source" in
+    none)
+      return 0
+      ;;
+    file)
+      notification_direct_env_is_unset "$secret_env" \
+        || fail "file-backed $label archive requires $secret_env to be unset on the target"
+      ;;
+    external)
+      ;;
+    *) fail "unsupported $label source=$source" ;;
+  esac
+
+  actual_key_id=$(notification_key_id_from_env "$key_id_env") \
+    || fail "archive requires target $key_id_env to match $label key id"
+  [ "$actual_key_id" = "$expected_key_id" ] \
+    || fail "target $key_id_env does not match archived $label key id"
+
+  if [ "$source" = external ]; then
+    actual_sha256=$(notification_secret_sha256_from_env "$secret_env") \
+      || fail "archive requires an explicit externally managed $secret_env"
+    [ "$actual_sha256" = "$expected_sha256" ] \
+      || fail "externally managed $secret_env does not match the archive fingerprint"
+  fi
+}
+
+archive_notification_key_has_file() {
+  source=$1
+  payload_path=$2
+  label=$3
+
+  case "$source" in
+    none|external)
+      return 1
+      ;;
+    file)
+      [ -s "$payload_path" ] || fail "archive declares a file-backed $label but the file is missing"
+      return 0
+      ;;
+    *) fail "unsupported $label source=$source" ;;
+  esac
 }
 
 warn_if_mismatch() {
@@ -1194,7 +1301,7 @@ validate_archive_storage_contract() {
   fi
 
   case "$format_version" in
-    2|3) ;;
+    2|3|4) ;;
     *) return 0 ;;
   esac
   storage_driver=$(manifest_value "$payload_dir/manifest.env" STORAGE_DRIVER)

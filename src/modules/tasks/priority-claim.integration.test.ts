@@ -250,7 +250,7 @@ describeWithDatabase("priority task class claims", () => {
     );
   });
 
-  it("preserves transactional reserve and notification progress across a dispatcher tick", async () => {
+  it("preserves transactional reserve, notification progress, and default progress across ticks", async () => {
     await db.execute(sql`
       INSERT INTO tasks(kind, payload_json, run_after, status, attempts, max_attempts, priority, queue_class)
       SELECT 'email', '{}'::jsonb, now() - interval '1 second', 'pending', 0, 5, 10, 'transactional'
@@ -260,6 +260,11 @@ describeWithDatabase("priority task class claims", () => {
       INSERT INTO tasks(kind, payload_json, run_after, status, attempts, max_attempts, priority, queue_class)
       SELECT 'notification.deliver', '{}'::jsonb, now() - interval '1 second', 'pending', 0, 5, 90, 'notification'
       FROM generate_series(1, 6);
+    `);
+    await db.execute(sql`
+      INSERT INTO tasks(kind, payload_json, run_after, status, attempts, max_attempts, priority, queue_class)
+      SELECT 'publish_post', '{}'::jsonb, now() - interval '1 second', 'pending', 0, 5, 20, 'default'
+      FROM generate_series(1, 20);
     `);
 
     const seen: TaskQueueClass[] = [];
@@ -280,16 +285,18 @@ describeWithDatabase("priority task class claims", () => {
     await expect(dispatchTaskBatch(deps)).resolves.toBe(TASK_BATCH_SIZE);
     await expect(dispatchTaskBatch(deps)).resolves.toBe(TASK_BATCH_SIZE);
 
-    expect(seen.filter((kind) => kind === "transactional")).toHaveLength(36);
+    expect(seen.filter((kind) => kind === "transactional")).toHaveLength(32);
     expect(seen.filter((kind) => kind === "notification")).toHaveLength(4);
-    // Each tick guarantees the notification minimum without giving up the
-    // transactional reserve; position within the tick is not part of the
-    // contract (the dispatcher may satisfy the minimum early).
+    expect(seen.filter((kind) => kind === "default")).toHaveLength(4);
+    // Each tick guarantees the notification and default minimums without giving
+    // up the transactional reserve; position after the reserve is not part of
+    // the contract.
     const firstTick = seen.slice(0, TASK_BATCH_SIZE);
     const secondTick = seen.slice(TASK_BATCH_SIZE);
     for (const tick of [firstTick, secondTick]) {
       expect(tick.filter((kind) => kind === "notification")).toHaveLength(2);
-      expect(tick.filter((kind) => kind === "transactional")).toHaveLength(18);
+      expect(tick.filter((kind) => kind === "default")).toHaveLength(2);
+      expect(tick.filter((kind) => kind === "transactional")).toHaveLength(16);
       expect(tick.slice(0, 8)).toEqual(Array<TaskQueueClass>(8).fill("transactional"));
     }
   });

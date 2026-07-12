@@ -1,7 +1,10 @@
 import { createHmac, timingSafeEqual } from "crypto";
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "fs";
 
 import { getEnv } from "@/lib/env";
+import {
+  resolveNotificationSecret,
+  validateNotificationKeyPair,
+} from "@/modules/security/notification-key-validation";
 
 export const NOTIFICATION_SUPPRESSION_DIGEST_PURPOSE = "notification.suppression-email:v1";
 
@@ -17,52 +20,6 @@ type KeyMaterial = {
 
 let cachedKeys: { current: KeyMaterial; previous: KeyMaterial | null } | undefined;
 
-function invalidKey(message: string): never {
-  throw new Error(message);
-}
-
-function normalizeSecret(value: string, label: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) invalidKey(`${label} is missing or invalid`);
-  return trimmed;
-}
-
-function readSecretFile(path: string, label: string): string {
-  let descriptor: number;
-  try {
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ELOOP") {
-      invalidKey(`${label} is missing or invalid`);
-    }
-    throw new Error(`${label} is unreadable`);
-  }
-
-  try {
-    const metadata = fstatSync(descriptor);
-    if (!metadata.isFile()) invalidKey(`${label} is missing or invalid`);
-    return normalizeSecret(readFileSync(descriptor, "utf8"), label);
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
-function resolveSecret(
-  envSecret: string | undefined,
-  filePath: string | undefined,
-  label: string,
-): string | null {
-  if (envSecret !== undefined && envSecret.length > 0) return normalizeSecret(envSecret, label);
-  if (filePath) return readSecretFile(filePath, label);
-  return null;
-}
-
-function normalizeKeyId(value: string | undefined, label: string): string {
-  const trimmed = value?.trim();
-  if (!trimmed) invalidKey(`${label} is missing or invalid`);
-  return trimmed;
-}
-
 export function normalizeEmailForNotificationSuppression(email: string): string {
   return email.trim().toLowerCase();
 }
@@ -73,37 +30,27 @@ export function getNotificationSuppressionDigestKeys(): {
 } {
   if (cachedKeys) return cachedKeys;
   const env = getEnv();
-  const currentSecret = resolveSecret(
+  const currentSecret = resolveNotificationSecret(
     env.NOTIFICATION_SUPPRESSION_DIGEST_SECRET,
     env.NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE,
     "NOTIFICATION_SUPPRESSION_DIGEST_SECRET",
   );
-  if (!currentSecret) invalidKey("NOTIFICATION_SUPPRESSION_DIGEST_SECRET is missing or invalid");
-
-  const previousSecret = resolveSecret(
+  const previousSecret = resolveNotificationSecret(
     env.NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET,
     env.NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE,
     "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET",
   );
 
-  cachedKeys = {
-    current: {
-      keyId: normalizeKeyId(
-        env.NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID,
-        "NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID",
-      ),
-      secret: currentSecret,
-    },
-    previous: previousSecret
-      ? {
-          keyId: normalizeKeyId(
-            env.NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID,
-            "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID",
-          ),
-          secret: previousSecret,
-        }
-      : null,
-  };
+  cachedKeys = validateNotificationKeyPair({
+    currentKeyId: env.NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID,
+    currentSecret,
+    currentKeyIdLabel: "NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID",
+    currentSecretLabel: "NOTIFICATION_SUPPRESSION_DIGEST_SECRET",
+    previousKeyId: env.NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID,
+    previousSecret,
+    previousKeyIdLabel: "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID",
+    previousSecretLabel: "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET",
+  });
   return cachedKeys;
 }
 

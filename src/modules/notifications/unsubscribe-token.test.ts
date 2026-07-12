@@ -11,6 +11,8 @@ const managedEnv = [
   "NOTIFICATION_UNSUBSCRIBE_TOKEN_MAX_AGE_DAYS",
 ] as const;
 const originals = new Map(managedEnv.map((key) => [key, process.env[key]]));
+const currentSecret = "unsubscribe-secret-0123456789012345";
+const previousSecret = "unsubscribe-previous-secret-0123456789";
 
 const mocks = vi.hoisted(() => ({
   usersRows: [{ id: "11111111-1111-4111-8111-111111111111" }],
@@ -63,9 +65,9 @@ beforeEach(() => {
     NODE_ENV: "test",
     SESSION_SECRET: "unsubscribe-token-test-session-secret",
     NOTIFICATION_UNSUBSCRIBE_KEY_ID: "kid-current",
-    NOTIFICATION_UNSUBSCRIBE_SECRET: "unsubscribe-secret",
+    NOTIFICATION_UNSUBSCRIBE_SECRET: currentSecret,
     NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID: "kid-previous",
-    NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET: "unsubscribe-previous-secret",
+    NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET: previousSecret,
     NOTIFICATION_UNSUBSCRIBE_TOKEN_MAX_AGE_DAYS: "180",
   });
 });
@@ -99,7 +101,7 @@ describe("notification unsubscribe token generation", () => {
     });
 
     const signingInput = parts.slice(0, 4).join(".");
-    const expectedMac = createHmac("sha256", "unsubscribe-secret")
+    const expectedMac = createHmac("sha256", currentSecret)
       .update("notification.unsubscribe:v1")
       .update("\0")
       .update(signingInput)
@@ -126,7 +128,9 @@ describe("notification unsubscribe token verification", () => {
 
   it("accepts a previous-key token during rotation", async () => {
     process.env.NOTIFICATION_UNSUBSCRIBE_KEY_ID = "kid-previous";
-    process.env.NOTIFICATION_UNSUBSCRIBE_SECRET = "unsubscribe-previous-secret";
+    process.env.NOTIFICATION_UNSUBSCRIBE_SECRET = previousSecret;
+    Reflect.deleteProperty(process.env, "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID");
+    Reflect.deleteProperty(process.env, "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET");
     vi.resetModules();
     const { generateNotificationUnsubscribeToken } = await import("./unsubscribe-token");
     const token = generateNotificationUnsubscribeToken({
@@ -136,9 +140,9 @@ describe("notification unsubscribe token verification", () => {
     });
 
     process.env.NOTIFICATION_UNSUBSCRIBE_KEY_ID = "kid-current";
-    process.env.NOTIFICATION_UNSUBSCRIBE_SECRET = "unsubscribe-secret";
+    process.env.NOTIFICATION_UNSUBSCRIBE_SECRET = currentSecret;
     process.env.NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID = "kid-previous";
-    process.env.NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET = "unsubscribe-previous-secret";
+    process.env.NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET = previousSecret;
     vi.resetModules();
     const { verifyNotificationUnsubscribeToken } = await import("./unsubscribe-token");
 

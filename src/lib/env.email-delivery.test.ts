@@ -5,6 +5,7 @@ const keys = [
   "EMAIL_DELIVERY_MAX_AGE_HOURS",
   "TASK_TRANSACTIONAL_RESERVED_PER_BATCH",
   "TASK_NOTIFICATION_MIN_PER_BATCH",
+  "TASK_DEFAULT_MIN_PER_BATCH",
   "TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH",
   "TASK_MAINTENANCE_MAX_PER_BATCH",
   "NOTIFICATION_EMAIL_DAILY_BUDGET",
@@ -58,6 +59,7 @@ describe("email delivery retry environment", () => {
       EMAIL_DELIVERY_MAX_AGE_HOURS: 24,
       TASK_TRANSACTIONAL_RESERVED_PER_BATCH: 8,
       TASK_NOTIFICATION_MIN_PER_BATCH: 2,
+      TASK_DEFAULT_MIN_PER_BATCH: 2,
       TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH: 2,
       TASK_MAINTENANCE_MAX_PER_BATCH: 2,
       NOTIFICATION_EMAIL_DAILY_BUDGET: 500,
@@ -77,6 +79,8 @@ describe("email delivery retry environment", () => {
     ["TASK_TRANSACTIONAL_RESERVED_PER_BATCH", "20", 20],
     ["TASK_NOTIFICATION_MIN_PER_BATCH", "0", 0],
     ["TASK_NOTIFICATION_MIN_PER_BATCH", "20", 20],
+    ["TASK_DEFAULT_MIN_PER_BATCH", "0", 0],
+    ["TASK_DEFAULT_MIN_PER_BATCH", "20", 20],
     ["TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH", "0", 0],
     ["TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH", "20", 20],
     ["TASK_MAINTENANCE_MAX_PER_BATCH", "0", 0],
@@ -92,7 +96,18 @@ describe("email delivery retry environment", () => {
     ["NOTIFICATION_UNSUBSCRIBE_TOKEN_MAX_AGE_DAYS", "1", 1],
     ["NOTIFICATION_UNSUBSCRIBE_TOKEN_MAX_AGE_DAYS", "3650", 3650],
   ] as const)("accepts %s=%s", async (key, value, expected) => {
-    await expect(load({ [key]: value })).resolves.toMatchObject({ [key]: expected });
+    const overrides: Partial<Record<(typeof keys)[number], string>> = { [key]: value };
+    if (
+      key === "TASK_TRANSACTIONAL_RESERVED_PER_BATCH" ||
+      key === "TASK_NOTIFICATION_MIN_PER_BATCH" ||
+      key === "TASK_DEFAULT_MIN_PER_BATCH"
+    ) {
+      overrides.TASK_TRANSACTIONAL_RESERVED_PER_BATCH = "0";
+      overrides.TASK_NOTIFICATION_MIN_PER_BATCH = "0";
+      overrides.TASK_DEFAULT_MIN_PER_BATCH = "0";
+      overrides[key] = value;
+    }
+    await expect(load(overrides)).resolves.toMatchObject({ [key]: expected });
   });
 
   it.each([
@@ -105,6 +120,8 @@ describe("email delivery retry environment", () => {
     ["TASK_TRANSACTIONAL_RESERVED_PER_BATCH", "21"],
     ["TASK_NOTIFICATION_MIN_PER_BATCH", "-1"],
     ["TASK_NOTIFICATION_MIN_PER_BATCH", "21"],
+    ["TASK_DEFAULT_MIN_PER_BATCH", "-1"],
+    ["TASK_DEFAULT_MIN_PER_BATCH", "21"],
     ["TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH", "-1"],
     ["TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH", "21"],
     ["TASK_MAINTENANCE_MAX_PER_BATCH", "-1"],
@@ -121,5 +138,17 @@ describe("email delivery retry environment", () => {
     ["NOTIFICATION_UNSUBSCRIBE_TOKEN_MAX_AGE_DAYS", "3651"],
   ] as const)("rejects invalid %s=%s", async (key, value) => {
     await expect(load({ [key]: value })).rejects.toThrow("环境变量配置错误");
+  });
+
+  it("rejects queue class minimums that exceed the batch size together", async () => {
+    await expect(
+      load({
+        TASK_TRANSACTIONAL_RESERVED_PER_BATCH: "17",
+        TASK_NOTIFICATION_MIN_PER_BATCH: "2",
+        TASK_DEFAULT_MIN_PER_BATCH: "2",
+      }),
+    ).rejects.toThrow(
+      "TASK_TRANSACTIONAL_RESERVED_PER_BATCH + TASK_NOTIFICATION_MIN_PER_BATCH + TASK_DEFAULT_MIN_PER_BATCH must be <= TASK_BATCH_SIZE",
+    );
   });
 });

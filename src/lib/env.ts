@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+import {
+  resolveNotificationSecret,
+  validateNotificationKeyPair,
+} from "@/modules/security/notification-key-validation";
+
+const TASK_BATCH_SIZE = 20;
+
 const envSchema = z.object({
   APP_URL: z.string().default("http://localhost:3000"),
   APP_NAME: z.string().default("Artist Member Site"),
@@ -41,6 +48,7 @@ const envSchema = z.object({
   EMAIL_DELIVERY_MAX_AGE_HOURS: z.coerce.number().finite().int().min(1).max(168).default(24),
   TASK_TRANSACTIONAL_RESERVED_PER_BATCH: z.coerce.number().finite().int().min(0).max(20).default(8),
   TASK_NOTIFICATION_MIN_PER_BATCH: z.coerce.number().finite().int().min(0).max(20).default(2),
+  TASK_DEFAULT_MIN_PER_BATCH: z.coerce.number().finite().int().min(0).max(20).default(2),
   TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH: z.coerce
     .number()
     .finite()
@@ -208,7 +216,42 @@ let cached: Env | null = null;
  * 避免构建阶段读取或要求真实 secret。
  */
 function assertRuntimeSecurity(env: Env) {
+  const reservedBatchSlots =
+    env.TASK_TRANSACTIONAL_RESERVED_PER_BATCH +
+    env.TASK_NOTIFICATION_MIN_PER_BATCH +
+    env.TASK_DEFAULT_MIN_PER_BATCH;
+  if (reservedBatchSlots > TASK_BATCH_SIZE) {
+    throw new Error(
+      "TASK_TRANSACTIONAL_RESERVED_PER_BATCH + TASK_NOTIFICATION_MIN_PER_BATCH + TASK_DEFAULT_MIN_PER_BATCH must be <= TASK_BATCH_SIZE",
+    );
+  }
+
   if (process.env.NEXT_PHASE === "phase-production-build") return;
+
+  validateNotificationRuntimeKeyEnv({
+    currentKeyId: env.NOTIFICATION_UNSUBSCRIBE_KEY_ID,
+    currentSecret: env.NOTIFICATION_UNSUBSCRIBE_SECRET,
+    currentSecretFile: env.NOTIFICATION_UNSUBSCRIBE_SECRET_FILE,
+    currentKeyIdLabel: "NOTIFICATION_UNSUBSCRIBE_KEY_ID",
+    currentSecretLabel: "NOTIFICATION_UNSUBSCRIBE_SECRET",
+    previousKeyId: env.NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID,
+    previousSecret: env.NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET,
+    previousSecretFile: env.NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE,
+    previousKeyIdLabel: "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID",
+    previousSecretLabel: "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET",
+  });
+  validateNotificationRuntimeKeyEnv({
+    currentKeyId: env.NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID,
+    currentSecret: env.NOTIFICATION_SUPPRESSION_DIGEST_SECRET,
+    currentSecretFile: env.NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE,
+    currentKeyIdLabel: "NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID",
+    currentSecretLabel: "NOTIFICATION_SUPPRESSION_DIGEST_SECRET",
+    previousKeyId: env.NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID,
+    previousSecret: env.NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET,
+    previousSecretFile: env.NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE,
+    previousKeyIdLabel: "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID",
+    previousSecretLabel: "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET",
+  });
 
   if (env.SECURITY_HSTS_ENABLED && new URL(env.APP_URL).protocol !== "https:") {
     throw new Error("SECURITY_HSTS_ENABLED=true requires an HTTPS APP_URL");
@@ -219,6 +262,44 @@ function assertRuntimeSecurity(env: Env) {
       "TURNSTILE_ENABLED=true 时必须同时配置 NEXT_PUBLIC_TURNSTILE_SITE_KEY 和 TURNSTILE_SECRET_KEY",
     );
   }
+}
+
+function validateNotificationRuntimeKeyEnv(input: {
+  currentKeyId: string | undefined;
+  currentSecret: string | undefined;
+  currentSecretFile: string | undefined;
+  currentKeyIdLabel: string;
+  currentSecretLabel: string;
+  previousKeyId: string | undefined;
+  previousSecret: string | undefined;
+  previousSecretFile: string | undefined;
+  previousKeyIdLabel: string;
+  previousSecretLabel: string;
+}) {
+  if (!input.currentKeyId && !input.currentSecret && !input.currentSecretFile) {
+    return;
+  }
+
+  const currentSecret = resolveNotificationSecret(
+    input.currentSecret,
+    input.currentSecretFile,
+    input.currentSecretLabel,
+  );
+  const previousSecret = resolveNotificationSecret(
+    input.previousSecret,
+    input.previousSecretFile,
+    input.previousSecretLabel,
+  );
+  validateNotificationKeyPair({
+    currentKeyId: input.currentKeyId,
+    currentSecret,
+    currentKeyIdLabel: input.currentKeyIdLabel,
+    currentSecretLabel: input.currentSecretLabel,
+    previousKeyId: input.previousKeyId,
+    previousSecret,
+    previousKeyIdLabel: input.previousKeyIdLabel,
+    previousSecretLabel: input.previousSecretLabel,
+  });
 }
 
 export function getEnv(): Env {

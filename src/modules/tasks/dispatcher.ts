@@ -102,6 +102,7 @@ export async function dispatchTaskBatch(
   let processed = 0;
   let transactionalClaimed = 0;
   let notificationClaimed = 0;
+  let defaultClaimed = 0;
   let notificationStaleClaimed = 0;
   let maintenanceClaimed = 0;
 
@@ -115,6 +116,7 @@ export async function dispatchTaskBatch(
     const task = await claimOneForClass(queueClass, { includeStale });
     if (!task) return null;
     if (queueClass === "transactional") transactionalClaimed += 1;
+    if (queueClass === "default") defaultClaimed += 1;
     if (queueClass === "notification") {
       notificationClaimed += 1;
       if (task.reclaimedStale) notificationStaleClaimed += 1;
@@ -133,14 +135,38 @@ export async function dispatchTaskBatch(
 
   for (; processed < TASK_BATCH_SIZE; processed += 1) {
     const remainingSlots = TASK_BATCH_SIZE - processed;
+    const notificationDeficit = env.TASK_NOTIFICATION_MIN_PER_BATCH - notificationClaimed;
+    const defaultDeficit = env.TASK_DEFAULT_MIN_PER_BATCH - defaultClaimed;
+    const notificationSlotsAtRisk = remainingSlots <= Math.max(notificationDeficit, 0);
+    const defaultSlotsAtRisk = remainingSlots <= Math.max(defaultDeficit, 0);
+    const reservedSlotsAtRisk =
+      remainingSlots <= Math.max(notificationDeficit, 0) + Math.max(defaultDeficit, 0);
     const task =
-      remainingSlots <= env.TASK_NOTIFICATION_MIN_PER_BATCH - notificationClaimed
-        ? await claimByOrder(["notification", "transactional", "default", "maintenance"])
-        : transactionalClaimed < env.TASK_TRANSACTIONAL_RESERVED_PER_BATCH
-          ? await claimByOrder(["transactional", "notification", "default", "maintenance"])
-          : notificationClaimed < env.TASK_NOTIFICATION_MIN_PER_BATCH
-            ? await claimByOrder(["notification", "transactional", "default", "maintenance"])
-            : await claimByOrder(["transactional", "default", "notification", "maintenance"]);
+      defaultSlotsAtRisk && defaultDeficit > 0
+        ? await claimByOrder(["default", "notification", "maintenance"])
+        : notificationSlotsAtRisk && notificationDeficit > 0
+          ? await claimByOrder(["notification", "default", "maintenance"])
+          : reservedSlotsAtRisk && defaultDeficit > 0
+            ? await claimByOrder(["default", "notification", "maintenance"])
+            : reservedSlotsAtRisk && notificationDeficit > 0
+              ? await claimByOrder(["notification", "default", "maintenance"])
+              : transactionalClaimed < env.TASK_TRANSACTIONAL_RESERVED_PER_BATCH
+                ? await claimByOrder(["transactional", "notification", "default", "maintenance"])
+                : notificationDeficit > 0
+                  ? await claimByOrder(["notification", "transactional", "default", "maintenance"])
+                  : defaultDeficit > 0
+                    ? await claimByOrder([
+                        "default",
+                        "transactional",
+                        "notification",
+                        "maintenance",
+                      ])
+                    : await claimByOrder([
+                        "transactional",
+                        "default",
+                        "notification",
+                        "maintenance",
+                      ]);
     if (!task) break;
     await dispatchClaimedTask(task, dependencies);
   }

@@ -724,6 +724,8 @@ export const notificationDeliveryAttempts = pgTable(
     attemptNumber: integer("attempt_number").notNull(),
     attemptUtcDay: date("attempt_utc_day", { mode: "date" }).notNull(),
     attemptMinute: timestamp("attempt_minute", { withTimezone: true }).notNull(),
+    reservedUtcDay: date("reserved_utc_day", { mode: "date" }),
+    reservedMinute: timestamp("reserved_minute", { withTimezone: true }),
     smtpAttempted: boolean("smtp_attempted").notNull().default(false),
     outcome: text("outcome", {
       enum: [
@@ -732,6 +734,7 @@ export const notificationDeliveryAttempts = pgTable(
         "permanent_failure",
         "transient_failure",
         "needs_operator_defer",
+        "lease_expired",
         "budget_defer",
         "pacing_defer",
         "suppressed_skip",
@@ -747,11 +750,17 @@ export const notificationDeliveryAttempts = pgTable(
     recipientDigest: text("recipient_digest"),
     messageSnapshot: jsonb("message_snapshot"),
     errorKind: text("error_kind"),
+    operatorRecheckCount: integer("operator_recheck_count").notNull().default(0),
+    operatorLastCheckedAt: timestamp("operator_last_checked_at", { withTimezone: true }),
     createdAt: createdAt(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
   (table) => [
     check("notification_delivery_attempts_number_positive", sql`${table.attemptNumber} > 0`),
+    check(
+      "notification_delivery_attempts_operator_recheck_count_nonnegative",
+      sql`${table.operatorRecheckCount} >= 0`,
+    ),
     uniqueIndex("notification_delivery_attempts_delivery_number_unique").on(
       table.deliveryId,
       table.attemptNumber,

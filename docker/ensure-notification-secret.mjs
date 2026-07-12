@@ -26,16 +26,16 @@ function isErrnoCode(error, code) {
 }
 
 export function validateNotificationSecret(value, label) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
   if (
     typeof value !== "string" ||
     value.length === 0 ||
-    value.trim().length === 0 ||
-    value === "change-me" ||
-    value.length < MIN_NOTIFICATION_SECRET_LENGTH
+    trimmed.length < MIN_NOTIFICATION_SECRET_LENGTH ||
+    trimmed === "change-me"
   ) {
     invalidSecret(label);
   }
-  return value;
+  return trimmed;
 }
 
 export function fsyncDirectory(path) {

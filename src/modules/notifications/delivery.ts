@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { type DbClient, getDb } from "@/db";
@@ -15,6 +15,7 @@ import {
   posts,
   postTranslations,
   type Task,
+  tasks,
   users,
 } from "@/db/schema";
 import { getEnv } from "@/lib/env";
@@ -51,6 +52,7 @@ type DeliveryOutcome =
   | "permanent_failure"
   | "transient_failure"
   | "needs_operator_defer"
+  | "lease_expired"
   | "budget_defer"
   | "pacing_defer"
   | "suppressed_skip"
@@ -62,6 +64,9 @@ type DeliveryOutcome =
 
 type PreparedMessage = {
   attemptId: string;
+  attemptNumber: number;
+  taskId: string;
+  taskLockToken: string;
   deliveryId: string;
   campaignId: string;
   recipientEmail: string;
@@ -149,6 +154,10 @@ async function insertAttemptAndSetDeliveryTx(
     recipientDigest?: string | null;
     messageSnapshot?: Record<string, unknown> | null;
     errorKind?: string | null;
+    reservedUtcDay?: Date | null;
+    reservedMinute?: Date | null;
+    operatorRecheckCount?: number;
+    operatorLastCheckedAt?: Date | SQL | null;
     nextAttemptAfter?: Date | null;
     lastError?: string | null;
     completed?: boolean;
@@ -179,6 +188,8 @@ async function insertAttemptAndSetDeliveryTx(
       attemptNumber: delivery.attemptCount,
       attemptUtcDay: sql`(now() at time zone 'utc')::date`,
       attemptMinute: sql`date_trunc('minute', now())`,
+      reservedUtcDay: input.reservedUtcDay ?? null,
+      reservedMinute: input.reservedMinute ?? null,
       smtpAttempted: input.smtpAttempted ?? false,
       outcome: input.outcome,
       recipientLocale: input.recipientLocale ?? null,
@@ -186,6 +197,8 @@ async function insertAttemptAndSetDeliveryTx(
       recipientDigest: input.recipientDigest ?? null,
       messageSnapshot: input.messageSnapshot ?? null,
       errorKind: input.errorKind ?? null,
+      operatorRecheckCount: input.operatorRecheckCount ?? 0,
+      operatorLastCheckedAt: input.operatorLastCheckedAt ?? null,
       completedAt: input.completed ? sql`now()` : null,
     })
     .returning({
@@ -322,13 +335,30 @@ async function findSuppressionTx(tx: DbClient, email: string): Promise<boolean> 
 
 async function reserveQuotaTx(
   tx: DbClient,
-  input: { now: Date; deliveryId: string },
+  input: { deliveryId: string },
 ): Promise<
-  { ok: true } | { ok: false; outcome: "budget_defer" | "pacing_defer"; deferUntil: Date }
+  | { ok: true; reservedUtcDay: Date; reservedMinute: Date }
+  | { ok: false; outcome: "budget_defer" | "pacing_defer"; deferUntil: Date }
 > {
   const env = getEnv();
-  const dayStart = utcDayStart(input.now);
-  const minuteStart = utcMinuteStart(input.now);
+  const [clock] = await tx.execute<{
+    db_now: Date;
+    day_start: Date;
+    minute_start: Date;
+    reserved_utc_day: string;
+  }>(sql`
+    SELECT
+      now() AS db_now,
+      date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc' AS day_start,
+      date_trunc('minute', now()) AS minute_start,
+      ((now() AT TIME ZONE 'utc')::date)::text AS reserved_utc_day
+  `);
+  if (!clock) throw new Error("Notification quota clock read failed");
+  // postgres.js may return raw SQL timestamps as strings — coerce before
+  // handing them to drizzle timestamp columns.
+  const dayStart = new Date(clock.day_start);
+  const minuteStart = new Date(clock.minute_start);
+  const reservedUtcDay = new Date(`${clock.reserved_utc_day}T00:00:00.000Z`);
   await tx
     .insert(notificationQuotaWindows)
     .values([
@@ -358,14 +388,14 @@ async function reserveQuotaTx(
     return {
       ok: false,
       outcome: "budget_defer",
-      deferUntil: nextUtcMidnightWithJitter(input.now, input.deliveryId),
+      deferUntil: nextUtcMidnightWithJitter(new Date(clock.db_now), input.deliveryId),
     };
   }
   if (minute.attempted_count >= env.NOTIFICATION_EMAIL_PACING_PER_MINUTE) {
     return {
       ok: false,
       outcome: "pacing_defer",
-      deferUntil: nextMinuteWithJitter(input.now, input.deliveryId),
+      deferUntil: nextMinuteWithJitter(new Date(clock.db_now), input.deliveryId),
     };
   }
 
@@ -378,7 +408,72 @@ async function reserveQuotaTx(
       ('utc_minute', ${minuteStart.toISOString()}::timestamptz)
     )
   `);
-  return { ok: true };
+  return { ok: true, reservedUtcDay, reservedMinute: minuteStart };
+}
+
+async function recordNeedsOperatorDeferTx(
+  tx: DbClient,
+  input: {
+    campaignId: string;
+    delivery: typeof notificationDeliveries.$inferSelect;
+    task: Task;
+    reason: string;
+    terminal: boolean;
+    deferUntil: Date;
+  },
+) {
+  const [latest] = await tx
+    .select({
+      id: notificationDeliveryAttempts.id,
+      outcome: notificationDeliveryAttempts.outcome,
+      completedAt: notificationDeliveryAttempts.completedAt,
+    })
+    .from(notificationDeliveryAttempts)
+    .where(eq(notificationDeliveryAttempts.deliveryId, input.delivery.id))
+    .orderBy(desc(notificationDeliveryAttempts.attemptNumber))
+    .limit(1)
+    .for("update");
+  const status = input.terminal ? "dead" : "deferred";
+  const lastError = input.terminal
+    ? `${input.reason}; notification delivery expired`
+    : input.reason;
+
+  if (latest?.outcome === "needs_operator_defer" && !latest.completedAt) {
+    await tx
+      .update(notificationDeliveryAttempts)
+      .set({
+        operatorRecheckCount: sql`${notificationDeliveryAttempts.operatorRecheckCount} + 1`,
+        operatorLastCheckedAt: sql`now()`,
+        completedAt: input.terminal ? sql`now()` : null,
+      })
+      .where(eq(notificationDeliveryAttempts.id, latest.id));
+    await tx
+      .update(notificationDeliveries)
+      .set({
+        status,
+        lastOutcome: "needs_operator_defer",
+        lastError,
+        nextAttemptAfter: input.terminal ? null : input.deferUntil,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(notificationDeliveries.id, input.delivery.id));
+    return;
+  }
+
+  await insertAttemptAndSetDeliveryTx(tx, {
+    deliveryId: input.delivery.id,
+    campaignId: input.campaignId,
+    userId: input.delivery.userId,
+    taskId: input.task.id,
+    outcome: "needs_operator_defer",
+    status,
+    smtpAttempted: false,
+    nextAttemptAfter: input.terminal ? null : input.deferUntil,
+    lastError,
+    completed: input.terminal,
+    operatorRecheckCount: 1,
+    operatorLastCheckedAt: sql`now()`,
+  });
 }
 
 async function preflightNeedsOperatorTx(
@@ -397,17 +492,13 @@ async function preflightNeedsOperatorTx(
       return { kind: "done" };
     const terminal = expired(delivery.createdAt, now);
     const deferUntil = operatorDeferUntil(now);
-    await insertAttemptAndSetDeliveryTx(tx, {
-      deliveryId: delivery.id,
+    await recordNeedsOperatorDeferTx(tx, {
       campaignId: campaign.id,
-      userId: delivery.userId,
-      taskId: task.id,
-      outcome: "needs_operator_defer",
-      status: terminal ? "dead" : "deferred",
-      smtpAttempted: false,
-      nextAttemptAfter: terminal ? null : deferUntil,
-      lastError: terminal ? `${reason}; notification delivery expired` : reason,
-      completed: terminal,
+      delivery,
+      task,
+      reason,
+      terminal,
+      deferUntil,
     });
     if (terminal) {
       await enqueueCampaignFinalizeForDeliveryTx(tx, campaign.id);
@@ -511,7 +602,7 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
       locale,
     );
 
-    const quota = await reserveQuotaTx(tx, { now, deliveryId: delivery.id });
+    const quota = await reserveQuotaTx(tx, { deliveryId: delivery.id });
     if (!quota.ok) {
       await insertAttemptAndSetDeliveryTx(tx, {
         deliveryId: delivery.id,
@@ -558,6 +649,8 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
       outcome: "started",
       status: "sending",
       smtpAttempted: false,
+      reservedUtcDay: quota.reservedUtcDay,
+      reservedMinute: quota.reservedMinute,
       recipientLocale: locale,
       recipientDigestKeyId: currentDigest.keyId,
       recipientDigest: currentDigest.digest,
@@ -573,6 +666,9 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
       kind: "send",
       message: {
         attemptId: attempt.id,
+        attemptNumber: attempt.attemptNumber,
+        taskId: task.id,
+        taskLockToken: task.lockedBy ?? "",
         deliveryId: delivery.id,
         campaignId: campaign.id,
         recipientEmail: user.email,
@@ -589,12 +685,40 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
   });
 }
 
+async function isLatestAttemptHeldByTaskTx(
+  tx: DbClient,
+  message: PreparedMessage,
+): Promise<boolean> {
+  const [task] = await tx
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.id, message.taskId),
+        eq(tasks.status, "processing"),
+        eq(tasks.lockedBy, message.taskLockToken),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (!task) return false;
+
+  const [delivery] = await tx
+    .select({ attemptCount: notificationDeliveries.attemptCount })
+    .from(notificationDeliveries)
+    .where(eq(notificationDeliveries.id, message.deliveryId))
+    .limit(1)
+    .for("update");
+  return Boolean(delivery && delivery.attemptCount === message.attemptNumber);
+}
+
 async function finishAcceptedTx(message: PreparedMessage): Promise<void> {
   await getDb().transaction(async (tx) => {
     await tx
       .update(notificationDeliveryAttempts)
       .set({ outcome: "accepted", completedAt: sql`now()` })
       .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+    if (!(await isLatestAttemptHeldByTaskTx(tx, message))) return;
     await tx
       .update(notificationDeliveries)
       .set({
@@ -620,6 +744,7 @@ async function finishFailureTx(
         .update(notificationDeliveryAttempts)
         .set({ outcome: "permanent_failure", errorKind: "permanent", completedAt: sql`now()` })
         .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+      if (!(await isLatestAttemptHeldByTaskTx(tx, message))) return;
       await tx
         .update(notificationDeliveries)
         .set({
@@ -663,32 +788,41 @@ async function finishFailureTx(
       const [attempt] = await tx
         .select({
           smtpAttempted: notificationDeliveryAttempts.smtpAttempted,
-          attemptUtcDay: notificationDeliveryAttempts.attemptUtcDay,
-          attemptMinute: notificationDeliveryAttempts.attemptMinute,
+          reservedUtcDay: notificationDeliveryAttempts.reservedUtcDay,
+          reservedMinute: notificationDeliveryAttempts.reservedMinute,
         })
         .from(notificationDeliveryAttempts)
         .where(eq(notificationDeliveryAttempts.id, message.attemptId))
         .limit(1)
         .for("update");
       const terminal = delivery ? expired(delivery.createdAt, now) : false;
-      if (attempt?.smtpAttempted) {
+      const active = await isLatestAttemptHeldByTaskTx(tx, message);
+      if (active && attempt?.smtpAttempted && attempt.reservedUtcDay && attempt.reservedMinute) {
         await tx.execute(sql`
           UPDATE notification_quota_windows
           SET attempted_count = greatest(attempted_count - 1, 0),
               updated_at = now()
-          WHERE (window_kind = 'utc_day' AND window_start = ${utcDayStart(attempt.attemptUtcDay).toISOString()}::timestamptz)
-             OR (window_kind = 'utc_minute' AND window_start = ${attempt.attemptMinute?.toISOString() ?? null}::timestamptz)
+          WHERE (window_kind = 'utc_day' AND window_start = ${utcDayStart(attempt.reservedUtcDay).toISOString()}::timestamptz)
+             OR (window_kind = 'utc_minute' AND window_start = ${attempt.reservedMinute.toISOString()}::timestamptz)
         `);
       }
+      const attemptUpdate = active
+        ? {
+            smtpAttempted: false,
+            outcome: "needs_operator_defer" as const,
+            errorKind: "needs_operator",
+            completedAt: sql`now()`,
+          }
+        : {
+            outcome: "needs_operator_defer" as const,
+            errorKind: "needs_operator",
+            completedAt: sql`now()`,
+          };
       await tx
         .update(notificationDeliveryAttempts)
-        .set({
-          smtpAttempted: false,
-          outcome: "needs_operator_defer",
-          errorKind: "needs_operator",
-          completedAt: sql`now()`,
-        })
+        .set(attemptUpdate)
         .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+      if (!active) return;
       await tx
         .update(notificationDeliveries)
         .set({
@@ -711,6 +845,7 @@ async function finishFailureTx(
       .update(notificationDeliveryAttempts)
       .set({ outcome: "transient_failure", errorKind: "transient", completedAt: sql`now()` })
       .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+    if (!(await isLatestAttemptHeldByTaskTx(tx, message))) return;
     await tx
       .update(notificationDeliveries)
       .set({

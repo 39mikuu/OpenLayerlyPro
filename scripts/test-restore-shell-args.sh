@@ -150,20 +150,49 @@ compose() {
       if [ "$action" = "up" ]; then
         return
       fi
+      entrypoint="sh"
       while [ "$#" -gt 0 ] && [ "$1" != "app" ]; do
+        if [ "$1" = "--entrypoint" ]; then
+          entrypoint=$2
+          shift 2
+          continue
+        fi
         shift
       done
       [ "$#" -gt 0 ] || fail "mock compose run did not receive app service"
       shift
-      command sh "$@"
+      if [ "$entrypoint" = node ] && [ "${1:-}" = "-e" ]; then
+        shift
+        script=$1
+        shift
+        env DOCKER_INSPECT_ENV_JSON="$DOCKER_INSPECT_ENV_JSON" node -e '
+          const entries = JSON.parse(process.env.DOCKER_INSPECT_ENV_JSON || "[]");
+          for (const entry of Array.isArray(entries) ? entries : []) {
+            const index = entry.indexOf("=");
+            if (index > 0) process.env[entry.slice(0, index)] = entry.slice(index + 1);
+          }
+          const source = process.argv[1];
+          process.argv.splice(1, 1);
+          eval(source);
+        ' "$script" "$@"
+        return
+      fi
+      command "$entrypoint" "$@"
       return
       ;;
     exec)
-      while [ "$#" -gt 0 ] && [ "$1" != "postgres" ]; do
+      service=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          app|postgres)
+            service=$1
+            shift
+            break
+            ;;
+        esac
         shift
       done
-      [ "$#" -gt 0 ] || fail "mock compose exec did not receive postgres service"
-      shift
+      [ -n "$service" ] || fail "mock compose exec did not receive a supported service"
       ;;
     *)
       fail "unexpected mock compose action: $action"
@@ -680,6 +709,230 @@ read_archive_provenance "$legacy_manifest" 2
   || fail "legacy v2 app version fallback did not parse"
 [ "$ARCHIVE_RUNTIME_SOURCE_COMMIT" = "unknown" ] \
   || fail "legacy v2 source commit did not default to unknown"
+
+V4_DIR="$TEST_ROOT/v4-notification-archive"
+mkdir -p "$V4_DIR/secrets"
+UNSUBSCRIBE_CURRENT_SECRET="unsubscribe-current-secret-000000"
+UNSUBSCRIBE_PREVIOUS_SECRET="unsubscribe-previous-secret-00000"
+SUPPRESSION_CURRENT_SECRET="suppression-current-secret-000000"
+SUPPRESSION_PREVIOUS_SECRET="suppression-previous-secret-00000"
+printf '%s\n' "$UNSUBSCRIBE_CURRENT_SECRET" > "$V4_DIR/secrets/notification-unsubscribe-secret"
+printf '%s\n' "$UNSUBSCRIBE_PREVIOUS_SECRET" > "$V4_DIR/secrets/notification-unsubscribe-previous-secret"
+printf '%s\n' "$SUPPRESSION_CURRENT_SECRET" > "$V4_DIR/secrets/notification-suppression-digest-secret"
+printf '%s\n' "$SUPPRESSION_PREVIOUS_SECRET" > "$V4_DIR/secrets/notification-suppression-digest-previous-secret"
+chmod 600 "$V4_DIR/secrets/"notification-*
+UNSUBSCRIBE_CURRENT_SHA=$(sha256_trimmed_file "$V4_DIR/secrets/notification-unsubscribe-secret")
+UNSUBSCRIBE_PREVIOUS_SHA=$(sha256_trimmed_file "$V4_DIR/secrets/notification-unsubscribe-previous-secret")
+SUPPRESSION_CURRENT_SHA=$(sha256_trimmed_file "$V4_DIR/secrets/notification-suppression-digest-secret")
+SUPPRESSION_PREVIOUS_SHA=$(sha256_trimmed_file "$V4_DIR/secrets/notification-suppression-digest-previous-secret")
+cat > "$V4_DIR/manifest.env" <<EOF
+FORMAT_VERSION=4
+RUNTIME_APP_VERSION=image-version
+RUNTIME_SOURCE_COMMIT=$VALID_COMMIT
+RUNTIME_IMAGE_ID=$VALID_IMAGE_ID
+BUILD_TIMESTAMP=2026-07-05T00:00:00Z
+BACKUP_TOOL_COMMIT=$VALID_TOOL_COMMIT
+BACKUP_TOOL_SCRIPT_SHA256=$VALID_TOOL_SHA
+CONFIG_ENCRYPTION_KEY_SHA256=$CONFIG_KEY_SHA256
+CONFIG_ENCRYPTION_KEY_FORMAT=legacy
+NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE=file
+NOTIFICATION_UNSUBSCRIBE_KEY_ID=unsub_current
+NOTIFICATION_UNSUBSCRIBE_KEY_SHA256=$UNSUBSCRIBE_CURRENT_SHA
+NOTIFICATION_UNSUBSCRIBE_KEY_ARCHIVE_PATH=secrets/notification-unsubscribe-secret
+NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE=external
+NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID=unsub_previous
+NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SHA256=$UNSUBSCRIBE_PREVIOUS_SHA
+NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE=external
+NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID=supp_current
+NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256=$SUPPRESSION_CURRENT_SHA
+NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE=file
+NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID=supp_previous
+NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256=$SUPPRESSION_PREVIOUS_SHA
+NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ARCHIVE_PATH=secrets/notification-suppression-digest-previous-secret
+EOF
+validate_v3_manifest_file "$V4_DIR/manifest.env" >/dev/null \
+  || fail "valid v4 notification manifest did not pass shared validator"
+read_archive_provenance "$V4_DIR/manifest.env" 4
+[ "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" = external ] \
+  || fail "v4 previous external notification key source did not parse"
+[ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" = file ] \
+  || fail "v4 previous file notification key source did not parse"
+verify_archive_notification_key_fingerprints "$V4_DIR" 4 \
+  || fail "valid v4 notification key fingerprints were rejected"
+
+V4_PREVIOUS_NONE_DIR="$TEST_ROOT/v4-previous-none"
+mkdir -p "$V4_PREVIOUS_NONE_DIR/secrets"
+cp "$V4_DIR/secrets/notification-unsubscribe-secret" "$V4_PREVIOUS_NONE_DIR/secrets/notification-unsubscribe-secret"
+cp "$V4_DIR/secrets/notification-suppression-digest-secret" "$V4_PREVIOUS_NONE_DIR/secrets/notification-suppression-digest-secret"
+chmod 600 "$V4_PREVIOUS_NONE_DIR/secrets/"notification-*
+awk '
+  /^NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_/ { next }
+  /^NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_/ { next }
+  { print }
+  END {
+    print "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE=none";
+    print "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE=none";
+  }
+' "$V4_DIR/manifest.env" > "$V4_PREVIOUS_NONE_DIR/manifest.env"
+verify_archive_notification_key_fingerprints "$V4_PREVIOUS_NONE_DIR" 4 \
+  || fail "v4 previous none notification key source was rejected"
+
+V4_PREVIOUS_NONE_BAD_DIR="$TEST_ROOT/v4-previous-none-bad"
+cp -R "$V4_PREVIOUS_NONE_DIR" "$V4_PREVIOUS_NONE_BAD_DIR"
+printf '%s\n' "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID=stale_previous" \
+  >> "$V4_PREVIOUS_NONE_BAD_DIR/manifest.env"
+set +e
+previous_none_bad_output=$(
+  verify_archive_notification_key_fingerprints "$V4_PREVIOUS_NONE_BAD_DIR" 4 2>&1
+)
+previous_none_bad_status=$?
+set -e
+[ "$previous_none_bad_status" -ne 0 ] \
+  || fail "v4 previous none source with key id unexpectedly passed"
+printf '%s' "$previous_none_bad_output" \
+  | grep -F "source is none but manifest includes key material" >/dev/null \
+  || fail "v4 previous none key-material error was not explicit"
+
+V4_PREVIOUS_EXTERNAL_BAD_DIR="$TEST_ROOT/v4-previous-external-bad"
+cp -R "$V4_DIR" "$V4_PREVIOUS_EXTERNAL_BAD_DIR"
+printf '%s\n' "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ARCHIVE_PATH=secrets/notification-unsubscribe-previous-secret" \
+  >> "$V4_PREVIOUS_EXTERNAL_BAD_DIR/manifest.env"
+set +e
+previous_external_bad_output=$(
+  verify_archive_notification_key_fingerprints "$V4_PREVIOUS_EXTERNAL_BAD_DIR" 4 2>&1
+)
+previous_external_bad_status=$?
+set -e
+[ "$previous_external_bad_status" -ne 0 ] \
+  || fail "v4 previous external source with archive path unexpectedly passed"
+printf '%s' "$previous_external_bad_output" \
+  | grep -F "external source must not include archive path" >/dev/null \
+  || fail "v4 external archive-path error was not explicit"
+
+V4_PREVIOUS_FILE_BAD_DIR="$TEST_ROOT/v4-previous-file-bad"
+cp -R "$V4_DIR" "$V4_PREVIOUS_FILE_BAD_DIR"
+rm -f "$V4_PREVIOUS_FILE_BAD_DIR/secrets/notification-suppression-digest-previous-secret"
+set +e
+previous_file_bad_output=$(
+  verify_archive_notification_key_fingerprints "$V4_PREVIOUS_FILE_BAD_DIR" 4 2>&1
+)
+previous_file_bad_status=$?
+set -e
+[ "$previous_file_bad_status" -ne 0 ] \
+  || fail "v4 previous file source with missing archive file unexpectedly passed"
+printf '%s' "$previous_file_bad_output" \
+  | grep -F "archive notification key fingerprint validation failed" >/dev/null \
+  || fail "v4 missing previous file error was not explicit"
+
+DOCKER_INSPECT_ENV_JSON=$(node -e '
+  const values = {
+    APP_VERSION: "image-version",
+    SOURCE_COMMIT: process.argv[1],
+    BUILD_TIMESTAMP: "2026-07-05T00:00:00Z",
+    NOTIFICATION_UNSUBSCRIBE_SECRET: "",
+    NOTIFICATION_UNSUBSCRIBE_KEY_ID: "unsub_current",
+    NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET: process.argv[2],
+    NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID: "unsub_previous",
+    NOTIFICATION_SUPPRESSION_DIGEST_SECRET: process.argv[3],
+    NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID: "supp_current",
+    NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET: "",
+    NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID: "supp_previous",
+  };
+  process.stdout.write(JSON.stringify(Object.entries(values).map(([k, v]) => `${k}=${v}`)));
+' "$VALID_COMMIT" "$UNSUBSCRIBE_PREVIOUS_SECRET" "$SUPPRESSION_CURRENT_SECRET")
+verify_target_notification_key_env \
+  file "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_ID" "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256" \
+  NOTIFICATION_UNSUBSCRIBE_KEY_ID NOTIFICATION_UNSUBSCRIBE_SECRET \
+  "notification unsubscribe current"
+verify_target_notification_key_env \
+  external "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID" "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SHA256" \
+  NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET \
+  "notification unsubscribe previous"
+verify_target_notification_key_env \
+  external "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID" "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256" \
+  NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID NOTIFICATION_SUPPRESSION_DIGEST_SECRET \
+  "notification suppression current"
+verify_target_notification_key_env \
+  file "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID" "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256" \
+  NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET \
+  "notification suppression previous"
+
+DOCKER_INSPECT_ENV_JSON=$(node -e '
+  const values = {
+    APP_VERSION: "image-version",
+    SOURCE_COMMIT: process.argv[1],
+    BUILD_TIMESTAMP: "2026-07-05T00:00:00Z",
+    NOTIFICATION_UNSUBSCRIBE_SECRET: process.argv[2],
+    NOTIFICATION_UNSUBSCRIBE_KEY_ID: "unsub_current",
+  };
+  process.stdout.write(JSON.stringify(Object.entries(values).map(([k, v]) => `${k}=${v}`)));
+' "$VALID_COMMIT" "$UNSUBSCRIBE_CURRENT_SECRET")
+set +e
+file_backed_direct_output=$(
+  verify_target_notification_key_env \
+    file "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_ID" "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256" \
+    NOTIFICATION_UNSUBSCRIBE_KEY_ID NOTIFICATION_UNSUBSCRIBE_SECRET \
+    "notification unsubscribe current" 2>&1
+)
+file_backed_direct_status=$?
+set -e
+[ "$file_backed_direct_status" -ne 0 ] \
+  || fail "file-backed notification key accepted direct target env secret"
+printf '%s' "$file_backed_direct_output" \
+  | grep -F "requires NOTIFICATION_UNSUBSCRIBE_SECRET to be unset" >/dev/null \
+  || fail "file-backed direct env error was not explicit"
+
+DOCKER_INSPECT_ENV_JSON=$(node -e '
+  const values = {
+    APP_VERSION: "image-version",
+    SOURCE_COMMIT: process.argv[1],
+    BUILD_TIMESTAMP: "2026-07-05T00:00:00Z",
+    NOTIFICATION_UNSUBSCRIBE_SECRET: "",
+    NOTIFICATION_UNSUBSCRIBE_KEY_ID: "wrong_id",
+  };
+  process.stdout.write(JSON.stringify(Object.entries(values).map(([k, v]) => `${k}=${v}`)));
+' "$VALID_COMMIT")
+set +e
+key_id_mismatch_output=$(
+  verify_target_notification_key_env \
+    file "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_ID" "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256" \
+    NOTIFICATION_UNSUBSCRIBE_KEY_ID NOTIFICATION_UNSUBSCRIBE_SECRET \
+    "notification unsubscribe current" 2>&1
+)
+key_id_mismatch_status=$?
+set -e
+[ "$key_id_mismatch_status" -ne 0 ] \
+  || fail "notification key target id mismatch unexpectedly passed"
+printf '%s' "$key_id_mismatch_output" \
+  | grep -F "does not match archived notification unsubscribe current key id" >/dev/null \
+  || fail "notification key id mismatch error was not explicit"
+
+DOCKER_INSPECT_ENV_JSON=$(node -e '
+  const values = {
+    APP_VERSION: "image-version",
+    SOURCE_COMMIT: process.argv[1],
+    BUILD_TIMESTAMP: "2026-07-05T00:00:00Z",
+    NOTIFICATION_SUPPRESSION_DIGEST_SECRET: "wrong-suppression-secret-0000000",
+    NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID: "supp_current",
+  };
+  process.stdout.write(JSON.stringify(Object.entries(values).map(([k, v]) => `${k}=${v}`)));
+' "$VALID_COMMIT")
+set +e
+external_fingerprint_mismatch_output=$(
+  verify_target_notification_key_env \
+    external "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID" "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256" \
+    NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID NOTIFICATION_SUPPRESSION_DIGEST_SECRET \
+    "notification suppression current" 2>&1
+)
+external_fingerprint_mismatch_status=$?
+set -e
+[ "$external_fingerprint_mismatch_status" -ne 0 ] \
+  || fail "notification external secret fingerprint mismatch unexpectedly passed"
+printf '%s' "$external_fingerprint_mismatch_output" \
+  | grep -F "does not match the archive fingerprint" >/dev/null \
+  || fail "notification external fingerprint mismatch error was not explicit"
+
+DOCKER_INSPECT_ENV_JSON='["APP_VERSION=image-version","SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567","BUILD_TIMESTAMP=2026-07-05T00:00:00Z"]'
 
 for legacy_format in 1 2; do
   set +e

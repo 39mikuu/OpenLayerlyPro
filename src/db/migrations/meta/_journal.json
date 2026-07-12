@@ -176,6 +176,13 @@
       "when": 1783987200000,
       "tag": "0024_g1_transactional_email_privacy",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784073600000,
+      "tag": "0025_notification_delivery_fencing",
+      "breakpoints": true
     }
   ]
 }

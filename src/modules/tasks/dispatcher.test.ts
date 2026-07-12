@@ -117,6 +117,29 @@ describe("task dispatcher", () => {
     expect(deps.claimClass).toHaveBeenCalledTimes(TASK_BATCH_SIZE);
   });
 
+  it("guarantees default progress when transactional and notification queues stay full", async () => {
+    const deps = dependencies();
+    const seen: string[] = [];
+    const nextTask = (queueClass: "transactional" | "notification" | "default") => ({
+      ...task(`${queueClass}-${seen.length}`),
+      queueClass,
+      reclaimedStale: false,
+    });
+    deps.claimClass.mockImplementation(async (queueClass: string) => {
+      if (queueClass === "maintenance") return null;
+      seen.push(queueClass);
+      return nextTask(queueClass as "transactional" | "notification" | "default");
+    });
+    deps.run.mockResolvedValue({});
+    deps.succeed.mockResolvedValue(true);
+
+    await expect(dispatchTaskBatch(deps)).resolves.toBe(TASK_BATCH_SIZE);
+
+    expect(seen.filter((queueClass) => queueClass === "transactional")).toHaveLength(16);
+    expect(seen.filter((queueClass) => queueClass === "notification")).toHaveLength(2);
+    expect(seen.filter((queueClass) => queueClass === "default")).toHaveLength(2);
+  });
+
   it("marks failures with the matching token and continues to the next task", async () => {
     const first = task("11111111-1111-4111-8111-111111111111");
     const second = task("22222222-2222-4222-8222-222222222222");

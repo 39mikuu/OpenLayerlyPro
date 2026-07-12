@@ -2,7 +2,14 @@ import { randomUUID } from "crypto";
 import { and, asc, desc, eq, inArray, lt, lte, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
-import { paymentProviderEvents, type Task, tasks } from "@/db/schema";
+import {
+  notificationCampaigns,
+  notificationDeliveries,
+  notificationDeliveryAttempts,
+  paymentProviderEvents,
+  type Task,
+  tasks,
+} from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
@@ -79,6 +86,11 @@ export type ClaimOneTaskForClassOptions = ClaimOptions & { includeStale?: boolea
 type ClaimOneTaskForClassInternalOptions = ClaimOptions & { includeStale?: boolean };
 export type ClaimedTaskForClass = Task & { reclaimedStale: boolean };
 
+type NotificationDeliverPayload = {
+  version: 1;
+  userId?: string;
+};
+
 type RawTaskRow = {
   id: string;
   kind: string;
@@ -127,8 +139,8 @@ async function sweepExpiredFinalAttemptTasksInternal(options: {
   const updatedAt = clock ?? sql<Date>`now()`;
   const leaseExpired = clock ? lt(tasks.leaseUntil, clock) : sql`${tasks.leaseUntil} < now()`;
 
-  const swept = await getDb().transaction(async (tx) =>
-    tx
+  const swept = await getDb().transaction(async (tx) => {
+    const sweptTasks = await tx
       .update(tasks)
       .set({
         status: "dead",
@@ -150,8 +162,103 @@ async function sweepExpiredFinalAttemptTasksInternal(options: {
         kind: tasks.kind,
         attempts: tasks.attempts,
         payloadJson: tasks.payloadJson,
-      }),
-  );
+      });
+
+    const notificationTasks = sweptTasks.filter((task) => task.kind === "notification.deliver");
+    if (notificationTasks.length === 0) return sweptTasks;
+
+    const affectedDeliveries = await tx
+      .update(notificationDeliveries)
+      .set({
+        status: "dead",
+        lastOutcome: "lease_expired",
+        lastError: "Task lease expired after the final execution attempt",
+        nextAttemptAfter: null,
+        updatedAt,
+      })
+      .where(
+        and(
+          inArray(
+            notificationDeliveries.taskId,
+            notificationTasks.map((task) => task.id),
+          ),
+          inArray(notificationDeliveries.status, ["queued", "sending", "deferred", "failed"]),
+        ),
+      )
+      .returning({
+        id: notificationDeliveries.id,
+        campaignId: notificationDeliveries.campaignId,
+        taskId: notificationDeliveries.taskId,
+      });
+
+    for (const delivery of affectedDeliveries) {
+      const task = notificationTasks.find((candidate) => candidate.id === delivery.taskId);
+      const payload = task?.payloadJson as NotificationDeliverPayload | null | undefined;
+      const userId = typeof payload?.userId === "string" ? payload.userId : null;
+
+      const [openAttempt] = await tx
+        .select({ id: notificationDeliveryAttempts.id })
+        .from(notificationDeliveryAttempts)
+        .where(
+          and(
+            eq(notificationDeliveryAttempts.deliveryId, delivery.id),
+            sql`${notificationDeliveryAttempts.completedAt} IS NULL`,
+          ),
+        )
+        .orderBy(desc(notificationDeliveryAttempts.attemptNumber))
+        .limit(1)
+        .for("update");
+
+      if (openAttempt) {
+        await tx
+          .update(notificationDeliveryAttempts)
+          .set({
+            outcome: "lease_expired",
+            errorKind: "lease_expired",
+            completedAt: updatedAt,
+          })
+          .where(eq(notificationDeliveryAttempts.id, openAttempt.id));
+      } else if (userId) {
+        const [deliveryState] = await tx
+          .select({ attemptCount: notificationDeliveries.attemptCount })
+          .from(notificationDeliveries)
+          .where(eq(notificationDeliveries.id, delivery.id))
+          .limit(1);
+        await tx.insert(notificationDeliveryAttempts).values({
+          deliveryId: delivery.id,
+          campaignId: delivery.campaignId,
+          userId,
+          taskId: delivery.taskId,
+          attemptNumber: Math.max(1, (deliveryState?.attemptCount ?? 0) + 1),
+          attemptUtcDay: sql`(now() at time zone 'utc')::date`,
+          attemptMinute: sql`date_trunc('minute', now())`,
+          smtpAttempted: false,
+          outcome: "lease_expired",
+          errorKind: "lease_expired",
+          completedAt: updatedAt,
+        });
+      }
+
+      await tx
+        .update(notificationCampaigns)
+        .set({ status: "sending", updatedAt })
+        .where(
+          and(
+            eq(notificationCampaigns.id, delivery.campaignId),
+            inArray(notificationCampaigns.status, ["expanded", "sending"]),
+          ),
+        );
+      await enqueueTask(tx, {
+        kind: "notification.campaign_finalize",
+        dedupeKey: `notification:campaign_finalize:${delivery.campaignId}`,
+        payload: { version: 1, campaignId: delivery.campaignId },
+        priority: 95,
+        queueClass: "notification",
+      });
+    }
+
+    return sweptTasks;
+  });
 
   for (const task of swept) {
     warnMailTaskDeadLettered(task, "lease_expired");

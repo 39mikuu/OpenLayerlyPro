@@ -22,12 +22,42 @@ export type NotificationCampaignAdminSummary = {
   suppressionCount: number;
 };
 
+type CampaignSummaryBase = Omit<
+  NotificationCampaignAdminSummary,
+  "deliveryCounts" | "attemptCounts" | "suppressionCount"
+>;
+
 function countRows(rows: { key: string | null; count: number | string }[]): Record<string, number> {
   return Object.fromEntries(rows.map((row) => [row.key ?? "unknown", Number(row.count)]));
 }
 
-async function hydrateCampaignSummary(campaignId: string) {
-  const [campaign] = await getDb()
+function groupedCountMap(
+  rows: { campaignId: string; key: string | null; count: number | string }[],
+): Map<string, Record<string, number>> {
+  const grouped = new Map<string, { key: string | null; count: number | string }[]>();
+  for (const row of rows) {
+    const values = grouped.get(row.campaignId) ?? [];
+    values.push(row);
+    grouped.set(row.campaignId, values);
+  }
+  return new Map([...grouped].map(([campaignId, values]) => [campaignId, countRows(values)]));
+}
+
+function numericCountMap(
+  rows: { campaignId: string; count: number | string }[],
+): Map<string, number> {
+  return new Map(rows.map((row) => [row.campaignId, Number(row.count)]));
+}
+
+function uuidArray(ids: string[]) {
+  return sql`ARRAY[${sql.join(
+    ids.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  )}]`;
+}
+
+function campaignBaseQuery() {
+  return getDb()
     .select({
       id: notificationCampaigns.id,
       postId: notificationCampaigns.postId,
@@ -44,61 +74,68 @@ async function hydrateCampaignSummary(campaignId: string) {
       lastError: notificationCampaigns.lastError,
     })
     .from(notificationCampaigns)
-    .leftJoin(posts, eq(posts.id, notificationCampaigns.postId))
-    .where(eq(notificationCampaigns.id, campaignId))
-    .limit(1);
-  if (!campaign) return null;
+    .leftJoin(posts, eq(posts.id, notificationCampaigns.postId));
+}
+
+async function hydrateCampaignSummaries(
+  campaigns: CampaignSummaryBase[],
+): Promise<NotificationCampaignAdminSummary[]> {
+  if (campaigns.length === 0) return [];
+  const campaignIds = campaigns.map((campaign) => campaign.id);
 
   const [deliveryRows, attemptRows, suppressionRows] = await Promise.all([
-    getDb().execute<{ key: string; count: number | string }>(sql`
-      SELECT status AS key, count(*)::int AS count
+    getDb().execute<{ campaignId: string; key: string; count: number | string }>(sql`
+      SELECT campaign_id AS "campaignId", status AS key, count(*)::int AS count
       FROM notification_deliveries
-      WHERE campaign_id = ${campaignId}
-      GROUP BY status
+      WHERE campaign_id = ANY(${uuidArray(campaignIds)})
+      GROUP BY campaign_id, status
     `),
-    getDb().execute<{ key: string; count: number | string }>(sql`
-      SELECT outcome AS key, count(*)::int AS count
+    getDb().execute<{ campaignId: string; key: string; count: number | string }>(sql`
+      SELECT campaign_id AS "campaignId", outcome AS key, count(*)::int AS count
       FROM notification_delivery_attempts
-      WHERE campaign_id = ${campaignId}
-      GROUP BY outcome
+      WHERE campaign_id = ANY(${uuidArray(campaignIds)})
+      GROUP BY campaign_id, outcome
     `),
-    getDb().execute<{ count: number | string }>(sql`
-      SELECT count(*)::int AS count
-      FROM notification_suppressions
-      WHERE first_delivery_id IN (
-        SELECT id FROM notification_deliveries WHERE campaign_id = ${campaignId}
-      )
-         OR last_delivery_id IN (
-        SELECT id FROM notification_deliveries WHERE campaign_id = ${campaignId}
-      )
+    getDb().execute<{ campaignId: string; count: number | string }>(sql`
+      SELECT d.campaign_id AS "campaignId", count(DISTINCT s.id)::int AS count
+      FROM notification_deliveries d
+      JOIN notification_suppressions s
+        ON s.first_delivery_id = d.id
+        OR s.last_delivery_id = d.id
+      WHERE d.campaign_id = ANY(${uuidArray(campaignIds)})
+      GROUP BY d.campaign_id
     `),
   ]);
 
-  return {
-    ...campaign,
-    deliveryCounts: countRows(deliveryRows),
-    attemptCounts: countRows(attemptRows),
-    suppressionCount: Number(suppressionRows[0]?.count ?? 0),
-  } satisfies NotificationCampaignAdminSummary;
+  const deliveriesByCampaign = groupedCountMap(deliveryRows);
+  const attemptsByCampaign = groupedCountMap(attemptRows);
+  const suppressionsByCampaign = numericCountMap(suppressionRows);
+
+  return campaigns.map(
+    (campaign) =>
+      ({
+        ...campaign,
+        deliveryCounts: deliveriesByCampaign.get(campaign.id) ?? {},
+        attemptCounts: attemptsByCampaign.get(campaign.id) ?? {},
+        suppressionCount: suppressionsByCampaign.get(campaign.id) ?? 0,
+      }) satisfies NotificationCampaignAdminSummary,
+  );
 }
 
 export async function listNotificationCampaignAdminSummaries(): Promise<
   NotificationCampaignAdminSummary[]
 > {
-  const campaigns = await getDb()
-    .select({ id: notificationCampaigns.id })
-    .from(notificationCampaigns)
+  const campaigns = await campaignBaseQuery()
     .orderBy(desc(notificationCampaigns.createdAt), desc(notificationCampaigns.id))
     .limit(50);
-
-  const summaries = await Promise.all(
-    campaigns.map((campaign) => hydrateCampaignSummary(campaign.id)),
-  );
-  return summaries.filter((summary) => summary !== null);
+  return hydrateCampaignSummaries(campaigns);
 }
 
 export async function getNotificationCampaignAdminSummary(
   campaignId: string,
 ): Promise<NotificationCampaignAdminSummary | null> {
-  return hydrateCampaignSummary(campaignId);
+  const campaigns = await campaignBaseQuery()
+    .where(eq(notificationCampaigns.id, campaignId))
+    .limit(1);
+  return (await hydrateCampaignSummaries(campaigns))[0] ?? null;
 }
