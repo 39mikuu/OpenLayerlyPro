@@ -3,11 +3,22 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
-import { paymentProviderEvents, tasks } from "@/db/schema";
+import {
+  notificationCampaigns,
+  notificationDeliveries,
+  paymentProviderEvents,
+  posts,
+  tasks,
+  users,
+} from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { createStorageDeleteDedupeKeyForTests } from "@/modules/file/cleanup";
 
-import { NEUTRALIZED_EMAIL_LAST_ERROR, neutralizeRestoredTasks } from "./neutralize";
+import {
+  NEUTRALIZED_EMAIL_LAST_ERROR,
+  NEUTRALIZED_NOTIFICATION_LAST_ERROR,
+  neutralizeRestoredTasks,
+} from "./neutralize";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -82,8 +93,25 @@ describeWithDatabase("restore neutralize integration", () => {
       },
       {
         kind: "email",
+        dedupeKey: `email:renewal_reminder:${randomUUID()}:${new Date("2026-07-12T00:00:00.000Z").toISOString()}`,
+        payloadJson: {
+          version: 2,
+          template: "renewal_reminder",
+          subscriptionId: randomUUID(),
+          periodEndsAt: "2026-07-12T00:00:00.000Z",
+        },
+        status: "processing",
+        attempts: 2,
+      },
+      {
+        kind: "email",
         dedupeKey: `email:membership_activated:${randomUUID()}`,
-        payloadJson: { template: "membership_activated", to: "fan@example.com" },
+        payloadJson: {
+          version: 2,
+          template: "membership_activated",
+          paymentRequestId: randomUUID(),
+          membershipId: randomUUID(),
+        },
         status: "pending",
       },
     ]);
@@ -94,7 +122,7 @@ describeWithDatabase("restore neutralize integration", () => {
     expect(report.providerEventsReset).toBe(1);
     expect(report.providerDispatchTasksEnsured).toBe(1);
     expect(report.emailRenewalRemindersReset).toBe(1);
-    expect(report.emailDeliveryNeutralized).toBe(1);
+    expect(report.emailDeliveryNeutralized).toBe(2);
     expect(report.otherTasksReset).toBe(2);
     expect(report.subscriptionReconcileNormalized).toBe(true);
 
@@ -139,13 +167,153 @@ describeWithDatabase("restore neutralize integration", () => {
     expect(neutralizedEmail).toMatchObject({
       status: "dead",
       lastError: NEUTRALIZED_EMAIL_LAST_ERROR,
+      payloadJson: {
+        version: 2,
+        template: "membership_activated",
+        recipientRedacted: true,
+      },
     });
+    expect(JSON.stringify(neutralizedEmail!.payloadJson)).not.toContain("@");
+
+    const resetRenewal = remainingTasks.find(
+      (task) =>
+        task.kind === "email" &&
+        (task.payloadJson as { template?: string; version?: number }).template ===
+          "renewal_reminder" &&
+        (task.payloadJson as { version?: number }).version === 2,
+    );
+    expect(resetRenewal).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      lastError: null,
+    });
+
+    const rawRecipientEmailTasks = remainingTasks.filter(
+      (task) =>
+        task.kind === "email" &&
+        typeof task.payloadJson === "object" &&
+        task.payloadJson !== null &&
+        "to" in task.payloadJson,
+    );
+    expect(rawRecipientEmailTasks).toHaveLength(0);
 
     const resetPublish = remainingTasks.find((task) => task.kind === "publish_post");
     expect(resetPublish).toMatchObject({
       status: "pending",
       attempts: 0,
       lastError: null,
+    });
+  });
+
+  it("dead-letters restored notification tasks and related campaign state", async () => {
+    const [user] = await db
+      .insert(users)
+      .values({ email: `restore-${randomUUID()}@example.test` })
+      .returning();
+    const postRows = await db
+      .insert(posts)
+      .values([
+        {
+          title: "Deliver",
+          slug: `deliver-${randomUUID()}`,
+          visibility: "public",
+          status: "published",
+          publishedAt: new Date(),
+        },
+        {
+          title: "Expand",
+          slug: `expand-${randomUUID()}`,
+          visibility: "public",
+          status: "published",
+          publishedAt: new Date(),
+        },
+        {
+          title: "Finalize",
+          slug: `finalize-${randomUUID()}`,
+          visibility: "public",
+          status: "published",
+          publishedAt: new Date(),
+        },
+      ])
+      .returning();
+    const campaigns = await db
+      .insert(notificationCampaigns)
+      .values(
+        postRows.map((post) => ({
+          postId: post.id,
+          source: "manual_publish" as const,
+          status: "sending" as const,
+          publishedAt: post.publishedAt!,
+        })),
+      )
+      .returning();
+    const taskRows = await db
+      .insert(tasks)
+      .values([
+        {
+          kind: "notification.deliver",
+          dedupeKey: `notification:delivery:${randomUUID()}`,
+          payloadJson: { version: 1, userId: user!.id },
+          status: "processing",
+          attempts: 2,
+          lockedBy: "worker",
+        },
+        {
+          kind: "notification.campaign_expand",
+          dedupeKey: `notification:campaign_expand:${campaigns[1]!.id}`,
+          payloadJson: { version: 1, campaignId: campaigns[1]!.id },
+          status: "pending",
+        },
+        {
+          kind: "notification.campaign_finalize",
+          dedupeKey: `notification:campaign_finalize:${campaigns[2]!.id}`,
+          payloadJson: { version: 1, campaignId: campaigns[2]!.id },
+          status: "failed",
+          attempts: 1,
+        },
+      ])
+      .returning();
+    await db.insert(notificationDeliveries).values({
+      campaignId: campaigns[0]!.id,
+      userId: user!.id,
+      taskId: taskRows[0]!.id,
+      status: "sending",
+      attemptCount: 1,
+    });
+
+    const report = await neutralizeRestoredTasks(db);
+
+    expect(report.notificationTasksNeutralized).toBe(3);
+    expect(report.notificationDeliveriesNeutralized).toBe(1);
+    expect(report.notificationCampaignsNeutralized).toBe(3);
+
+    const storedTasks = await db
+      .select()
+      .from(tasks)
+      .where(
+        inArray(
+          tasks.id,
+          taskRows.map((row) => row.id),
+        ),
+      );
+    expect(storedTasks).toHaveLength(3);
+    expect(storedTasks.every((task) => task.status === "dead")).toBe(true);
+    expect(
+      storedTasks.every((task) => task.lastError === NEUTRALIZED_NOTIFICATION_LAST_ERROR),
+    ).toBe(true);
+
+    const storedCampaigns = await db.select().from(notificationCampaigns);
+    expect(storedCampaigns.every((campaign) => campaign.status === "dead")).toBe(true);
+    expect(
+      storedCampaigns.every(
+        (campaign) => campaign.lastError === NEUTRALIZED_NOTIFICATION_LAST_ERROR,
+      ),
+    ).toBe(true);
+
+    const [storedDelivery] = await db.select().from(notificationDeliveries);
+    expect(storedDelivery).toMatchObject({
+      status: "dead",
+      lastError: NEUTRALIZED_NOTIFICATION_LAST_ERROR,
     });
   });
 

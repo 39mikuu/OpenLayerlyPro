@@ -21,9 +21,20 @@ SMTP is required for production fan email-code login and for transactional notif
 
 ## Recipient Data Boundary
 
-Durable email tasks currently store the recipient address in `tasks.payload_json.to` so the worker can send after the business transaction commits. The task table is therefore sensitive operational data and must be protected by the same database access controls, backup controls, and retention discipline as user records.
+Durable transactional email tasks use v2 payloads with business references such as `paymentRequestId`, `membershipId`, `subscriptionId`, and `periodEndsAt`. They must not store `tasks.payload_json.to`; the worker dereferences the latest user email and locale at send time, then revalidates business freshness before SMTP.
 
-The admin task API/UI, application logs, delivery ledger, and normalized provider errors must not expose raw recipient addresses, verification codes, SMTP secrets, or raw provider responses. This is a presentation/logging redaction boundary; it does not mean the underlying task payload is de-identified.
+Operators can assert the boundary with:
+
+```sql
+select count(*)
+from tasks
+where kind = 'email'
+  and payload_json ? 'to';
+```
+
+The expected count is zero. Historical terminal rows are redacted with `recipientRedacted=true`; unsafe retryable legacy rows are dead-lettered with a safe error.
+
+The admin task API/UI, application logs, delivery ledger, and normalized provider errors must not expose raw recipient addresses, verification codes, SMTP secrets, or raw provider responses.
 
 ## Reliable Delivery Semantics
 
@@ -46,11 +57,14 @@ Mail tasks that can become obsolete must re-check their current business state i
 - a superseded login code succeeds as a no-op and never sends the old code;
 - a canceled/renewed/stale renewal reminder succeeds as a no-op;
 - restored or retried work must not send a notification whose state can no longer be verified.
+- restore neutralization dead-letters nonterminal payment/membership transactional email tasks and bulk notification task kinds when the delivery outcome is unknown; renewal reminders may re-arm only with a v2 subscription/period reference and still revalidate freshness.
 
 These checks occur outside long database transactions. The task claim/fence is captured in a short transaction, SMTP runs afterward, and only the current claim may commit the final task/delivery state.
 
 ## At-Least-Once Residual
 
 SMTP does not provide exactly-once delivery. If the provider accepts a message and the worker crashes before the database records success, lease recovery may send the same logical message again. Stable Message-ID and the delivery ledger improve traceability but cannot eliminate mailbox/provider duplicates.
+
+Bulk post notifications are opt-in by default off. They render in the recipient's current locale, skip archived/unpublished posts at send time, and write suppression records only for synchronous permanent SMTP rejection from notification delivery. Suppression does not affect login codes, payment emails, membership emails, or renewal reminders.
 
 Operators should monitor the task dashboard, deferred/dead counts, and delivery ledger rather than treating task enqueue as proof of inbox arrival.

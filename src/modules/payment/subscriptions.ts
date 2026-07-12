@@ -11,7 +11,6 @@ import {
   paymentRequests,
   type Subscription,
   subscriptions,
-  users,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
@@ -794,19 +793,14 @@ export async function applyPaidInvoice(
 
   await updateSubscriptionFromPaidInvoice(tx, subscription, event, invoiceLine);
 
-  const [user] = await tx.select().from(users).where(eq(users.id, subscription.userId)).limit(1);
-  if (!user) throw new Error("Subscription user not found");
   await enqueueTask(tx, {
     kind: "email",
     dedupeKey: `email:membership_activated:${created.id}`,
     payload: {
+      version: 2,
       template: "membership_activated",
-      to: user.email,
-      locale: user.locale,
-      params: {
-        tierName: granted.tier.name,
-        endsAt: granted.membership.endsAt.toISOString(),
-      },
+      paymentRequestId: created.id,
+      membershipId: granted.membership.id,
     },
   });
 

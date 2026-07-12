@@ -147,12 +147,12 @@ reject_unsafe_payload_tree "$WORK_DIR"
 FORMAT_VERSION=$(grep '^FORMAT_VERSION=' "$WORK_DIR/manifest.env" | cut -d= -f2- | tr -d '\r')
 FORMAT_VERSION=${FORMAT_VERSION:-1}
 case "$FORMAT_VERSION" in
-  1|2|3) ;;
+  1|2|3|4) ;;
   *) fail "unsupported FORMAT_VERSION=$FORMAT_VERSION" ;;
 esac
 
 case "$FORMAT_VERSION" in
-  2|3)
+  2|3|4)
   [ -f "$WORK_DIR/checksums.sha256" ] || fail "FORMAT_VERSION=$FORMAT_VERSION archive is missing checksums.sha256"
   echo "Verifying archive checksums..."
   (
@@ -216,6 +216,11 @@ validate_archive_storage_contract "$WORK_DIR" "$FORMAT_VERSION"
 
 read_archive_provenance "$WORK_DIR/manifest.env" "$FORMAT_VERSION"
 verify_archive_config_key_fingerprint "$WORK_DIR" "$FORMAT_VERSION"
+verify_archive_notification_key_fingerprints "$WORK_DIR" "$FORMAT_VERSION"
+
+if [ "$FORMAT_VERSION" != "4" ] && archive_has_notification_key_continuity_data "$WORK_DIR/db.sql"; then
+  fail "archive contains notification data but lacks FORMAT_VERSION=4 notification key manifest fields"
+fi
 
 read_restore_target_provenance_read_only
 PRECONFIRM_TARGET_CONTAINER_EXISTS=$RESTORE_TARGET_CONTAINER_EXISTS
@@ -258,8 +263,12 @@ if [ "$ASSUME_YES" != true ]; then
   echo "  Build timestamp: $ARCHIVE_BUILD_TIMESTAMP"
   echo "  Backup tool commit: $ARCHIVE_BACKUP_TOOL_COMMIT"
   echo "  Backup tool script SHA-256: $ARCHIVE_BACKUP_TOOL_SCRIPT_SHA256"
-  if [ "$FORMAT_VERSION" = "3" ]; then
+  if [ "$FORMAT_VERSION" = "3" ] || [ "$FORMAT_VERSION" = "4" ]; then
     echo "  Config key format: $ARCHIVE_CONFIG_ENCRYPTION_KEY_FORMAT"
+  fi
+  if [ "$FORMAT_VERSION" = "4" ]; then
+    echo "  Notification unsubscribe key: $ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE/$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_ID"
+    echo "  Notification suppression key: $ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE/$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID"
   fi
   echo "Target provenance:"
   echo "  Runtime app version: $TARGET_RUNTIME_APP_VERSION"
@@ -313,6 +322,56 @@ case "$SESSION_SECRET_SOURCE" in
     ;;
   *) fail "unsupported SESSION_SECRET_SOURCE=$SESSION_SECRET_SOURCE" ;;
 esac
+
+if [ "$FORMAT_VERSION" = "4" ]; then
+  case "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" in
+    file)
+      [ -s "$WORK_DIR/secrets/notification-unsubscribe-secret" ] \
+        || fail "archive declares a file-backed notification unsubscribe key but the file is missing"
+      ;;
+    external)
+      EXPECTED_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256=$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256
+      ;;
+    *) fail "unsupported NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE=$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" ;;
+  esac
+
+  case "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" in
+    file)
+      [ -s "$WORK_DIR/secrets/notification-suppression-digest-secret" ] \
+        || fail "archive declares a file-backed notification suppression key but the file is missing"
+      ;;
+    external)
+      EXPECTED_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256=$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256
+      ;;
+    *) fail "unsupported NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE=$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" ;;
+  esac
+
+  if [ "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" = external ]; then
+    actual_unsubscribe_sha256=$(
+      compose run --rm -T --no-deps --entrypoint node app -e '
+        const { createHash } = require("crypto");
+        const value = process.env.NOTIFICATION_UNSUBSCRIBE_SECRET;
+        if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) process.exit(1);
+        process.stdout.write(createHash("sha256").update(value).digest("hex"));
+      '
+    ) || fail "archive requires an explicit externally managed NOTIFICATION_UNSUBSCRIBE_SECRET"
+    [ "$actual_unsubscribe_sha256" = "$EXPECTED_NOTIFICATION_UNSUBSCRIBE_KEY_SHA256" ] \
+      || fail "externally managed NOTIFICATION_UNSUBSCRIBE_SECRET does not match the archive fingerprint"
+  fi
+
+  if [ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" = external ]; then
+    actual_suppression_sha256=$(
+      compose run --rm -T --no-deps --entrypoint node app -e '
+        const { createHash } = require("crypto");
+        const value = process.env.NOTIFICATION_SUPPRESSION_DIGEST_SECRET;
+        if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) process.exit(1);
+        process.stdout.write(createHash("sha256").update(value).digest("hex"));
+      '
+    ) || fail "archive requires an explicit externally managed NOTIFICATION_SUPPRESSION_DIGEST_SECRET"
+    [ "$actual_suppression_sha256" = "$EXPECTED_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256" ] \
+      || fail "externally managed NOTIFICATION_SUPPRESSION_DIGEST_SECRET does not match the archive fingerprint"
+  fi
+fi
 
 echo "Starting PostgreSQL for the target Compose project..."
 compose up -d postgres
@@ -450,6 +509,46 @@ if [ "$SESSION_SECRET_SOURCE" = file ]; then
   preflight_session_secret_restore_target "$TARGET_SESSION_SECRET_FILE"
 fi
 
+TARGET_NOTIFICATION_UNSUBSCRIBE_SECRET_FILE=""
+if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" = file ]; then
+  echo "Preflighting notification unsubscribe secret restore target before database replacement..."
+  TARGET_NOTIFICATION_UNSUBSCRIBE_SECRET_FILE=$(
+    container_env_value "$RESTORE_APP_ENV_JSON" NOTIFICATION_UNSUBSCRIBE_SECRET_FILE "/app/secrets/notification-unsubscribe-secret" | tr -d '\r'
+  )
+  preflight_notification_secret_restore_target \
+    "$TARGET_NOTIFICATION_UNSUBSCRIBE_SECRET_FILE" NOTIFICATION_UNSUBSCRIBE_SECRET_FILE
+fi
+
+TARGET_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE=""
+if [ "$FORMAT_VERSION" = "4" ] && [ -s "$WORK_DIR/secrets/notification-unsubscribe-previous-secret" ]; then
+  echo "Preflighting notification unsubscribe previous secret restore target before database replacement..."
+  TARGET_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE=$(
+    container_env_value "$RESTORE_APP_ENV_JSON" NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE "/app/secrets/notification-unsubscribe-previous-secret" | tr -d '\r'
+  )
+  preflight_notification_secret_restore_target \
+    "$TARGET_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE
+fi
+
+TARGET_NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE=""
+if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" = file ]; then
+  echo "Preflighting notification suppression digest secret restore target before database replacement..."
+  TARGET_NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE=$(
+    container_env_value "$RESTORE_APP_ENV_JSON" NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE "/app/secrets/notification-suppression-digest-secret" | tr -d '\r'
+  )
+  preflight_notification_secret_restore_target \
+    "$TARGET_NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE" NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE
+fi
+
+TARGET_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE=""
+if [ "$FORMAT_VERSION" = "4" ] && [ -s "$WORK_DIR/secrets/notification-suppression-digest-previous-secret" ]; then
+  echo "Preflighting notification suppression digest previous secret restore target before database replacement..."
+  TARGET_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE=$(
+    container_env_value "$RESTORE_APP_ENV_JSON" NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE "/app/secrets/notification-suppression-digest-previous-secret" | tr -d '\r'
+  )
+  preflight_notification_secret_restore_target \
+    "$TARGET_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE
+fi
+
 # Resolve and fully preflight UPLOAD_DIR *before* the destructive dropdb, so an
 # invalid/out-of-mount/read-only upload target aborts the restore while the
 # database is still intact (instead of after it has been replaced).
@@ -486,6 +585,42 @@ if [ "$SESSION_SECRET_SOURCE" = file ]; then
   docker_cmd cp "$WORK_DIR/secrets/session-secret" "$RESTORE_APP_CONTAINER_ID:$TARGET_SESSION_SECRET_FILE"
   verify_container_session_secret_file "$TARGET_SESSION_SECRET_FILE" \
     || fail "restored session secret is invalid"
+fi
+
+if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" = file ]; then
+  echo "Restoring notification unsubscribe secret file..."
+  docker_cmd cp \
+    "$WORK_DIR/secrets/notification-unsubscribe-secret" \
+    "$RESTORE_APP_CONTAINER_ID:$TARGET_NOTIFICATION_UNSUBSCRIBE_SECRET_FILE"
+  verify_container_notification_secret_file \
+    "$TARGET_NOTIFICATION_UNSUBSCRIBE_SECRET_FILE" NOTIFICATION_UNSUBSCRIBE_SECRET_FILE
+fi
+
+if [ "$FORMAT_VERSION" = "4" ] && [ -s "$WORK_DIR/secrets/notification-unsubscribe-previous-secret" ]; then
+  echo "Restoring notification unsubscribe previous secret file..."
+  docker_cmd cp \
+    "$WORK_DIR/secrets/notification-unsubscribe-previous-secret" \
+    "$RESTORE_APP_CONTAINER_ID:$TARGET_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE"
+  verify_container_notification_secret_file \
+    "$TARGET_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE
+fi
+
+if [ "$FORMAT_VERSION" = "4" ] && [ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" = file ]; then
+  echo "Restoring notification suppression digest secret file..."
+  docker_cmd cp \
+    "$WORK_DIR/secrets/notification-suppression-digest-secret" \
+    "$RESTORE_APP_CONTAINER_ID:$TARGET_NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE"
+  verify_container_notification_secret_file \
+    "$TARGET_NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE" NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE
+fi
+
+if [ "$FORMAT_VERSION" = "4" ] && [ -s "$WORK_DIR/secrets/notification-suppression-digest-previous-secret" ]; then
+  echo "Restoring notification suppression digest previous secret file..."
+  docker_cmd cp \
+    "$WORK_DIR/secrets/notification-suppression-digest-previous-secret" \
+    "$RESTORE_APP_CONTAINER_ID:$TARGET_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE"
+  verify_container_notification_secret_file \
+    "$TARGET_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE
 fi
 
 if [ "$RESTORE_HAS_UPLOADS" = true ]; then

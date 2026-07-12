@@ -85,6 +85,7 @@ describeWithDatabase("S4 login-code integration", () => {
     const taskRows = await db.select().from(tasks);
     expect(taskRows).toHaveLength(1);
     expect(taskRows[0]?.kind).toBe("auth.login_code_email");
+    expect(taskRows[0]?.payloadJson).not.toHaveProperty("to");
     expect(JSON.stringify(taskRows[0]?.payloadJson)).not.toContain("fan@example.com");
     expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();
   });

@@ -154,12 +154,13 @@ describeWithDatabase("Stripe refund and dispute reversal integration", () => {
     expect(queued[1]).toMatchObject({
       dedupeKey: `email:membership_revoked:${request.id}`,
       payloadJson: {
+        version: 2,
         template: "membership_revoked",
-        to: user.email,
-        locale: "ja",
-        params: { tierName: "Supporter" },
+        paymentRequestId: request.id,
+        membershipId: membership!.id,
       },
     });
+    expect(JSON.stringify(queued[1]!.payloadJson)).not.toContain(user.email);
     expect(providerMocks.resolveCheckoutByPaymentIntent).not.toHaveBeenCalled();
   });
 

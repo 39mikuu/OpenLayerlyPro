@@ -257,7 +257,12 @@ try {
       (
         'email',
         ${`email:membership_activated:${randomUUID()}`},
-        ${sql.json({ template: "membership_activated", to: MEMBER_EMAIL })},
+        ${sql.json({
+          version: 2,
+          template: "membership_activated",
+          paymentRequestId: randomUUID(),
+          membershipId: randomUUID(),
+        })},
         'processing',
         1,
         'stale-worker',
@@ -267,12 +272,10 @@ try {
         'email',
         ${`email:renewal_reminder:${randomUUID()}`},
         ${sql.json({
+          version: 2,
           template: "renewal_reminder",
           subscriptionId,
           periodEndsAt: renewalStalePeriodIso,
-          to: MEMBER_EMAIL,
-          locale: "en",
-          params: { tierName: "Restore E2E Tier", endsAt: renewalStalePeriodIso },
         })},
         'processing',
         1,

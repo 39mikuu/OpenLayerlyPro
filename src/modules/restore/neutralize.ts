@@ -1,15 +1,27 @@
 import { and, eq, inArray, not, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
-import { paymentProviderEvents, tasks } from "@/db/schema";
+import {
+  notificationCampaigns,
+  notificationDeliveries,
+  paymentProviderEvents,
+  tasks,
+} from "@/db/schema";
 import { enqueueTask } from "@/modules/tasks/enqueue";
 
 import type { NeutralizeReport } from "./types";
 
 export const NEUTRALIZED_EMAIL_LAST_ERROR = "neutralized on restore: delivery outcome unknown";
+export const NEUTRALIZED_NOTIFICATION_LAST_ERROR =
+  "neutralized on restore: notification delivery outcome unknown";
 
 const NON_TERMINAL_TASK_STATUSES = ["pending", "processing", "failed"] as const;
 const NON_TERMINAL_PROVIDER_EVENT_STATUSES = ["received", "processing", "failed"] as const;
+const NOTIFICATION_TASK_KINDS = [
+  "notification.deliver",
+  "notification.campaign_expand",
+  "notification.campaign_finalize",
+] as const;
 const EMAIL_TEMPLATES_TO_NEUTRALIZE = new Set([
   "membership_activated",
   "membership_revoked",
@@ -23,6 +35,39 @@ function emailTemplate(payload: unknown): string | null {
   return typeof template === "string" ? template : null;
 }
 
+function redactedEmailPayload(payload: unknown): Record<string, unknown> {
+  const template = emailTemplate(payload) ?? "unknown";
+  const version =
+    typeof payload === "object" &&
+    payload !== null &&
+    typeof (payload as { version?: unknown }).version === "number"
+      ? (payload as { version: number }).version
+      : 1;
+  return { version, template, recipientRedacted: true };
+}
+
+function hasRenewalReminderV2Reference(payload: unknown): boolean {
+  if (typeof payload !== "object" || payload === null) return false;
+  const candidate = payload as {
+    version?: unknown;
+    template?: unknown;
+    subscriptionId?: unknown;
+    periodEndsAt?: unknown;
+  };
+  return (
+    candidate.version === 2 &&
+    candidate.template === "renewal_reminder" &&
+    typeof candidate.subscriptionId === "string" &&
+    typeof candidate.periodEndsAt === "string"
+  );
+}
+
+function campaignIdFromPayload(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const campaignId = (payload as { campaignId?: unknown }).campaignId;
+  return typeof campaignId === "string" ? campaignId : null;
+}
+
 export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<NeutralizeReport> {
   return db.transaction(async (tx) => {
     const report: NeutralizeReport = {
@@ -31,6 +76,9 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
       providerDispatchTasksEnsured: 0,
       emailRenewalRemindersReset: 0,
       emailDeliveryNeutralized: 0,
+      notificationTasksNeutralized: 0,
+      notificationDeliveriesNeutralized: 0,
+      notificationCampaignsNeutralized: 0,
       otherTasksReset: 0,
       subscriptionReconcileNormalized: false,
     };
@@ -78,6 +126,24 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
     for (const task of nonTerminalEmailTasks) {
       const template = emailTemplate(task.payloadJson);
       if (template === "renewal_reminder") {
+        if (!hasRenewalReminderV2Reference(task.payloadJson)) {
+          const [updated] = await tx
+            .update(tasks)
+            .set({
+              status: "dead",
+              runAfter: sql`now()`,
+              lockedAt: null,
+              lockedBy: null,
+              leaseUntil: null,
+              lastError: NEUTRALIZED_EMAIL_LAST_ERROR,
+              payloadJson: redactedEmailPayload(task.payloadJson),
+              updatedAt: sql`now()`,
+            })
+            .where(eq(tasks.id, task.id))
+            .returning({ id: tasks.id });
+          if (updated) report.emailDeliveryNeutralized += 1;
+          continue;
+        }
         const [updated] = await tx
           .update(tasks)
           .set({
@@ -107,6 +173,7 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
             lockedBy: null,
             leaseUntil: null,
             lastError: NEUTRALIZED_EMAIL_LAST_ERROR,
+            payloadJson: redactedEmailPayload(task.payloadJson),
             updatedAt: sql`now()`,
           })
           .where(eq(tasks.id, task.id))
@@ -132,6 +199,73 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
       if (updatedOtherEmail) report.otherTasksReset += 1;
     }
 
+    const nonTerminalNotificationTasks = await tx
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          inArray(tasks.kind, [...NOTIFICATION_TASK_KINDS]),
+          inArray(tasks.status, [...NON_TERMINAL_TASK_STATUSES]),
+        ),
+      );
+
+    for (const task of nonTerminalNotificationTasks) {
+      const campaignId = campaignIdFromPayload(task.payloadJson);
+      const [updated] = await tx
+        .update(tasks)
+        .set({
+          status: "dead",
+          runAfter: sql`now()`,
+          lockedAt: null,
+          lockedBy: null,
+          leaseUntil: null,
+          lastError: NEUTRALIZED_NOTIFICATION_LAST_ERROR,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(tasks.id, task.id))
+        .returning({ id: tasks.id });
+      if (updated) report.notificationTasksNeutralized += 1;
+
+      if (task.kind === "notification.deliver") {
+        const deliveryRows = await tx
+          .update(notificationDeliveries)
+          .set({
+            status: "dead",
+            lastError: NEUTRALIZED_NOTIFICATION_LAST_ERROR,
+            updatedAt: sql`now()`,
+          })
+          .where(eq(notificationDeliveries.taskId, task.id))
+          .returning({ campaignId: notificationDeliveries.campaignId });
+        report.notificationDeliveriesNeutralized += deliveryRows.length;
+        for (const delivery of deliveryRows) {
+          const [campaign] = await tx
+            .update(notificationCampaigns)
+            .set({
+              status: "dead",
+              lastError: NEUTRALIZED_NOTIFICATION_LAST_ERROR,
+              updatedAt: sql`now()`,
+            })
+            .where(eq(notificationCampaigns.id, delivery.campaignId))
+            .returning({ id: notificationCampaigns.id });
+          if (campaign) report.notificationCampaignsNeutralized += 1;
+        }
+        continue;
+      }
+
+      if (campaignId) {
+        const [campaign] = await tx
+          .update(notificationCampaigns)
+          .set({
+            status: "dead",
+            lastError: NEUTRALIZED_NOTIFICATION_LAST_ERROR,
+            updatedAt: sql`now()`,
+          })
+          .where(eq(notificationCampaigns.id, campaignId))
+          .returning({ id: notificationCampaigns.id });
+        if (campaign) report.notificationCampaignsNeutralized += 1;
+      }
+    }
+
     const resetOtherTasks = await tx
       .update(tasks)
       .set({
@@ -148,6 +282,7 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
         and(
           inArray(tasks.status, [...NON_TERMINAL_TASK_STATUSES]),
           not(eq(tasks.kind, "email")),
+          not(inArray(tasks.kind, [...NOTIFICATION_TASK_KINDS])),
           not(eq(tasks.kind, "storage.delete_object")),
           not(eq(tasks.kind, "subscription.reconcile")),
         ),

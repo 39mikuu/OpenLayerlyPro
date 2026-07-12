@@ -1,7 +1,7 @@
 import { and, eq, gt, gte, max, ne, sql } from "drizzle-orm";
 
 import { type DbClient, getDb, type TxClient } from "@/db";
-import { memberships, membershipTiers, subscriptions, users } from "@/db/schema";
+import { memberships, membershipTiers, subscriptions } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { enqueueTask } from "@/modules/tasks";
@@ -202,15 +202,8 @@ export async function handleRenewalReminder(input: {
 }): Promise<void> {
   await getDb().transaction(async (tx) => {
     const [row] = await tx
-      .select({
-        subscription: subscriptions,
-        email: users.email,
-        locale: users.locale,
-        tierName: membershipTiers.name,
-      })
+      .select({ subscription: subscriptions })
       .from(subscriptions)
-      .innerJoin(users, eq(users.id, subscriptions.userId))
-      .innerJoin(membershipTiers, eq(membershipTiers.id, subscriptions.tierId))
       .where(eq(subscriptions.id, input.subscriptionId))
       .limit(1);
     if (!row || row.subscription.status !== "active") return;
@@ -225,12 +218,10 @@ export async function handleRenewalReminder(input: {
       kind: "email",
       dedupeKey: `email:renewal_reminder:${input.subscriptionId}:${iso}`,
       payload: {
+        version: 2,
         template: "renewal_reminder",
         subscriptionId: input.subscriptionId,
         periodEndsAt: iso,
-        to: row.email,
-        locale: row.locale,
-        params: { tierName: row.tierName, endsAt: iso },
       },
     });
   });

@@ -55,6 +55,48 @@ validate_copied_session_secret_file() {
   ' "$session_secret_path" || fail "session secret file is invalid or has unsafe permissions"
 }
 
+validate_copied_notification_secret_file() {
+  secret_path=$1
+  label=$2
+
+  [ -f "$secret_path" ] || fail "$label file is invalid or has unsafe permissions"
+  [ ! -L "$secret_path" ] || fail "$label file is invalid or has unsafe permissions"
+  [ "$(stat -c %a "$secret_path")" = "600" ] \
+    || fail "$label file is invalid or has unsafe permissions"
+  node -e '
+    const fs = require("fs");
+    const value = fs.readFileSync(process.argv[1], "utf8").replace(/\r?\n$/, "");
+    if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) {
+      process.exit(1);
+    }
+  ' "$secret_path" || fail "$label file is invalid or has unsafe permissions"
+}
+
+backup_notification_secret_if_file() {
+  source=$1
+  file_path=$2
+  archive_name=$3
+  label=$4
+  output_prefix=$5
+
+  eval "${output_prefix}_ARCHIVE_PATH="
+  if [ "$source" = file ]; then
+    archive_path="secrets/$archive_name"
+    echo "Backing up $label file..."
+    docker_cmd cp "$APP_CONTAINER_ID:$file_path" "$WORK_DIR/$archive_path"
+    [ "$(stat -c %a "$WORK_DIR/$archive_path")" = "600" ] \
+      || fail "$label file is invalid or has unsafe permissions"
+    [ -s "$WORK_DIR/$archive_path" ] || fail "$label file is missing or empty"
+    fix_workspace_permissions
+    validate_copied_notification_secret_file "$WORK_DIR/$archive_path" "$label"
+    chmod 600 "$WORK_DIR/$archive_path" || fail "unable to secure $label in backup workspace"
+    secret_sha256=$(sha256_trimmed_file "$WORK_DIR/$archive_path") \
+      || fail "unable to fingerprint $label"
+    eval "${output_prefix}_SHA256=\$secret_sha256"
+    eval "${output_prefix}_ARCHIVE_PATH=\$archive_path"
+  fi
+}
+
 compose() {
   project_args=""
   env_args=""
@@ -150,6 +192,26 @@ validate_app_container_config_key_file_path "$APP_CONTAINER_ID" "$CONFIG_KEY_FIL
 if [ "$SESSION_SECRET_SOURCE" = file ]; then
   validate_app_container_session_secret_file_path "$APP_CONTAINER_ID" "$SESSION_SECRET_FILE"
 fi
+if [ "$NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" = file ]; then
+  validate_app_container_notification_secret_file_path \
+    "$APP_CONTAINER_ID" "$NOTIFICATION_UNSUBSCRIBE_KEY_FILE" \
+    NOTIFICATION_UNSUBSCRIBE_SECRET_FILE
+fi
+if [ "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" = file ]; then
+  validate_app_container_notification_secret_file_path \
+    "$APP_CONTAINER_ID" "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_FILE" \
+    NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE
+fi
+if [ "$NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" = file ]; then
+  validate_app_container_notification_secret_file_path \
+    "$APP_CONTAINER_ID" "$NOTIFICATION_SUPPRESSION_DIGEST_KEY_FILE" \
+    NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE
+fi
+if [ "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" = file ]; then
+  validate_app_container_notification_secret_file_path \
+    "$APP_CONTAINER_ID" "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_FILE" \
+    NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE
+fi
 case "$STORAGE_DRIVER" in
   local)
     validate_app_container_upload_dir_path "$APP_CONTAINER_ID" "$UPLOAD_DIR"
@@ -223,6 +285,31 @@ else
   echo "SESSION_SECRET is externally managed; recording fingerprint only."
 fi
 
+backup_notification_secret_if_file \
+  "$NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" \
+  "$NOTIFICATION_UNSUBSCRIBE_KEY_FILE" \
+  notification-unsubscribe-secret \
+  "notification unsubscribe secret" \
+  NOTIFICATION_UNSUBSCRIBE_KEY
+backup_notification_secret_if_file \
+  "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" \
+  "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_FILE" \
+  notification-unsubscribe-previous-secret \
+  "notification unsubscribe previous secret" \
+  NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY
+backup_notification_secret_if_file \
+  "$NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" \
+  "$NOTIFICATION_SUPPRESSION_DIGEST_KEY_FILE" \
+  notification-suppression-digest-secret \
+  "notification suppression digest secret" \
+  NOTIFICATION_SUPPRESSION_DIGEST_KEY
+backup_notification_secret_if_file \
+  "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" \
+  "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_FILE" \
+  notification-suppression-digest-previous-secret \
+  "notification suppression digest previous secret" \
+  NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY
+
 case "$STORAGE_DRIVER" in
   local)
     echo "Backing up local uploads from $UPLOAD_DIR..."
@@ -247,7 +334,7 @@ BACKUP_TOOL_SCRIPT_SHA256=$(sha256sum "$ROOT_DIR/scripts/backup.sh" | awk '{prin
   || fail "unable to fingerprint backup.sh"
 
 {
-  echo "FORMAT_VERSION=3"
+  echo "FORMAT_VERSION=4"
   echo "CREATED_AT_UTC=$CREATED_AT_UTC"
   echo "APP_VERSION=$RUNTIME_APP_VERSION"
   echo "RUNTIME_APP_VERSION=$RUNTIME_APP_VERSION"
@@ -270,11 +357,37 @@ BACKUP_TOOL_SCRIPT_SHA256=$(sha256sum "$ROOT_DIR/scripts/backup.sh" | awk '{prin
   else
     echo "SESSION_SECRET_SHA256=$SESSION_SECRET_SHA256"
   fi
+  echo "NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE=$NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE"
+  echo "NOTIFICATION_UNSUBSCRIBE_KEY_ID=$NOTIFICATION_UNSUBSCRIBE_KEY_ID"
+  echo "NOTIFICATION_UNSUBSCRIBE_KEY_SHA256=$NOTIFICATION_UNSUBSCRIBE_KEY_SHA256"
+  if [ "$NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" = file ]; then
+    echo "NOTIFICATION_UNSUBSCRIBE_KEY_ARCHIVE_PATH=$NOTIFICATION_UNSUBSCRIBE_KEY_ARCHIVE_PATH"
+  fi
+  if [ "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" != none ]; then
+    echo "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID=$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID"
+    echo "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SHA256=$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SHA256"
+    if [ "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" = file ]; then
+      echo "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ARCHIVE_PATH=$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ARCHIVE_PATH"
+    fi
+  fi
+  echo "NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE=$NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE"
+  echo "NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID=$NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID"
+  echo "NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256=$NOTIFICATION_SUPPRESSION_DIGEST_KEY_SHA256"
+  if [ "$NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" = file ]; then
+    echo "NOTIFICATION_SUPPRESSION_DIGEST_KEY_ARCHIVE_PATH=$NOTIFICATION_SUPPRESSION_DIGEST_KEY_ARCHIVE_PATH"
+  fi
+  if [ "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" != none ]; then
+    echo "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID=$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID"
+    echo "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256=$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256"
+    if [ "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" = file ]; then
+      echo "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ARCHIVE_PATH=$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ARCHIVE_PATH"
+    fi
+  fi
   echo "BACKUP_WINDOW_NOTE=$BACKUP_WINDOW_NOTE"
 } > "$WORK_DIR/manifest.env"
 
 validate_v3_manifest_file "$WORK_DIR/manifest.env" backup >/dev/null \
-  || fail "backup manifest v3 validation failed"
+  || fail "backup manifest v4 validation failed"
 verify_app_container_unchanged_for_backup "$APP_CONTAINER_ID" "$RUNTIME_IMAGE_ID"
 
 # The snapshot is now fully copied into the private workspace. End the maintenance
@@ -304,7 +417,7 @@ chmod 600 "$ARCHIVE_TMP"
 mv -f "$ARCHIVE_TMP" "$ARCHIVE_PATH"
 
 echo "Backup created: $ARCHIVE_PATH"
-echo "Included: PostgreSQL database, config encryption key, manifest v3, checksums"
+echo "Included: PostgreSQL database, config encryption key, manifest v4, checksums"
 echo "Runtime image: version=$RUNTIME_APP_VERSION commit=$RUNTIME_SOURCE_COMMIT image=$RUNTIME_IMAGE_ID"
 echo "Backup tool: commit=$BACKUP_TOOL_COMMIT script_sha256=$BACKUP_TOOL_SCRIPT_SHA256"
 if [ "$UPLOADS_INCLUDED" = true ]; then

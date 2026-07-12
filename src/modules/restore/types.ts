@@ -37,6 +37,9 @@ export type NeutralizeReport = {
   providerDispatchTasksEnsured: number;
   emailRenewalRemindersReset: number;
   emailDeliveryNeutralized: number;
+  notificationTasksNeutralized: number;
+  notificationDeliveriesNeutralized: number;
+  notificationCampaignsNeutralized: number;
   otherTasksReset: number;
   subscriptionReconcileNormalized: boolean;
 };

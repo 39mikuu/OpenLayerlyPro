@@ -1,6 +1,15 @@
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
-import type { Task } from "@/db/schema";
+import { getDb } from "@/db";
+import {
+  memberships,
+  membershipTiers,
+  paymentRequests,
+  subscriptions,
+  type Task,
+  users,
+} from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { deliverLoginCodeEmailTask } from "@/modules/auth/login-code";
@@ -40,40 +49,27 @@ import { paymentProviderEventPayloadSchema } from "./payloads";
 const emailPayloadSchema = z.discriminatedUnion("template", [
   z.object({
     template: z.literal("membership_activated"),
-    to: z.string().email(),
-    locale: z.enum(SUPPORTED_LOCALES),
-    params: z.object({
-      tierName: z.string(),
-      endsAt: z.string().datetime(),
-    }),
+    version: z.literal(2),
+    paymentRequestId: z.string().uuid(),
+    membershipId: z.string().uuid(),
   }),
   z.object({
     template: z.literal("membership_revoked"),
-    to: z.string().email(),
-    locale: z.enum(SUPPORTED_LOCALES),
-    params: z.object({
-      tierName: z.string(),
-    }),
+    version: z.literal(2),
+    paymentRequestId: z.string().uuid(),
+    membershipId: z.string().uuid(),
   }),
   z.object({
     template: z.literal("payment_rejected"),
-    to: z.string().email(),
-    locale: z.enum(SUPPORTED_LOCALES),
-    params: z.object({
-      tierName: z.string(),
-      reviewNote: z.string().nullable(),
-    }),
+    version: z.literal(2),
+    paymentRequestId: z.string().uuid(),
+    reviewedAt: z.string().datetime(),
   }),
   z.object({
     template: z.literal("renewal_reminder"),
+    version: z.literal(2),
     subscriptionId: z.string().uuid(),
     periodEndsAt: z.string().datetime(),
-    to: z.string().email(),
-    locale: z.enum(SUPPORTED_LOCALES),
-    params: z.object({
-      tierName: z.string(),
-      endsAt: z.string().datetime(),
-    }),
   }),
 ]);
 
@@ -109,43 +105,155 @@ export type TaskHandlerResult = { note?: string; deferUntil?: Date };
 
 const PROVIDER_EVENT_BUSY_DEFER_JITTER_MS = 250;
 
+async function resolveMembershipEmail(input: {
+  paymentRequestId: string;
+  membershipId: string;
+  expectedStatus: "approved" | "reversed";
+}) {
+  const [row] = await getDb()
+    .select({
+      request: paymentRequests,
+      membership: memberships,
+      user: users,
+      tierName: membershipTiers.name,
+    })
+    .from(paymentRequests)
+    .innerJoin(memberships, eq(memberships.id, input.membershipId))
+    .innerJoin(users, eq(users.id, paymentRequests.userId))
+    .innerJoin(membershipTiers, eq(membershipTiers.id, memberships.tierId))
+    .where(eq(paymentRequests.id, input.paymentRequestId))
+    .limit(1);
+
+  if (
+    !row ||
+    row.request.status !== input.expectedStatus ||
+    row.request.grantedMembershipId !== row.membership.id ||
+    row.membership.id !== input.membershipId ||
+    row.membership.userId !== row.request.userId
+  ) {
+    throw new PermanentTaskError("Transactional email domain reference is stale or missing");
+  }
+
+  return {
+    to: row.user.email,
+    locale: row.user.locale,
+    tierName: row.tierName,
+    endsAt: row.membership.endsAt,
+  };
+}
+
+async function resolvePaymentRejectedEmail(input: { paymentRequestId: string; reviewedAt: Date }) {
+  const [row] = await getDb()
+    .select({
+      request: paymentRequests,
+      user: users,
+      tierName: membershipTiers.name,
+    })
+    .from(paymentRequests)
+    .innerJoin(users, eq(users.id, paymentRequests.userId))
+    .innerJoin(membershipTiers, eq(membershipTiers.id, paymentRequests.tierId))
+    .where(eq(paymentRequests.id, input.paymentRequestId))
+    .limit(1);
+
+  if (
+    !row ||
+    row.request.status !== "rejected" ||
+    !row.request.reviewedAt ||
+    row.request.reviewedAt.getTime() !== input.reviewedAt.getTime()
+  ) {
+    throw new PermanentTaskError("Transactional email domain reference is stale or missing");
+  }
+
+  return {
+    to: row.user.email,
+    locale: row.user.locale,
+    tierName: row.tierName,
+    reviewNote: row.request.reviewNote,
+  };
+}
+
+async function resolveRenewalReminderEmail(input: {
+  subscriptionId: string;
+  periodEndsAt: Date;
+}): Promise<
+  | {
+      kind: "send";
+      to: string;
+      locale: (typeof SUPPORTED_LOCALES)[number];
+      tierName: string;
+      endsAt: Date;
+    }
+  | { kind: "skip" }
+> {
+  const shouldSend = await shouldSendRenewalReminderEmail(input);
+  if (!shouldSend) return { kind: "skip" };
+
+  const [row] = await getDb()
+    .select({
+      subscription: subscriptions,
+      user: users,
+      tierName: membershipTiers.name,
+    })
+    .from(subscriptions)
+    .innerJoin(users, eq(users.id, subscriptions.userId))
+    .innerJoin(membershipTiers, eq(membershipTiers.id, subscriptions.tierId))
+    .where(
+      and(
+        eq(subscriptions.id, input.subscriptionId),
+        eq(subscriptions.status, "active"),
+        eq(subscriptions.currentPeriodEndsAt, input.periodEndsAt),
+      ),
+    )
+    .limit(1);
+
+  if (!row) return { kind: "skip" };
+  return {
+    kind: "send",
+    to: row.user.email,
+    locale: row.user.locale,
+    tierName: row.tierName,
+    endsAt: input.periodEndsAt,
+  };
+}
+
 async function runEmailTask(task: Task): Promise<TaskHandlerResult> {
-  const payload = emailPayloadSchema.parse(task.payloadJson);
+  const parsed = emailPayloadSchema.safeParse(task.payloadJson);
+  if (!parsed.success) throw new PermanentTaskError("Invalid email payload");
+  const payload = parsed.data;
   let deliver: () => Promise<void>;
 
   if (payload.template === "membership_activated") {
+    const email = await resolveMembershipEmail({
+      paymentRequestId: payload.paymentRequestId,
+      membershipId: payload.membershipId,
+      expectedStatus: "approved",
+    });
     deliver = () =>
-      sendMembershipActivatedEmail(
-        payload.to,
-        payload.params.tierName,
-        new Date(payload.params.endsAt),
-        payload.locale,
-      );
+      sendMembershipActivatedEmail(email.to, email.tierName, email.endsAt, email.locale);
   } else if (payload.template === "membership_revoked") {
-    deliver = () => sendMembershipRevokedEmail(payload.to, payload.params.tierName, payload.locale);
+    const email = await resolveMembershipEmail({
+      paymentRequestId: payload.paymentRequestId,
+      membershipId: payload.membershipId,
+      expectedStatus: "reversed",
+    });
+    deliver = () => sendMembershipRevokedEmail(email.to, email.tierName, email.locale);
   } else if (payload.template === "payment_rejected") {
+    const email = await resolvePaymentRejectedEmail({
+      paymentRequestId: payload.paymentRequestId,
+      reviewedAt: new Date(payload.reviewedAt),
+    });
     deliver = () =>
-      sendPaymentRejectedEmail(
-        payload.to,
-        payload.params.tierName,
-        payload.params.reviewNote,
-        payload.locale,
-      );
+      sendPaymentRejectedEmail(email.to, email.tierName, email.reviewNote, email.locale);
   } else {
     const periodEndsAt = new Date(payload.periodEndsAt);
-    const shouldSend = await shouldSendRenewalReminderEmail({
+    const email = await resolveRenewalReminderEmail({
       subscriptionId: payload.subscriptionId,
       periodEndsAt,
     });
-    if (!shouldSend) return { note: "Renewal reminder became inactive or stale; delivery skipped" };
+    if (email.kind === "skip")
+      return { note: "Renewal reminder became inactive or stale; delivery skipped" };
 
-    deliver = () =>
-      sendRenewalReminderEmail(
-        payload.to,
-        payload.params.tierName,
-        new Date(payload.params.endsAt),
-        payload.locale,
-      );
+    deliver = () => sendRenewalReminderEmail(email.to, email.tierName, email.endsAt, email.locale);
   }
 
   try {

@@ -8,6 +8,7 @@
 - [ ] `SESSION_SECRET` resolves from the intended env/file source; all replicas share it and it is not rotated unintentionally.
 - [ ] The config encryption key is backed up and readable only by the deployment.
 - [ ] SMTP is configured and failed/dead/deferred mail work is monitored.
+- [ ] Notification unsubscribe and suppression digest current keys are configured; previous keys are retained until token expiry or suppression rehash is complete.
 - [ ] `TRUSTED_PROXY_HEADER` and `TRUSTED_PROXY_HOPS` match the real edge topology.
 - [ ] Caddy/Tunnel merged Compose config does not publish app port 3000; trusted proxy headers cannot be bypassed through a direct origin port.
 - [ ] Only one app instance is running unless shared rate-limit/task coordination has been implemented.
@@ -34,7 +35,10 @@
 - [ ] Refund/dispute and subscription reconciliation have been exercised in Stripe Test Mode.
 - [ ] Missing or broken SMTP does not silently mark business mail successful.
 - [ ] Logs, admin task responses, normalized provider errors and delivery-ledger views do not expose raw recipient addresses, codes or provider secrets.
-- [ ] The task table and backups are protected as sensitive user data because durable email payloads currently store the recipient address in `payload_json.to`.
+- [ ] Transactional email task payloads contain only v2 domain references; `select count(*) from tasks where kind='email' and payload_json ? 'to'` returns zero.
+- [ ] Bulk notification opt-in defaults to off; archived/unpublished posts are skipped at send time.
+- [ ] SMTP accepted is treated as provider relay acceptance, not final mailbox delivery, and documentation/admin language does not promise exactly-once delivery.
+- [ ] Notification suppression is limited to synchronous permanent SMTP failures from bulk notification sends; transactional email ignores the suppression list.
 
 ## Video and downloads
 
@@ -68,6 +72,8 @@
 - [ ] Every referenced local object is preserved even when the env fallback is `s3`.
 - [ ] Every referenced S3/R2 object has a matching version/snapshot recovery point even when the env fallback is `local`.
 - [ ] File-backed `SESSION_SECRET` is present in the checksummed archive, or the external value matches the recorded fingerprint.
+- [ ] File-backed notification unsubscribe/suppression keys, including configured previous keys, are present in the v4 archive with `0600` mode, or external values match the recorded fingerprints.
+- [ ] Restore drills verify notification task neutralization prevents replay of business email or bulk notification sends after restore.
 - [ ] `docker compose down -v` is prohibited unless the secrets volume has a tested recovery point.
 - [ ] An archive plus separately protected storage components has been restored in an isolated Compose project.
 - [ ] For your deployment, verify the S7 checksums, legacy schema probing, storage inventory/convergence, file-safety backfill and task/payment-event neutralization in isolated local and S3 restore drills.

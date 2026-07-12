@@ -674,11 +674,13 @@ describeWithDatabase("Stripe automatic payment integration", () => {
     expect(queued[0]).toMatchObject({
       dedupeKey: `email:membership_activated:${request!.id}`,
       payloadJson: {
+        version: 2,
         template: "membership_activated",
-        to: user.email,
-        locale: "ja",
+        paymentRequestId: request!.id,
+        membershipId: grants[0]!.id,
       },
     });
+    expect(JSON.stringify(queued[0]!.payloadJson)).not.toContain(user.email);
   });
 
   it("treats non-pending replay as a no-op", async () => {

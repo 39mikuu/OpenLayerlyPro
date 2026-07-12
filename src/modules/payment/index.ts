@@ -495,19 +495,14 @@ async function finalizeApprovedPayment(
     .returning();
   if (!updated) throw new Error("Failed to link granted membership");
 
-  const [user] = await tx.select().from(users).where(eq(users.id, row.userId)).limit(1);
-  if (!user) throw new Error("Payment request user not found");
   await enqueueTask(tx, {
     kind: "email",
     dedupeKey: `email:membership_activated:${row.id}`,
     payload: {
+      version: 2,
       template: "membership_activated",
-      to: user.email,
-      locale: user.locale,
-      params: {
-        tierName: granted.tier.name,
-        endsAt: granted.membership.endsAt.toISOString(),
-      },
+      paymentRequestId: row.id,
+      membershipId: granted.membership.id,
     },
   });
   return updated;
@@ -905,24 +900,14 @@ export async function rejectPaymentRequest(
       after: { status: "rejected" },
       correlationId,
     });
-    const [recipient] = await tx
-      .select({ email: users.email, locale: users.locale, tierName: membershipTiers.name })
-      .from(users)
-      .innerJoin(membershipTiers, eq(membershipTiers.id, row.tierId))
-      .where(eq(users.id, row.userId))
-      .limit(1);
-    if (!recipient) throw new Error("Payment request recipient not found");
     await enqueueTask(tx, {
       kind: "email",
       dedupeKey: `email:payment_rejected:${requestId}:${reviewedAt.toISOString()}`,
       payload: {
+        version: 2,
         template: "payment_rejected",
-        to: recipient.email,
-        locale: recipient.locale,
-        params: {
-          tierName: recipient.tierName,
-          reviewNote: storedReviewNote,
-        },
+        paymentRequestId: requestId,
+        reviewedAt: reviewedAt.toISOString(),
       },
     });
     return row;
@@ -981,21 +966,14 @@ async function applyApprovedPaymentReversal(
   );
 
   if (!context.notifyMember) return;
-  const [recipient] = await tx
-    .select({ email: users.email, locale: users.locale, tierName: membershipTiers.name })
-    .from(users)
-    .innerJoin(membershipTiers, eq(membershipTiers.id, reversed.tierId))
-    .where(eq(users.id, reversed.userId))
-    .limit(1);
-  if (!recipient) throw new Error("Payment reversal recipient not found");
   await enqueueTask(tx, {
     kind: "email",
     dedupeKey: `email:membership_revoked:${reversed.id}`,
     payload: {
+      version: 2,
       template: "membership_revoked",
-      to: recipient.email,
-      locale: recipient.locale,
-      params: { tierName: recipient.tierName },
+      paymentRequestId: reversed.id,
+      membershipId: membership.id,
     },
   });
 }

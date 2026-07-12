@@ -169,6 +169,13 @@
       "when": 1783908000000,
       "tag": "0023_wp2_email_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1783987200000,
+      "tag": "0024_g1_transactional_email_privacy",
+      "breakpoints": true
     }
   ]
 }
