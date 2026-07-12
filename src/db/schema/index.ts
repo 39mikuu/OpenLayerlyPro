@@ -821,6 +821,8 @@ export const notificationSuppressions = pgTable(
       table.emailDigestKeyId,
       table.emailDigest,
     ),
+    index("notification_suppressions_first_delivery_idx").on(table.firstDeliveryId),
+    index("notification_suppressions_last_delivery_idx").on(table.lastDeliveryId),
   ],
 );
 

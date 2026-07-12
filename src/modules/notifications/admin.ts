@@ -97,13 +97,19 @@ async function hydrateCampaignSummaries(
       GROUP BY campaign_id, outcome
     `),
     getDb().execute<{ campaignId: string; count: number | string }>(sql`
-      SELECT d.campaign_id AS "campaignId", count(DISTINCT s.id)::int AS count
-      FROM notification_deliveries d
-      JOIN notification_suppressions s
-        ON s.first_delivery_id = d.id
-        OR s.last_delivery_id = d.id
-      WHERE d.campaign_id = ANY(${uuidArray(campaignIds)})
-      GROUP BY d.campaign_id
+      SELECT "campaignId", count(DISTINCT suppression_id)::int AS count
+      FROM (
+        SELECT d.campaign_id AS "campaignId", s.id AS suppression_id
+        FROM notification_deliveries d
+        JOIN notification_suppressions s ON s.first_delivery_id = d.id
+        WHERE d.campaign_id = ANY(${uuidArray(campaignIds)})
+        UNION
+        SELECT d.campaign_id AS "campaignId", s.id AS suppression_id
+        FROM notification_deliveries d
+        JOIN notification_suppressions s ON s.last_delivery_id = d.id
+        WHERE d.campaign_id = ANY(${uuidArray(campaignIds)})
+      ) suppression_links
+      GROUP BY "campaignId"
     `),
   ]);
 

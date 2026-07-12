@@ -615,6 +615,45 @@ describeWithDatabase("notification delivery", () => {
     await expect(db.select().from(notificationSuppressions)).resolves.toHaveLength(1);
   });
 
+  it("keeps swept lease_expired attempts immutable against late stale-worker outcomes", async () => {
+    const sweepAt = new Date(Date.now() + 60_000);
+    const { delivery, task } = await seedDelivery();
+    const slowSend = deferred<void>();
+    mocks.sendNewPostNotificationEmail.mockImplementationOnce(() => slowSend.promise);
+
+    const staleRun = handleNotificationDeliveryTask(task);
+    await waitForSendCalls(1);
+
+    // The worker stalls in SMTP long enough to exhaust its final lease.
+    await db
+      .update(tasks)
+      .set({
+        attempts: 5,
+        maxAttempts: 5,
+        leaseUntil: new Date(sweepAt.getTime() - 1_000),
+      })
+      .where(eq(tasks.id, task.id));
+    await expect(sweepExpiredFinalAttemptTasksAt(sweepAt)).resolves.toMatchObject([
+      { id: task.id, kind: "notification.deliver" },
+    ]);
+
+    // The stale worker's late permanent failure must not rewrite the swept
+    // attempt, the delivery, or the suppression list.
+    slowSend.reject(new MailDeliveryError("permanent"));
+    await expect(staleRun).rejects.toMatchObject({
+      message: "Notification email delivery failed permanently",
+    });
+
+    const attempts = await deliveryAttempts(delivery.id);
+    expect(attempts.map((attempt) => attempt.outcome)).toEqual(["lease_expired"]);
+    const [storedDelivery] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, delivery.id));
+    expect(storedDelivery).toMatchObject({ status: "dead", lastOutcome: "lease_expired" });
+    await expect(db.select().from(notificationSuppressions)).resolves.toHaveLength(0);
+  });
+
   it("sweeps expired final-attempt sends to terminal deliveries and finalizes campaigns", async () => {
     const now = new Date("2026-07-12T12:00:00.000Z");
     const { campaign, delivery, task, user } = await seedDelivery();

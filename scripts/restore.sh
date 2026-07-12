@@ -341,6 +341,19 @@ if [ "$FORMAT_VERSION" = "4" ]; then
     "$WORK_DIR/secrets/notification-suppression-digest-previous-secret" \
     "notification suppression previous key" >/dev/null || [ "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" != file ]
 
+  verify_archive_notification_key_pair \
+    "notification unsubscribe" \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_ID" \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID" \
+    "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SHA256"
+  verify_archive_notification_key_pair \
+    "notification suppression" \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID" \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE" \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID" \
+    "$ARCHIVE_NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256"
+
   verify_target_notification_key_env \
     "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" \
     "$ARCHIVE_NOTIFICATION_UNSUBSCRIBE_KEY_ID" \

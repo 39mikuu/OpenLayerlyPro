@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { and, desc, eq, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { type DbClient, getDb } from "@/db";
@@ -717,7 +717,12 @@ async function finishAcceptedTx(message: PreparedMessage): Promise<void> {
     await tx
       .update(notificationDeliveryAttempts)
       .set({ outcome: "accepted", completedAt: sql`now()` })
-      .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+      .where(
+        and(
+          eq(notificationDeliveryAttempts.id, message.attemptId),
+          isNull(notificationDeliveryAttempts.completedAt),
+        ),
+      );
     if (!(await isLatestAttemptHeldByTaskTx(tx, message))) return;
     await tx
       .update(notificationDeliveries)
@@ -743,7 +748,12 @@ async function finishFailureTx(
       await tx
         .update(notificationDeliveryAttempts)
         .set({ outcome: "permanent_failure", errorKind: "permanent", completedAt: sql`now()` })
-        .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+        .where(
+          and(
+            eq(notificationDeliveryAttempts.id, message.attemptId),
+            isNull(notificationDeliveryAttempts.completedAt),
+          ),
+        );
       if (!(await isLatestAttemptHeldByTaskTx(tx, message))) return;
       await tx
         .update(notificationDeliveries)
@@ -821,7 +831,12 @@ async function finishFailureTx(
       await tx
         .update(notificationDeliveryAttempts)
         .set(attemptUpdate)
-        .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+        .where(
+          and(
+            eq(notificationDeliveryAttempts.id, message.attemptId),
+            isNull(notificationDeliveryAttempts.completedAt),
+          ),
+        );
       if (!active) return;
       await tx
         .update(notificationDeliveries)
@@ -844,7 +859,12 @@ async function finishFailureTx(
     await tx
       .update(notificationDeliveryAttempts)
       .set({ outcome: "transient_failure", errorKind: "transient", completedAt: sql`now()` })
-      .where(eq(notificationDeliveryAttempts.id, message.attemptId));
+      .where(
+        and(
+          eq(notificationDeliveryAttempts.id, message.attemptId),
+          isNull(notificationDeliveryAttempts.completedAt),
+        ),
+      );
     if (!(await isLatestAttemptHeldByTaskTx(tx, message))) return;
     await tx
       .update(notificationDeliveries)

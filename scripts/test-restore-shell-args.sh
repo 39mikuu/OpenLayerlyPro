@@ -1326,4 +1326,49 @@ if grep -nE 'run_(app|postgres)_shell "' \
   fail "restore scripts still construct child-shell command text with double quotes"
 fi
 
+echo "Verifying notification key pair invariants..."
+verify_archive_notification_key_pair \
+  "notification unsubscribe" current file previous "$UNSUBSCRIBE_PREVIOUS_SHA" \
+  || fail "distinct current/previous key ids were wrongly rejected"
+verify_archive_notification_key_pair \
+  "notification unsubscribe" current none "" "" \
+  || fail "previous source none without metadata was wrongly rejected"
+if (verify_archive_notification_key_pair \
+  "notification unsubscribe" current file current "$UNSUBSCRIBE_PREVIOUS_SHA") >/dev/null 2>&1; then
+  fail "duplicate current/previous key ids were accepted"
+fi
+if (verify_archive_notification_key_pair \
+  "notification unsubscribe" current none previous "") >/dev/null 2>&1; then
+  fail "previous key metadata without a previous source was accepted"
+fi
+if (verify_archive_notification_key_pair \
+  "notification unsubscribe" current file "" "$UNSUBSCRIBE_PREVIOUS_SHA") >/dev/null 2>&1; then
+  fail "file previous source without a key id was accepted"
+fi
+if (verify_archive_notification_key_pair \
+  "notification unsubscribe" current external previous "") >/dev/null 2>&1; then
+  fail "external previous source without a fingerprint was accepted"
+fi
+
+echo "Verifying trimmed fingerprint normalization..."
+WHITESPACE_SECRET="  $(printf 'w%.0s' 1 2 3 4 5 6 7 8)abcdefghijklmnopqrstuvwxyz  "
+TRIMMED_EXPECTED=$(printf '%s' "$WHITESPACE_SECRET" | node -e '
+  const { createHash } = require("crypto");
+  let data = "";
+  process.stdin.on("data", (chunk) => (data += chunk));
+  process.stdin.on("end", () => {
+    process.stdout.write(createHash("sha256").update(data.trim()).digest("hex"));
+  });
+')
+TRIMMED_ACTUAL=$(sha256_trimmed_secret_value "$WHITESPACE_SECRET") \
+  || fail "whitespace-padded secret was rejected by the trimmed fingerprint helper"
+[ "$TRIMMED_ACTUAL" = "$TRIMMED_EXPECTED" ] \
+  || fail "trimmed fingerprint helper does not hash the trimmed effective secret"
+WHITESPACE_FILE=$(mktemp "${TMPDIR:-/tmp}/openlayerly-trimmed-secret.XXXXXX")
+printf '%s\n' "$WHITESPACE_SECRET" > "$WHITESPACE_FILE"
+FILE_ACTUAL=$(sha256_trimmed_file "$WHITESPACE_FILE")
+rm -f "$WHITESPACE_FILE"
+[ "$FILE_ACTUAL" = "$TRIMMED_EXPECTED" ] \
+  || fail "file and value fingerprints disagree for the same trimmed secret"
+
 echo "Restore shell argument tests passed"

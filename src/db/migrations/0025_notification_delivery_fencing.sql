@@ -27,3 +27,9 @@ ALTER TABLE notification_delivery_attempts
       'preference_disabled_skip',
       'user_missing_skip'
     ));
+
+CREATE INDEX IF NOT EXISTS notification_suppressions_first_delivery_idx
+  ON notification_suppressions(first_delivery_id);
+
+CREATE INDEX IF NOT EXISTS notification_suppressions_last_delivery_idx
+  ON notification_suppressions(last_delivery_id);

@@ -299,12 +299,26 @@ sha256_secret_value() {
   '
 }
 
+# Notification key fingerprints are always taken over the TRIMMED effective
+# secret so backup, restore, target-env checks and the runtime agree.
+sha256_trimmed_secret_value() {
+  secret_value=$1
+
+  SECRET_VALUE=$secret_value node -e '
+    const { createHash } = require("crypto");
+    const value = (process.env.SECRET_VALUE ?? "").trim();
+    if (value.length < 32 || value === "change-me") process.exit(1);
+    process.stdout.write(createHash("sha256").update(value).digest("hex"));
+  '
+}
+
 read_secret_source_from_env() {
   env_json=$1
   secret_name=$2
   secret_file_name=$3
   default_file=$4
   output_prefix=$5
+  hash_mode=${6:-raw}
 
   secret_file=$(container_env_value "$env_json" "$secret_file_name" "$default_file" | tr -d '\r')
   set +e
@@ -315,8 +329,13 @@ read_secret_source_from_env() {
     eval "${output_prefix}_SOURCE=external"
     eval "${output_prefix}_FILE="
     # shellcheck disable=SC2034 # consumed via eval into ${output_prefix}_SHA256 below
-    secret_sha256=$(sha256_secret_value "$secret_value") \
-      || fail "externally managed $secret_name is missing or invalid"
+    if [ "$hash_mode" = trimmed ]; then
+      secret_sha256=$(sha256_trimmed_secret_value "$secret_value") \
+        || fail "externally managed $secret_name is missing or invalid"
+    else
+      secret_sha256=$(sha256_secret_value "$secret_value") \
+        || fail "externally managed $secret_name is missing or invalid"
+    fi
     eval "${output_prefix}_SHA256=\$secret_sha256"
   else
     eval "${output_prefix}_SOURCE=file"
@@ -330,6 +349,7 @@ read_optional_secret_source_from_env() {
   secret_name=$2
   secret_file_name=$3
   output_prefix=$4
+  hash_mode=${5:-raw}
 
   set +e
   secret_value=$(container_env_value_raw "$env_json" "$secret_name")
@@ -341,8 +361,13 @@ read_optional_secret_source_from_env() {
     eval "${output_prefix}_SOURCE=external"
     eval "${output_prefix}_FILE="
     # shellcheck disable=SC2034 # consumed via eval into ${output_prefix}_SHA256 below
-    secret_sha256=$(sha256_secret_value "$secret_value") \
-      || fail "externally managed $secret_name is missing or invalid"
+    if [ "$hash_mode" = trimmed ]; then
+      secret_sha256=$(sha256_trimmed_secret_value "$secret_value") \
+        || fail "externally managed $secret_name is missing or invalid"
+    else
+      secret_sha256=$(sha256_secret_value "$secret_value") \
+        || fail "externally managed $secret_name is missing or invalid"
+    fi
     eval "${output_prefix}_SHA256=\$secret_sha256"
   elif [ "$secret_file_status" -eq 0 ] && [ -n "$secret_file" ]; then
     eval "${output_prefix}_SOURCE=file"
@@ -389,17 +414,17 @@ read_app_container_runtime_config() {
     /app/secrets/session-secret SESSION_SECRET
   read_secret_source_from_env "$env_json" NOTIFICATION_UNSUBSCRIBE_SECRET \
     NOTIFICATION_UNSUBSCRIBE_SECRET_FILE /app/secrets/notification-unsubscribe-secret \
-    NOTIFICATION_UNSUBSCRIBE_KEY
+    NOTIFICATION_UNSUBSCRIBE_KEY trimmed
   read_optional_secret_source_from_env "$env_json" NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET \
     NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE \
-    NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY
+    NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY trimmed
   read_secret_source_from_env "$env_json" NOTIFICATION_SUPPRESSION_DIGEST_SECRET \
     NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE \
     /app/secrets/notification-suppression-digest-secret \
-    NOTIFICATION_SUPPRESSION_DIGEST_KEY
+    NOTIFICATION_SUPPRESSION_DIGEST_KEY trimmed
   read_optional_secret_source_from_env "$env_json" NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET \
     NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE \
-    NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY
+    NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY trimmed
 
   NOTIFICATION_UNSUBSCRIBE_KEY_ID=$(container_env_value "$env_json" NOTIFICATION_UNSUBSCRIBE_KEY_ID current | tr -d '\r')
   # shellcheck disable=SC2034 # consumed by backup.sh after sourcing this helper
@@ -1033,7 +1058,7 @@ verify_archive_notification_key_fingerprints() {
         if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${label} archive file is invalid`);
         if ((metadata.mode & 0o777) !== 0o600) fail(`${label} archive file must be 0600`);
         const actual = createHash("sha256")
-          .update(readFileSync(path, "utf8").replace(/\r?\n$/, ""))
+          .update(readFileSync(path, "utf8").trim())
           .digest("hex");
         if (actual !== expected) fail(`${label} archive fingerprint mismatch`);
       } else if (source === "external") {
@@ -1063,7 +1088,7 @@ verify_archive_notification_key_fingerprints() {
       if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${label} archive file is invalid`);
       if ((metadata.mode & 0o777) !== 0o600) fail(`${label} archive file must be 0600`);
       const actual = createHash("sha256")
-        .update(readFileSync(path, "utf8").replace(/\r?\n$/, ""))
+        .update(readFileSync(path, "utf8").trim())
         .digest("hex");
       if (actual !== expected) fail(`${label} archive fingerprint mismatch`);
     };
@@ -1137,6 +1162,34 @@ verify_container_notification_secret_file() {
     chmod 600 "$1"
   ' "$target_secret_file" \
     || fail "restored $label is invalid"
+}
+
+# Enforce the runtime key-pair invariant before the destructive restore
+# boundary: previous metadata must be complete and its key id must differ
+# from the current key id (mirrors notification-key-validation.ts).
+verify_archive_notification_key_pair() {
+  pair_label=$1
+  pair_current_id=$2
+  pair_previous_source=$3
+  pair_previous_id=$4
+  pair_previous_sha256=$5
+
+  case "$pair_previous_source" in
+    none | "")
+      if [ -n "$pair_previous_id" ] || [ -n "$pair_previous_sha256" ]; then
+        fail "$pair_label manifest lists previous key metadata without a previous key source"
+      fi
+      ;;
+    file | external)
+      [ -n "$pair_previous_id" ] \
+        || fail "$pair_label manifest previous key requires a key id"
+      [ -n "$pair_previous_sha256" ] \
+        || fail "$pair_label manifest previous key requires a fingerprint"
+      [ "$pair_previous_id" != "$pair_current_id" ] \
+        || fail "$pair_label previous key id must differ from the current key id"
+      ;;
+    *) fail "unsupported $pair_label previous key source=$pair_previous_source" ;;
+  esac
 }
 
 verify_target_notification_key_env() {
