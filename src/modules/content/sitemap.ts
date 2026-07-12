@@ -103,9 +103,11 @@ export async function buildSitemapIndexResource(
     countPublicPosts(dbc),
     readPublicPostSitemapLastModified(dbc),
   ]);
-  const postShardCount = Math.max(
-    1,
-    countPublicSitemapPostShards(postCount, opts.shardSize ?? PUBLIC_SITEMAP_URL_LIMIT),
+  // Zero public posts advertise no post shards: an empty <urlset> is invalid
+  // to some sitemap validators, so fresh/private-only sites list static only.
+  const postShardCount = countPublicSitemapPostShards(
+    postCount,
+    opts.shardSize ?? PUBLIC_SITEMAP_URL_LIMIT,
   );
   // Per-entry <lastmod> below is informational; the HTTP resource itself is
   // validated by strong ETag only (see buildPublicHttpResource).
@@ -146,9 +148,11 @@ export async function buildPostSitemapShardResource(opts: {
   const baseUrl = opts.baseUrl ?? getPublicBaseUrl();
   const dbc = opts.dbc ?? getDb();
   const postCount = await countPublicPosts(dbc);
-  const shardCount = Math.max(
-    1,
-    countPublicSitemapPostShards(postCount, opts.shardSize ?? PUBLIC_SITEMAP_URL_LIMIT),
+  // Mirrors the index: with zero public posts no shard exists, so shard 0
+  // 404s instead of serving an empty (validator-invalid) <urlset>.
+  const shardCount = countPublicSitemapPostShards(
+    postCount,
+    opts.shardSize ?? PUBLIC_SITEMAP_URL_LIMIT,
   );
   if (opts.shard < 0 || opts.shard >= shardCount) return null;
   const posts = await listPublicSitemapShard({
@@ -163,12 +167,14 @@ export async function buildPostSitemapShardResource(opts: {
   return buildPublicHttpResource(renderSitemapUrlSet(entries));
 }
 
+// Slashless prefixes so the exact entrypoints (/admin, /me, ...) are covered
+// as well as everything nested beneath them.
 const ROBOTS_DISALLOW_PATHS = [
-  "/admin/",
+  "/admin",
   "/api/",
   "/download/",
-  "/me/",
-  "/checkout/",
+  "/me",
+  "/checkout",
   "/login",
 ] as const;
 

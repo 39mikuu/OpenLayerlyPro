@@ -300,6 +300,20 @@ describeWithDatabase("public projection SEO integration", () => {
     expect(shardResponse.headers.get("vary")).toBeNull();
   });
 
+  it("advertises no post shards and 404s shard 0 when no public posts exist", async () => {
+    const indexResponse = await sitemapIndexGET(new Request(`${APP_URL}/sitemap.xml`) as never);
+    const indexXml = await indexResponse.text();
+    const shardResponse = await postShardGET(
+      new Request(`${APP_URL}/sitemaps/posts/0.xml`) as never,
+      { params: Promise.resolve({ shard: "0.xml" }) },
+    );
+
+    expect(indexResponse.status).toBe(200);
+    expect(indexXml).toContain(`${APP_URL}/sitemaps/static.xml`);
+    expect(indexXml).not.toContain("posts/0.xml");
+    expect(shardResponse.status).toBe(404);
+  });
+
   it("walks shards by keyset pages and rejects out-of-range shards", async () => {
     for (let index = 1; index <= 5; index += 1) {
       await seedPost({

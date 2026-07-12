@@ -42,11 +42,11 @@ describe("public sitemap rendering", () => {
     const robots = buildRobotsTxt("https://site.example").body;
 
     expect(robots).toContain("User-agent: *\nAllow: /\n");
-    expect(robots).toContain("Disallow: /admin/");
+    expect(robots).toContain("Disallow: /admin");
     expect(robots).toContain("Disallow: /api/");
     expect(robots).toContain("Disallow: /download/");
-    expect(robots).toContain("Disallow: /me/");
-    expect(robots).toContain("Disallow: /checkout/");
+    expect(robots).toContain("Disallow: /me");
+    expect(robots).toContain("Disallow: /checkout");
     expect(robots).toContain("Disallow: /login");
     expect(robots).toContain("Sitemap: https://site.example/sitemap.xml");
     expect(robots).not.toContain("Disallow: /posts");
@@ -56,13 +56,13 @@ describe("public sitemap rendering", () => {
     const robots = buildRobotsTxt("https://site.example/base").body;
 
     expect(robots).toContain("Allow: /base/");
-    expect(robots).toContain("Disallow: /base/admin/");
+    expect(robots).toContain("Disallow: /base/admin");
     expect(robots).toContain("Disallow: /base/api/");
     expect(robots).toContain("Disallow: /base/download/");
-    expect(robots).toContain("Disallow: /base/me/");
-    expect(robots).toContain("Disallow: /base/checkout/");
+    expect(robots).toContain("Disallow: /base/me");
+    expect(robots).toContain("Disallow: /base/checkout");
     expect(robots).toContain("Disallow: /base/login");
     expect(robots).toContain("Sitemap: https://site.example/base/sitemap.xml");
-    expect(robots).not.toContain("Disallow: /admin/");
+    expect(robots).not.toContain("Disallow: /admin\n");
   });
 });
