@@ -317,6 +317,105 @@ describeWithDatabase("restore neutralize integration", () => {
     });
   });
 
+  it("preserves terminal delivery and campaign outcomes when only the task lagged behind", async () => {
+    const [user] = await db
+      .insert(users)
+      .values({ email: `restore-${randomUUID()}@example.test` })
+      .returning();
+    const postRows = await db
+      .insert(posts)
+      .values([
+        {
+          title: "Accepted delivery",
+          slug: `accepted-${randomUUID()}`,
+          visibility: "public",
+          status: "published",
+          publishedAt: new Date(),
+        },
+        {
+          title: "Completed campaign",
+          slug: `completed-${randomUUID()}`,
+          visibility: "public",
+          status: "published",
+          publishedAt: new Date(),
+        },
+      ])
+      .returning();
+    const campaigns = await db
+      .insert(notificationCampaigns)
+      .values([
+        {
+          postId: postRows[0]!.id,
+          source: "manual_publish" as const,
+          status: "completed" as const,
+          publishedAt: postRows[0]!.publishedAt!,
+          completedAt: new Date(),
+        },
+        {
+          postId: postRows[1]!.id,
+          source: "manual_publish" as const,
+          status: "completed" as const,
+          publishedAt: postRows[1]!.publishedAt!,
+          completedAt: new Date(),
+        },
+      ])
+      .returning();
+    const taskRows = await db
+      .insert(tasks)
+      .values([
+        {
+          kind: "notification.deliver",
+          dedupeKey: `notification:delivery:${randomUUID()}`,
+          payloadJson: { version: 1, userId: user!.id },
+          status: "processing",
+          attempts: 1,
+          lockedBy: "worker",
+        },
+        {
+          kind: "notification.campaign_finalize",
+          dedupeKey: `notification:campaign_finalize:${campaigns[1]!.id}`,
+          payloadJson: { version: 1, campaignId: campaigns[1]!.id },
+          status: "processing",
+          attempts: 1,
+          lockedBy: "worker",
+        },
+      ])
+      .returning();
+    await db.insert(notificationDeliveries).values({
+      campaignId: campaigns[0]!.id,
+      userId: user!.id,
+      taskId: taskRows[0]!.id,
+      status: "accepted",
+      attemptCount: 1,
+      lastOutcome: "accepted",
+    });
+
+    const report = await neutralizeRestoredTasks(db);
+
+    expect(report.notificationTasksNeutralized).toBe(2);
+    expect(report.notificationDeliveriesNeutralized).toBe(0);
+    expect(report.notificationCampaignsNeutralized).toBe(0);
+
+    const storedTasks = await db
+      .select()
+      .from(tasks)
+      .where(
+        inArray(
+          tasks.id,
+          taskRows.map((row) => row.id),
+        ),
+      );
+    expect(storedTasks.every((task) => task.status === "dead")).toBe(true);
+
+    const [storedDelivery] = await db.select().from(notificationDeliveries);
+    expect(storedDelivery).toMatchObject({ status: "accepted", lastError: null });
+
+    const storedCampaigns = await db.select().from(notificationCampaigns);
+    expect(storedCampaigns).toHaveLength(2);
+    expect(storedCampaigns.every((campaign) => campaign.status === "completed")).toBe(true);
+    expect(storedCampaigns.every((campaign) => campaign.lastError === null)).toBe(true);
+  });
+
   it("releases storage delete dedupe keys so converge can enqueue orphan cleanup later", async () => {
     const deletePayload = {
       storageDriver: "local" as const,

@@ -16,6 +16,8 @@ export const NEUTRALIZED_NOTIFICATION_LAST_ERROR =
   "neutralized on restore: notification delivery outcome unknown";
 
 const NON_TERMINAL_TASK_STATUSES = ["pending", "processing", "failed"] as const;
+const NON_TERMINAL_DELIVERY_STATUSES = ["queued", "sending", "deferred", "failed"] as const;
+const NON_TERMINAL_CAMPAIGN_STATUSES = ["pending", "expanding", "expanded", "sending"] as const;
 const NON_TERMINAL_PROVIDER_EVENT_STATUSES = ["received", "processing", "failed"] as const;
 const NOTIFICATION_TASK_KINDS = [
   "notification.deliver",
@@ -227,6 +229,9 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
       if (updated) report.notificationTasksNeutralized += 1;
 
       if (task.kind === "notification.deliver") {
+        // The delivery may already be terminal (its finishing transaction committed
+        // before the backup, ahead of the dispatcher marking the task terminal) —
+        // keep that recorded outcome and only neutralize in-flight deliveries.
         const deliveryRows = await tx
           .update(notificationDeliveries)
           .set({
@@ -234,7 +239,12 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
             lastError: NEUTRALIZED_NOTIFICATION_LAST_ERROR,
             updatedAt: sql`now()`,
           })
-          .where(eq(notificationDeliveries.taskId, task.id))
+          .where(
+            and(
+              eq(notificationDeliveries.taskId, task.id),
+              inArray(notificationDeliveries.status, [...NON_TERMINAL_DELIVERY_STATUSES]),
+            ),
+          )
           .returning({ campaignId: notificationDeliveries.campaignId });
         report.notificationDeliveriesNeutralized += deliveryRows.length;
         for (const delivery of deliveryRows) {
@@ -245,7 +255,12 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
               lastError: NEUTRALIZED_NOTIFICATION_LAST_ERROR,
               updatedAt: sql`now()`,
             })
-            .where(eq(notificationCampaigns.id, delivery.campaignId))
+            .where(
+              and(
+                eq(notificationCampaigns.id, delivery.campaignId),
+                inArray(notificationCampaigns.status, [...NON_TERMINAL_CAMPAIGN_STATUSES]),
+              ),
+            )
             .returning({ id: notificationCampaigns.id });
           if (campaign) report.notificationCampaignsNeutralized += 1;
         }
@@ -260,7 +275,12 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
             lastError: NEUTRALIZED_NOTIFICATION_LAST_ERROR,
             updatedAt: sql`now()`,
           })
-          .where(eq(notificationCampaigns.id, campaignId))
+          .where(
+            and(
+              eq(notificationCampaigns.id, campaignId),
+              inArray(notificationCampaigns.status, [...NON_TERMINAL_CAMPAIGN_STATUSES]),
+            ),
+          )
           .returning({ id: notificationCampaigns.id });
         if (campaign) report.notificationCampaignsNeutralized += 1;
       }
