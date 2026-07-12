@@ -2,13 +2,13 @@ import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 
 vi.hoisted(() => {
-  process.env.APP_URL = "https://site.example/base";
+  process.env.APP_URL = "https://site.example";
 });
 
 import { GET } from "./route";
 
 function request(headers: HeadersInit = {}) {
-  return new NextRequest("https://site.example/base/robots.txt", { headers });
+  return new NextRequest("https://site.example/robots.txt", { headers });
 }
 
 describe("robots.txt route", () => {
@@ -25,10 +25,16 @@ describe("robots.txt route", () => {
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("set-cookie")).toBeNull();
     expect(response.headers.get("vary")).toBeNull();
-    expect(body).toContain("Allow: /base/");
-    expect(body).toContain("Disallow: /base/api/");
-    expect(body).toContain("Sitemap: https://site.example/base/sitemap.xml");
+    expect(body).toContain("Allow: /");
+    expect(body).toContain("Disallow: /api/");
+    expect(body).toContain("Sitemap: https://site.example/sitemap.xml");
     expect(body).not.toContain("Disallow: /posts");
+  });
+
+  it("404s non-canonical query strings", async () => {
+    const response = await GET(new NextRequest("https://site.example/robots.txt?utm=1"));
+
+    expect(response.status).toBe(404);
   });
 
   it("returns 304 for wildcard If-None-Match", async () => {

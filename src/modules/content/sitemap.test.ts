@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { type DbClient } from "@/db";
+
+import { PUBLIC_SITEMAP_MAX_SHARDS } from "./public-projection";
 import {
+  buildPostSitemapShardResource,
   buildRobotsTxt,
   renderSitemapIndex,
   renderSitemapUrlSet,
@@ -52,17 +56,25 @@ describe("public sitemap rendering", () => {
     expect(robots).not.toContain("Disallow: /posts");
   });
 
-  it("prefixes robots rules with the deployment base path", () => {
-    const robots = buildRobotsTxt("https://site.example/base").body;
+  it("rejects path-prefixed APP_URL values for root-only robots.txt", () => {
+    expect(() => buildRobotsTxt("https://site.example/base")).toThrow(
+      /must not include a pathname/,
+    );
+  });
 
-    expect(robots).toContain("Allow: /base/");
-    expect(robots).toContain("Disallow: /base/admin");
-    expect(robots).toContain("Disallow: /base/api/");
-    expect(robots).toContain("Disallow: /base/download/");
-    expect(robots).toContain("Disallow: /base/me");
-    expect(robots).toContain("Disallow: /base/checkout");
-    expect(robots).toContain("Disallow: /base/login");
-    expect(robots).toContain("Sitemap: https://site.example/base/sitemap.xml");
-    expect(robots).not.toContain("Disallow: /admin\n");
+  it("rejects over-cap post shards before querying the database", async () => {
+    const throwingDb = {
+      select: () => {
+        throw new Error("database should not be queried for over-cap sitemap shards");
+      },
+    } as unknown as DbClient;
+
+    await expect(
+      buildPostSitemapShardResource({
+        baseUrl: "https://site.example",
+        shard: PUBLIC_SITEMAP_MAX_SHARDS,
+        dbc: throwingDb,
+      }),
+    ).resolves.toBeNull();
   });
 });

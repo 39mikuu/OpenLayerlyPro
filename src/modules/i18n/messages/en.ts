@@ -54,6 +54,8 @@ export const en: Messages = {
   posts: {
     title: "Works",
     subtitle: "Browse the creator's latest posts and membership updates.",
+    seoTitle: "Works",
+    seoDescription: "Browse the creator's latest public posts and membership updates.",
     empty: "No works published yet.",
     nextPage: "Next page",
   },
@@ -78,6 +80,8 @@ export const en: Messages = {
     title: "Membership tiers",
     subtitle:
       "Pick a tier, pay via QR code and upload the screenshot; access is granted after review.",
+    seoTitle: "Membership tiers",
+    seoDescription: "Choose a membership tier and support the creator's ongoing work.",
     currentPrefix: "Current membership: ",
     validUntil: ", valid until {date}",
     duration: "Valid for {days} days",

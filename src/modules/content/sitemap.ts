@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
+import { membershipTiers } from "@/db/schema";
 import { DEFAULT_LOCALE } from "@/modules/i18n";
 import { readPublicSiteInfoWithMetadata } from "@/modules/site";
 
@@ -11,12 +12,14 @@ import {
   countPublicPosts,
   countPublicSitemapPostShards,
   escapeXml,
-  getPublicBaseUrl,
+  getPublicSeoRootUrl,
   listPublicSitemapShard,
   maxPublicDate,
+  PUBLIC_SITEMAP_MAX_SHARDS,
+  PUBLIC_SITEMAP_SHARD_SIZE,
   PUBLIC_SITEMAP_URL_LIMIT,
   type PublicHttpResource,
-  type PublicPostProjectionRow,
+  type PublicSitemapPostRow,
   toDate,
 } from "./public-projection";
 
@@ -89,6 +92,19 @@ export async function readPublicPostSitemapLastModified(
   return toDate(row?.lastModifiedAt);
 }
 
+export async function readPublicTierSitemapLastModified(
+  dbc: DbClient = getDb(),
+): Promise<Date | null> {
+  const [row] = await dbc
+    .select({ lastModifiedAt: sql<Date | string | null>`max(${membershipTiers.updatedAt})` })
+    .from(membershipTiers);
+  return toDate(row?.lastModifiedAt);
+}
+
+function maxPublicDateOrNull(...dates: Array<Date | null | undefined>): Date | null {
+  return dates.some(Boolean) ? maxPublicDate(...dates) : null;
+}
+
 export async function buildSitemapIndexResource(
   opts: {
     baseUrl?: string;
@@ -96,30 +112,33 @@ export async function buildSitemapIndexResource(
     dbc?: DbClient;
   } = {},
 ): Promise<PublicHttpResource> {
-  const baseUrl = opts.baseUrl ?? getPublicBaseUrl();
+  const baseUrl = getPublicSeoRootUrl(opts.baseUrl);
   const dbc = opts.dbc ?? getDb();
-  const [site, postCount, latestPostUpdatedAt] = await Promise.all([
+  const [site, postCount, latestPostUpdatedAt, latestTierUpdatedAt] = await Promise.all([
     readPublicSiteInfoWithMetadata(),
     countPublicPosts(dbc),
     readPublicPostSitemapLastModified(dbc),
+    readPublicTierSitemapLastModified(dbc),
   ]);
+  const shardSize = opts.shardSize ?? PUBLIC_SITEMAP_SHARD_SIZE;
   // Zero public posts advertise no post shards: an empty <urlset> is invalid
   // to some sitemap validators, so fresh/private-only sites list static only.
-  const postShardCount = countPublicSitemapPostShards(
-    postCount,
-    opts.shardSize ?? PUBLIC_SITEMAP_URL_LIMIT,
-  );
+  const postShardCount = countPublicSitemapPostShards(postCount, shardSize);
   // Per-entry <lastmod> below is informational; the HTTP resource itself is
   // validated by strong ETag only (see buildPublicHttpResource).
-  const lastModifiedAt = maxPublicDate(site.feedIdentityUpdatedAt, latestPostUpdatedAt);
+  const staticLastModifiedAt = maxPublicDateOrNull(
+    site.feedIdentityUpdatedAt,
+    latestPostUpdatedAt,
+    latestTierUpdatedAt,
+  );
   const entries: SitemapEntry[] = [
     {
       loc: buildPublicUrl(baseUrl, "/sitemaps/static.xml"),
-      lastmod: site.feedIdentityUpdatedAt ?? lastModifiedAt,
+      lastmod: staticLastModifiedAt,
     },
     ...Array.from({ length: postShardCount }, (_, shard) => ({
       loc: buildPublicUrl(baseUrl, `/sitemaps/posts/${shard}.xml`),
-      lastmod: latestPostUpdatedAt ?? lastModifiedAt,
+      lastmod: latestPostUpdatedAt,
     })),
   ];
   return buildPublicHttpResource(renderSitemapIndex(entries));
@@ -130,12 +149,19 @@ export async function buildStaticSitemapResource(
     baseUrl?: string;
   } = {},
 ): Promise<PublicHttpResource> {
-  const baseUrl = opts.baseUrl ?? getPublicBaseUrl();
-  const site = await readPublicSiteInfoWithMetadata();
-  const entries = STATIC_SITEMAP_PATHS.map((path) => ({
-    loc: buildPublicUrl(baseUrl, path),
-    lastmod: site.feedIdentityUpdatedAt,
-  }));
+  const baseUrl = getPublicSeoRootUrl(opts.baseUrl);
+  const [site, latestPostUpdatedAt, latestTierUpdatedAt] = await Promise.all([
+    readPublicSiteInfoWithMetadata(),
+    readPublicPostSitemapLastModified(),
+    readPublicTierSitemapLastModified(),
+  ]);
+  const listLastModifiedAt = maxPublicDateOrNull(site.feedIdentityUpdatedAt, latestPostUpdatedAt);
+  const tiersLastModifiedAt = maxPublicDateOrNull(site.feedIdentityUpdatedAt, latestTierUpdatedAt);
+  const entries: SitemapEntry[] = [
+    { loc: buildPublicUrl(baseUrl, "/"), lastmod: listLastModifiedAt },
+    { loc: buildPublicUrl(baseUrl, "/posts"), lastmod: listLastModifiedAt },
+    { loc: buildPublicUrl(baseUrl, "/tiers"), lastmod: tiersLastModifiedAt },
+  ];
   return buildPublicHttpResource(renderSitemapUrlSet(entries));
 }
 
@@ -145,22 +171,22 @@ export async function buildPostSitemapShardResource(opts: {
   shardSize?: number;
   dbc?: DbClient;
 }): Promise<PublicHttpResource | null> {
-  const baseUrl = opts.baseUrl ?? getPublicBaseUrl();
+  const baseUrl = getPublicSeoRootUrl(opts.baseUrl);
   const dbc = opts.dbc ?? getDb();
+  const shardSize = opts.shardSize ?? PUBLIC_SITEMAP_SHARD_SIZE;
+  if (opts.shard < 0 || opts.shard >= PUBLIC_SITEMAP_MAX_SHARDS) return null;
   const postCount = await countPublicPosts(dbc);
   // Mirrors the index: with zero public posts no shard exists, so shard 0
   // 404s instead of serving an empty (validator-invalid) <urlset>.
-  const shardCount = countPublicSitemapPostShards(
-    postCount,
-    opts.shardSize ?? PUBLIC_SITEMAP_URL_LIMIT,
-  );
-  if (opts.shard < 0 || opts.shard >= shardCount) return null;
+  const shardCount = countPublicSitemapPostShards(postCount, shardSize);
+  if (opts.shard >= shardCount) return null;
   const posts = await listPublicSitemapShard({
     shard: opts.shard,
-    shardSize: opts.shardSize,
+    shardSize,
     dbc,
   });
-  const entries = posts.map((post: PublicPostProjectionRow) => ({
+  if (posts.length === 0) return null;
+  const entries = posts.map((post: PublicSitemapPostRow) => ({
     loc: buildPostUrl(baseUrl, post.slug),
     lastmod: post.updatedAt,
   }));
@@ -178,19 +204,17 @@ const ROBOTS_DISALLOW_PATHS = [
   "/login",
 ] as const;
 
-export function buildRobotsTxt(baseUrl = getPublicBaseUrl()): PublicHttpResource {
-  // Robots directives match the full request path, so a base-path deployment
-  // (APP_URL like https://site.example/base) must disallow /base/admin/ etc.
-  const basePath = new URL(`${baseUrl}/`).pathname.replace(/\/+$/, "");
+export function buildRobotsTxt(baseUrl = getPublicSeoRootUrl()): PublicHttpResource {
+  const publicBaseUrl = getPublicSeoRootUrl(baseUrl);
   const body = [
     "User-agent: *",
-    `Allow: ${basePath || "/"}${basePath ? "/" : ""}`,
+    "Allow: /",
     // Site icons advertised in page metadata resolve under /api/files/, so
     // allow that subtree (longest-match wins) before disallowing the rest of
     // the API; the download routes stay auth-gated regardless of crawling.
-    `Allow: ${basePath}/api/files/`,
-    ...ROBOTS_DISALLOW_PATHS.map((path) => `Disallow: ${basePath}${path}`),
-    `Sitemap: ${buildPublicUrl(baseUrl, "/sitemap.xml")}`,
+    "Allow: /api/files/",
+    ...ROBOTS_DISALLOW_PATHS.map((path) => `Disallow: ${path}`),
+    `Sitemap: ${buildPublicUrl(publicBaseUrl, "/sitemap.xml")}`,
     "",
   ].join("\n");
   return buildPublicHttpResource(body);

@@ -1,29 +1,32 @@
 // getEnv() caches on first call, so APP_URL must be set before any import
 // side effect can read it (same pattern as feed.integration.test.ts).
-process.env.APP_URL = "https://seo.example/base";
+process.env.APP_URL = "https://seo.example";
 
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { GET as sitemapIndexGET } from "@/app/sitemap.xml/route";
 import { GET as postShardGET } from "@/app/sitemaps/posts/[shard]/route";
-import { getDb } from "@/db";
+import { type DbClient, getDb } from "@/db";
 import {
   categories,
   files,
   membershipTiers,
   postCategories,
+  posts,
   postTags,
   postTranslations,
   siteSettings,
   tags,
 } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
+import { renderNextMetadataTags } from "@/modules/content/metadata-tags.test-helper";
 import {
   countPublicPosts,
   countPublicSitemapPostShards,
   listPublicSitemapShard,
-  publicPostProjectionQuery,
+  publicSitemapPostQuery,
+  publicSitemapShardBoundaryPageQuery,
 } from "@/modules/content/public-projection";
 import { buildPublicPostMetadata } from "@/modules/content/seo";
 import {
@@ -46,7 +49,7 @@ type ExplainRow = {
 };
 
 const db = getDb();
-const APP_URL = "https://seo.example/base";
+const APP_URL = "https://seo.example";
 
 async function upsertSiteSettings() {
   await db
@@ -192,10 +195,6 @@ function findPlanPath(plan: PlanNode, predicate: (node: PlanNode) => boolean): P
   return null;
 }
 
-function metadataText(value: unknown): string {
-  return JSON.stringify(value);
-}
-
 describeWithDatabase("public projection SEO integration", () => {
   beforeEach(async () => {
     process.env.APP_URL = APP_URL;
@@ -314,7 +313,7 @@ describeWithDatabase("public projection SEO integration", () => {
     expect(shardResponse.status).toBe(404);
   });
 
-  it("walks shards by keyset pages and rejects out-of-range shards", async () => {
+  it("serves shards by directly addressed narrow pages and rejects out-of-range shards", async () => {
     for (let index = 1; index <= 5; index += 1) {
       await seedPost({
         id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
@@ -325,9 +324,20 @@ describeWithDatabase("public projection SEO integration", () => {
     }
 
     expect(countPublicSitemapPostShards(await countPublicPosts(), 2)).toBe(3);
-    await expect(listPublicSitemapShard({ shard: 0, shardSize: 2 })).resolves.toHaveLength(2);
-    await expect(listPublicSitemapShard({ shard: 1, shardSize: 2 })).resolves.toHaveLength(2);
-    await expect(listPublicSitemapShard({ shard: 2, shardSize: 2 })).resolves.toHaveLength(1);
+    const shard0 = await listPublicSitemapShard({ shard: 0, shardSize: 2 });
+    const shard1 = await listPublicSitemapShard({ shard: 1, shardSize: 2 });
+    const shard2 = await listPublicSitemapShard({ shard: 2, shardSize: 2 });
+    expect(shard0.map((post) => post.slug)).toEqual(["shard-post-5", "shard-post-4"]);
+    expect(shard1.map((post) => post.slug)).toEqual(["shard-post-3", "shard-post-2"]);
+    expect(shard2.map((post) => post.slug)).toEqual(["shard-post-1"]);
+    expect([...shard0, ...shard1, ...shard2].map((post) => post.id)).toEqual([
+      "00000000-0000-4000-8000-000000000005",
+      "00000000-0000-4000-8000-000000000004",
+      "00000000-0000-4000-8000-000000000003",
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000001",
+    ]);
+    expect(new Set([...shard0, ...shard1, ...shard2].map((post) => post.id)).size).toBe(5);
     await expect(
       buildSitemapIndexResource({ baseUrl: APP_URL, shardSize: 2 }),
     ).resolves.toMatchObject({
@@ -336,6 +346,41 @@ describeWithDatabase("public projection SEO integration", () => {
     await expect(
       buildPostSitemapShardResource({ baseUrl: APP_URL, shard: 3, shardSize: 2 }),
     ).resolves.toBeNull();
+  });
+
+  it("404s a trailing post sitemap shard that shrinks after count", async () => {
+    for (let index = 1; index <= 3; index += 1) {
+      await seedPost({
+        id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        slug: `shrinking-post-${index}`,
+        title: `Shrinking Post ${index}`,
+        publishedAt: `2026-07-10T12:00:0${index}.000Z`,
+      });
+    }
+
+    await db.transaction(async (tx) => {
+      await tx
+        .update(posts)
+        .set({ status: "archived", updatedAt: new Date("2026-07-10T13:00:00.000Z") })
+        .where(eq(posts.slug, "shrinking-post-1"));
+
+      await expect(
+        buildPostSitemapShardResource({
+          baseUrl: APP_URL,
+          shard: 1,
+          shardSize: 2,
+          dbc: {
+            ...tx,
+            select: ((...args: Parameters<typeof tx.select>) => {
+              if (args.length === 1 && "count" in (args[0] as Record<string, unknown>)) {
+                return db.select(...args);
+              }
+              return tx.select(...args);
+            }) as typeof tx.select,
+          } as unknown as DbClient,
+        }),
+      ).resolves.toBeNull();
+    });
   });
 
   it("uses the public partial index without offset or unbounded pre-limit sort", async () => {
@@ -352,8 +397,12 @@ describeWithDatabase("public projection SEO integration", () => {
     // earlier suites churned the posts table in the same database.
     await db.execute(sql`analyze posts`);
 
-    // EXPLAIN the real projection query (translation join and keyset cursor
-    // included), for both the first page and a cursor page.
+    // EXPLAIN the exact narrow boundary pages used by listPublicSitemapShard()
+    // plus the sitemap page query after a supplied boundary cursor.
+    expect(publicSitemapShardBoundaryPageQuery({ limit: 2, dbc: db }).toSQL().sql).not.toMatch(
+      /\boffset\b/i,
+    );
+    expect(publicSitemapPostQuery({ limit: 2, dbc: db }).toSQL().sql).not.toMatch(/\boffset\b/i);
     const cursorCases = [
       null,
       { publishedAt: "2026-07-10T12:00:05.000Z", id: "00000000-0000-4000-8000-000000000005" },
@@ -361,7 +410,7 @@ describeWithDatabase("public projection SEO integration", () => {
     for (const cursor of cursorCases) {
       await db.transaction(async (tx) => {
         await tx.execute(sql`set local enable_seqscan = off`);
-        const query = publicPostProjectionQuery({ limit: 2, cursor, dbc: tx });
+        const query = publicSitemapShardBoundaryPageQuery({ limit: 2, cursor, dbc: tx });
         const rows = await tx.execute<ExplainRow>(
           sql`explain (analyze, format json, costs off, timing off, summary off) ${query}`,
         );
@@ -379,6 +428,33 @@ describeWithDatabase("public projection SEO integration", () => {
         }
       });
     }
+
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local enable_seqscan = off`);
+      const query = publicSitemapPostQuery({
+        limit: 2,
+        cursor: {
+          publishedAt: "2026-07-10T12:00:05.000Z",
+          id: "00000000-0000-4000-8000-000000000005",
+        },
+        dbc: tx,
+      });
+      const rows = await tx.execute<ExplainRow>(
+        sql`explain (analyze, format json, costs off, timing off, summary off) ${query}`,
+      );
+      const plan = rows[0]!["QUERY PLAN"][0]!.Plan;
+      const pathToIndexScan = findPlanPath(
+        plan,
+        (node) => node["Index Name"] === "posts_public_feed_idx",
+      );
+
+      expect(pathToIndexScan).not.toBeNull();
+      const limitIndex = pathToIndexScan!.findLastIndex((node) => node["Node Type"] === "Limit");
+      expect(limitIndex).toBeGreaterThanOrEqual(0);
+      for (const node of pathToIndexScan!.slice(limitIndex + 1)) {
+        expect(node["Node Type"]).not.toBe("Sort");
+      }
+    });
   });
 
   it("renders public metadata and keeps non-public metadata generic noindex without images", async () => {
@@ -407,21 +483,47 @@ describeWithDatabase("public projection SEO integration", () => {
 
     const publicMetadata = await buildPublicPostMetadata("public-meta");
     const memberMetadata = await buildPublicPostMetadata("member-meta-secret");
-    const publicText = metadataText(publicMetadata);
-    const memberText = metadataText(memberMetadata);
+    const publicHead = await renderNextMetadataTags(publicMetadata);
+    const memberHead = await renderNextMetadataTags(memberMetadata);
 
     expect(publicMetadata.title).toBe("Public Meta Title");
-    expect(publicText).toContain("Public Meta Summary");
-    expect(publicText).toContain(`${APP_URL}/posts/public-meta`);
-    expect(publicText).toContain('"card":"summary"');
-    expect(publicText).not.toContain("images");
-    expect(publicText).not.toContain(coverId);
+    expect(publicMetadata.openGraph).toMatchObject({
+      title: "Public Meta Title",
+      type: "article",
+      url: `${APP_URL}/posts/public-meta`,
+      locale: "en_US",
+    });
+    expect(publicHead).toContain('<meta property="og:title" content="Public Meta Title"/>');
+    expect(publicHead).toContain('<meta property="og:type" content="article"/>');
+    expect(publicHead).toContain(
+      '<meta property="og:url" content="https://seo.example/posts/public-meta"/>',
+    );
+    expect(publicHead).toContain('<meta property="og:locale" content="en_US"/>');
+    expect(publicHead).toContain(
+      '<link rel="canonical" href="https://seo.example/posts/public-meta"/>',
+    );
+    expect(publicHead).toContain('<meta name="twitter:card" content="summary"/>');
+    expect(publicHead).not.toContain("og:image");
+    expect(publicHead).not.toContain(coverId);
 
     expect(memberMetadata.title).toEqual({ absolute: "SEO Site" });
     expect(memberMetadata.robots).toEqual({ index: false, follow: false });
-    expect(memberText).toContain(`${APP_URL}/posts/member-meta-secret`);
-    expect(memberText).toContain('"card":"summary"');
-    expect(memberText).not.toContain("images");
+    expect(memberMetadata.openGraph).toMatchObject({
+      title: "SEO Site",
+      type: "website",
+      url: `${APP_URL}/posts/member-meta-secret`,
+    });
+    expect(memberHead).toContain('<meta name="robots" content="noindex, nofollow"/>');
+    expect(memberHead).toContain('<meta property="og:title" content="SEO Site"/>');
+    expect(memberHead).toContain('<meta property="og:type" content="website"/>');
+    expect(memberHead).toContain(
+      '<meta property="og:url" content="https://seo.example/posts/member-meta-secret"/>',
+    );
+    expect(memberHead).toContain(
+      '<link rel="canonical" href="https://seo.example/posts/member-meta-secret"/>',
+    );
+    expect(memberHead).toContain('<meta name="twitter:card" content="summary"/>');
+    expect(memberHead).not.toContain("og:image");
     for (const privateValue of [
       "Member Metadata Secret Title",
       "Member Metadata Secret Summary",
@@ -430,7 +532,7 @@ describeWithDatabase("public projection SEO integration", () => {
       "Secret Tag Name",
       "Secret Tier Name",
     ]) {
-      expect(memberText).not.toContain(privateValue);
+      expect(memberHead).not.toContain(privateValue);
     }
   });
 });

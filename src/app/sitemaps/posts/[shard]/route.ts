@@ -4,6 +4,7 @@ import {
   isPublicHttpResourceNotModified,
   publicXmlHeaders,
 } from "@/modules/content/public-projection";
+import { hasNonCanonicalPublicQuery, publicNotFoundResponse } from "@/modules/content/public-route";
 import {
   buildPostSitemapShardResource,
   PUBLIC_SITEMAP_CONTENT_TYPE,
@@ -19,27 +20,16 @@ export async function GET(
   { params }: { params: Promise<{ shard: string }> },
 ) {
   try {
+    if (hasNonCanonicalPublicQuery(request.url)) return publicNotFoundResponse();
     const { shard } = await params;
     if (!SHARD_PARAM_PATTERN.test(shard)) {
-      return new Response("Not Found", {
-        status: 404,
-        headers: {
-          "content-type": "text/plain; charset=utf-8",
-          "x-content-type-options": "nosniff",
-        },
-      });
+      return publicNotFoundResponse();
     }
     const sitemap = await buildPostSitemapShardResource({
       shard: Number(shard.replace(/\.xml$/, "")),
     });
     if (!sitemap) {
-      return new Response("Not Found", {
-        status: 404,
-        headers: {
-          "content-type": "text/plain; charset=utf-8",
-          "x-content-type-options": "nosniff",
-        },
-      });
+      return publicNotFoundResponse();
     }
     const headers = publicXmlHeaders(sitemap, PUBLIC_SITEMAP_CONTENT_TYPE);
     if (isPublicHttpResourceNotModified(request.headers, sitemap)) {

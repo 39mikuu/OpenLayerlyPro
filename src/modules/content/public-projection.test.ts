@@ -9,8 +9,10 @@ import {
   encodePublicPostCursor,
   escapeXml,
   getPublicBaseUrl,
+  getPublicSeoRootUrl,
   isPublicHttpResourceNotModified,
   PUBLIC_SEO_CACHE_CONTROL,
+  PUBLIC_SITEMAP_MAX_SHARDS,
   publicXmlHeaders,
   sanitizeXml10,
 } from "./public-projection";
@@ -23,6 +25,14 @@ describe("public projection helpers", () => {
     expect(() => getPublicBaseUrl("ftp://site.example")).toThrow(/http or https/);
     expect(() => getPublicBaseUrl("https://site.example/base?utm=1")).toThrow(/query or hash/);
     expect(() => getPublicBaseUrl("https://site.example/base#hash")).toThrow(/query or hash/);
+  });
+
+  it("requires root APP_URL paths for sitemap and robots routes", () => {
+    expect(getPublicSeoRootUrl("https://site.example/")).toBe("https://site.example");
+    expect(getPublicSeoRootUrl("https://site.example")).toBe("https://site.example");
+    expect(() => getPublicSeoRootUrl("https://site.example/base")).toThrow(
+      /must not include a pathname/,
+    );
   });
 
   it("builds absolute public URLs without losing the base path", () => {
@@ -73,6 +83,12 @@ describe("public projection helpers", () => {
     expect(countPublicSitemapPostShards(2, 2)).toBe(1);
     expect(countPublicSitemapPostShards(3, 2)).toBe(2);
     expect(countPublicSitemapPostShards(5, 2)).toBe(3);
+    expect(countPublicSitemapPostShards(PUBLIC_SITEMAP_MAX_SHARDS * 2, 2)).toBe(
+      PUBLIC_SITEMAP_MAX_SHARDS,
+    );
+    expect(() => countPublicSitemapPostShards(PUBLIC_SITEMAP_MAX_SHARDS * 2 + 1, 2)).toThrow(
+      /bounded sitemap capacity/,
+    );
   });
 
   it("builds strong validators and public route headers", () => {

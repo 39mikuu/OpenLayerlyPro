@@ -10,6 +10,8 @@ import { DEFAULT_LOCALE, isLocale, type Locale } from "@/modules/i18n";
 export const PUBLIC_SEO_CACHE_CONTROL =
   "public, max-age=0, s-maxage=300, stale-while-revalidate=60";
 export const PUBLIC_SITEMAP_URL_LIMIT = 50_000;
+export const PUBLIC_SITEMAP_SHARD_SIZE = 5_000;
+export const PUBLIC_SITEMAP_MAX_SHARDS = 100;
 export const PUBLIC_EMPTY_LAST_MODIFIED = new Date(0);
 
 const PRECISE_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{6})Z$/;
@@ -26,6 +28,13 @@ export type PublicPostProjectionRow = {
   summary: string | null;
   coverFileId: string | null;
   contentLocale: Locale;
+};
+
+export type PublicSitemapPostRow = {
+  id: string;
+  slug: string;
+  publishedAt: Date;
+  updatedAt: Date;
 };
 
 export type PublicHttpResource = {
@@ -49,6 +58,18 @@ type PublicProjectionSqlRow = {
   translationLocale: string | null;
   translationUpdatedAt: Date | string | null;
   translationPublishedAt: Date | string | null;
+  cursorPublishedAt: string;
+};
+
+type PublicSitemapSqlRow = {
+  id: string;
+  slug: string;
+  publishedAt: Date | string | null;
+  sitemapUpdatedAt: Date | string;
+};
+
+type PublicSitemapBoundarySqlRow = {
+  id: string;
   cursorPublishedAt: string;
 };
 
@@ -144,6 +165,14 @@ export function getPublicBaseUrl(appUrl = getEnv().APP_URL): string {
   }
   parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
   return parsed.toString().replace(/\/$/, "");
+}
+
+export function getPublicSeoRootUrl(appUrl = getEnv().APP_URL): string {
+  const baseUrl = getPublicBaseUrl(appUrl);
+  if (new URL(`${baseUrl}/`).pathname !== "/") {
+    throw new Error("APP_URL must not include a pathname for sitemap and robots routes");
+  }
+  return baseUrl;
 }
 
 export function buildPublicUrl(baseUrl: string, path: string): string {
@@ -248,6 +277,19 @@ function rowToProjection(row: PublicProjectionSqlRow): PublicPostProjectionRow {
   };
 }
 
+function rowToSitemapPost(row: PublicSitemapSqlRow): PublicSitemapPostRow {
+  const publishedAt = toDate(row.publishedAt);
+  if (!publishedAt) {
+    throw new Error("public sitemap row is missing published_at");
+  }
+  return {
+    id: row.id,
+    slug: row.slug,
+    publishedAt,
+    updatedAt: toDate(row.sitemapUpdatedAt) ?? publishedAt,
+  };
+}
+
 const precisePublishedAt = sql<string>`to_char(
   ${posts.publishedAt} at time zone 'UTC',
   'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
@@ -317,6 +359,89 @@ export function publicPostProjectionQuery(opts: {
     .limit(opts.limit);
 }
 
+function publicSitemapPostSelect() {
+  return {
+    id: posts.id,
+    slug: posts.slug,
+    publishedAt: posts.publishedAt,
+    sitemapUpdatedAt: sql<Date | string>`greatest(
+      ${posts.publishedAt},
+      ${posts.updatedAt},
+      ${posts.contentUpdatedAt},
+      coalesce(${postTranslations.updatedAt}, ${posts.publishedAt}),
+      coalesce(${postTranslations.publishedAt}, ${posts.publishedAt})
+    )`,
+  };
+}
+
+export function publicSitemapPostQuery(opts: {
+  limit: number;
+  cursor?: PublicPostCursor | null;
+  locale?: Locale;
+  dbc?: DbClient;
+}) {
+  const dbc = opts.dbc ?? getDb();
+  const locale = opts.locale ?? DEFAULT_LOCALE;
+  return dbc
+    .select(publicSitemapPostSelect())
+    .from(posts)
+    .leftJoin(
+      postTranslations,
+      and(
+        eq(postTranslations.postId, posts.id),
+        eq(postTranslations.locale, locale),
+        eq(postTranslations.status, "published"),
+      ),
+    )
+    .where(and(...publicPostProjectionConditions(opts.cursor ?? null)))
+    .orderBy(desc(posts.publishedAt), desc(posts.id))
+    .limit(opts.limit);
+}
+
+export function publicSitemapShardBoundaryPageQuery(opts: {
+  limit: number;
+  cursor?: PublicPostCursor | null;
+  dbc?: DbClient;
+}) {
+  const dbc = opts.dbc ?? getDb();
+  return dbc
+    .select({
+      id: posts.id,
+      cursorPublishedAt: precisePublishedAt,
+    })
+    .from(posts)
+    .where(and(...publicPostProjectionConditions(opts.cursor ?? null)))
+    .orderBy(desc(posts.publishedAt), desc(posts.id))
+    .limit(opts.limit);
+}
+
+async function readPublicSitemapShardBoundary(opts: {
+  shard: number;
+  shardSize: number;
+  dbc?: DbClient;
+}): Promise<PublicPostCursor | null> {
+  if (opts.shard <= 0) return null;
+  if (opts.shard >= PUBLIC_SITEMAP_MAX_SHARDS) return null;
+
+  let cursor: PublicPostCursor | null = null;
+  for (let page = 0; page < opts.shard; page += 1) {
+    // Capped keyset walk: each step reads one narrow id+publishedAt page via
+    // posts_public_feed_idx; 100 shards bounds worst-case work to 500k posts.
+    const rows: PublicSitemapBoundarySqlRow[] = await publicSitemapShardBoundaryPageQuery({
+      limit: opts.shardSize,
+      cursor,
+      dbc: opts.dbc,
+    });
+    if (rows.length < opts.shardSize) return null;
+    const boundary = rows.at(-1)!;
+    cursor = {
+      id: boundary.id,
+      publishedAt: boundary.cursorPublishedAt,
+    };
+  }
+  return cursor;
+}
+
 async function listPublicPostProjectionRows(opts: {
   limit: number;
   cursor?: PublicPostCursor | null;
@@ -363,10 +488,14 @@ export async function countPublicPosts(dbc: DbClient = getDb()): Promise<number>
 
 export function countPublicSitemapPostShards(
   postCount: number,
-  shardSize = PUBLIC_SITEMAP_URL_LIMIT,
+  shardSize = PUBLIC_SITEMAP_SHARD_SIZE,
 ): number {
   const safeShardSize = Math.max(1, Math.min(Math.trunc(shardSize), PUBLIC_SITEMAP_URL_LIMIT));
-  return Math.ceil(Math.max(0, postCount) / safeShardSize);
+  const shardCount = Math.ceil(Math.max(0, postCount) / safeShardSize);
+  if (shardCount > PUBLIC_SITEMAP_MAX_SHARDS) {
+    throw new Error("public sitemap shard count exceeds bounded sitemap capacity");
+  }
+  return shardCount;
 }
 
 export async function listPublicSitemapShard(opts: {
@@ -374,29 +503,25 @@ export async function listPublicSitemapShard(opts: {
   shardSize?: number;
   locale?: Locale;
   dbc?: DbClient;
-}): Promise<PublicPostProjectionRow[]> {
+}): Promise<PublicSitemapPostRow[]> {
   const shardSize = Math.max(
     1,
-    Math.min(Math.trunc(opts.shardSize ?? PUBLIC_SITEMAP_URL_LIMIT), PUBLIC_SITEMAP_URL_LIMIT),
+    Math.min(Math.trunc(opts.shardSize ?? PUBLIC_SITEMAP_SHARD_SIZE), PUBLIC_SITEMAP_URL_LIMIT),
   );
   const shard = Math.max(0, Math.trunc(opts.shard));
-  let cursor: string | null = null;
-  let page: { posts: PublicPostProjectionRow[]; nextCursor: string | null } = {
-    posts: [],
-    nextCursor: null,
-  };
-  for (let index = 0; index <= shard; index += 1) {
-    page = await listPublicPostProjectionPage({
-      limit: shardSize,
-      cursor,
-      locale: opts.locale,
-      dbc: opts.dbc,
-    });
-    if (index === shard) return page.posts;
-    cursor = page.nextCursor;
-    if (!cursor) return [];
-  }
-  return [];
+  const cursor = await readPublicSitemapShardBoundary({
+    shard,
+    shardSize,
+    dbc: opts.dbc,
+  });
+  if (shard > 0 && !cursor) return [];
+  const rows = await publicSitemapPostQuery({
+    limit: shardSize,
+    cursor,
+    locale: opts.locale,
+    dbc: opts.dbc,
+  });
+  return rows.map(rowToSitemapPost);
 }
 
 export async function getPublicPostProjectionBySlug(

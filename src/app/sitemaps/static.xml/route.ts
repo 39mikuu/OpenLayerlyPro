@@ -4,6 +4,7 @@ import {
   isPublicHttpResourceNotModified,
   publicXmlHeaders,
 } from "@/modules/content/public-projection";
+import { hasNonCanonicalPublicQuery, publicNotFoundResponse } from "@/modules/content/public-route";
 import { buildStaticSitemapResource, PUBLIC_SITEMAP_CONTENT_TYPE } from "@/modules/content/sitemap";
 
 export const runtime = "nodejs";
@@ -11,6 +12,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
+    if (hasNonCanonicalPublicQuery(request.url)) return publicNotFoundResponse();
     const sitemap = await buildStaticSitemapResource();
     const headers = publicXmlHeaders(sitemap, PUBLIC_SITEMAP_CONTENT_TYPE);
     if (isPublicHttpResourceNotModified(request.headers, sitemap)) {

@@ -46,6 +46,16 @@ describe("post sitemap shard route", () => {
     await expect(response.text()).resolves.toBe(SITEMAP.body);
   });
 
+  it("404s non-canonical query strings before rendering", async () => {
+    const response = await GET(
+      new NextRequest("https://site.example/sitemaps/posts/0.xml?cachebust=1"),
+      context("0.xml"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(mocks.buildPostSitemapShardResource).not.toHaveBeenCalled();
+  });
+
   it.each(["0", "posts-0.xml", "0.xml.txt", "-1.xml", "abc.xml"])(
     "404s invalid shard param %s",
     async (shard) => {

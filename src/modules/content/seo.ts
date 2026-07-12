@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 
 import { getDb } from "@/db";
 import { posts } from "@/db/schema";
+import { DEFAULT_LOCALE, type Locale, translate } from "@/modules/i18n";
 import { type PublicSiteInfo, readPublicSiteInfo } from "@/modules/site";
 
 import {
@@ -20,6 +21,12 @@ type SiteMetadataOptions = {
   canonicalPath: string;
   absoluteTitle?: boolean;
   noindex?: boolean;
+};
+
+const OG_LOCALE_BY_CONTENT_LOCALE: Partial<Record<Locale, string>> = {
+  zh: "zh_CN",
+  en: "en_US",
+  ja: "ja_JP",
 };
 
 function siteTitle(site: PublicSiteInfo): string {
@@ -46,8 +53,10 @@ export function buildSiteMetadataFromInfo(
     alternates: { canonical: canonicalUrl },
     robots: options.noindex ? { index: false, follow: false } : undefined,
     openGraph: {
+      title,
       siteName: siteTitle(site),
       description,
+      type: "website",
       url: canonicalUrl,
     },
     twitter: {
@@ -64,6 +73,17 @@ export async function buildSiteMetadata(
 ): Promise<Metadata> {
   const site = await readPublicSiteInfo();
   return buildSiteMetadataFromInfo(site, { ...options, canonicalPath });
+}
+
+export function buildListPageSeoCopy(page: "posts" | "tiers") {
+  return {
+    title: translate(DEFAULT_LOCALE, `${page}.seoTitle`),
+    description: translate(DEFAULT_LOCALE, `${page}.seoDescription`),
+  };
+}
+
+export function ogLocaleForContentLocale(locale: Locale): string | undefined {
+  return OG_LOCALE_BY_CONTENT_LOCALE[locale];
 }
 
 async function readPublishedPostVisibility(
@@ -120,7 +140,7 @@ export async function buildPublicPostMetadata(slug: string): Promise<Metadata> {
       publishedTime: post.publishedAt.toISOString(),
       modifiedTime: post.updatedAt.toISOString(),
       siteName: siteTitle(site),
-      locale: post.contentLocale,
+      locale: ogLocaleForContentLocale(post.contentLocale),
     },
     twitter: {
       card: "summary",

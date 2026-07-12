@@ -1,4 +1,3 @@
-import type { Metadata } from "next";
 import { describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -12,29 +11,9 @@ vi.mock("@/modules/theme", () => ({
   getActiveTheme: vi.fn(),
 }));
 
-import { generateMetadata } from "./page";
+import { renderNextMetadataTags } from "@/modules/content/metadata-tags.test-helper";
 
-function renderOwnedHead(metadata: Metadata): string {
-  const title =
-    typeof metadata.title === "string"
-      ? metadata.title
-      : typeof metadata.title === "object" && metadata.title && "absolute" in metadata.title
-        ? metadata.title.absolute
-        : "";
-  const robots =
-    typeof metadata.robots === "object" && metadata.robots
-      ? `${metadata.robots.index === false ? "noindex" : "index"},${
-          metadata.robots.follow === false ? "nofollow" : "follow"
-        }`
-      : "";
-  return JSON.stringify({
-    title,
-    robots,
-    openGraph: metadata.openGraph ?? {},
-    twitter: metadata.twitter ?? {},
-    alternates: metadata.alternates,
-  });
-}
+import { generateMetadata } from "./page";
 
 describe("post page metadata", () => {
   it("delegates to public-only metadata with promised params", async () => {
@@ -58,6 +37,8 @@ describe("post page metadata", () => {
       robots: { index: false, follow: false },
       alternates: { canonical: "https://artist.example/posts/member-secret" },
       openGraph: {
+        title: "Public Studio",
+        type: "website",
         siteName: "Public Studio",
         description: "Generic site description",
         url: "https://artist.example/posts/member-secret",
@@ -72,10 +53,18 @@ describe("post page metadata", () => {
     const metadata = await generateMetadata({
       params: Promise.resolve({ slug: "member-secret" }),
     });
-    const head = renderOwnedHead(metadata);
+    const head = await renderNextMetadataTags(metadata);
 
-    expect(head).toContain("noindex,nofollow");
-    expect(head).toContain('"card":"summary"');
+    expect(head).toContain('<meta name="robots" content="noindex, nofollow"/>');
+    expect(head).toContain('<meta property="og:title" content="Public Studio"/>');
+    expect(head).toContain('<meta property="og:type" content="website"/>');
+    expect(head).toContain(
+      '<meta property="og:url" content="https://artist.example/posts/member-secret"/>',
+    );
+    expect(head).toContain(
+      '<link rel="canonical" href="https://artist.example/posts/member-secret"/>',
+    );
+    expect(head).toContain('<meta name="twitter:card" content="summary"/>');
     expect(head).not.toContain("images");
     for (const restricted of [
       "Member Secret Title",

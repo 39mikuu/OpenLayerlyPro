@@ -44,6 +44,13 @@ describe("static sitemap route", () => {
     await expect(response.text()).resolves.toBe(SITEMAP.body);
   });
 
+  it("404s non-canonical query strings before rendering", async () => {
+    const response = await GET(new NextRequest("https://site.example/sitemaps/static.xml?x=1"));
+
+    expect(response.status).toBe(404);
+    expect(mocks.buildStaticSitemapResource).not.toHaveBeenCalled();
+  });
+
   it("returns 304 for weak matching ETags", async () => {
     const response = await GET(request({ "if-none-match": `W/${SITEMAP.etag}` }));
 

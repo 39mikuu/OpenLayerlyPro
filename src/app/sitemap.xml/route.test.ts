@@ -46,6 +46,13 @@ describe("sitemap.xml route", () => {
     await expect(response.text()).resolves.toBe(SITEMAP.body);
   });
 
+  it("404s non-canonical query strings before rendering", async () => {
+    const response = await GET(new NextRequest("https://site.example/sitemap.xml?utm=1"));
+
+    expect(response.status).toBe(404);
+    expect(mocks.buildSitemapIndexResource).not.toHaveBeenCalled();
+  });
+
   it("returns 304 for matching ETag", async () => {
     const response = await GET(request({ "if-none-match": SITEMAP.etag }));
 
