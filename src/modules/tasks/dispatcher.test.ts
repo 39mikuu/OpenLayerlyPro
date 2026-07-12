@@ -20,6 +20,8 @@ function task(id: string, lockToken = `claim-${id}`): Task {
     lockedBy: lockToken,
     leaseUntil: new Date(now.getTime() + 60_000),
     lastError: null,
+    priority: 10,
+    queueClass: "transactional",
     createdAt: now,
     updatedAt: now,
   };
@@ -33,6 +35,7 @@ describe("task dispatcher", () => {
   function dependencies() {
     return {
       claim: vi.fn(),
+      claimClass: vi.fn(),
       run: vi.fn(),
       succeed: vi.fn(),
       fail: vi.fn(),
@@ -47,18 +50,18 @@ describe("task dispatcher", () => {
     const first = task("11111111-1111-4111-8111-111111111111");
     const second = task("22222222-2222-4222-8222-222222222222");
     const deps = dependencies();
-    deps.claim
-      .mockResolvedValueOnce([first])
-      .mockResolvedValueOnce([second])
-      .mockResolvedValueOnce([]);
+    deps.claimClass
+      .mockResolvedValueOnce({ ...first, reclaimedStale: false })
+      .mockResolvedValueOnce({ ...second, reclaimedStale: false })
+      .mockResolvedValue(null);
     deps.run.mockResolvedValue({ note: "SMTP not configured" });
     deps.succeed.mockResolvedValue(true);
 
     await expect(dispatchTaskBatch(deps)).resolves.toBe(2);
     expect(deps.sweep).toHaveBeenCalledTimes(1);
-    expect(deps.claim).toHaveBeenCalledTimes(3);
-    expect(deps.claim).toHaveBeenNthCalledWith(1, 1);
-    expect(deps.claim).toHaveBeenNthCalledWith(2, 1);
+    expect(deps.claimClass).toHaveBeenCalledTimes(6);
+    expect(deps.claimClass).toHaveBeenNthCalledWith(1, "transactional", { includeStale: true });
+    expect(deps.claimClass).toHaveBeenNthCalledWith(2, "transactional", { includeStale: true });
     expect(deps.succeed).toHaveBeenNthCalledWith(
       1,
       first.id,
@@ -82,11 +85,11 @@ describe("task dispatcher", () => {
       calls.push("sweep");
       return [];
     });
-    deps.claim.mockImplementation(async () => {
+    deps.claimClass.mockImplementation(async () => {
       calls.push("claim");
-      if (deps.claim.mock.calls.length === 1) return [first];
-      if (deps.claim.mock.calls.length === 2) return [second];
-      return [];
+      if (deps.claimClass.mock.calls.length === 1) return { ...first, reclaimedStale: false };
+      if (deps.claimClass.mock.calls.length === 2) return { ...second, reclaimedStale: false };
+      return null;
     });
     deps.run.mockImplementation(async (claimed: Task) => {
       calls.push("run:" + claimed.id);
@@ -97,19 +100,21 @@ describe("task dispatcher", () => {
     await expect(dispatchTaskBatch(deps)).resolves.toBe(2);
 
     expect(deps.sweep).toHaveBeenCalledTimes(1);
-    expect(deps.claim).toHaveBeenCalledTimes(3);
+    expect(deps.claimClass).toHaveBeenCalledTimes(6);
     expect(calls.slice(0, 2)).toEqual(["sweep", "claim"]);
   });
 
   it("processes at most the configured batch size", async () => {
     const deps = dependencies();
-    deps.claim.mockImplementation(async () => [task(`task-${deps.claim.mock.calls.length}`)]);
+    deps.claimClass.mockImplementation(async () => ({
+      ...task(`task-${deps.claimClass.mock.calls.length}`),
+      reclaimedStale: false,
+    }));
     deps.run.mockResolvedValue({});
     deps.succeed.mockResolvedValue(true);
 
     await expect(dispatchTaskBatch(deps)).resolves.toBe(TASK_BATCH_SIZE);
-    expect(deps.claim).toHaveBeenCalledTimes(TASK_BATCH_SIZE);
-    expect(deps.claim).toHaveBeenCalledWith(1);
+    expect(deps.claimClass).toHaveBeenCalledTimes(TASK_BATCH_SIZE);
   });
 
   it("marks failures with the matching token and continues to the next task", async () => {
@@ -117,10 +122,10 @@ describe("task dispatcher", () => {
     const second = task("22222222-2222-4222-8222-222222222222");
     const error = new Error("SMTP unavailable");
     const deps = dependencies();
-    deps.claim
-      .mockResolvedValueOnce([first])
-      .mockResolvedValueOnce([second])
-      .mockResolvedValueOnce([]);
+    deps.claimClass
+      .mockResolvedValueOnce({ ...first, reclaimedStale: false })
+      .mockResolvedValueOnce({ ...second, reclaimedStale: false })
+      .mockResolvedValue(null);
     deps.run.mockRejectedValueOnce(error).mockResolvedValueOnce({});
     deps.fail.mockResolvedValue({ updated: true, status: "failed" });
     deps.succeed.mockResolvedValue(true);

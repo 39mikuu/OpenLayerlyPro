@@ -6,11 +6,18 @@ import { paymentProviderEvents, type Task, tasks } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
-import { DEFAULT_MAX_ATTEMPTS, enqueueTask } from "./enqueue";
+import { DEFAULT_MAX_ATTEMPTS, enqueueTask, enqueueTaskReturningId } from "./enqueue";
 import { PermanentTaskError, type TaskFailureClassification } from "./errors";
 import { paymentProviderEventPayloadSchema } from "./payloads";
+import { type TaskQueueClass } from "./queue-class";
 
-export { DEFAULT_MAX_ATTEMPTS, enqueueTask, PermanentTaskError };
+export {
+  DEFAULT_MAX_ATTEMPTS,
+  enqueueTask,
+  enqueueTaskReturningId,
+  PermanentTaskError,
+  type TaskQueueClass,
+};
 
 // Total execution limit: failures 1-4 retry after 1m/2m/4m/8m; failure 5 is dead.
 export const TASK_LEASE_MS = 60_000;
@@ -68,6 +75,50 @@ function safeFailureMessage(kind: string, error: unknown): string {
 
 type ClaimOptions = { lockToken?: string; leaseMs?: number };
 type ClaimInternalOptions = ClaimOptions & { now?: Date };
+export type ClaimOneTaskForClassOptions = ClaimOptions & { includeStale?: boolean };
+type ClaimOneTaskForClassInternalOptions = ClaimOptions & { includeStale?: boolean };
+export type ClaimedTaskForClass = Task & { reclaimedStale: boolean };
+
+type RawTaskRow = {
+  id: string;
+  kind: string;
+  dedupe_key: string | null;
+  payload_json: unknown;
+  run_after: Date;
+  status: TaskStatus;
+  attempts: number;
+  max_attempts: number;
+  locked_at: Date | null;
+  locked_by: string | null;
+  lease_until: Date | null;
+  last_error: string | null;
+  priority: number;
+  queue_class: TaskQueueClass;
+  created_at: Date;
+  updated_at: Date;
+};
+
+function rawTaskRowToTask(row: RawTaskRow, reclaimedStale: boolean): ClaimedTaskForClass {
+  return {
+    id: row.id,
+    kind: row.kind,
+    dedupeKey: row.dedupe_key,
+    payloadJson: row.payload_json,
+    runAfter: row.run_after,
+    status: row.status,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    lockedAt: row.locked_at,
+    lockedBy: row.locked_by,
+    leaseUntil: row.lease_until,
+    lastError: row.last_error,
+    priority: row.priority,
+    queueClass: row.queue_class,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    reclaimedStale,
+  };
+}
 
 async function sweepExpiredFinalAttemptTasksInternal(options: {
   now?: Date;
@@ -188,6 +239,87 @@ async function claimDueTasksInternal(
     const order = new Map(selectedIds.map((id, index) => [id, index]));
     return claimed.sort((left, right) => order.get(left.id)! - order.get(right.id)!);
   });
+}
+
+async function claimOneTaskForClassBranch(
+  queueClass: TaskQueueClass,
+  options: ClaimOneTaskForClassInternalOptions & { branch: "stale" | "due" },
+): Promise<ClaimedTaskForClass | null> {
+  const lockToken = options.lockToken ?? randomUUID();
+  const leaseMs = options.leaseMs ?? TASK_LEASE_MS;
+  return getDb().transaction(async (tx) => {
+    if (options.branch === "stale") {
+      const rows = await tx.execute(sql<RawTaskRow>`
+        WITH candidate AS (
+          SELECT id
+          FROM tasks
+          WHERE queue_class = ${queueClass}
+            AND status = 'processing'
+            AND lease_until < now()
+            AND attempts < max_attempts
+          ORDER BY lease_until ASC, priority ASC, id ASC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE tasks
+        SET status = 'processing',
+            attempts = attempts + 1,
+            locked_at = now(),
+            locked_by = ${lockToken},
+            lease_until = now() + (${leaseMs} * interval '1 millisecond'),
+            updated_at = now()
+        FROM candidate
+        WHERE tasks.id = candidate.id
+        RETURNING tasks.*;
+      `);
+      const row = rows[0] as RawTaskRow | undefined;
+      return row ? rawTaskRowToTask(row, true) : null;
+    }
+
+    const rows = await tx.execute(sql<RawTaskRow>`
+      WITH candidate AS (
+        SELECT id
+        FROM tasks
+        WHERE queue_class = ${queueClass}
+          AND status IN ('pending','failed')
+          AND run_after <= now()
+          AND attempts < max_attempts
+        ORDER BY run_after ASC, priority ASC, id ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE tasks
+      SET status = 'processing',
+          attempts = attempts + 1,
+          locked_at = now(),
+          locked_by = ${lockToken},
+          lease_until = now() + (${leaseMs} * interval '1 millisecond'),
+          updated_at = now()
+      FROM candidate
+      WHERE tasks.id = candidate.id
+      RETURNING tasks.*;
+    `);
+    const row = rows[0] as RawTaskRow | undefined;
+    return row ? rawTaskRowToTask(row, false) : null;
+  });
+}
+
+async function claimOneTaskForClassInternal(
+  queueClass: TaskQueueClass,
+  options: ClaimOneTaskForClassInternalOptions,
+): Promise<ClaimedTaskForClass | null> {
+  if (options.includeStale ?? true) {
+    const stale = await claimOneTaskForClassBranch(queueClass, { ...options, branch: "stale" });
+    if (stale) return stale;
+  }
+  return claimOneTaskForClassBranch(queueClass, { ...options, branch: "due" });
+}
+
+export async function claimOneTaskForClass(
+  queueClass: TaskQueueClass,
+  options: ClaimOneTaskForClassOptions = {},
+): Promise<ClaimedTaskForClass | null> {
+  return claimOneTaskForClassInternal(queueClass, options);
 }
 
 /** Production claim path. All due, lease and lock timestamps come from PostgreSQL. */

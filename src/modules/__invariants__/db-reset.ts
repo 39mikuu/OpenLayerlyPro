@@ -9,6 +9,12 @@ import { type DbClient, getDb } from "@/db";
 export async function resetDatabase(db: DbClient = getDb()): Promise<void> {
   await db.execute(sql`
     truncate table
+      notification_delivery_attempts,
+      notification_quota_windows,
+      notification_suppressions,
+      notification_deliveries,
+      notification_campaigns,
+      notification_preferences,
       audit_events,
       tasks,
       app_events,

@@ -62,6 +62,8 @@ function task(payloadJson: Record<string, unknown>, kind = "email", createdAt = 
     lockedBy: "worker",
     leaseUntil: new Date(now.getTime() + 60_000),
     lastError: null,
+    priority: kind === "auth.login_code_email" ? 0 : 10,
+    queueClass: "transactional",
     createdAt,
     updatedAt: now,
   };
