@@ -70,7 +70,8 @@ type PreparedMessage = {
   title: string;
   summary: string | null;
   postUrl: string;
-  unsubscribeUrl: string;
+  unsubscribeConfirmUrl: string;
+  unsubscribeOneClickUrl: string;
   siteName: string;
 };
 
@@ -495,7 +496,8 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
       preferenceVersion: preference.version,
       issuedAt: now,
     });
-    const unsubscribeUrl = absoluteUrl(`/api/notifications/unsubscribe/${token}`);
+    const unsubscribeConfirmUrl = absoluteUrl(`/unsubscribe/notifications/${token}`);
+    const unsubscribeOneClickUrl = absoluteUrl(`/api/notifications/unsubscribe/${token}`);
     const postUrl = absoluteUrl(`/posts/${post.slug}`);
     const siteName = getEnv().APP_NAME;
     const rendered = renderNewPostNotificationEmail(
@@ -503,7 +505,7 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
         title: localized.title,
         summary: localized.summary,
         postUrl,
-        unsubscribeUrl,
+        unsubscribeConfirmUrl,
         siteName,
       },
       locale,
@@ -545,7 +547,7 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
       textHash: hashText(rendered.text),
       textLength: rendered.text.length,
       postUrlHash: hashText(postUrl),
-      unsubscribeUrlHash: hashText(unsubscribeUrl),
+      unsubscribeUrlHash: hashText(unsubscribeConfirmUrl),
     };
 
     const attempt = await insertAttemptAndSetDeliveryTx(tx, {
@@ -579,7 +581,8 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
         title: localized.title,
         summary: localized.summary,
         postUrl,
-        unsubscribeUrl,
+        unsubscribeConfirmUrl,
+        unsubscribeOneClickUrl,
         siteName,
       },
     };
@@ -758,7 +761,8 @@ export async function handleNotificationDeliveryTask(task: Task): Promise<TaskHa
         title: message.title,
         summary: message.summary,
         postUrl: message.postUrl,
-        unsubscribeUrl: message.unsubscribeUrl,
+        unsubscribeConfirmUrl: message.unsubscribeConfirmUrl,
+        unsubscribeOneClickUrl: message.unsubscribeOneClickUrl,
         siteName: message.siteName,
       },
       message.recipientLocale,

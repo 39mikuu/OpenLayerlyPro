@@ -275,7 +275,8 @@ describeWithDatabase("G1 transactional email privacy migration", () => {
       (task) =>
         task.payload_json.template === "membership_activated" &&
         task.id !== terminalSafeId &&
-        task.id !== terminalUnsafeId,
+        task.id !== terminalUnsafeId &&
+        task.id !== unsafeId,
     );
     expect(activated?.payload_json).toMatchObject({
       version: 2,

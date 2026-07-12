@@ -53,6 +53,12 @@ AS $$
   )
 $$;
 
+-- Fence the dispatcher for the duration of this migration transaction:
+-- EXCLUSIVE conflicts with the ROW SHARE taken by SELECT ... FOR UPDATE
+-- SKIP LOCKED claims, so no worker can pick up a raw-recipient email task
+-- between the rewrite passes below and the final dead-letter/redaction pass.
+LOCK TABLE tasks IN EXCLUSIVE MODE;
+
 WITH safe AS (
   SELECT
     t.id,

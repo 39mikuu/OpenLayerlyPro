@@ -227,7 +227,7 @@ export function renderNewPostNotificationEmail(
     title: string;
     summary: string | null;
     postUrl: string;
-    unsubscribeUrl: string;
+    unsubscribeConfirmUrl: string;
     siteName: string;
   },
   locale?: Locale,
@@ -244,7 +244,7 @@ export function renderNewPostNotificationEmail(
       "",
       t("mail.newPostOpen", { url: input.postUrl }),
       "",
-      t("mail.newPostUnsubscribe", { url: input.unsubscribeUrl }),
+      t("mail.newPostUnsubscribe", { url: input.unsubscribeConfirmUrl }),
     ]
       .filter((line) => line.length > 0)
       .join("\n"),
@@ -257,21 +257,33 @@ export async function sendNewPostNotificationEmail(
     title: string;
     summary: string | null;
     postUrl: string;
-    unsubscribeUrl: string;
+    unsubscribeConfirmUrl: string;
+    unsubscribeOneClickUrl: string;
     siteName: string;
   },
   locale: Locale,
   headers: Record<string, string>,
   safeLog: MailSafeLog,
 ): Promise<void> {
-  const message = renderNewPostNotificationEmail(input, locale);
+  const message = renderNewPostNotificationEmail(
+    {
+      title: input.title,
+      summary: input.summary,
+      postUrl: input.postUrl,
+      unsubscribeConfirmUrl: input.unsubscribeConfirmUrl,
+      siteName: input.siteName,
+    },
+    locale,
+  );
   await sendMail({
     to,
     subject: message.subject,
     text: message.text,
     headers: {
       ...headers,
-      "List-Unsubscribe": `<${input.unsubscribeUrl}>`,
+      // RFC 8058: the header carries the one-click POST endpoint; the human
+      // confirmation page link lives in the message body instead.
+      "List-Unsubscribe": `<${input.unsubscribeOneClickUrl}>`,
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     },
     safeLog: { ...safeLog, template: "new_post_notification", category: "notification" },

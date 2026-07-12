@@ -30,10 +30,6 @@ type RecipientCandidate = {
   user_id: string;
 };
 
-type ExpansionCompletion = {
-  delivery_count: number | string;
-};
-
 function oneSecondFromNow(): Date {
   return new Date(Date.now() + 1_000);
 }
@@ -168,18 +164,21 @@ async function enqueueCampaignFinalizeTx(
 }
 
 async function completeExpansionTx(tx: DbClient, campaignId: string): Promise<void> {
-  const rows = await tx.execute<ExpansionCompletion>(sql`
-    SELECT count(*)::int AS delivery_count
+  // Only the zero/nonzero decision matters here — probe one row instead of
+  // counting the whole recipient set so completion stays bounded.
+  const rows = await tx.execute<{ present: number }>(sql`
+    SELECT 1 AS present
     FROM notification_deliveries
     WHERE campaign_id = ${campaignId}
+    LIMIT 1
   `);
-  const deliveryCount = Number(rows[0]?.delivery_count ?? 0);
+  const hasDeliveries = rows.length > 0;
   await tx
     .update(notificationCampaigns)
     .set({
-      status: deliveryCount > 0 ? "sending" : "completed",
+      status: hasDeliveries ? "sending" : "completed",
       expansionCompletedAt: sql`now()`,
-      completedAt: deliveryCount > 0 ? null : sql`now()`,
+      completedAt: hasDeliveries ? null : sql`now()`,
       updatedAt: sql`now()`,
     })
     .where(eq(notificationCampaigns.id, campaignId));

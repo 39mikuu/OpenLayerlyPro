@@ -220,7 +220,10 @@ describeWithDatabase("notification delivery", () => {
         title: "日本語タイトル",
         summary: "日本語概要",
         postUrl: `https://example.test/posts/${post.slug}`,
-        unsubscribeUrl: expect.stringContaining(
+        unsubscribeConfirmUrl: expect.stringContaining(
+          "https://example.test/unsubscribe/notifications/olp_npu.v1.unsub-current.",
+        ),
+        unsubscribeOneClickUrl: expect.stringContaining(
           "https://example.test/api/notifications/unsubscribe/olp_npu.v1.unsub-current.",
         ),
       }),
