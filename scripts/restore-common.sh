@@ -285,6 +285,7 @@ read_secret_source_from_env() {
   if [ "$secret_status" -eq 0 ] && [ -n "$secret_value" ]; then
     eval "${output_prefix}_SOURCE=external"
     eval "${output_prefix}_FILE="
+    # shellcheck disable=SC2034 # consumed via eval into ${output_prefix}_SHA256 below
     secret_sha256=$(sha256_secret_value "$secret_value") \
       || fail "externally managed $secret_name is missing or invalid"
     eval "${output_prefix}_SHA256=\$secret_sha256"
@@ -310,6 +311,7 @@ read_optional_secret_source_from_env() {
   if [ "$secret_status" -eq 0 ] && [ -n "$secret_value" ]; then
     eval "${output_prefix}_SOURCE=external"
     eval "${output_prefix}_FILE="
+    # shellcheck disable=SC2034 # consumed via eval into ${output_prefix}_SHA256 below
     secret_sha256=$(sha256_secret_value "$secret_value") \
       || fail "externally managed $secret_name is missing or invalid"
     eval "${output_prefix}_SHA256=\$secret_sha256"
@@ -371,8 +373,10 @@ read_app_container_runtime_config() {
     NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY
 
   NOTIFICATION_UNSUBSCRIBE_KEY_ID=$(container_env_value "$env_json" NOTIFICATION_UNSUBSCRIBE_KEY_ID current | tr -d '\r')
+  # shellcheck disable=SC2034 # consumed by backup.sh after sourcing this helper
   NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID=$(container_env_value "$env_json" NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID "" | tr -d '\r')
   NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID=$(container_env_value "$env_json" NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID current | tr -d '\r')
+  # shellcheck disable=SC2034 # consumed by backup.sh after sourcing this helper
   NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID=$(container_env_value "$env_json" NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID "" | tr -d '\r')
 
   case "$STORAGE_DRIVER" in

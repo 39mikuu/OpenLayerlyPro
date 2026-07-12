@@ -90,6 +90,7 @@ backup_notification_secret_if_file() {
     fix_workspace_permissions
     validate_copied_notification_secret_file "$WORK_DIR/$archive_path" "$label"
     chmod 600 "$WORK_DIR/$archive_path" || fail "unable to secure $label in backup workspace"
+    # shellcheck disable=SC2034 # consumed via eval into ${output_prefix}_SHA256 below
     secret_sha256=$(sha256_trimmed_file "$WORK_DIR/$archive_path") \
       || fail "unable to fingerprint $label"
     eval "${output_prefix}_SHA256=\$secret_sha256"
