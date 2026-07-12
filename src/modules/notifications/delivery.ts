@@ -20,6 +20,11 @@ import {
 } from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { getSmtpConfig } from "@/modules/config";
+import {
+  buildPostUrl,
+  buildPublicUrl,
+  getPublicBaseUrl,
+} from "@/modules/content/public-projection";
 import { isLocale, type Locale } from "@/modules/i18n";
 import { renderNewPostNotificationEmail, sendNewPostNotificationEmail } from "@/modules/mail";
 import {
@@ -130,10 +135,6 @@ function expired(createdAt: Date, now: Date): boolean {
     now.getTime() - createdAt.getTime() >
     getEnv().NOTIFICATION_DELIVERY_MAX_AGE_HOURS * 60 * 60 * 1000
   );
-}
-
-function absoluteUrl(path: string): string {
-  return new URL(path, getEnv().APP_URL).toString();
 }
 
 function hashText(value: string): string {
@@ -593,9 +594,18 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
       preferenceVersion: preference.version,
       issuedAt: now,
     });
-    const unsubscribeConfirmUrl = absoluteUrl(`/unsubscribe/notifications/${token}`);
-    const unsubscribeOneClickUrl = absoluteUrl(`/api/notifications/unsubscribe/${token}`);
-    const postUrl = absoluteUrl(`/posts/${post.slug}`);
+    // buildPublicUrl preserves an APP_URL path prefix (subpath deployments);
+    // `new URL("/x", base)` would drop it and break every emailed link.
+    const publicBaseUrl = getPublicBaseUrl(getEnv().APP_URL);
+    const unsubscribeConfirmUrl = buildPublicUrl(
+      publicBaseUrl,
+      `/unsubscribe/notifications/${encodeURIComponent(token)}`,
+    );
+    const unsubscribeOneClickUrl = buildPublicUrl(
+      publicBaseUrl,
+      `/api/notifications/unsubscribe/${encodeURIComponent(token)}`,
+    );
+    const postUrl = buildPostUrl(publicBaseUrl, post.slug);
     const siteName = getEnv().APP_NAME;
     const rendered = renderNewPostNotificationEmail(
       {
