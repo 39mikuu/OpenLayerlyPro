@@ -44,6 +44,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/dist/restore-config-key-probe.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/dedupe-pending-payments.mjs ./scripts/dedupe-pending-payments.mjs
 COPY docker/ensure-config-encryption-key.mjs ./docker/ensure-config-encryption-key.mjs
 COPY docker/ensure-session-secret.mjs ./docker/ensure-session-secret.mjs
+COPY docker/ensure-notification-secret.mjs ./docker/ensure-notification-secret.mjs
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/entrypoint-secrets.sh /entrypoint-secrets.sh
 RUN chmod +x /entrypoint.sh \

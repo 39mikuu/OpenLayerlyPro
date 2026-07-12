@@ -86,6 +86,22 @@ entrypoint_apply_root_ownership() {
     suppression_file_mode=true
   fi
 
+  unsubscribe_previous_file_mode=false
+  NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRETS_DIR=
+  if [ -z "${NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET:-}" ] && \
+    [ -n "${NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE:-}" ]; then
+    unsubscribe_previous_file_mode=true
+    NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRETS_DIR="$(dirname "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE")"
+  fi
+
+  suppression_previous_file_mode=false
+  NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR=
+  if [ -z "${NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET:-}" ] && \
+    [ -n "${NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE:-}" ]; then
+    suppression_previous_file_mode=true
+    NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR="$(dirname "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE")"
+  fi
+
   # In CONFIG_ENCRYPTION_KEY env mode, the config key file path is not touched at all:
   # no file tests, chmod, or chown. Still chown the shared secrets dir when the
   # file-backed SESSION_SECRET lives there, because the default session-secret path is
@@ -94,7 +110,9 @@ entrypoint_apply_root_ownership() {
     [ "$config_file_mode" = true ] || {
       { [ "$session_file_mode" = true ] && [ "$SESSION_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
       { [ "$unsubscribe_file_mode" = true ] && [ "$NOTIFICATION_UNSUBSCRIBE_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
-      { [ "$suppression_file_mode" = true ] && [ "$NOTIFICATION_SUPPRESSION_SECRETS_DIR" = "$SECRETS_DIR" ]; }
+      { [ "$suppression_file_mode" = true ] && [ "$NOTIFICATION_SUPPRESSION_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
+      { [ "$unsubscribe_previous_file_mode" = true ] && [ "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
+      { [ "$suppression_previous_file_mode" = true ] && [ "$NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR" = "$SECRETS_DIR" ]; }
     }
   }; then
     chown nextjs:nodejs "$SECRETS_DIR"
@@ -103,7 +121,9 @@ entrypoint_apply_root_ownership() {
   for notification_secret_dir in \
     "$SESSION_SECRETS_DIR" \
     "$NOTIFICATION_UNSUBSCRIBE_SECRETS_DIR" \
-    "$NOTIFICATION_SUPPRESSION_SECRETS_DIR"
+    "$NOTIFICATION_SUPPRESSION_SECRETS_DIR" \
+    "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRETS_DIR" \
+    "$NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR"
   do
     if [ "$notification_secret_dir" != "$SECRETS_DIR" ] && [ -d "$notification_secret_dir" ]; then
       chown nextjs:nodejs "$notification_secret_dir"
@@ -130,6 +150,22 @@ entrypoint_apply_root_ownership() {
   if [ "$suppression_file_mode" = true ]; then
     entrypoint_chown_regular_file_or_fail \
       "$NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE" "NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE" \
+      || return 1
+  fi
+
+  if [ "$unsubscribe_previous_file_mode" = true ] && \
+    [ -e "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" ]; then
+    entrypoint_chown_regular_file_or_fail \
+      "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" \
+      "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" \
+      || return 1
+  fi
+
+  if [ "$suppression_previous_file_mode" = true ] && \
+    [ -e "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" ]; then
+    entrypoint_chown_regular_file_or_fail \
+      "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" \
+      "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" \
       || return 1
   fi
 }

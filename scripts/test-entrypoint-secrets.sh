@@ -41,6 +41,10 @@ reset_fixture() {
   unset SESSION_SECRET
   unset NOTIFICATION_UNSUBSCRIBE_SECRET
   unset NOTIFICATION_SUPPRESSION_DIGEST_SECRET
+  unset NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET
+  unset NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE
+  unset NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET
+  unset NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE
 }
 
 reset_fixture
@@ -86,6 +90,57 @@ if entrypoint_apply_root_ownership 2>"$TEST_ROOT/session-symlink.err"; then
 fi
 grep -F "SESSION_SECRET_FILE must not be a symlink" "$TEST_ROOT/session-symlink.err" >/dev/null \
   || fail "file-backed session mode did not fail loudly on symlinked path"
+
+reset_fixture
+mkdir -p "$TEST_ROOT/root/previous"
+NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE="$TEST_ROOT/root/previous/notification-unsubscribe-previous-secret"
+NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE="$TEST_ROOT/root/previous/notification-suppression-digest-previous-secret"
+export NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE
+export NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE
+printf '%s' "old-unsubscribe-secret-material" > "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE"
+printf '%s' "old-suppression-secret-material" > "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE"
+entrypoint_apply_root_ownership
+grep -F "nextjs:nodejs $TEST_ROOT/root/previous" "$CHOWN_LOG" >/dev/null \
+  || fail "previous notification secret file mode did not chown the containing dir"
+grep -F -- "-h nextjs:nodejs $NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" \
+  "$CHOWN_LOG" >/dev/null \
+  || fail "previous unsubscribe file mode did not chown the existing file"
+grep -F -- "-h nextjs:nodejs $NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" \
+  "$CHOWN_LOG" >/dev/null \
+  || fail "previous suppression file mode did not chown the existing file"
+
+reset_fixture
+mkdir -p "$TEST_ROOT/root/previous"
+NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE="$TEST_ROOT/root/previous/notification-unsubscribe-previous-secret"
+NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE="$TEST_ROOT/root/previous/notification-suppression-digest-previous-secret"
+export NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE
+export NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE
+printf '%s' "old-unsubscribe-secret-material" > "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE"
+printf '%s' "old-suppression-secret-material" > "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE"
+export NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET=external-old-unsubscribe-secret
+export NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET=external-old-suppression-secret
+entrypoint_apply_root_ownership
+if grep -F "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" "$CHOWN_LOG" >/dev/null; then
+  fail "previous unsubscribe env mode chowned the file path"
+fi
+if grep -F "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" "$CHOWN_LOG" >/dev/null; then
+  fail "previous suppression env mode chowned the file path"
+fi
+
+reset_fixture
+NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE="$TEST_ROOT/root/missing/notification-unsubscribe-previous-secret"
+NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE="$TEST_ROOT/root/missing/notification-suppression-digest-previous-secret"
+export NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE
+export NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE
+entrypoint_apply_root_ownership
+[ ! -e "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" ] \
+  || fail "absent previous unsubscribe file was created"
+[ ! -e "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" ] \
+  || fail "absent previous suppression file was created"
+[ ! -d "$TEST_ROOT/root/missing" ] || fail "absent previous secret dir was created"
+if grep -F "$TEST_ROOT/root/missing" "$CHOWN_LOG" >/dev/null; then
+  fail "absent previous secret path was chowned"
+fi
 
 # Upgraded envs without the new key-id variables must default to "current"
 # so runtime key-pair validation accepts the generated file-backed secrets.
