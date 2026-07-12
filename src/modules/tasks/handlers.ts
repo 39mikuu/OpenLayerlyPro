@@ -22,6 +22,7 @@ import {
   handleRenewalReminder,
   shouldSendRenewalReminderEmail,
 } from "@/modules/membership/renewal-reminders";
+import { handleCampaignExpandTask, handleCampaignFinalizeTask } from "@/modules/notifications";
 import { cleanupPaymentProof } from "@/modules/payment/proof-lifecycle";
 import {
   dispatchPaymentProviderEvent,
@@ -271,6 +272,10 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
       // failures keep the normal durable-task retry/backoff semantics.
       return { deferUntil: nextSubscriptionReconcileAt() };
     }
+    case "notification.campaign_expand":
+      return handleCampaignExpandTask(task.payloadJson);
+    case "notification.campaign_finalize":
+      return handleCampaignFinalizeTask(task.payloadJson);
     default:
       throw new PermanentTaskError("Unsupported task kind");
   }
