@@ -11,6 +11,13 @@ entrypoint_configure_secret_environment() {
   export NOTIFICATION_UNSUBSCRIBE_SECRET_FILE
   NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE="${NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE:-/app/secrets/notification-suppression-digest-secret}"
   export NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE
+  # Upgraded Compose envs predate the key-id variables; default them so the
+  # runtime key-pair validation accepts the generated file-backed secrets
+  # (restore already assumes the "current" key id).
+  NOTIFICATION_UNSUBSCRIBE_KEY_ID="${NOTIFICATION_UNSUBSCRIBE_KEY_ID:-current}"
+  export NOTIFICATION_UNSUBSCRIBE_KEY_ID
+  NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID="${NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID:-current}"
+  export NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID
   SECRETS_DIR="$(dirname "$CONFIG_ENCRYPTION_KEY_FILE")"
   SESSION_SECRETS_DIR="$(dirname "$SESSION_SECRET_FILE")"
   NOTIFICATION_UNSUBSCRIBE_SECRETS_DIR="$(dirname "$NOTIFICATION_UNSUBSCRIBE_SECRET_FILE")"

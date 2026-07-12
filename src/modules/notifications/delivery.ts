@@ -67,6 +67,7 @@ type PreparedMessage = {
   attemptNumber: number;
   taskId: string;
   taskLockToken: string;
+  finalAttempt: boolean;
   deliveryId: string;
   campaignId: string;
   recipientEmail: string;
@@ -669,6 +670,7 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
         attemptNumber: attempt.attemptNumber,
         taskId: task.id,
         taskLockToken: task.lockedBy ?? "",
+        finalAttempt: task.attempts >= task.maxAttempts,
         deliveryId: delivery.id,
         campaignId: campaign.id,
         recipientEmail: user.email,
@@ -866,15 +868,21 @@ async function finishFailureTx(
         ),
       );
     if (!(await isLatestAttemptHeldByTaskTx(tx, message))) return;
+    // On the task's final attempt the dispatcher dead-letters the task after
+    // this throw, so the delivery must reach a terminal state here or the
+    // campaign finalizer would defer forever.
     await tx
       .update(notificationDeliveries)
       .set({
-        status: "failed",
+        status: message.finalAttempt ? "dead" : "failed",
         lastOutcome: "transient_failure",
-        lastError: "SMTP transient failure",
+        lastError: message.finalAttempt
+          ? "SMTP transient failure; retries exhausted"
+          : "SMTP transient failure",
         updatedAt: sql`now()`,
       })
       .where(eq(notificationDeliveries.id, message.deliveryId));
+    if (message.finalAttempt) await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
   });
   throw new MailDeliveryError("transient");
 }

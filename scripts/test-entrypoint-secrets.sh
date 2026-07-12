@@ -87,4 +87,20 @@ fi
 grep -F "SESSION_SECRET_FILE must not be a symlink" "$TEST_ROOT/session-symlink.err" >/dev/null \
   || fail "file-backed session mode did not fail loudly on symlinked path"
 
+# Upgraded envs without the new key-id variables must default to "current"
+# so runtime key-pair validation accepts the generated file-backed secrets.
+unset NOTIFICATION_UNSUBSCRIBE_KEY_ID NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID
+entrypoint_configure_secret_environment
+[ "$NOTIFICATION_UNSUBSCRIBE_KEY_ID" = current ] \
+  || fail "unset NOTIFICATION_UNSUBSCRIBE_KEY_ID did not default to current"
+[ "$NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID" = current ] \
+  || fail "unset NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID did not default to current"
+export NOTIFICATION_UNSUBSCRIBE_KEY_ID=rotated NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID=rotated2
+entrypoint_configure_secret_environment
+[ "$NOTIFICATION_UNSUBSCRIBE_KEY_ID" = rotated ] \
+  || fail "explicit NOTIFICATION_UNSUBSCRIBE_KEY_ID was overridden"
+[ "$NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID" = rotated2 ] \
+  || fail "explicit NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID was overridden"
+unset NOTIFICATION_UNSUBSCRIBE_KEY_ID NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID
+
 echo "Entrypoint secrets ownership tests passed"

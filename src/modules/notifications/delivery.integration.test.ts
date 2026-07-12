@@ -615,6 +615,38 @@ describeWithDatabase("notification delivery", () => {
     await expect(db.select().from(notificationSuppressions)).resolves.toHaveLength(1);
   });
 
+  it("terminalizes the delivery and finalizes the campaign when transient retries exhaust", async () => {
+    const { campaign, delivery, task } = await seedDelivery();
+    await db.update(tasks).set({ attempts: 5, maxAttempts: 5 }).where(eq(tasks.id, task.id));
+    const [finalTask] = await db.select().from(tasks).where(eq(tasks.id, task.id));
+    mocks.sendNewPostNotificationEmail.mockRejectedValueOnce(new MailDeliveryError("transient"));
+
+    await expect(handleNotificationDeliveryTask(finalTask as Task)).rejects.toMatchObject({
+      kind: "transient",
+    });
+
+    const [stored] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, delivery.id));
+    expect(stored).toMatchObject({
+      status: "dead",
+      lastOutcome: "transient_failure",
+      lastError: "SMTP transient failure; retries exhausted",
+    });
+    const [finalizeTask] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.kind, "notification.campaign_finalize"));
+    expect(finalizeTask).toBeDefined();
+    await expect(handleCampaignFinalizeTask(finalizeTask!.payloadJson)).resolves.toEqual({});
+    const [storedCampaign] = await db
+      .select()
+      .from(notificationCampaigns)
+      .where(eq(notificationCampaigns.id, campaign.id));
+    expect(storedCampaign).toMatchObject({ status: "completed" });
+  });
+
   it("keeps swept lease_expired attempts immutable against late stale-worker outcomes", async () => {
     const sweepAt = new Date(Date.now() + 60_000);
     const { delivery, task } = await seedDelivery();
