@@ -3,7 +3,7 @@
 process.env.APP_URL = "https://seo.example";
 
 import { eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { GET as sitemapIndexGET } from "@/app/sitemap.xml/route";
 import { GET as postShardGET } from "@/app/sitemaps/posts/[shard]/route";
@@ -200,6 +200,10 @@ describeWithDatabase("public projection SEO integration", () => {
     process.env.APP_URL = APP_URL;
     await resetDatabase(db);
     await upsertSiteSettings();
+  });
+
+  afterAll(async () => {
+    await resetDatabase(db);
   });
 
   it("keeps sitemap/index/shards public-only and stable across crawler headers", async () => {
