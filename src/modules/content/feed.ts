@@ -244,10 +244,22 @@ export async function buildPublicAtomFeed(dbc: DbClient = getDb()): Promise<Publ
   return buildFeedMetadata(xml, lastModifiedAt);
 }
 
+// Unlike the sitemap/robots collections (ETag-only), the feed keeps its WP3
+// contract: Last-Modified is advertised and If-Modified-Since is honored with
+// precise-ms comparison, with If-None-Match always taking precedence.
 export function isPublicAtomFeedNotModified(headers: Headers, feed: PublicAtomFeed): boolean {
-  return isPublicHttpResourceNotModified(headers, { ...feed, body: feed.xml });
+  if (headers.get("if-none-match")) {
+    return isPublicHttpResourceNotModified(headers, { body: feed.xml, etag: feed.etag });
+  }
+  const ifModifiedSince = headers.get("if-modified-since");
+  if (!ifModifiedSince) return false;
+  const since = Date.parse(ifModifiedSince);
+  if (!Number.isFinite(since)) return false;
+  return since >= feed.lastModifiedAt.getTime();
 }
 
 export function publicAtomFeedHeaders(feed: PublicAtomFeed): Headers {
-  return publicXmlHeaders({ ...feed, body: feed.xml }, PUBLIC_ATOM_CONTENT_TYPE);
+  const headers = publicXmlHeaders({ body: feed.xml, etag: feed.etag }, PUBLIC_ATOM_CONTENT_TYPE);
+  headers.set("last-modified", feed.lastModified);
+  return headers;
 }

@@ -14,7 +14,6 @@ import {
   getPublicBaseUrl,
   listPublicSitemapShard,
   maxPublicDate,
-  PUBLIC_EMPTY_LAST_MODIFIED,
   PUBLIC_SITEMAP_URL_LIMIT,
   type PublicHttpResource,
   type PublicPostProjectionRow,
@@ -108,10 +107,8 @@ export async function buildSitemapIndexResource(
     1,
     countPublicSitemapPostShards(postCount, opts.shardSize ?? PUBLIC_SITEMAP_URL_LIMIT),
   );
-  // Known accepted limitation (same ruling as the feed): derived from rows
-  // still in the public projection, so removals can move it backward and an
-  // If-Modified-Since-only client may briefly get a stale 304. The strong
-  // ETag is the authoritative validator and If-None-Match takes precedence.
+  // Per-entry <lastmod> below is informational; the HTTP resource itself is
+  // validated by strong ETag only (see buildPublicHttpResource).
   const lastModifiedAt = maxPublicDate(site.feedIdentityUpdatedAt, latestPostUpdatedAt);
   const entries: SitemapEntry[] = [
     {
@@ -123,7 +120,7 @@ export async function buildSitemapIndexResource(
       lastmod: latestPostUpdatedAt ?? lastModifiedAt,
     })),
   ];
-  return buildPublicHttpResource(renderSitemapIndex(entries), lastModifiedAt);
+  return buildPublicHttpResource(renderSitemapIndex(entries));
 }
 
 export async function buildStaticSitemapResource(
@@ -133,12 +130,11 @@ export async function buildStaticSitemapResource(
 ): Promise<PublicHttpResource> {
   const baseUrl = opts.baseUrl ?? getPublicBaseUrl();
   const site = await readPublicSiteInfoWithMetadata();
-  const lastModifiedAt = site.feedIdentityUpdatedAt ?? PUBLIC_EMPTY_LAST_MODIFIED;
   const entries = STATIC_SITEMAP_PATHS.map((path) => ({
     loc: buildPublicUrl(baseUrl, path),
     lastmod: site.feedIdentityUpdatedAt,
   }));
-  return buildPublicHttpResource(renderSitemapUrlSet(entries), lastModifiedAt);
+  return buildPublicHttpResource(renderSitemapUrlSet(entries));
 }
 
 export async function buildPostSitemapShardResource(opts: {
@@ -164,10 +160,7 @@ export async function buildPostSitemapShardResource(opts: {
     loc: buildPostUrl(baseUrl, post.slug),
     lastmod: post.updatedAt,
   }));
-  return buildPublicHttpResource(
-    renderSitemapUrlSet(entries),
-    maxPublicDate(...posts.map((post) => post.updatedAt)),
-  );
+  return buildPublicHttpResource(renderSitemapUrlSet(entries));
 }
 
 const ROBOTS_DISALLOW_PATHS = [
@@ -186,9 +179,13 @@ export function buildRobotsTxt(baseUrl = getPublicBaseUrl()): PublicHttpResource
   const body = [
     "User-agent: *",
     `Allow: ${basePath || "/"}${basePath ? "/" : ""}`,
+    // Site icons advertised in page metadata resolve under /api/files/, so
+    // allow that subtree (longest-match wins) before disallowing the rest of
+    // the API; the download routes stay auth-gated regardless of crawling.
+    `Allow: ${basePath}/api/files/`,
     ...ROBOTS_DISALLOW_PATHS.map((path) => `Disallow: ${basePath}${path}`),
     `Sitemap: ${buildPublicUrl(baseUrl, "/sitemap.xml")}`,
     "",
   ].join("\n");
-  return buildPublicHttpResource(body, PUBLIC_EMPTY_LAST_MODIFIED);
+  return buildPublicHttpResource(body);
 }

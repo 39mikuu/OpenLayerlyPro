@@ -76,19 +76,20 @@ describe("public projection helpers", () => {
   });
 
   it("builds strong validators and public route headers", () => {
-    const resource = buildPublicHttpResource("<xml/>", new Date("2026-07-10T12:00:00.900Z"));
+    const resource = buildPublicHttpResource("<xml/>");
     const headers = publicXmlHeaders(resource, "application/xml; charset=utf-8");
 
     expect(resource.etag).toMatch(/^"[A-Za-z0-9_-]+"$/);
     expect(headers.get("content-type")).toBe("application/xml; charset=utf-8");
     expect(headers.get("cache-control")).toBe(PUBLIC_SEO_CACHE_CONTROL);
     expect(headers.get("x-content-type-options")).toBe("nosniff");
+    expect(headers.get("last-modified")).toBeNull();
     expect(headers.get("set-cookie")).toBeNull();
     expect(headers.get("vary")).toBeNull();
   });
 
-  it("honors ETag precedence and precise If-Modified-Since comparison", () => {
-    const resource = buildPublicHttpResource("<xml/>", new Date("2026-07-10T12:00:00.900Z"));
+  it("matches only If-None-Match validators and ignores If-Modified-Since", () => {
+    const resource = buildPublicHttpResource("<xml/>");
 
     expect(
       isPublicHttpResourceNotModified(
@@ -102,18 +103,14 @@ describe("public projection helpers", () => {
     expect(
       isPublicHttpResourceNotModified(new Headers({ "if-none-match": resource.etag }), resource),
     ).toBe(true);
-    expect(
-      isPublicHttpResourceNotModified(
-        new Headers({ "if-modified-since": "Fri, 10 Jul 2026 12:00:00 GMT" }),
-        resource,
-      ),
-    ).toBe(false);
+    // ETag-only by design: a derived Last-Modified could move backward when
+    // rows leave the public projection, so IMS alone never yields a 304.
     expect(
       isPublicHttpResourceNotModified(
         new Headers({ "if-modified-since": "Fri, 10 Jul 2026 12:00:01 GMT" }),
         resource,
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(isPublicHttpResourceNotModified(new Headers({ "if-none-match": "*" }), resource)).toBe(
       true,
     );

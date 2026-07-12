@@ -18,8 +18,6 @@ import { GET } from "./route";
 const SITEMAP = {
   body: "<urlset/>",
   etag: '"post-shard-etag"',
-  lastModifiedAt: new Date("2026-07-10T12:00:00.900Z"),
-  lastModified: "Fri, 10 Jul 2026 12:00:00 GMT",
 };
 
 function request(headers: HeadersInit = {}) {

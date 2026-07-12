@@ -31,8 +31,6 @@ export type PublicPostProjectionRow = {
 export type PublicHttpResource = {
   body: string;
   etag: string;
-  lastModifiedAt: Date;
-  lastModified: string;
 };
 
 type PublicProjectionSqlRow = {
@@ -438,12 +436,14 @@ export async function getPublicPostProjectionBySlug(
   return row ? rowToProjection(row) : null;
 }
 
-export function buildPublicHttpResource(body: string, lastModifiedAt: Date): PublicHttpResource {
+// Sitemap/robots collections are validated by strong ETag only. A derived
+// Last-Modified could move backward when rows leave the public projection,
+// letting If-Modified-Since-only clients keep stale 304s — so these routes
+// deliberately advertise no Last-Modified and ignore If-Modified-Since.
+export function buildPublicHttpResource(body: string): PublicHttpResource {
   return {
     body,
     etag: `"${createHash("sha256").update(body).digest("base64url")}"`,
-    lastModifiedAt,
-    lastModified: lastModifiedAt.toUTCString(),
   };
 }
 
@@ -452,19 +452,12 @@ export function isPublicHttpResourceNotModified(
   resource: PublicHttpResource,
 ): boolean {
   const ifNoneMatch = headers.get("if-none-match");
-  if (ifNoneMatch) {
-    if (ifNoneMatch.trim() === "*") return true;
-    return ifNoneMatch
-      .split(",")
-      .map((value) => value.trim().replace(/^W\//, ""))
-      .includes(resource.etag);
-  }
-
-  const ifModifiedSince = headers.get("if-modified-since");
-  if (!ifModifiedSince) return false;
-  const since = Date.parse(ifModifiedSince);
-  if (!Number.isFinite(since)) return false;
-  return since >= resource.lastModifiedAt.getTime();
+  if (!ifNoneMatch) return false;
+  if (ifNoneMatch.trim() === "*") return true;
+  return ifNoneMatch
+    .split(",")
+    .map((value) => value.trim().replace(/^W\//, ""))
+    .includes(resource.etag);
 }
 
 export function publicXmlHeaders(resource: PublicHttpResource, contentType: string): Headers {
@@ -472,7 +465,6 @@ export function publicXmlHeaders(resource: PublicHttpResource, contentType: stri
     "content-type": contentType,
     "cache-control": PUBLIC_SEO_CACHE_CONTROL,
     etag: resource.etag,
-    "last-modified": resource.lastModified,
     "x-content-type-options": "nosniff",
   });
 }

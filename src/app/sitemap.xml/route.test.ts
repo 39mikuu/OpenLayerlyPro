@@ -18,8 +18,6 @@ import { GET } from "./route";
 const SITEMAP = {
   body: "<sitemapindex/>",
   etag: '"sitemap-etag"',
-  lastModifiedAt: new Date("2026-07-10T12:00:00.900Z"),
-  lastModified: "Fri, 10 Jul 2026 12:00:00 GMT",
 };
 
 function request(headers: HeadersInit = {}) {
@@ -41,7 +39,7 @@ describe("sitemap.xml route", () => {
       "public, max-age=0, s-maxage=300, stale-while-revalidate=60",
     );
     expect(response.headers.get("etag")).toBe(SITEMAP.etag);
-    expect(response.headers.get("last-modified")).toBe(SITEMAP.lastModified);
+    expect(response.headers.get("last-modified")).toBeNull();
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("set-cookie")).toBeNull();
     expect(response.headers.get("vary")).toBeNull();
@@ -57,9 +55,10 @@ describe("sitemap.xml route", () => {
     await expect(response.text()).resolves.toBe("");
   });
 
-  it("does not collapse same-second If-Modified-Since before precise update time", async () => {
+  it("ignores If-Modified-Since entirely (ETag-only validation)", async () => {
     const response = await GET(request({ "if-modified-since": "Fri, 10 Jul 2026 12:00:00 GMT" }));
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("last-modified")).toBeNull();
   });
 });
