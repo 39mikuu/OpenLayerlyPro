@@ -65,8 +65,8 @@ validate_copied_notification_secret_file() {
     || fail "$label file is invalid or has unsafe permissions"
   node -e '
     const fs = require("fs");
-    const value = fs.readFileSync(process.argv[1], "utf8").replace(/\r?\n$/, "");
-    if (!value || value.trim().length === 0 || value === "change-me" || value.length < 32) {
+    const trimmed = fs.readFileSync(process.argv[1], "utf8").trim();
+    if (trimmed.length < 32 || trimmed === "change-me") {
       process.exit(1);
     }
   ' "$secret_path" || fail "$label file is invalid or has unsafe permissions"

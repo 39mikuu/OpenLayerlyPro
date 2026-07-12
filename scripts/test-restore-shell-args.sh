@@ -1371,4 +1371,98 @@ rm -f "$WHITESPACE_FILE"
 [ "$FILE_ACTUAL" = "$TRIMMED_EXPECTED" ] \
   || fail "file and value fingerprints disagree for the same trimmed secret"
 
+echo "Verifying trimmed strength validation of notification secrets..."
+WEAK_PADDED="x$(printf ' %.0s' $(seq 31))"
+ALL_SPACES=$(printf ' %.0s' $(seq 32))
+WRAPPED_31="  $(printf 'y%.0s' $(seq 31))  "
+WRAPPED_32="  $(printf 'z%.0s' $(seq 32))  "
+
+if sha256_trimmed_secret_value "$WEAK_PADDED" >/dev/null 2>&1; then
+  fail "raw-length-32 secret that trims to 1 char passed the trimmed fingerprint helper"
+fi
+if sha256_trimmed_secret_value "$ALL_SPACES" >/dev/null 2>&1; then
+  fail "all-whitespace secret passed the trimmed fingerprint helper"
+fi
+if sha256_trimmed_secret_value "$WRAPPED_31" >/dev/null 2>&1; then
+  fail "whitespace-wrapped 31-char secret passed the trimmed fingerprint helper"
+fi
+sha256_trimmed_secret_value "$WRAPPED_32" >/dev/null \
+  || fail "whitespace-wrapped 32-char secret was rejected by the trimmed fingerprint helper"
+
+# backup.sh's copied-file validator must enforce the same trimmed strength.
+eval "$(sed -n '/^validate_copied_notification_secret_file() {/,/^}/p' "$ROOT_DIR/scripts/backup.sh")"
+STRENGTH_FILE=$(mktemp "${TMPDIR:-/tmp}/openlayerly-secret-strength.XXXXXX")
+chmod 600 "$STRENGTH_FILE"
+for weak_value in "$WEAK_PADDED" "$ALL_SPACES" "$WRAPPED_31"; do
+  printf '%s\n' "$weak_value" > "$STRENGTH_FILE"
+  if (validate_copied_notification_secret_file "$STRENGTH_FILE" "strength test") \
+    >/dev/null 2>&1; then
+    rm -f "$STRENGTH_FILE"
+    fail "backup copied-file validator accepted a secret weaker than 32 trimmed chars"
+  fi
+done
+printf '%s\n' "$WRAPPED_32" > "$STRENGTH_FILE"
+validate_copied_notification_secret_file "$STRENGTH_FILE" "strength test" >/dev/null 2>&1 \
+  || fail "backup copied-file validator rejected a valid whitespace-wrapped secret"
+rm -f "$STRENGTH_FILE"
+
+# The archive preflight (which runs before the destructive dropdb) must reject
+# weak trimmed secrets even when the manifest fingerprint matches.
+sha_of_trimmed() {
+  SECRET_VALUE=$1 node -e '
+    const { createHash } = require("crypto");
+    process.stdout.write(
+      createHash("sha256").update((process.env.SECRET_VALUE ?? "").trim()).digest("hex"),
+    );
+  '
+}
+V4_WEAK_CURRENT_DIR="$TEST_ROOT/v4-weak-current"
+cp -R "$V4_DIR" "$V4_WEAK_CURRENT_DIR"
+printf '%s\n' "$WEAK_PADDED" > "$V4_WEAK_CURRENT_DIR/secrets/notification-unsubscribe-secret"
+chmod 600 "$V4_WEAK_CURRENT_DIR/secrets/notification-unsubscribe-secret"
+WEAK_SHA=$(sha_of_trimmed "$WEAK_PADDED")
+sed "s/^NOTIFICATION_UNSUBSCRIBE_KEY_SHA256=.*/NOTIFICATION_UNSUBSCRIBE_KEY_SHA256=$WEAK_SHA/" \
+  "$V4_DIR/manifest.env" > "$V4_WEAK_CURRENT_DIR/manifest.env"
+set +e
+weak_current_output=$(verify_archive_notification_key_fingerprints "$V4_WEAK_CURRENT_DIR" 4 2>&1)
+weak_current_status=$?
+set -e
+[ "$weak_current_status" -ne 0 ] \
+  || fail "weak trimmed current unsubscribe archive secret unexpectedly passed"
+printf '%s' "$weak_current_output" | grep -F "archive secret is invalid after trimming" >/dev/null \
+  || fail "weak current archive secret error was not explicit"
+
+V4_WEAK_PREVIOUS_DIR="$TEST_ROOT/v4-weak-previous"
+cp -R "$V4_DIR" "$V4_WEAK_PREVIOUS_DIR"
+printf '%s\n' "$ALL_SPACES" \
+  > "$V4_WEAK_PREVIOUS_DIR/secrets/notification-suppression-digest-previous-secret"
+chmod 600 "$V4_WEAK_PREVIOUS_DIR/secrets/notification-suppression-digest-previous-secret"
+SPACES_SHA=$(sha_of_trimmed "$ALL_SPACES")
+sed "s/^NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256=.*/NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SHA256=$SPACES_SHA/" \
+  "$V4_DIR/manifest.env" > "$V4_WEAK_PREVIOUS_DIR/manifest.env"
+set +e
+weak_previous_output=$(verify_archive_notification_key_fingerprints "$V4_WEAK_PREVIOUS_DIR" 4 2>&1)
+weak_previous_status=$?
+set -e
+[ "$weak_previous_status" -ne 0 ] \
+  || fail "weak trimmed previous suppression archive secret unexpectedly passed"
+printf '%s' "$weak_previous_output" | grep -F "archive secret is invalid after trimming" >/dev/null \
+  || fail "weak previous archive secret error was not explicit"
+
+# Guard the ordering contract: the archive fingerprint preflight must run
+# before the destructive dropdb in restore.sh.
+fingerprint_preflight_line=$(
+  awk 'index($0, "verify_archive_notification_key_fingerprints \"$WORK_DIR\"") { print NR; exit }' \
+    "$ROOT_DIR/scripts/restore.sh"
+)
+destructive_dropdb_line=$(
+  awk 'index($0, "dropdb --if-exists --force -U \"$db_user\" \"$db_name\"") { print NR; exit }' \
+    "$ROOT_DIR/scripts/restore.sh"
+)
+[ -n "$fingerprint_preflight_line" ] \
+  || fail "restore.sh no longer runs verify_archive_notification_key_fingerprints"
+[ -n "$destructive_dropdb_line" ] || fail "restore.sh destructive dropdb marker was not found"
+[ "$fingerprint_preflight_line" -lt "$destructive_dropdb_line" ] \
+  || fail "notification fingerprint preflight does not run before the destructive dropdb"
+
 echo "Restore shell argument tests passed"

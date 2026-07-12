@@ -187,6 +187,58 @@ describe("notification unsubscribe token verification", () => {
     },
   );
 
+  it("reports preference-disabled for a duplicate submission with a stale version", async () => {
+    // A successful unsubscribe bumps the version and disables the flag, so a
+    // provider one-click retry replays a stale-version token: it must map to
+    // the idempotent already-disabled path, not invalid.
+    mocks.preferenceRows = [{ version: 4, newPostEmailEnabled: false }];
+    vi.resetModules();
+    const { generateNotificationUnsubscribeToken, verifyNotificationUnsubscribeToken } =
+      await import("./unsubscribe-token");
+    const token = generateNotificationUnsubscribeToken({
+      userId: "11111111-1111-4111-8111-111111111111",
+      preferenceVersion: 3,
+      issuedAt: new Date("2026-07-12T00:00:00.000Z"),
+    });
+
+    await expect(
+      verifyNotificationUnsubscribeToken(token, { now: new Date("2026-07-13T00:00:00.000Z") }),
+    ).resolves.toMatchObject({ valid: false, reason: "preference-disabled" });
+  });
+
+  it("still rejects a stale-version token when the preference was re-enabled", async () => {
+    mocks.preferenceRows = [{ version: 5, newPostEmailEnabled: true }];
+    vi.resetModules();
+    const { generateNotificationUnsubscribeToken, verifyNotificationUnsubscribeToken } =
+      await import("./unsubscribe-token");
+    const token = generateNotificationUnsubscribeToken({
+      userId: "11111111-1111-4111-8111-111111111111",
+      preferenceVersion: 3,
+      issuedAt: new Date("2026-07-12T00:00:00.000Z"),
+    });
+
+    await expect(
+      verifyNotificationUnsubscribeToken(token, { now: new Date("2026-07-13T00:00:00.000Z") }),
+    ).resolves.toMatchObject({ valid: false, reason: "version-mismatch" });
+  });
+
+  it("keeps rejecting tampered stale-version tokens as bad-mac, not already-disabled", async () => {
+    mocks.preferenceRows = [{ version: 4, newPostEmailEnabled: false }];
+    vi.resetModules();
+    const { generateNotificationUnsubscribeToken, verifyNotificationUnsubscribeToken } =
+      await import("./unsubscribe-token");
+    const token = generateNotificationUnsubscribeToken({
+      userId: "11111111-1111-4111-8111-111111111111",
+      preferenceVersion: 3,
+      issuedAt: new Date("2026-07-12T00:00:00.000Z"),
+    });
+    const tampered = `${token.slice(0, -1)}${token.endsWith("0") ? "1" : "0"}`;
+
+    await expect(
+      verifyNotificationUnsubscribeToken(tampered, { now: new Date("2026-07-13T00:00:00.000Z") }),
+    ).resolves.toMatchObject({ valid: false, reason: "bad-mac" });
+  });
+
   it("rejects missing users", async () => {
     mocks.usersRows = [];
     vi.resetModules();

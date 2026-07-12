@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const keys = [
   "EMAIL_RETRY_RECHECK_MINUTES",
@@ -150,5 +153,60 @@ describe("email delivery retry environment", () => {
     ).rejects.toThrow(
       "TASK_TRANSACTIONAL_RESERVED_PER_BATCH + TASK_NOTIFICATION_MIN_PER_BATCH + TASK_DEFAULT_MIN_PER_BATCH must be <= TASK_BATCH_SIZE",
     );
+  });
+});
+
+describe("notification key startup validation", () => {
+  const validSecret = "0123456789abcdef0123456789abcdef";
+  let previousSecretFile: string;
+
+  beforeAll(() => {
+    previousSecretFile = join(mkdtempSync(join(tmpdir(), "env-key-test-")), "previous-secret");
+    writeFileSync(previousSecretFile, validSecret, { mode: 0o600 });
+  });
+
+  it("allows a fully unconfigured key family", async () => {
+    await expect(load()).resolves.toBeTruthy();
+  });
+
+  it.each([
+    ["unsubscribe previous key id only", { NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID: "old" }],
+    ["unsubscribe previous secret only", { NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET: validSecret }],
+    [
+      "unsubscribe previous id + secret without current",
+      {
+        NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID: "old",
+        NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET: validSecret,
+      },
+    ],
+    [
+      "suppression previous key id only",
+      { NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID: "old" },
+    ],
+    [
+      "suppression previous secret only",
+      { NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET: validSecret },
+    ],
+    [
+      "suppression previous id + secret without current",
+      {
+        NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID: "old",
+        NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET: validSecret,
+      },
+    ],
+  ] as const)("fails closed at startup for %s", async (_name, overrides) => {
+    await expect(load({ ...overrides })).rejects.toThrow("is missing or invalid");
+  });
+
+  it("fails closed for unsubscribe previous secret file only", async () => {
+    await expect(
+      load({ NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE: previousSecretFile }),
+    ).rejects.toThrow("is missing or invalid");
+  });
+
+  it("fails closed for suppression previous secret file only", async () => {
+    await expect(
+      load({ NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE: previousSecretFile }),
+    ).rejects.toThrow("is missing or invalid");
   });
 });

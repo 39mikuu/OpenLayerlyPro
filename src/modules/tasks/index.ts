@@ -219,17 +219,21 @@ async function sweepExpiredFinalAttemptTasksInternal(options: {
           })
           .where(eq(notificationDeliveryAttempts.id, openAttempt.id));
       } else if (userId) {
+        // Reserve the synthetic attempt number by bumping attempt_count
+        // atomically, keeping the delivery.attempt_count === latest
+        // attempt_number ledger invariant that the finish-path fencing
+        // relies on.
         const [deliveryState] = await tx
-          .select({ attemptCount: notificationDeliveries.attemptCount })
-          .from(notificationDeliveries)
+          .update(notificationDeliveries)
+          .set({ attemptCount: sql`${notificationDeliveries.attemptCount} + 1` })
           .where(eq(notificationDeliveries.id, delivery.id))
-          .limit(1);
+          .returning({ attemptCount: notificationDeliveries.attemptCount });
         await tx.insert(notificationDeliveryAttempts).values({
           deliveryId: delivery.id,
           campaignId: delivery.campaignId,
           userId,
           taskId: delivery.taskId,
-          attemptNumber: Math.max(1, (deliveryState?.attemptCount ?? 0) + 1),
+          attemptNumber: Math.max(1, deliveryState?.attemptCount ?? 1),
           attemptUtcDay: sql`(now() at time zone 'utc')::date`,
           attemptMinute: sql`date_trunc('minute', now())`,
           smtpAttempted: false,

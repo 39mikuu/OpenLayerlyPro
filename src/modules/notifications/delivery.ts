@@ -716,6 +716,10 @@ async function isLatestAttemptHeldByTaskTx(
 
 async function finishAcceptedTx(message: PreparedMessage): Promise<void> {
   await getDb().transaction(async (tx) => {
+    // Lock order must be task -> delivery -> attempt, matching the
+    // final-attempt sweep; locking the attempt first deadlocks (40P01)
+    // against a concurrent sweep that already holds the task row.
+    const active = await isLatestAttemptHeldByTaskTx(tx, message);
     await tx
       .update(notificationDeliveryAttempts)
       .set({ outcome: "accepted", completedAt: sql`now()` })
@@ -725,7 +729,7 @@ async function finishAcceptedTx(message: PreparedMessage): Promise<void> {
           isNull(notificationDeliveryAttempts.completedAt),
         ),
       );
-    if (!(await isLatestAttemptHeldByTaskTx(tx, message))) return;
+    if (!active) return;
     await tx
       .update(notificationDeliveries)
       .set({
@@ -747,6 +751,8 @@ async function finishFailureTx(
   const now = new Date();
   if (kind === "permanent") {
     await getDb().transaction(async (tx) => {
+      // Same task -> delivery -> attempt lock order as the sweep.
+      const active = await isLatestAttemptHeldByTaskTx(tx, message);
       await tx
         .update(notificationDeliveryAttempts)
         .set({ outcome: "permanent_failure", errorKind: "permanent", completedAt: sql`now()` })
@@ -756,7 +762,7 @@ async function finishFailureTx(
             isNull(notificationDeliveryAttempts.completedAt),
           ),
         );
-      if (!(await isLatestAttemptHeldByTaskTx(tx, message))) return;
+      if (!active) return;
       await tx
         .update(notificationDeliveries)
         .set({
@@ -791,6 +797,8 @@ async function finishFailureTx(
   if (kind === "needs_operator") {
     const deferUntil = operatorDeferUntil(now);
     await getDb().transaction(async (tx) => {
+      // Same task -> delivery -> attempt lock order as the sweep.
+      const active = await isLatestAttemptHeldByTaskTx(tx, message);
       const [delivery] = await tx
         .select({ createdAt: notificationDeliveries.createdAt })
         .from(notificationDeliveries)
@@ -808,7 +816,6 @@ async function finishFailureTx(
         .limit(1)
         .for("update");
       const terminal = delivery ? expired(delivery.createdAt, now) : false;
-      const active = await isLatestAttemptHeldByTaskTx(tx, message);
       if (active && attempt?.smtpAttempted && attempt.reservedUtcDay && attempt.reservedMinute) {
         await tx.execute(sql`
           UPDATE notification_quota_windows
@@ -858,6 +865,8 @@ async function finishFailureTx(
   }
 
   await getDb().transaction(async (tx) => {
+    // Same task -> delivery -> attempt lock order as the sweep.
+    const active = await isLatestAttemptHeldByTaskTx(tx, message);
     await tx
       .update(notificationDeliveryAttempts)
       .set({ outcome: "transient_failure", errorKind: "transient", completedAt: sql`now()` })
@@ -867,7 +876,7 @@ async function finishFailureTx(
           isNull(notificationDeliveryAttempts.completedAt),
         ),
       );
-    if (!(await isLatestAttemptHeldByTaskTx(tx, message))) return;
+    if (!active) return;
     // On the task's final attempt the dispatcher dead-letters the task after
     // this throw, so the delivery must reach a terminal state here or the
     // campaign finalizer would defer forever.

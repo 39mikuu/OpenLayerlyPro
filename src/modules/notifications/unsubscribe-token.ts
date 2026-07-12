@@ -152,11 +152,18 @@ export async function verifyNotificationUnsubscribeToken(
     .where(eq(notificationPreferences.userId, payload.userId))
     .limit(1);
   if (!preference) return { valid: false, reason: "preference-missing", payload, keyId: kid };
-  if (preference.version !== payload.preferenceVersion) {
-    return { valid: false, reason: "version-mismatch", payload, keyId: kid };
-  }
+  // A successful unsubscribe increments the preference version, so a retried
+  // submission of the same token arrives with a stale version. The MAC and
+  // user checks above already authenticate the token, so report the disabled
+  // flag first to keep duplicate submissions idempotent (already-disabled)
+  // instead of failing them on version-mismatch. A stale version with the
+  // flag re-enabled stays invalid — the user changed their preference after
+  // this token was issued.
   if (!preference.newPostEmailEnabled) {
     return { valid: false, reason: "preference-disabled", payload, keyId: kid };
+  }
+  if (preference.version !== payload.preferenceVersion) {
+    return { valid: false, reason: "version-mismatch", payload, keyId: kid };
   }
 
   return { valid: true, payload, keyId: kid };

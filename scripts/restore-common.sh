@@ -1057,9 +1057,9 @@ verify_archive_notification_key_fingerprints() {
         const metadata = lstatSync(path);
         if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${label} archive file is invalid`);
         if ((metadata.mode & 0o777) !== 0o600) fail(`${label} archive file must be 0600`);
-        const actual = createHash("sha256")
-          .update(readFileSync(path, "utf8").trim())
-          .digest("hex");
+        const trimmed = readFileSync(path, "utf8").trim();
+        if (trimmed.length < 32 || trimmed === "change-me") fail(`${label} archive secret is invalid after trimming`);
+        const actual = createHash("sha256").update(trimmed).digest("hex");
         if (actual !== expected) fail(`${label} archive fingerprint mismatch`);
       } else if (source === "external") {
         if (archivePath) fail(`${label} external source must not include archive path`);
@@ -1087,9 +1087,9 @@ verify_archive_notification_key_fingerprints() {
       const metadata = lstatSync(path);
       if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${label} archive file is invalid`);
       if ((metadata.mode & 0o777) !== 0o600) fail(`${label} archive file must be 0600`);
-      const actual = createHash("sha256")
-        .update(readFileSync(path, "utf8").trim())
-        .digest("hex");
+      const trimmed = readFileSync(path, "utf8").trim();
+      if (trimmed.length < 32 || trimmed === "change-me") fail(`${label} archive secret is invalid after trimming`);
+      const actual = createHash("sha256").update(trimmed).digest("hex");
       if (actual !== expected) fail(`${label} archive fingerprint mismatch`);
     };
     check("NOTIFICATION_UNSUBSCRIBE_KEY", "notification unsubscribe key");
@@ -1154,8 +1154,8 @@ verify_container_notification_secret_file() {
     test ! -L "$1"
     node -e "
       const fs = require(\"fs\");
-      const value = fs.readFileSync(process.argv[1], \"utf8\").replace(/\\r?\\n$/, \"\");
-      if (!value || value.trim().length === 0 || value === \"change-me\" || value.length < 32) {
+      const trimmed = fs.readFileSync(process.argv[1], \"utf8\").trim();
+      if (trimmed.length < 32 || trimmed === \"change-me\") {
         process.exit(1);
       }
     " "$1"

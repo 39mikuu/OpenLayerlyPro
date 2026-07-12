@@ -686,6 +686,207 @@ describeWithDatabase("notification delivery", () => {
     await expect(db.select().from(notificationSuppressions)).resolves.toHaveLength(0);
   });
 
+  // Provokes the task -> delivery -> attempt lock-order contract: a third
+  // transaction holds the open attempt row so the finish transaction queues on
+  // it while a concurrent sweep arrives. With the pre-fix attempt-first lock
+  // order the finish grabs the attempt while the sweep holds the task and
+  // waits on the attempt — a real 40P01 deadlock. With the unified order the
+  // finish holds the task first, the sweep queues behind it, and both commit.
+  async function raceSweepAgainstLateFinish(finishOutcome: "accepted" | "permanent" | "transient") {
+    const { campaign, delivery, task } = await seedDelivery();
+    const slowSend = deferred<void>();
+    mocks.sendNewPostNotificationEmail.mockImplementationOnce(() => slowSend.promise);
+
+    const staleRun = handleNotificationDeliveryTask(task);
+    // The rejection is asserted later, after the race resolves.
+    staleRun.catch(() => {});
+    await waitForSendCalls(1);
+
+    await db
+      .update(tasks)
+      .set({ attempts: 5, maxAttempts: 5, leaseUntil: sql`now() - interval '1 second'` })
+      .where(eq(tasks.id, task.id));
+
+    const lockAcquired = deferred<void>();
+    const releaseHold = deferred<void>();
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`
+        SELECT id FROM notification_delivery_attempts
+        WHERE delivery_id = ${delivery.id}
+        FOR UPDATE
+      `);
+      lockAcquired.resolve();
+      await releaseHold.promise;
+    });
+    await lockAcquired.promise;
+
+    // The stale worker's SMTP call completes late; its finish transaction
+    // starts first and queues on the held attempt row.
+    if (finishOutcome === "accepted") slowSend.resolve();
+    else slowSend.reject(new MailDeliveryError(finishOutcome));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // The sweep now races the in-flight finish transaction.
+    const sweep = sweepExpiredFinalAttemptTasksAt(new Date());
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    releaseHold.resolve();
+    await holder;
+
+    // No 40P01: the sweep dead-letters the task and the finish commits.
+    await expect(sweep).resolves.toMatchObject([{ id: task.id, kind: "notification.deliver" }]);
+    if (finishOutcome === "accepted") {
+      await expect(staleRun).resolves.toEqual({});
+    } else if (finishOutcome === "permanent") {
+      await expect(staleRun).rejects.toMatchObject({
+        message: "Notification email delivery failed permanently",
+      });
+    } else {
+      await expect(staleRun).rejects.toMatchObject({ kind: "transient" });
+    }
+
+    const attempts = await deliveryAttempts(delivery.id);
+    const [storedDelivery] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, delivery.id));
+    if (finishOutcome === "accepted") {
+      // The finish won the task lock and completed the delivery; the sweep
+      // then skipped the already-terminal delivery.
+      expect(attempts.map((attempt) => attempt.outcome)).toEqual(["accepted"]);
+      expect(storedDelivery).toMatchObject({
+        status: "accepted",
+        lastOutcome: "accepted",
+        attemptCount: 1,
+      });
+      await expect(db.select().from(notificationSuppressions)).resolves.toHaveLength(0);
+    } else if (finishOutcome === "permanent") {
+      expect(attempts.map((attempt) => attempt.outcome)).toEqual(["permanent_failure"]);
+      expect(storedDelivery).toMatchObject({
+        status: "dead",
+        lastOutcome: "permanent_failure",
+        attemptCount: 1,
+      });
+      await expect(db.select().from(notificationSuppressions)).resolves.toHaveLength(1);
+    } else {
+      // The finish left the delivery retryable, so the sweep terminalized it
+      // with a synthetic lease_expired attempt that keeps the ledger in step.
+      expect(attempts.map((attempt) => attempt.outcome)).toEqual([
+        "transient_failure",
+        "lease_expired",
+      ]);
+      expect(attempts.map((attempt) => attempt.attemptNumber)).toEqual([1, 2]);
+      expect(storedDelivery).toMatchObject({
+        status: "dead",
+        lastOutcome: "lease_expired",
+        attemptCount: 2,
+      });
+      await expect(db.select().from(notificationSuppressions)).resolves.toHaveLength(0);
+    }
+    return { campaign };
+  }
+
+  it(
+    "does not deadlock when the sweep races a late accepted finish",
+    { timeout: 20_000 },
+    async () => {
+      await raceSweepAgainstLateFinish("accepted");
+    },
+  );
+
+  it(
+    "does not deadlock when the sweep races a late permanent rejection",
+    { timeout: 20_000 },
+    async () => {
+      await raceSweepAgainstLateFinish("permanent");
+    },
+  );
+
+  it(
+    "does not deadlock when the sweep races a late transient failure",
+    { timeout: 20_000 },
+    async () => {
+      await raceSweepAgainstLateFinish("transient");
+    },
+  );
+
+  it("keeps attempt_count in step with a synthetic lease_expired attempt", async () => {
+    const now = new Date("2026-07-12T12:00:00.000Z");
+    const { campaign, delivery, task, user } = await seedDelivery();
+    await db
+      .update(tasks)
+      .set({
+        attempts: 5,
+        maxAttempts: 5,
+        lockedBy: "crashed-worker",
+        lockedAt: new Date(now.getTime() - 120_000),
+        leaseUntil: new Date(now.getTime() - 1_000),
+      })
+      .where(eq(tasks.id, task.id));
+    await db
+      .update(notificationDeliveries)
+      .set({ status: "failed", attemptCount: 2, lastOutcome: "transient_failure" })
+      .where(eq(notificationDeliveries.id, delivery.id));
+    // Both prior attempts are completed, so the sweep has no open attempt row
+    // and must record a synthetic one.
+    await db.insert(notificationDeliveryAttempts).values(
+      [1, 2].map((attemptNumber) => ({
+        deliveryId: delivery.id,
+        campaignId: campaign.id,
+        userId: user.id,
+        taskId: task.id,
+        attemptNumber,
+        attemptUtcDay: now,
+        attemptMinute: now,
+        smtpAttempted: true,
+        outcome: "transient_failure" as const,
+        errorKind: "transient",
+        completedAt: now,
+      })),
+    );
+
+    // Concurrent sweeps: exactly one claims the task, so exactly one synthetic
+    // attempt may be written.
+    const [first, second] = await Promise.all([
+      sweepExpiredFinalAttemptTasksAt(now),
+      sweepExpiredFinalAttemptTasksAt(now),
+    ]);
+    expect([...first, ...second].filter((swept) => swept.id === task.id)).toHaveLength(1);
+
+    const attempts = await deliveryAttempts(delivery.id);
+    expect(attempts.map((attempt) => attempt.attemptNumber)).toEqual([1, 2, 3]);
+    expect(attempts[2]).toMatchObject({
+      outcome: "lease_expired",
+      errorKind: "lease_expired",
+      smtpAttempted: false,
+    });
+    const [storedDelivery] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, delivery.id));
+    expect(storedDelivery).toMatchObject({
+      status: "dead",
+      lastOutcome: "lease_expired",
+      attemptCount: 3,
+    });
+
+    // A repeated sweep is a no-op: the task is dead and the delivery terminal.
+    await expect(sweepExpiredFinalAttemptTasksAt(now)).resolves.toEqual([]);
+    await expect(deliveryAttempts(delivery.id)).resolves.toHaveLength(3);
+
+    const [finalizeTask] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.kind, "notification.campaign_finalize"));
+    expect(finalizeTask).toBeDefined();
+    await expect(handleCampaignFinalizeTask(finalizeTask!.payloadJson)).resolves.toEqual({});
+    const [storedCampaign] = await db
+      .select()
+      .from(notificationCampaigns)
+      .where(eq(notificationCampaigns.id, campaign.id));
+    expect(storedCampaign).toMatchObject({ status: "completed" });
+  });
+
   it("sweeps expired final-attempt sends to terminal deliveries and finalizes campaigns", async () => {
     const now = new Date("2026-07-12T12:00:00.000Z");
     const { campaign, delivery, task, user } = await seedDelivery();

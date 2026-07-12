@@ -276,7 +276,17 @@ function validateNotificationRuntimeKeyEnv(input: {
   previousKeyIdLabel: string;
   previousSecretLabel: string;
 }) {
-  if (!input.currentKeyId && !input.currentSecret && !input.currentSecretFile) {
+  // Only skip validation when the feature is fully unconfigured. A
+  // previous-only configuration (rotation leftovers without a current key)
+  // must fail closed here instead of surfacing later at resolver time.
+  const hasAnyKeyConfig =
+    input.currentKeyId ||
+    input.currentSecret ||
+    input.currentSecretFile ||
+    input.previousKeyId ||
+    input.previousSecret ||
+    input.previousSecretFile;
+  if (!hasAnyKeyConfig) {
     return;
   }
 
