@@ -909,7 +909,9 @@ printf '%s' "$key_id_mismatch_output" \
 
 # Upgraded Compose deployments may leave the current key-id env unset and rely
 # on the entrypoint default of "current"; the target check must honor the same
-# default instead of blocking the restore.
+# ${VAR:-current} semantics: unset or empty falls back, but a whitespace-only
+# value stays set (the entrypoint would keep it and the runtime would reject
+# it), so the preflight must fail rather than silently substitute current.
 DOCKER_INSPECT_ENV_JSON=$(node -e '
   const values = {
     APP_VERSION: "image-version",
@@ -938,6 +940,42 @@ set -e
 printf '%s' "$missing_key_id_output" \
   | grep -F "archive requires target NOTIFICATION_UNSUBSCRIBE_KEY_ID" >/dev/null \
   || fail "missing key id error was not explicit"
+
+key_id_env_json() {
+  KEY_ID_ENTRY=$1 node -e '
+    const values = [
+      "APP_VERSION=image-version",
+      "BUILD_TIMESTAMP=2026-07-05T00:00:00Z",
+    ];
+    const entry = process.env.KEY_ID_ENTRY;
+    if (entry !== "__unset__") values.push(entry);
+    process.stdout.write(JSON.stringify(values));
+  '
+}
+for key_id_env_name in NOTIFICATION_UNSUBSCRIBE_KEY_ID NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID; do
+  # unset -> fallback current
+  DOCKER_INSPECT_ENV_JSON=$(key_id_env_json "__unset__")
+  [ "$(notification_key_id_from_env "$key_id_env_name" current)" = current ] \
+    || fail "$key_id_env_name unset did not fall back to current"
+  # empty string -> fallback current (matches shell \${VAR:-current})
+  DOCKER_INSPECT_ENV_JSON=$(key_id_env_json "$key_id_env_name=")
+  [ "$(notification_key_id_from_env "$key_id_env_name" current)" = current ] \
+    || fail "$key_id_env_name empty did not fall back to current"
+  # whitespace-only -> set-but-invalid, must fail even with a fallback
+  DOCKER_INSPECT_ENV_JSON=$(key_id_env_json "$key_id_env_name=   ")
+  if notification_key_id_from_env "$key_id_env_name" current >/dev/null 2>&1; then
+    fail "$key_id_env_name whitespace-only value fell back to current"
+  fi
+  # whitespace-wrapped valid id -> trims and passes
+  DOCKER_INSPECT_ENV_JSON=$(key_id_env_json "$key_id_env_name= current ")
+  [ "$(notification_key_id_from_env "$key_id_env_name" current)" = current ] \
+    || fail "$key_id_env_name whitespace-wrapped id was not trimmed"
+  # illegal characters -> fail
+  DOCKER_INSPECT_ENV_JSON=$(key_id_env_json "$key_id_env_name=bad id!")
+  if notification_key_id_from_env "$key_id_env_name" current >/dev/null 2>&1; then
+    fail "$key_id_env_name illegal characters unexpectedly passed"
+  fi
+done
 
 DOCKER_INSPECT_ENV_JSON=$(node -e '
   const values = {

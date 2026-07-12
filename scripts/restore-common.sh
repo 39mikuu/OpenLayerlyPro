@@ -136,7 +136,11 @@ notification_key_id_from_env() {
   compose run --rm -T --no-deps --entrypoint node app -e '
     const name = process.argv[1];
     const fallback = process.argv[2] ?? "";
-    const value = (process.env[name] ?? "").trim() || fallback;
+    // Match the shell ${VAR:-default} semantics of the entrypoint exactly:
+    // only unset or empty falls back; a whitespace-only value stays set and
+    // must fail here, just as the runtime key validation would reject it.
+    const raw = process.env[name];
+    const value = raw === undefined || raw.length === 0 ? fallback : raw.trim();
     if (!value || !/^[A-Za-z0-9_-]+$/.test(value)) process.exit(1);
     process.stdout.write(value);
   ' "$env_name" "$default_value"
