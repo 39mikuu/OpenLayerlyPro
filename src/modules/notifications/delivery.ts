@@ -91,7 +91,27 @@ type DeliveryPreparation =
   | { kind: "done" }
   | { kind: "defer"; deferUntil: Date };
 
+type FinalizerFaultKind = "accepted" | MailFailureKind;
+
+export const __testOnlyFinalizerFaults: Partial<Record<FinalizerFaultKind, () => void>> = {};
+
 const NONTERMINAL_DELIVERY_STATUSES = ["queued", "sending", "deferred", "failed"] as const;
+const PERMANENT_FAILURE_LAST_ERROR = "SMTP permanent rejection";
+const TRANSIENT_FINAL_ATTEMPT_FINALIZATION_ERROR =
+  "SMTP transient failure; finalization failed; retries exhausted";
+const NEEDS_OPERATOR_FINAL_ATTEMPT_FINALIZATION_ERROR =
+  "SMTP operator issue; finalization failed; retries exhausted";
+
+function maybeThrowFinalizerFault(kind: FinalizerFaultKind): void {
+  if (process.env.NODE_ENV !== "test") return;
+  __testOnlyFinalizerFaults[kind]?.();
+}
+
+function permanentNotificationDeliveryError(): PermanentTaskError {
+  return new PermanentTaskError("Notification email delivery failed permanently", {
+    classification: "permanent",
+  });
+}
 
 function utcDayStart(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -731,6 +751,7 @@ async function isLatestAttemptHeldByTaskTx(
 
 async function finishAcceptedTx(message: PreparedMessage): Promise<void> {
   await getDb().transaction(async (tx) => {
+    maybeThrowFinalizerFault("accepted");
     // Lock order must be task -> delivery -> attempt, matching the
     // final-attempt sweep; locking the attempt first deadlocks (40P01)
     // against a concurrent sweep that already holds the task row.
@@ -759,110 +780,56 @@ async function finishAcceptedTx(message: PreparedMessage): Promise<void> {
   });
 }
 
-async function finishFailureTx(
+async function runFinalAttemptFallbackTx(
   message: PreparedMessage,
-  kind: MailFailureKind,
-): Promise<TaskHandlerResult> {
-  const now = new Date();
-  if (kind === "permanent") {
-    await getDb().transaction(async (tx) => {
-      // Same task -> delivery -> attempt lock order as the sweep.
+  finish: (tx: DbClient) => Promise<void>,
+): Promise<boolean> {
+  try {
+    return await getDb().transaction(async (tx) => {
       const active = await isLatestAttemptHeldByTaskTx(tx, message);
+      if (!active) return false;
+      await finish(tx);
+      await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
+      return true;
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function finishAcceptedWithFinalAttemptFallback(message: PreparedMessage): Promise<void> {
+  try {
+    await finishAcceptedTx(message);
+  } catch (error) {
+    if (!message.finalAttempt) throw error;
+    const recovered = await runFinalAttemptFallbackTx(message, async (tx) => {
       await tx
         .update(notificationDeliveryAttempts)
-        .set({ outcome: "permanent_failure", errorKind: "permanent", completedAt: sql`now()` })
+        .set({ outcome: "accepted", completedAt: sql`now()` })
         .where(
           and(
             eq(notificationDeliveryAttempts.id, message.attemptId),
             isNull(notificationDeliveryAttempts.completedAt),
           ),
         );
-      if (!active) return;
       await tx
         .update(notificationDeliveries)
         .set({
-          status: "dead",
-          lastOutcome: "permanent_failure",
-          lastError: "SMTP permanent rejection",
+          status: "accepted",
+          lastOutcome: "accepted",
+          lastError: null,
           nextAttemptAfter: null,
           updatedAt: sql`now()`,
         })
         .where(eq(notificationDeliveries.id, message.deliveryId));
-      const digest = createNotificationSuppressionDigest(message.recipientEmail);
-      await tx
-        .insert(notificationSuppressions)
-        .values({
-          emailDigestKeyId: digest.keyId,
-          emailDigest: digest.digest,
-          reason: "smtp_permanent_5xx",
-          firstDeliveryId: message.deliveryId,
-          lastDeliveryId: message.deliveryId,
-        })
-        .onConflictDoUpdate({
-          target: [notificationSuppressions.emailDigestKeyId, notificationSuppressions.emailDigest],
-          set: { lastDeliveryId: message.deliveryId, updatedAt: sql`now()` },
-        });
-      await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
     });
-    throw new PermanentTaskError("Notification email delivery failed permanently", {
-      classification: "permanent",
-    });
+    if (recovered) return;
+    throw error;
   }
+}
 
-  if (kind === "needs_operator") {
-    const deferUntil = operatorDeferUntil(now);
-    let terminal = false;
-    await getDb().transaction(async (tx) => {
-      // Same task -> delivery -> attempt lock order as the sweep.
-      const active = await isLatestAttemptHeldByTaskTx(tx, message);
-      const [delivery] = await tx
-        .select({ createdAt: notificationDeliveries.createdAt })
-        .from(notificationDeliveries)
-        .where(eq(notificationDeliveries.id, message.deliveryId))
-        .limit(1)
-        .for("update");
-      terminal = active && delivery ? expired(delivery.createdAt, now) : false;
-      // This branch only runs after the transport was invoked (e.g. EAUTH),
-      // so the attempt consumed a real SMTP connection: keep
-      // smtpAttempted=true and do not refund the day/minute quota windows —
-      // otherwise a broken SMTP config lets a large campaign hammer the
-      // server far past the configured pacing and daily budget.
-      await tx
-        .update(notificationDeliveryAttempts)
-        .set({
-          outcome: "needs_operator_defer",
-          errorKind: "needs_operator",
-          completedAt: sql`now()`,
-        })
-        .where(
-          and(
-            eq(notificationDeliveryAttempts.id, message.attemptId),
-            isNull(notificationDeliveryAttempts.completedAt),
-          ),
-        );
-      if (!active) return;
-      await tx
-        .update(notificationDeliveries)
-        .set({
-          status: terminal ? "dead" : "deferred",
-          lastOutcome: "needs_operator_defer",
-          lastError: terminal
-            ? "SMTP operator issue; notification expired"
-            : "SMTP operator issue; delivery deferred",
-          nextAttemptAfter: terminal ? null : deferUntil,
-          updatedAt: sql`now()`,
-        })
-        .where(eq(notificationDeliveries.id, message.deliveryId));
-      if (terminal) await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
-    });
-    // A terminal delivery is done: returning a defer here would re-pend the
-    // task and run it once more against an already-dead delivery.
-    return terminal ? {} : { deferUntil };
-  }
-
-  await getDb().transaction(async (tx) => {
-    // Same task -> delivery -> attempt lock order as the sweep.
-    const active = await isLatestAttemptHeldByTaskTx(tx, message);
+async function finishTransientFinalAttemptFallback(message: PreparedMessage): Promise<boolean> {
+  return runFinalAttemptFallbackTx(message, async (tx) => {
     await tx
       .update(notificationDeliveryAttempts)
       .set({ outcome: "transient_failure", errorKind: "transient", completedAt: sql`now()` })
@@ -872,23 +839,238 @@ async function finishFailureTx(
           isNull(notificationDeliveryAttempts.completedAt),
         ),
       );
-    if (!active) return;
-    // On the task's final attempt the dispatcher dead-letters the task after
-    // this throw, so the delivery must reach a terminal state here or the
-    // campaign finalizer would defer forever.
     await tx
       .update(notificationDeliveries)
       .set({
-        status: message.finalAttempt ? "dead" : "failed",
+        status: "dead",
         lastOutcome: "transient_failure",
-        lastError: message.finalAttempt
-          ? "SMTP transient failure; retries exhausted"
-          : "SMTP transient failure",
+        lastError: TRANSIENT_FINAL_ATTEMPT_FINALIZATION_ERROR,
+        nextAttemptAfter: null,
         updatedAt: sql`now()`,
       })
       .where(eq(notificationDeliveries.id, message.deliveryId));
-    if (message.finalAttempt) await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
   });
+}
+
+async function finishPermanentFinalAttemptFallback(message: PreparedMessage): Promise<boolean> {
+  return runFinalAttemptFallbackTx(message, async (tx) => {
+    await tx
+      .update(notificationDeliveryAttempts)
+      .set({ outcome: "permanent_failure", errorKind: "permanent", completedAt: sql`now()` })
+      .where(
+        and(
+          eq(notificationDeliveryAttempts.id, message.attemptId),
+          isNull(notificationDeliveryAttempts.completedAt),
+        ),
+      );
+    await tx
+      .update(notificationDeliveries)
+      .set({
+        status: "dead",
+        lastOutcome: "permanent_failure",
+        lastError: PERMANENT_FAILURE_LAST_ERROR,
+        nextAttemptAfter: null,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(notificationDeliveries.id, message.deliveryId));
+    const digest = createNotificationSuppressionDigest(message.recipientEmail);
+    await tx
+      .insert(notificationSuppressions)
+      .values({
+        emailDigestKeyId: digest.keyId,
+        emailDigest: digest.digest,
+        reason: "smtp_permanent_5xx",
+        firstDeliveryId: message.deliveryId,
+        lastDeliveryId: message.deliveryId,
+      })
+      .onConflictDoUpdate({
+        target: [notificationSuppressions.emailDigestKeyId, notificationSuppressions.emailDigest],
+        set: { lastDeliveryId: message.deliveryId, updatedAt: sql`now()` },
+      });
+  });
+}
+
+async function finishNeedsOperatorFinalAttemptFallback(message: PreparedMessage): Promise<boolean> {
+  return runFinalAttemptFallbackTx(message, async (tx) => {
+    await tx
+      .update(notificationDeliveryAttempts)
+      .set({
+        outcome: "needs_operator_defer",
+        errorKind: "needs_operator",
+        completedAt: sql`now()`,
+      })
+      .where(
+        and(
+          eq(notificationDeliveryAttempts.id, message.attemptId),
+          isNull(notificationDeliveryAttempts.completedAt),
+        ),
+      );
+    await tx
+      .update(notificationDeliveries)
+      .set({
+        status: "dead",
+        lastOutcome: "needs_operator_defer",
+        lastError: NEEDS_OPERATOR_FINAL_ATTEMPT_FINALIZATION_ERROR,
+        nextAttemptAfter: null,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(notificationDeliveries.id, message.deliveryId));
+  });
+}
+
+async function finishFailureTx(
+  message: PreparedMessage,
+  kind: MailFailureKind,
+): Promise<TaskHandlerResult> {
+  const now = new Date();
+  if (kind === "permanent") {
+    try {
+      await getDb().transaction(async (tx) => {
+        maybeThrowFinalizerFault("permanent");
+        // Same task -> delivery -> attempt lock order as the sweep.
+        const active = await isLatestAttemptHeldByTaskTx(tx, message);
+        await tx
+          .update(notificationDeliveryAttempts)
+          .set({ outcome: "permanent_failure", errorKind: "permanent", completedAt: sql`now()` })
+          .where(
+            and(
+              eq(notificationDeliveryAttempts.id, message.attemptId),
+              isNull(notificationDeliveryAttempts.completedAt),
+            ),
+          );
+        if (!active) return;
+        await tx
+          .update(notificationDeliveries)
+          .set({
+            status: "dead",
+            lastOutcome: "permanent_failure",
+            lastError: PERMANENT_FAILURE_LAST_ERROR,
+            nextAttemptAfter: null,
+            updatedAt: sql`now()`,
+          })
+          .where(eq(notificationDeliveries.id, message.deliveryId));
+        const digest = createNotificationSuppressionDigest(message.recipientEmail);
+        await tx
+          .insert(notificationSuppressions)
+          .values({
+            emailDigestKeyId: digest.keyId,
+            emailDigest: digest.digest,
+            reason: "smtp_permanent_5xx",
+            firstDeliveryId: message.deliveryId,
+            lastDeliveryId: message.deliveryId,
+          })
+          .onConflictDoUpdate({
+            target: [
+              notificationSuppressions.emailDigestKeyId,
+              notificationSuppressions.emailDigest,
+            ],
+            set: { lastDeliveryId: message.deliveryId, updatedAt: sql`now()` },
+          });
+        await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
+      });
+    } catch (error) {
+      if (!message.finalAttempt) throw error;
+      const recovered = await finishPermanentFinalAttemptFallback(message);
+      if (recovered) throw permanentNotificationDeliveryError();
+      throw error;
+    }
+    throw permanentNotificationDeliveryError();
+  }
+
+  if (kind === "needs_operator") {
+    const deferUntil = operatorDeferUntil(now);
+    let terminal = false;
+    try {
+      await getDb().transaction(async (tx) => {
+        maybeThrowFinalizerFault("needs_operator");
+        // Same task -> delivery -> attempt lock order as the sweep.
+        const active = await isLatestAttemptHeldByTaskTx(tx, message);
+        const [delivery] = await tx
+          .select({ createdAt: notificationDeliveries.createdAt })
+          .from(notificationDeliveries)
+          .where(eq(notificationDeliveries.id, message.deliveryId))
+          .limit(1)
+          .for("update");
+        terminal = active && delivery ? expired(delivery.createdAt, now) : false;
+        // This branch only runs after the transport was invoked (e.g. EAUTH),
+        // so the attempt consumed a real SMTP connection: keep
+        // smtpAttempted=true and do not refund the day/minute quota windows —
+        // otherwise a broken SMTP config lets a large campaign hammer the
+        // server far past the configured pacing and daily budget.
+        await tx
+          .update(notificationDeliveryAttempts)
+          .set({
+            outcome: "needs_operator_defer",
+            errorKind: "needs_operator",
+            completedAt: sql`now()`,
+          })
+          .where(
+            and(
+              eq(notificationDeliveryAttempts.id, message.attemptId),
+              isNull(notificationDeliveryAttempts.completedAt),
+            ),
+          );
+        if (!active) return;
+        await tx
+          .update(notificationDeliveries)
+          .set({
+            status: terminal ? "dead" : "deferred",
+            lastOutcome: "needs_operator_defer",
+            lastError: terminal
+              ? "SMTP operator issue; notification expired"
+              : "SMTP operator issue; delivery deferred",
+            nextAttemptAfter: terminal ? null : deferUntil,
+            updatedAt: sql`now()`,
+          })
+          .where(eq(notificationDeliveries.id, message.deliveryId));
+        if (terminal) await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
+      });
+    } catch (error) {
+      if (!message.finalAttempt) throw error;
+      await finishNeedsOperatorFinalAttemptFallback(message);
+      throw error;
+    }
+    // A terminal delivery is done: returning a defer here would re-pend the
+    // task and run it once more against an already-dead delivery.
+    return terminal ? {} : { deferUntil };
+  }
+
+  try {
+    await getDb().transaction(async (tx) => {
+      maybeThrowFinalizerFault("transient");
+      // Same task -> delivery -> attempt lock order as the sweep.
+      const active = await isLatestAttemptHeldByTaskTx(tx, message);
+      await tx
+        .update(notificationDeliveryAttempts)
+        .set({ outcome: "transient_failure", errorKind: "transient", completedAt: sql`now()` })
+        .where(
+          and(
+            eq(notificationDeliveryAttempts.id, message.attemptId),
+            isNull(notificationDeliveryAttempts.completedAt),
+          ),
+        );
+      if (!active) return;
+      // On the task's final attempt the dispatcher dead-letters the task after
+      // this throw, so the delivery must reach a terminal state here or the
+      // campaign finalizer would defer forever.
+      await tx
+        .update(notificationDeliveries)
+        .set({
+          status: message.finalAttempt ? "dead" : "failed",
+          lastOutcome: "transient_failure",
+          lastError: message.finalAttempt
+            ? "SMTP transient failure; retries exhausted"
+            : "SMTP transient failure",
+          updatedAt: sql`now()`,
+        })
+        .where(eq(notificationDeliveries.id, message.deliveryId));
+      if (message.finalAttempt) await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
+    });
+  } catch (error) {
+    if (!message.finalAttempt) throw error;
+    await finishTransientFinalAttemptFallback(message);
+    throw error;
+  }
   throw new MailDeliveryError("transient");
 }
 
@@ -947,6 +1129,6 @@ export async function handleNotificationDeliveryTask(task: Task): Promise<TaskHa
   } catch (error) {
     return finishFailureTx(message, classifyMailError(error));
   }
-  await finishAcceptedTx(message);
+  await finishAcceptedWithFinalAttemptFallback(message);
   return {};
 }

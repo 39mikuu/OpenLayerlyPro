@@ -557,8 +557,7 @@ validate_notification_secret_file_path() {
   path=$1
   label=$2
 
-  validate_absolute_container_path "$path" "$label"
-  validate_no_path_traversal "$path" "$label"
+  validate_path_under_mount "$path" "/app/secrets" "$label"
   case "$path" in
     /app/secrets | */) fail "$label must be a file path, not a directory" ;;
   esac

@@ -258,6 +258,41 @@ round_trip=$(run_postgres_shell 'printf "%s" "$1"' "$SPECIAL_COMPONENT")
 [ "$round_trip" = "$SPECIAL_COMPONENT" ] || fail "postgres positional argument did not round-trip"
 [ ! -e "$INJECTION_MARKER" ] || fail "shell wrapper executed injected shell text"
 
+set +e
+notification_secret_upload_output=$(
+  validate_notification_secret_file_path "/app/uploads/key" "NOTIFICATION_UNSUBSCRIBE_SECRET_FILE" 2>&1
+)
+notification_secret_upload_status=$?
+set -e
+[ "$notification_secret_upload_status" -ne 0 ] \
+  || fail "notification secret restore target outside /app/secrets unexpectedly passed"
+printf '%s' "$notification_secret_upload_output" \
+  | grep -F "NOTIFICATION_UNSUBSCRIBE_SECRET_FILE must stay under /app/secrets" >/dev/null \
+  || fail "notification secret outside-mount error was not explicit"
+
+set +e
+notification_secret_canonical_output=$(
+  validate_notification_secret_file_path \
+    "/app/secrets/../uploads/key" \
+    "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" 2>&1
+)
+notification_secret_canonical_status=$?
+set -e
+[ "$notification_secret_canonical_status" -ne 0 ] \
+  || fail "canonicalized notification secret restore target outside /app/secrets unexpectedly passed"
+printf '%s' "$notification_secret_canonical_output" \
+  | grep -F "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE must not contain '..'" >/dev/null \
+  || fail "canonicalized notification secret traversal error was not explicit"
+
+validate_notification_secret_file_path \
+  "/app/secrets/notification-unsubscribe-secret" \
+  "NOTIFICATION_UNSUBSCRIBE_SECRET_FILE" >/dev/null \
+  || fail "default notification secret restore target was rejected"
+validate_notification_secret_file_path \
+  "/app/secrets/sub/key" \
+  "NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE" >/dev/null \
+  || fail "nested notification secret restore target was rejected"
+
 : > "$COMPOSE_MUTATION_LOG"
 single_container_id=$(resolve_single_app_container_id)
 [ "$single_container_id" = "mock-app-container" ] \

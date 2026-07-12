@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.hoisted(() => {
   Object.assign(process.env, {
@@ -47,13 +47,33 @@ import {
 } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { MailDeliveryError } from "@/modules/mail/delivery";
-import { handleNotificationDeliveryTask } from "@/modules/notifications";
+import {
+  __testOnlyFinalizerFaults,
+  handleNotificationDeliveryTask,
+} from "@/modules/notifications/delivery";
 import { handleCampaignFinalizeTask } from "@/modules/notifications/expansion";
 import { createNotificationSuppressionDigest } from "@/modules/security/notification-suppression-key";
 import { PermanentTaskError, sweepExpiredFinalAttemptTasksAt } from "@/modules/tasks";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
+const finalizerFaultKinds = ["accepted", "permanent", "transient", "needs_operator"] as const;
+
+type FinalizerFaultKind = (typeof finalizerFaultKinds)[number];
+
+function resetFinalizerFaults() {
+  for (const kind of finalizerFaultKinds) {
+    delete __testOnlyFinalizerFaults[kind];
+  }
+}
+
+function injectFinalizerFault(kind: FinalizerFaultKind): Error {
+  const error = new Error(`injected ${kind} finalizer fault`);
+  __testOnlyFinalizerFaults[kind] = () => {
+    throw error;
+  };
+  return error;
+}
 
 function utcDayStart(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -93,11 +113,17 @@ describeWithDatabase("notification delivery", () => {
   const db = getDb();
 
   afterAll(async () => {
+    resetFinalizerFaults();
     await resetDatabase(db);
+  });
+
+  afterEach(() => {
+    resetFinalizerFaults();
   });
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    resetFinalizerFaults();
     mocks.getSmtpConfig.mockResolvedValue({ configured: true });
     mocks.sendNewPostNotificationEmail.mockResolvedValue(undefined);
 
@@ -217,6 +243,38 @@ describeWithDatabase("notification delivery", () => {
       .from(notificationDeliveryAttempts)
       .where(eq(notificationDeliveryAttempts.deliveryId, deliveryId))
       .orderBy(notificationDeliveryAttempts.attemptNumber);
+  }
+
+  async function markTaskAsFinalAttempt(task: Task): Promise<Task> {
+    await db.update(tasks).set({ attempts: 5, maxAttempts: 5 }).where(eq(tasks.id, task.id));
+    const [storedTask] = await db.select().from(tasks).where(eq(tasks.id, task.id));
+    if (!storedTask) throw new Error("final-attempt task missing");
+    return storedTask as Task;
+  }
+
+  async function storedDelivery(deliveryId: string) {
+    const [delivery] = await db
+      .select()
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, deliveryId));
+    if (!delivery) throw new Error("delivery missing");
+    return delivery;
+  }
+
+  async function storedTask(taskId: string) {
+    const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+    if (!task) throw new Error("task missing");
+    return task;
+  }
+
+  async function expectCampaignFinalizeTask(campaignId: string) {
+    const [finalizeTask] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.kind, "notification.campaign_finalize"));
+    expect(finalizeTask).toBeDefined();
+    expect(finalizeTask!.payloadJson).toMatchObject({ version: 1, campaignId });
+    return finalizeTask!;
   }
 
   it("renders the recipient locale translation and records accepted SMTP attempts", async () => {
@@ -746,6 +804,160 @@ describeWithDatabase("notification delivery", () => {
       .from(notificationCampaigns)
       .where(eq(notificationCampaigns.id, campaign.id));
     expect(storedCampaign).toMatchObject({ status: "completed" });
+  });
+
+  it("rescues accepted final-attempt deliveries when accepted finalization fails", async () => {
+    const { campaign, delivery, task } = await seedDelivery();
+    const finalTask = await markTaskAsFinalAttempt(task);
+    injectFinalizerFault("accepted");
+
+    await expect(handleNotificationDeliveryTask(finalTask)).resolves.toEqual({});
+
+    expect(await storedDelivery(delivery.id)).toMatchObject({
+      status: "accepted",
+      lastOutcome: "accepted",
+      lastError: null,
+      nextAttemptAfter: null,
+    });
+    const [attempt] = await deliveryAttempts(delivery.id);
+    expect(attempt).toMatchObject({ outcome: "accepted", smtpAttempted: true });
+    expect(attempt!.completedAt).toBeInstanceOf(Date);
+    await expectCampaignFinalizeTask(campaign.id);
+    expect(await storedTask(task.id)).toMatchObject({ status: "processing" });
+  });
+
+  it("dead-letters final-attempt transient deliveries when transient finalization fails", async () => {
+    mocks.sendNewPostNotificationEmail.mockRejectedValueOnce(new MailDeliveryError("transient"));
+    const { campaign, delivery, task } = await seedDelivery();
+    const finalTask = await markTaskAsFinalAttempt(task);
+    const fault = injectFinalizerFault("transient");
+
+    await expect(handleNotificationDeliveryTask(finalTask)).rejects.toBe(fault);
+
+    expect(await storedDelivery(delivery.id)).toMatchObject({
+      status: "dead",
+      lastOutcome: "transient_failure",
+      lastError: "SMTP transient failure; finalization failed; retries exhausted",
+      nextAttemptAfter: null,
+    });
+    const [attempt] = await deliveryAttempts(delivery.id);
+    expect(attempt).toMatchObject({
+      outcome: "transient_failure",
+      errorKind: "transient",
+      smtpAttempted: true,
+    });
+    expect(attempt!.completedAt).toBeInstanceOf(Date);
+    await expectCampaignFinalizeTask(campaign.id);
+    expect(await storedTask(task.id)).toMatchObject({ status: "processing" });
+  });
+
+  it("suppresses final-attempt permanent deliveries when permanent finalization fails", async () => {
+    mocks.sendNewPostNotificationEmail.mockRejectedValueOnce(new MailDeliveryError("permanent"));
+    const { campaign, delivery, task, user } = await seedDelivery();
+    const finalTask = await markTaskAsFinalAttempt(task);
+    injectFinalizerFault("permanent");
+
+    await expect(handleNotificationDeliveryTask(finalTask)).rejects.toMatchObject({
+      message: "Notification email delivery failed permanently",
+      classification: "permanent",
+    } satisfies Partial<PermanentTaskError>);
+
+    expect(await storedDelivery(delivery.id)).toMatchObject({
+      status: "dead",
+      lastOutcome: "permanent_failure",
+      lastError: "SMTP permanent rejection",
+      nextAttemptAfter: null,
+    });
+    const [attempt] = await deliveryAttempts(delivery.id);
+    expect(attempt).toMatchObject({
+      outcome: "permanent_failure",
+      errorKind: "permanent",
+      smtpAttempted: true,
+    });
+    expect(attempt!.completedAt).toBeInstanceOf(Date);
+    const digest = createNotificationSuppressionDigest(user.email);
+    const [suppression] = await db
+      .select()
+      .from(notificationSuppressions)
+      .where(eq(notificationSuppressions.emailDigest, digest.digest));
+    expect(suppression).toMatchObject({
+      emailDigestKeyId: "supp-current",
+      firstDeliveryId: delivery.id,
+      lastDeliveryId: delivery.id,
+    });
+    await expectCampaignFinalizeTask(campaign.id);
+    expect(await storedTask(task.id)).toMatchObject({ status: "processing" });
+  });
+
+  it("dead-letters final-attempt operator deliveries when operator finalization fails", async () => {
+    mocks.sendNewPostNotificationEmail.mockRejectedValueOnce(
+      new MailDeliveryError("needs_operator"),
+    );
+    const { campaign, delivery, task } = await seedDelivery();
+    const finalTask = await markTaskAsFinalAttempt(task);
+    const fault = injectFinalizerFault("needs_operator");
+
+    await expect(handleNotificationDeliveryTask(finalTask)).rejects.toBe(fault);
+
+    expect(await storedDelivery(delivery.id)).toMatchObject({
+      status: "dead",
+      lastOutcome: "needs_operator_defer",
+      lastError: "SMTP operator issue; finalization failed; retries exhausted",
+      nextAttemptAfter: null,
+    });
+    const [attempt] = await deliveryAttempts(delivery.id);
+    expect(attempt).toMatchObject({
+      outcome: "needs_operator_defer",
+      errorKind: "needs_operator",
+      smtpAttempted: true,
+    });
+    expect(attempt!.completedAt).toBeInstanceOf(Date);
+    await expectCampaignFinalizeTask(campaign.id);
+    expect(await storedTask(task.id)).toMatchObject({ status: "processing" });
+  });
+
+  it("keeps non-final accepted finalizer failures retryable", async () => {
+    const { delivery, task } = await seedDelivery();
+    const fault = injectFinalizerFault("accepted");
+
+    await expect(handleNotificationDeliveryTask(task)).rejects.toBe(fault);
+
+    expect(await storedDelivery(delivery.id)).toMatchObject({
+      status: "sending",
+      lastOutcome: "started",
+    });
+    const [attempt] = await deliveryAttempts(delivery.id);
+    expect(attempt).toMatchObject({ outcome: "started", smtpAttempted: true });
+    expect(attempt!.completedAt).toBeNull();
+    await expect(
+      db.select().from(tasks).where(eq(tasks.kind, "notification.campaign_finalize")),
+    ).resolves.toHaveLength(0);
+    expect(await storedTask(task.id)).toMatchObject({ status: "processing" });
+  });
+
+  it("leaves stale final-attempt fallback rows untouched when the fence is lost", async () => {
+    const { delivery, task } = await seedDelivery();
+    const finalTask = await markTaskAsFinalAttempt(task);
+    const slowSend = deferred<void>();
+    mocks.sendNewPostNotificationEmail.mockImplementationOnce(() => slowSend.promise);
+    const fault = injectFinalizerFault("accepted");
+
+    const run = handleNotificationDeliveryTask(finalTask);
+    await waitForSendCalls(1);
+    await db.update(tasks).set({ status: "dead" }).where(eq(tasks.id, task.id));
+    slowSend.resolve();
+
+    await expect(run).rejects.toBe(fault);
+    expect(await storedDelivery(delivery.id)).toMatchObject({
+      status: "sending",
+      lastOutcome: "started",
+    });
+    const [attempt] = await deliveryAttempts(delivery.id);
+    expect(attempt).toMatchObject({ outcome: "started", smtpAttempted: true });
+    expect(attempt!.completedAt).toBeNull();
+    await expect(
+      db.select().from(tasks).where(eq(tasks.kind, "notification.campaign_finalize")),
+    ).resolves.toHaveLength(0);
   });
 
   it("keeps swept lease_expired attempts immutable against late stale-worker outcomes", async () => {
