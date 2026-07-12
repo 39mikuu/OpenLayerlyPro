@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.hoisted(() => {
   Object.assign(process.env, {
@@ -33,8 +33,6 @@ vi.mock("@/modules/mail", async (importOriginal) => {
 
 import { getDb } from "@/db";
 import {
-  memberships,
-  membershipTiers,
   notificationCampaigns,
   notificationDeliveries,
   notificationDeliveryAttempts,
@@ -47,6 +45,7 @@ import {
   tasks,
   users,
 } from "@/db/schema";
+import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { MailDeliveryError } from "@/modules/mail/delivery";
 import { handleNotificationDeliveryTask } from "@/modules/notifications";
 import { createNotificationSuppressionDigest } from "@/modules/security/notification-suppression-key";
@@ -74,23 +73,16 @@ function utcMinuteStart(date: Date): Date {
 describeWithDatabase("notification delivery", () => {
   const db = getDb();
 
+  afterAll(async () => {
+    await resetDatabase(db);
+  });
+
   beforeEach(async () => {
     vi.clearAllMocks();
     mocks.getSmtpConfig.mockResolvedValue({ configured: true });
     mocks.sendNewPostNotificationEmail.mockResolvedValue(undefined);
 
-    await db.delete(notificationDeliveryAttempts);
-    await db.delete(notificationDeliveries);
-    await db.delete(notificationCampaigns);
-    await db.delete(notificationPreferences);
-    await db.delete(notificationQuotaWindows);
-    await db.delete(notificationSuppressions);
-    await db.delete(postTranslations);
-    await db.delete(tasks);
-    await db.delete(posts);
-    await db.delete(memberships);
-    await db.delete(membershipTiers);
-    await db.delete(users);
+    await resetDatabase(db);
   });
 
   async function seedUser(

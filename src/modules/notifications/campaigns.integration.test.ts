@@ -1,23 +1,10 @@
 import { randomUUID } from "crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
-import {
-  auditEvents,
-  memberships,
-  membershipTiers,
-  notificationCampaigns,
-  notificationDeliveries,
-  notificationDeliveryAttempts,
-  notificationPreferences,
-  notificationQuotaWindows,
-  notificationSuppressions,
-  posts,
-  postTranslations,
-  tasks,
-  users,
-} from "@/db/schema";
+import { auditEvents, notificationCampaigns, posts, tasks } from "@/db/schema";
+import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { recordAudit } from "@/modules/audit";
 import {
   archivePost,
@@ -45,20 +32,12 @@ const adminActor = () => ({ type: "admin" as const, id: randomUUID() });
 describeWithDatabase("notification campaign creation", () => {
   const db = getDb();
 
+  afterAll(async () => {
+    await resetDatabase(db);
+  });
+
   beforeEach(async () => {
-    await db.delete(notificationDeliveryAttempts);
-    await db.delete(notificationDeliveries);
-    await db.delete(notificationCampaigns);
-    await db.delete(notificationPreferences);
-    await db.delete(notificationQuotaWindows);
-    await db.delete(notificationSuppressions);
-    await db.delete(postTranslations);
-    await db.delete(auditEvents);
-    await db.delete(tasks);
-    await db.delete(posts);
-    await db.delete(memberships);
-    await db.delete(membershipTiers);
-    await db.delete(users);
+    await resetDatabase(db);
   });
 
   async function seedDraft(): Promise<typeof posts.$inferSelect> {
