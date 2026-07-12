@@ -157,8 +157,14 @@ export async function buildStaticSitemapResource(
   ]);
   const listLastModifiedAt = maxPublicDateOrNull(site.feedIdentityUpdatedAt, latestPostUpdatedAt);
   const tiersLastModifiedAt = maxPublicDateOrNull(site.feedIdentityUpdatedAt, latestTierUpdatedAt);
+  // The home page renders tier cards too, so its recency tracks both sources.
+  const homeLastModifiedAt = maxPublicDateOrNull(
+    site.feedIdentityUpdatedAt,
+    latestPostUpdatedAt,
+    latestTierUpdatedAt,
+  );
   const entries: SitemapEntry[] = [
-    { loc: buildPublicUrl(baseUrl, "/"), lastmod: listLastModifiedAt },
+    { loc: buildPublicUrl(baseUrl, "/"), lastmod: homeLastModifiedAt },
     { loc: buildPublicUrl(baseUrl, "/posts"), lastmod: listLastModifiedAt },
     { loc: buildPublicUrl(baseUrl, "/tiers"), lastmod: tiersLastModifiedAt },
   ];

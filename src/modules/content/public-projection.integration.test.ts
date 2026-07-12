@@ -32,6 +32,7 @@ import { buildPublicPostMetadata } from "@/modules/content/seo";
 import {
   buildPostSitemapShardResource,
   buildSitemapIndexResource,
+  buildStaticSitemapResource,
 } from "@/modules/content/sitemap";
 
 const describeWithDatabase =
@@ -350,6 +351,34 @@ describeWithDatabase("public projection SEO integration", () => {
     await expect(
       buildPostSitemapShardResource({ baseUrl: APP_URL, shard: 3, shardSize: 2 }),
     ).resolves.toBeNull();
+  });
+
+  it("advances the home lastmod when only tiers change", async () => {
+    await seedPost({
+      id: "00000000-0000-4000-8000-000000000001",
+      slug: "home-lastmod-post",
+      title: "Home Lastmod Post",
+      publishedAt: "2026-07-10T12:00:00.000Z",
+      updatedAt: "2026-07-10T12:00:00.000Z",
+    });
+    await seedTier("55555555-5555-4555-8555-555555555555");
+    await db
+      .update(membershipTiers)
+      .set({ updatedAt: new Date("2026-07-11T09:00:00.000Z") })
+      .where(eq(membershipTiers.id, "55555555-5555-4555-8555-555555555555"));
+
+    const resource = await buildStaticSitemapResource({ baseUrl: APP_URL });
+    const byLoc = new Map(
+      [...resource.body.matchAll(/<loc>([^<]+)<\/loc>\s*<lastmod>([^<]+)<\/lastmod>/g)].map(
+        ([, loc, lastmod]) => [loc, lastmod] as const,
+      ),
+    );
+
+    // Home renders tier cards, so its recency follows the later tier update…
+    expect(byLoc.get(`${APP_URL}/`)).toBe("2026-07-11T09:00:00.000Z");
+    expect(byLoc.get(`${APP_URL}/tiers`)).toBe("2026-07-11T09:00:00.000Z");
+    // …while /posts stays on post recency.
+    expect(byLoc.get(`${APP_URL}/posts`)).toBe("2026-07-10T12:00:00.000Z");
   });
 
   it("404s a trailing post sitemap shard that shrinks after count", async () => {
