@@ -17,7 +17,7 @@ import {
 export const config = {
   runtime: "nodejs",
   matcher: [
-    "/((?!api(?:/|$)|download(?:/|$)|_next/(?:static|image)(?:/|$)|(?:favicon\\.ico|robots\\.txt|sitemap\\.xml|file\\.svg|globe\\.svg|next\\.svg|vercel\\.svg|window\\.svg)$).*)",
+    "/((?!api(?:/|$)|download(?:/|$)|_next/(?:static|image)(?:/|$)|(?:favicon\\.ico|robots\\.txt|sitemap\\.xml|feed\\.xml|file\\.svg|globe\\.svg|next\\.svg|vercel\\.svg|window\\.svg)$).*)",
   ],
 };
 

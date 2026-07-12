@@ -1,0 +1,1 @@
+CREATE INDEX "posts_public_feed_idx" ON "posts" USING btree ("published_at" DESC, "id" DESC) WHERE "posts"."status" = 'published' AND "posts"."visibility" = 'public' AND "posts"."published_at" IS NOT NULL;

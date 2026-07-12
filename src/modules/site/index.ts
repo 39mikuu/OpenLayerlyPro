@@ -33,6 +33,10 @@ export type PublicSiteInfo = {
   socialLinks: SocialLink[];
 };
 
+export type PublicSiteInfoWithMetadata = PublicSiteInfo & {
+  feedIdentityUpdatedAt: Date | null;
+};
+
 export type AdminSiteInfo = PublicSiteInfo & {
   customFooterMarkup: string;
   legacyFooterHtml: string;
@@ -55,6 +59,16 @@ export async function getSettings(keys: string[]): Promise<Record<string, unknow
   if (keys.length === 0) return {};
   const rows = await getDb().select().from(siteSettings).where(inArray(siteSettings.key, keys));
   return Object.fromEntries(rows.map((row) => [row.key, row.valueJson]));
+}
+
+async function getSettingsWithUpdatedAt(
+  keys: string[],
+): Promise<Record<string, { valueJson: unknown; updatedAt: Date }>> {
+  if (keys.length === 0) return {};
+  const rows = await getDb().select().from(siteSettings).where(inArray(siteSettings.key, keys));
+  return Object.fromEntries(
+    rows.map((row) => [row.key, { valueJson: row.valueJson, updatedAt: row.updatedAt }]),
+  );
 }
 
 export async function setSetting(key: string, value: unknown): Promise<void> {
@@ -127,6 +141,26 @@ export async function readPublicSiteInfo(): Promise<PublicSiteInfo> {
     siteLogoFileId: nullableStringSetting(settings.site_logo_file_id),
     siteIconFileId: nullableStringSetting(settings.site_icon_file_id),
     socialLinks: Array.isArray(socialLinks) ? (socialLinks as SocialLink[]) : [],
+  };
+}
+
+export async function readPublicSiteInfoWithMetadata(): Promise<PublicSiteInfoWithMetadata> {
+  const settings = await getSettingsWithUpdatedAt([...PUBLIC_SITE_SETTING_KEYS]);
+  const value = (key: (typeof PUBLIC_SITE_SETTING_KEYS)[number]) => settings[key]?.valueJson;
+  const socialLinks = value("social_links");
+  return {
+    initialized: value("initialized") === true,
+    siteName: stringSetting(value("site_name"), "Artist Member Site"),
+    artistName: stringSetting(value("artist_name")),
+    artistBio: stringSetting(value("artist_bio")),
+    artistAvatarFileId: nullableStringSetting(value("artist_avatar_file_id")),
+    siteLogoFileId: nullableStringSetting(value("site_logo_file_id")),
+    siteIconFileId: nullableStringSetting(value("site_icon_file_id")),
+    socialLinks: Array.isArray(socialLinks) ? (socialLinks as SocialLink[]) : [],
+    feedIdentityUpdatedAt:
+      [settings.site_name?.updatedAt, settings.artist_name?.updatedAt]
+        .filter((updatedAt): updatedAt is Date => updatedAt instanceof Date)
+        .sort((left, right) => right.getTime() - left.getTime())[0] ?? null,
   };
 }
 

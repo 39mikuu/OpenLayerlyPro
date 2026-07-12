@@ -16,6 +16,7 @@ CDN 到源站应使用 HTTPS 且校验证书；源站必须限制只接受可信
 站点包含认证、会员和短时能力 URL。默认只缓存带指纹的静态资源：
 
 - 可缓存：`/_next/static/*` 等 immutable 静态资源；
+- `/feed.xml` 是公开、动态但可 CDN 缓存的 Atom 输出；CDN 必须遵守应用返回的 `Cache-Control`（短 `s-maxage`），不要为其他动态或私有路由扩大 public 缓存范围；
 - 绕过缓存：`/api/*`、`/admin/*`、登录/账号/订单/checkout，以及所有应用代理的文件与视频响应；
 - `Cache-Control: private, no-store` 必须原样保留，不能被 CDN 改写为 public；
 - 不要按 URL 外观假定 `/api/files/*/download` 都是公开 signed redirect：local、private video 和其他受保护路径可能由应用直接代理；

@@ -339,6 +339,11 @@ export const posts = pgTable(
   },
   (table) => [
     index("posts_status_published_idx").on(table.status, table.publishedAt.desc()),
+    index("posts_public_feed_idx")
+      .on(table.publishedAt.desc(), table.id.desc())
+      .where(
+        sql`${table.status} = 'published' and ${table.visibility} = 'public' and ${table.publishedAt} is not null`,
+      ),
     index("posts_status_scheduled_idx").on(table.status, table.scheduledAt),
     // Bounded existence probe support for file-deletion reference checks.
     // Partial index covers only rows that actually reference a cover file.
