@@ -226,6 +226,14 @@ export async function updateUserDisplayNameWithWallReset(input: {
 }): Promise<void> {
   return getDb().transaction(async (tx) => {
     const now = new Date();
+    const [currentUser] = await tx
+      .select({ displayName: users.displayName })
+      .from(users)
+      .where(eq(users.id, input.userId))
+      .limit(1)
+      .for("update");
+    // Saving an unchanged name must not re-moderate an approved entry.
+    if (!currentUser || currentUser.displayName === input.displayName) return;
     await tx
       .update(users)
       .set({ displayName: input.displayName, updatedAt: now })
@@ -295,6 +303,20 @@ export async function upsertOptIn(input: {
       .where(eq(supporterWallEntries.userId, input.userId))
       .limit(1)
       .for("update");
+
+    // A no-op or retried PUT with the same dedication must not pull an
+    // approved entry back into moderation. Hidden entries still reset:
+    // resubmitting is the fan's only way to request re-review.
+    if (before && before.status !== "hidden" && before.dedication === dedication) {
+      return {
+        id: before.id,
+        dedication: before.dedication,
+        status: before.status,
+        version: before.version,
+        createdAt: before.createdAt,
+        updatedAt: before.updatedAt,
+      };
+    }
 
     const [entry] = before
       ? await tx

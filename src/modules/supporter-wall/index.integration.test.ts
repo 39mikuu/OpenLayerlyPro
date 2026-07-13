@@ -23,6 +23,7 @@ import {
   hideSupporterWallEntry,
   listSupporterWallEntriesPage,
   optOut,
+  updateUserDisplayNameWithWallReset,
   upsertOptIn,
 } from "./index";
 
@@ -349,6 +350,46 @@ describeWithDatabase("supporter wall domain integration", () => {
     ]);
     expect(JSON.stringify(viewModel)).not.toContain("old dedication");
     expect(JSON.stringify(viewModel)).not.toContain("new dedication");
+  });
+
+  it("keeps approved entries approved on a same-dedication resubmit", async () => {
+    await enableWall();
+    const { approved, user } = await createApprovedSupporter({
+      displayName: "Idempotent Fan",
+      dedication: "same text",
+      level: 10,
+    });
+
+    const resubmitted = await upsertOptIn({ userId: user.id, dedication: "same text" });
+
+    expect(resubmitted).toMatchObject({ id: approved.id, status: "approved", version: 1 });
+    await expect(getSupporterWallViewModel()).resolves.toMatchObject({
+      supporters: [expect.objectContaining({ dedication: "same text" })],
+    });
+    await expect(
+      db.select().from(auditEvents).where(eq(auditEvents.action, "fan_edit_reset")),
+    ).resolves.toHaveLength(0);
+  });
+
+  it("keeps approved entries approved when the display name is saved unchanged", async () => {
+    await enableWall();
+    const { approved, user } = await createApprovedSupporter({
+      displayName: "Stable Name",
+      dedication: "stable dedication",
+      level: 10,
+    });
+
+    await updateUserDisplayNameWithWallReset({ userId: user.id, displayName: "Stable Name" });
+
+    await expect(
+      db
+        .select({ status: supporterWallEntries.status, version: supporterWallEntries.version })
+        .from(supporterWallEntries)
+        .where(eq(supporterWallEntries.id, approved.id)),
+    ).resolves.toEqual([{ status: "approved", version: 1 }]);
+    await expect(
+      db.select().from(auditEvents).where(eq(auditEvents.action, "display_name_reset")),
+    ).resolves.toHaveLength(0);
   });
 
   it("does not audit first-time opt-in or pending fan re-edit", async () => {
