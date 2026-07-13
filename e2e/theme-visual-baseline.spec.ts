@@ -65,6 +65,8 @@ type HiddenPostSnapshot = { id: string };
 type HiddenTierSnapshot = { id: string };
 let hiddenPublishedPosts: HiddenPostSnapshot[] = [];
 let hiddenActiveTiers: HiddenTierSnapshot[] = [];
+type HiddenSupporterSnapshot = { id: string; status: "pending" | "approved" | "hidden" };
+let hiddenApprovedSupporters: HiddenSupporterSnapshot[] = [];
 
 type ThemeId = "builtin" | "blog" | "wordpress";
 type ThemeMode = "light" | "dark";
@@ -129,11 +131,11 @@ async function cleanupFixtures() {
     await tx.delete(posts).where(sql`${posts.slug} = ${POST_SLUG}`);
     await tx.delete(categories).where(sql`${categories.slug} = ${fixtureCategorySlug}`);
     await tx.delete(tags).where(sql`${tags.slug} = ${fixtureTagSlug}`);
-    // Delete ALL wall entries, not just this suite's: getSupporterWallViewModel
-    // intentionally keeps discontinued-tier supporters visible, so leftover
-    // approved entries from other suites would leak into the /supporters
-    // screenshot even after the tier-hiding pass below.
-    await tx.delete(supporterWallEntries);
+    await tx
+      .delete(supporterWallEntries)
+      .where(
+        sql`${supporterWallEntries.userId} in (select id from users where email like 'visual-baseline-%@example.com')`,
+      );
     await tx.delete(memberships).where(
       sql`${memberships.tierId} in (select id from membership_tiers where slug in (${sql.join(
         fixtureTierSlugs.map((slug) => sql`${slug}`),
@@ -183,6 +185,25 @@ async function hideNonVisualFixtureContent() {
           ),
         );
     }
+    // Non-fixture approved supporters would leak into the /supporters
+    // screenshot (discontinued tiers intentionally stay visible), so hide
+    // them for the run and restore their original status afterwards —
+    // mirroring the posts/tiers snapshot pattern above instead of deleting.
+    hiddenApprovedSupporters = await tx
+      .select({ id: supporterWallEntries.id, status: supporterWallEntries.status })
+      .from(supporterWallEntries)
+      .where(sql`${supporterWallEntries.status} = 'approved'`);
+    if (hiddenApprovedSupporters.length > 0) {
+      await tx
+        .update(supporterWallEntries)
+        .set({ status: "hidden" })
+        .where(
+          inArray(
+            supporterWallEntries.id,
+            hiddenApprovedSupporters.map((entry) => entry.id),
+          ),
+        );
+    }
   });
 }
 
@@ -207,6 +228,17 @@ async function restoreNonVisualFixtureContent() {
           inArray(
             membershipTiers.id,
             hiddenActiveTiers.map((tier) => tier.id),
+          ),
+        );
+    }
+    if (hiddenApprovedSupporters.length > 0) {
+      await tx
+        .update(supporterWallEntries)
+        .set({ status: "approved" })
+        .where(
+          inArray(
+            supporterWallEntries.id,
+            hiddenApprovedSupporters.map((entry) => entry.id),
           ),
         );
     }

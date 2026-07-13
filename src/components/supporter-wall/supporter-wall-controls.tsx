@@ -32,6 +32,15 @@ export function SupporterWallControls({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // router.refresh() after a display-name change hands down a new
+  // initialEntry (e.g. approved → pending) while client state persists;
+  // without this sync the controls would keep showing the stale status.
+  useEffect(() => {
+    setEntry(initialEntry);
+    setDedication(initialEntry?.dedication ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialEntry?.id, initialEntry?.status, initialEntry?.version]);
+
   useEffect(() => {
     let cancelled = false;
     void api<{ entry: FanWallEntry | null }>("/api/me/supporter-wall")
