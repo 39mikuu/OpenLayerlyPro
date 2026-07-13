@@ -864,6 +864,7 @@ export const ja: Messages = {
       storage: "ファイルストレージ",
       stripe: "Stripe 決済",
       translation: "AI 翻訳",
+      umami: "Umami アナリティクス",
       sourceDatabase: "管理画面の設定",
       sourceEnvironment: "環境変数",
       sourceNone: "未設定",

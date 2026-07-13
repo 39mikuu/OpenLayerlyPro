@@ -876,6 +876,7 @@ export const en: Messages = {
       storage: "File storage",
       stripe: "Stripe payments",
       translation: "AI translation",
+      umami: "Umami analytics",
       sourceDatabase: "Admin settings",
       sourceEnvironment: "Environment variables",
       sourceNone: "Not set",

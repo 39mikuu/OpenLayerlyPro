@@ -833,6 +833,7 @@ export const zh = {
       storage: "文件存储",
       stripe: "Stripe 支付",
       translation: "AI 翻译",
+      umami: "Umami 统计",
       sourceDatabase: "后台配置",
       sourceEnvironment: "环境变量",
       sourceNone: "未设置",

@@ -1,6 +1,13 @@
 import type { Locale } from "@/modules/i18n";
 
-export type IntegrationId = "smtp" | "storage" | "stripe" | "turnstile" | "translation" | "tunnel";
+export type IntegrationId =
+  | "smtp"
+  | "storage"
+  | "stripe"
+  | "turnstile"
+  | "translation"
+  | "umami"
+  | "tunnel";
 
 export type IntegrationKind = "service" | "deployment";
 
