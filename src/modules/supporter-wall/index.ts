@@ -18,6 +18,8 @@ const SUPPORTER_WALL_SETTING_KEYS = [
   SUPPORTER_WALL_MIN_LEVEL_KEY,
 ] as const;
 const MAX_DEDICATION_LENGTH = 200;
+// Deterministic order means the top-200 by level/created_at render; boundedness per WP5 plan.
+const PUBLIC_WALL_MAX_ENTRIES = 200;
 
 type SupporterWallEntryStatus = "pending" | "approved" | "hidden";
 
@@ -218,6 +220,55 @@ export async function getMyWallEntry(
   return entry ?? null;
 }
 
+export async function updateUserDisplayNameWithWallReset(input: {
+  userId: string;
+  displayName: string | null;
+}): Promise<void> {
+  return getDb().transaction(async (tx) => {
+    const now = new Date();
+    await tx
+      .update(users)
+      .set({ displayName: input.displayName, updatedAt: now })
+      .where(eq(users.id, input.userId));
+
+    const [before] = await tx
+      .select({
+        id: supporterWallEntries.id,
+        status: supporterWallEntries.status,
+        version: supporterWallEntries.version,
+      })
+      .from(supporterWallEntries)
+      .where(eq(supporterWallEntries.userId, input.userId))
+      .limit(1)
+      .for("update");
+    if (!before || before.status === "pending") return;
+
+    const [updated] = await tx
+      .update(supporterWallEntries)
+      .set({
+        status: "pending",
+        version: sql`${supporterWallEntries.version} + 1`,
+        updatedAt: now,
+      })
+      .where(eq(supporterWallEntries.id, before.id))
+      .returning({
+        status: supporterWallEntries.status,
+        version: supporterWallEntries.version,
+      });
+    if (!updated) throw new Error("Failed to reset supporter wall entry after display-name edit");
+
+    await recordAudit(tx, {
+      entityType: "supporter_wall_entry",
+      entityId: before.id,
+      action: "display_name_reset",
+      actor: { type: "user", id: input.userId },
+      before: pickEntryAudit(before),
+      after: pickEntryAudit(updated),
+      correlationId: randomUUID(),
+    });
+  });
+}
+
 export async function upsertOptIn(input: {
   userId: string;
   dedication?: string | null;
@@ -234,27 +285,55 @@ export async function upsertOptIn(input: {
     if (!user.displayName?.trim()) throw new ApiError(400, "displayNameRequired");
 
     const now = new Date();
-    const [entry] = await tx
-      .insert(supporterWallEntries)
-      .values({ userId: input.userId, dedication, status: "pending", updatedAt: now })
-      .onConflictDoUpdate({
-        target: supporterWallEntries.userId,
-        set: {
-          dedication,
-          status: "pending",
-          version: sql`${supporterWallEntries.version} + 1`,
-          updatedAt: now,
-        },
-      })
-      .returning({
-        id: supporterWallEntries.id,
-        dedication: supporterWallEntries.dedication,
-        status: supporterWallEntries.status,
-        version: supporterWallEntries.version,
-        createdAt: supporterWallEntries.createdAt,
-        updatedAt: supporterWallEntries.updatedAt,
-      });
+    const [before] = await tx
+      .select()
+      .from(supporterWallEntries)
+      .where(eq(supporterWallEntries.userId, input.userId))
+      .limit(1)
+      .for("update");
+
+    const [entry] = before
+      ? await tx
+          .update(supporterWallEntries)
+          .set({
+            dedication,
+            status: "pending",
+            version: sql`${supporterWallEntries.version} + 1`,
+            updatedAt: now,
+          })
+          .where(eq(supporterWallEntries.id, before.id))
+          .returning({
+            id: supporterWallEntries.id,
+            dedication: supporterWallEntries.dedication,
+            status: supporterWallEntries.status,
+            version: supporterWallEntries.version,
+            createdAt: supporterWallEntries.createdAt,
+            updatedAt: supporterWallEntries.updatedAt,
+          })
+      : await tx
+          .insert(supporterWallEntries)
+          .values({ userId: input.userId, dedication, status: "pending", updatedAt: now })
+          .returning({
+            id: supporterWallEntries.id,
+            dedication: supporterWallEntries.dedication,
+            status: supporterWallEntries.status,
+            version: supporterWallEntries.version,
+            createdAt: supporterWallEntries.createdAt,
+            updatedAt: supporterWallEntries.updatedAt,
+          });
     if (!entry) throw new Error("Failed to upsert supporter wall entry");
+
+    if (before && before.status !== "pending") {
+      await recordAudit(tx, {
+        entityType: "supporter_wall_entry",
+        entityId: before.id,
+        action: "fan_edit_reset",
+        actor: { type: "user", id: input.userId },
+        before: pickEntryAudit(before),
+        after: pickEntryAudit(entry),
+        correlationId: randomUUID(),
+      });
+    }
     return entry;
   });
 }
@@ -312,6 +391,7 @@ export async function getSupporterWallViewModel(): Promise<SupporterWallViewMode
     where e.status = 'approved'
       and ${thresholdSql}
     order by active.level desc, e.created_at asc, e.id asc
+    limit ${PUBLIC_WALL_MAX_ENTRIES}
   `);
   return {
     supporters: supporters.map(({ level, ...supporter }) => {

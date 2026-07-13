@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
@@ -254,6 +254,62 @@ describeWithDatabase("supporter wall domain integration", () => {
     await expect(getSupporterWallViewModel()).resolves.toBeNull();
   });
 
+  it("caps the public wall at the deterministic top 200 supporters", async () => {
+    await enableWall();
+    const topTier = await seedTier(10, "Top 200 Tier");
+    const lowTier = await seedTier(0, "Lowest Tier");
+    const topUsers = await db
+      .insert(users)
+      .values(
+        Array.from({ length: 200 }, (_, index) => ({
+          email: `top-${index}-${randomUUID()}@example.test`,
+          displayName: `Top Fan ${index.toString().padStart(3, "0")}`,
+        })),
+      )
+      .returning({ id: users.id, displayName: users.displayName });
+    const [lowestUser] = await db
+      .insert(users)
+      .values({
+        email: `lowest-${randomUUID()}@example.test`,
+        displayName: "Lowest Fan 201",
+      })
+      .returning({ id: users.id, displayName: users.displayName });
+
+    await db.insert(memberships).values([
+      ...topUsers.map((user) => ({
+        userId: user.id,
+        tierId: topTier.id,
+        source: "manual" as const,
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        status: "active" as const,
+      })),
+      {
+        userId: lowestUser!.id,
+        tierId: lowTier.id,
+        source: "manual" as const,
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        status: "active" as const,
+      },
+    ]);
+    await db.insert(supporterWallEntries).values([
+      ...topUsers.map((user) => ({
+        userId: user.id,
+        dedication: null,
+        status: "approved" as const,
+      })),
+      { userId: lowestUser!.id, dedication: null, status: "approved" as const },
+    ]);
+
+    const viewModel = await getSupporterWallViewModel();
+
+    expect(viewModel?.supporters).toHaveLength(200);
+    expect(viewModel?.supporters.map((supporter) => supporter.displayName)).not.toContain(
+      "Lowest Fan 201",
+    );
+  });
+
   it("moves an approved entry back to pending on fan re-edit and hides all dedication text", async () => {
     await enableWall();
     const { approved, user } = await createApprovedSupporter({
@@ -269,8 +325,79 @@ describeWithDatabase("supporter wall domain integration", () => {
     const viewModel = await getSupporterWallViewModel();
 
     expect(edited).toMatchObject({ id: approved.id, status: "pending", version: 2 });
+    await expect(
+      db
+        .select({
+          action: auditEvents.action,
+          beforeJson: auditEvents.beforeJson,
+          afterJson: auditEvents.afterJson,
+          actorType: auditEvents.actorType,
+          actorId: auditEvents.actorId,
+        })
+        .from(auditEvents)
+        .where(
+          and(eq(auditEvents.entityId, approved.id), eq(auditEvents.action, "fan_edit_reset")),
+        ),
+    ).resolves.toEqual([
+      {
+        action: "fan_edit_reset",
+        beforeJson: { status: "approved", version: 1 },
+        afterJson: { status: "pending", version: 2 },
+        actorType: "user",
+        actorId: user.id,
+      },
+    ]);
     expect(JSON.stringify(viewModel)).not.toContain("old dedication");
     expect(JSON.stringify(viewModel)).not.toContain("new dedication");
+  });
+
+  it("does not audit first-time opt-in or pending fan re-edit", async () => {
+    const user = await seedUser("Pending Edit Fan");
+
+    const first = await upsertOptIn({ userId: user.id, dedication: "first" });
+    const second = await upsertOptIn({ userId: user.id, dedication: "second" });
+
+    expect(first).toMatchObject({ status: "pending", version: 0 });
+    expect(second).toMatchObject({ id: first.id, status: "pending", version: 1 });
+    await expect(
+      db.select().from(auditEvents).where(eq(auditEvents.entityId, first.id)),
+    ).resolves.toHaveLength(0);
+  });
+
+  it("audits hidden entry reset on fan re-edit", async () => {
+    const admin = await seedAdmin();
+    const user = await seedUser("Hidden Edit Fan");
+    const entry = await upsertOptIn({ userId: user.id, dedication: "hide me" });
+    const approved = await approveSupporterWallEntry({
+      id: entry.id,
+      expectedVersion: entry.version,
+      actor: { type: "admin", id: admin.id },
+    });
+    const hidden = await hideSupporterWallEntry({
+      id: approved.id,
+      expectedVersion: approved.version,
+      actor: { type: "admin", id: admin.id },
+    });
+
+    const edited = await upsertOptIn({ userId: user.id, dedication: "new hidden text" });
+
+    expect(edited).toMatchObject({ id: entry.id, status: "pending", version: 3 });
+    await expect(
+      db
+        .select({
+          action: auditEvents.action,
+          beforeJson: auditEvents.beforeJson,
+          afterJson: auditEvents.afterJson,
+        })
+        .from(auditEvents)
+        .where(and(eq(auditEvents.entityId, hidden.id), eq(auditEvents.action, "fan_edit_reset"))),
+    ).resolves.toEqual([
+      {
+        action: "fan_edit_reset",
+        beforeJson: { status: "hidden", version: 2 },
+        afterJson: { status: "pending", version: 3 },
+      },
+    ]);
   });
 
   it("keeps email out of supporter wall fan, public, admin, and audit payloads", async () => {

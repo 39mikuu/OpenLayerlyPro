@@ -3,11 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   requireUser: vi.fn(),
-  updateUserDisplayName: vi.fn(),
+  updateUserDisplayNameWithWallReset: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/session", () => ({ requireUser: mocks.requireUser }));
-vi.mock("@/modules/user", () => ({ updateUserDisplayName: mocks.updateUserDisplayName }));
+vi.mock("@/modules/supporter-wall", () => ({
+  updateUserDisplayNameWithWallReset: mocks.updateUserDisplayNameWithWallReset,
+}));
 
 import { PATCH } from "./route";
 
@@ -23,7 +25,7 @@ describe("PATCH /api/me/profile", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.requireUser.mockResolvedValue({ id: "user-1" });
-    mocks.updateUserDisplayName.mockResolvedValue(undefined);
+    mocks.updateUserDisplayNameWithWallReset.mockResolvedValue(undefined);
   });
 
   it("trims and persists a bounded display name", async () => {
@@ -34,7 +36,10 @@ describe("PATCH /api/me/profile", () => {
       ok: true,
       data: { displayName: "Fan Name" },
     });
-    expect(mocks.updateUserDisplayName).toHaveBeenCalledWith("user-1", "Fan Name");
+    expect(mocks.updateUserDisplayNameWithWallReset).toHaveBeenCalledWith({
+      userId: "user-1",
+      displayName: "Fan Name",
+    });
   });
 
   it("clears the display name on explicit null", async () => {
@@ -42,7 +47,10 @@ describe("PATCH /api/me/profile", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ data: { displayName: null } });
-    expect(mocks.updateUserDisplayName).toHaveBeenCalledWith("user-1", null);
+    expect(mocks.updateUserDisplayNameWithWallReset).toHaveBeenCalledWith({
+      userId: "user-1",
+      displayName: null,
+    });
   });
 
   it.each([
@@ -54,6 +62,6 @@ describe("PATCH /api/me/profile", () => {
     const response = await PATCH(request(body));
 
     expect(response.status).toBe(400);
-    expect(mocks.updateUserDisplayName).not.toHaveBeenCalled();
+    expect(mocks.updateUserDisplayNameWithWallReset).not.toHaveBeenCalled();
   });
 });

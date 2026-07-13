@@ -5,7 +5,7 @@ import { handleApiError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
 import { requireUser } from "@/modules/auth/session";
-import { updateUserDisplayName } from "@/modules/user";
+import { updateUserDisplayNameWithWallReset } from "@/modules/supporter-wall";
 
 export const runtime = "nodejs";
 
@@ -27,7 +27,7 @@ export async function PATCH(req: NextRequest) {
       getEnv().REQUEST_JSON_MAX_BYTES,
       bodySchema,
     );
-    await updateUserDisplayName(user.id, displayName);
+    await updateUserDisplayNameWithWallReset({ userId: user.id, displayName });
     return jsonOk({ displayName });
   } catch (err) {
     return handleApiError(err);

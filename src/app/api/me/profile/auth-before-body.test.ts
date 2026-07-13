@@ -6,7 +6,7 @@ import { ApiError } from "@/lib/api";
 const mocks = vi.hoisted(() => ({
   readJsonWithLimit: vi.fn(),
   requireUser: vi.fn(),
-  updateUserDisplayName: vi.fn(),
+  updateUserDisplayNameWithWallReset: vi.fn(),
 }));
 
 vi.mock("@/lib/request-body", async (importOriginal) => {
@@ -14,7 +14,9 @@ vi.mock("@/lib/request-body", async (importOriginal) => {
   return { ...original, readJsonWithLimit: mocks.readJsonWithLimit };
 });
 vi.mock("@/modules/auth/session", () => ({ requireUser: mocks.requireUser }));
-vi.mock("@/modules/user", () => ({ updateUserDisplayName: mocks.updateUserDisplayName }));
+vi.mock("@/modules/supporter-wall", () => ({
+  updateUserDisplayNameWithWallReset: mocks.updateUserDisplayNameWithWallReset,
+}));
 
 import { PATCH } from "./route";
 
@@ -34,7 +36,7 @@ describe("profile auth-before-body invariant", () => {
     vi.clearAllMocks();
     mocks.requireUser.mockResolvedValue({ id: "user-1" });
     mocks.readJsonWithLimit.mockResolvedValue({ displayName: "Fan" });
-    mocks.updateUserDisplayName.mockResolvedValue(undefined);
+    mocks.updateUserDisplayNameWithWallReset.mockResolvedValue(undefined);
   });
 
   it("returns 401 before reading an unauthenticated oversized PATCH body", async () => {
@@ -45,6 +47,6 @@ describe("profile auth-before-body invariant", () => {
     expect(response.status).toBe(401);
     expect(mocks.requireUser).toHaveBeenCalledTimes(1);
     expect(mocks.readJsonWithLimit).not.toHaveBeenCalled();
-    expect(mocks.updateUserDisplayName).not.toHaveBeenCalled();
+    expect(mocks.updateUserDisplayNameWithWallReset).not.toHaveBeenCalled();
   });
 });
