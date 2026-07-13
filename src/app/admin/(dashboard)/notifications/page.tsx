@@ -39,7 +39,15 @@ const ATTEMPT_KEYS = [
 ];
 
 function compactCounts(keys: string[], counts: Record<string, number>): string {
-  const parts = keys
+  // Outcomes missing from the ordered list (e.g. in-flight "started" or a
+  // swept "lease_expired") must still render, or stuck deliveries show as 0.
+  const orderedKeys = [
+    ...keys,
+    ...Object.keys(counts)
+      .filter((key) => !keys.includes(key))
+      .sort(),
+  ];
+  const parts = orderedKeys
     .map((key) => [key, counts[key] ?? 0] as const)
     .filter(([, count]) => count > 0)
     .map(([key, count]) => `${key}:${count}`);
