@@ -129,11 +129,11 @@ async function cleanupFixtures() {
     await tx.delete(posts).where(sql`${posts.slug} = ${POST_SLUG}`);
     await tx.delete(categories).where(sql`${categories.slug} = ${fixtureCategorySlug}`);
     await tx.delete(tags).where(sql`${tags.slug} = ${fixtureTagSlug}`);
-    await tx
-      .delete(supporterWallEntries)
-      .where(
-        sql`${supporterWallEntries.userId} in (select id from users where email like 'visual-baseline-%@example.com')`,
-      );
+    // Delete ALL wall entries, not just this suite's: getSupporterWallViewModel
+    // intentionally keeps discontinued-tier supporters visible, so leftover
+    // approved entries from other suites would leak into the /supporters
+    // screenshot even after the tier-hiding pass below.
+    await tx.delete(supporterWallEntries);
     await tx.delete(memberships).where(
       sql`${memberships.tierId} in (select id from membership_tiers where slug in (${sql.join(
         fixtureTierSlugs.map((slug) => sql`${slug}`),
@@ -330,8 +330,10 @@ test.beforeAll(async () => {
       tierId: supporterTier.id,
       source: "manual",
       status: "active",
-      startsAt: new Date("2025-01-01T00:00:00.000Z"),
-      endsAt: new Date("2027-01-01T00:00:00.000Z"),
+      startsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      // Relative far-future end: the page never displays it, and a fixed date
+      // would silently expire the fixture and blank the wall screenshots.
+      endsAt: new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
       note: "Visual baseline supporter wall fixture",
     });
     await tx.insert(supporterWallEntries).values({
