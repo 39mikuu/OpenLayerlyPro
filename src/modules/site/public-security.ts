@@ -173,12 +173,22 @@ type IntegrationAdapterRuntime = {
   sources: Pick<CspSourceGroups, "script" | "image" | "connect" | "frame">;
 };
 
+// JSON embedded in inline <script> source must be escaped for the JS/HTML
+// context (</script> breakout, U+2028/U+2029 line terminators) even though
+// the path constants are compile-time values — CodeQL js/bad-code-sanitization.
+function jsonForInlineScript(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 function buildUmamiPublicPageTrackerInlineCode(): string {
-  const exact = JSON.stringify(
+  const exact = jsonForInlineScript(
     Object.fromEntries(PUBLIC_INTEGRATION_EXACT_PATHS.map((path) => [path, 1])),
   );
-  const prefixes = JSON.stringify([...PUBLIC_INTEGRATION_PATH_PREFIXES]);
-  return `(function(){var e=${exact};var r=${prefixes};var l="";function m(p){if(e[p])return true;for(var i=0;i<r.length;i++){if(p.indexOf(r[i])===0)return true;}return false;}function t(){var p=location.pathname;if(!m(p)){l="";return;}if(p===l)return;if(!window.umami||typeof window.umami.track!=="function")return;l=p;window.umami.track(function(d){return Object.assign({},d,{url:location.pathname+location.search,title:document.title,referrer:document.referrer});});}var h=history;var p=h.pushState;var q=h.replaceState;if(p)h.pushState=function(){var v=p.apply(this,arguments);t();return v;};if(q)h.replaceState=function(){var v=q.apply(this,arguments);t();return v;};window.addEventListener("popstate",t);window.addEventListener("load",t);})();`;
+  const prefixes = jsonForInlineScript([...PUBLIC_INTEGRATION_PATH_PREFIXES]);
+  return `(function(){var e=${exact};var r=${prefixes};var l="";function m(p){if(e[p])return true;for(var i=0;i<r.length;i++){if(p.indexOf(r[i])===0)return true;}return false;}function t(){var p=location.pathname;var u=p+location.search;if(!m(p)){l="";return;}if(u===l)return;if(!window.umami||typeof window.umami.track!=="function")return;l=u;window.umami.track(function(d){return Object.assign({},d,{url:location.pathname+location.search,title:document.title,referrer:document.referrer});});}var h=history;var p=h.pushState;var q=h.replaceState;if(p)h.pushState=function(){var v=p.apply(this,arguments);t();return v;};if(q)h.replaceState=function(){var v=q.apply(this,arguments);t();return v;};window.addEventListener("popstate",t);window.addEventListener("load",t);})();`;
 }
 
 const PUBLIC_INTEGRATION_ADAPTERS = {

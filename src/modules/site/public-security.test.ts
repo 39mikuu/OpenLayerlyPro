@@ -238,6 +238,11 @@ describe("public integration registry", () => {
     expect(inline).toContain("location.pathname+location.search");
     expect(inline).toContain("document.title");
     expect(inline).not.toContain("track();");
+    // Dedupe must key on pathname+search: /posts?cursor=... pagination is a
+    // distinct public view and must not be suppressed as a duplicate.
+    expect(inline).toContain("var u=p+location.search;");
+    expect(inline).toContain("if(u===l)return;");
+    expect(inline).toContain("l=u;");
   });
 
   it("derives Umami custom host rendering and CSP origins from explicit origins", () => {
