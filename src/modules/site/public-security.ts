@@ -178,7 +178,7 @@ function buildUmamiPublicPageTrackerInlineCode(): string {
     Object.fromEntries(PUBLIC_INTEGRATION_EXACT_PATHS.map((path) => [path, 1])),
   );
   const prefixes = JSON.stringify([...PUBLIC_INTEGRATION_PATH_PREFIXES]);
-  return `(function(){var e=${exact};var r=${prefixes};var l="";function m(p){if(e[p])return true;for(var i=0;i<r.length;i++){if(p.indexOf(r[i])===0)return true;}return false;}function t(){var p=location.pathname;if(!m(p)){l="";return;}if(p===l)return;if(!window.umami||typeof window.umami.track!=="function")return;l=p;window.umami.track();}var h=history;var p=h.pushState;var q=h.replaceState;if(p)h.pushState=function(){var v=p.apply(this,arguments);t();return v;};if(q)h.replaceState=function(){var v=q.apply(this,arguments);t();return v;};window.addEventListener("popstate",t);window.addEventListener("load",t);})();`;
+  return `(function(){var e=${exact};var r=${prefixes};var l="";function m(p){if(e[p])return true;for(var i=0;i<r.length;i++){if(p.indexOf(r[i])===0)return true;}return false;}function t(){var p=location.pathname;if(!m(p)){l="";return;}if(p===l)return;if(!window.umami||typeof window.umami.track!=="function")return;l=p;window.umami.track(function(d){return Object.assign({},d,{url:location.pathname+location.search,title:document.title,referrer:document.referrer});});}var h=history;var p=h.pushState;var q=h.replaceState;if(p)h.pushState=function(){var v=p.apply(this,arguments);t();return v;};if(q)h.replaceState=function(){var v=q.apply(this,arguments);t();return v;};window.addEventListener("popstate",t);window.addEventListener("load",t);})();`;
 }
 
 const PUBLIC_INTEGRATION_ADAPTERS = {
@@ -223,7 +223,11 @@ const PUBLIC_INTEGRATION_ADAPTERS = {
             data: {
               "website-id": integration.websiteId,
               "auto-track": "false",
-              ...(apiOrigin !== scriptOrigin ? { "host-url": apiOrigin } : {}),
+              // Emit host-url whenever apiOrigin is explicit: without it the
+              // tracker derives the endpoint from the script directory, so a
+              // same-origin subpath script (/stats/script.js) would post to
+              // /stats/api/send instead of /api/send.
+              ...(integration.apiOrigin ? { "host-url": apiOrigin } : {}),
             },
           },
           {

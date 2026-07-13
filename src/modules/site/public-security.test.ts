@@ -200,6 +200,46 @@ describe("public integration registry", () => {
     expect(runtime.sources.connect).toEqual(["https://cloud.umami.is"]);
   });
 
+  it("emits host-url for an explicit same-origin Umami apiOrigin (subpath script)", () => {
+    const websiteId = "33333333-3333-4333-8333-333333333333";
+    const integrations = publicIntegrationsSchema.parse([
+      {
+        id: "subpath-analytics",
+        provider: "umami",
+        websiteId,
+        scriptUrl: "https://site.example/stats/script.js",
+        apiOrigin: "https://site.example",
+      },
+    ]);
+    const runtime = buildIntegrationRuntime(integrations);
+
+    expect(runtime.plans[0]?.data).toEqual({
+      "website-id": websiteId,
+      "auto-track": "false",
+      // Explicit apiOrigin must always emit host-url: otherwise the tracker
+      // derives /stats/api/send from the script directory and loses events.
+      "host-url": "https://site.example",
+    });
+    expect(runtime.sources.connect).toEqual(["https://site.example"]);
+  });
+
+  it("tracks manual Umami pageviews with the current URL, not the cached one", () => {
+    const integrations = publicIntegrationsSchema.parse([
+      {
+        id: "analytics",
+        provider: "umami",
+        websiteId: "44444444-4444-4444-8444-444444444444",
+      },
+    ]);
+    const runtime = buildIntegrationRuntime(integrations);
+    const inline = runtime.plans[1]?.inlineCode ?? "";
+    // With data-auto-track=false the tracker's cached currentUrl goes stale;
+    // the companion must pass an explicit payload with location-derived url.
+    expect(inline).toContain("location.pathname+location.search");
+    expect(inline).toContain("document.title");
+    expect(inline).not.toContain("track();");
+  });
+
   it("derives Umami custom host rendering and CSP origins from explicit origins", () => {
     const websiteId = "22222222-2222-4222-8222-222222222222";
     const integrations = publicIntegrationsSchema.parse([
