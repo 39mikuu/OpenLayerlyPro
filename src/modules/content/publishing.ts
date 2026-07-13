@@ -5,6 +5,7 @@ import { type DbClient, getDb } from "@/db";
 import { type Post, posts } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { type AuditActor, pickPostPublishingAudit, recordAudit } from "@/modules/audit";
+import { createCampaignForPublishedPostTx } from "@/modules/notifications";
 import { enqueueTask } from "@/modules/tasks";
 
 export type PublishingActor = AuditActor;
@@ -20,13 +21,23 @@ type PublishingDependencies = {
   createId: () => string;
   enqueue: typeof enqueueTask;
   audit: typeof recordAudit;
+  createCampaign: typeof createCampaignForPublishedPostTx;
 };
 
 const defaultDependencies: PublishingDependencies = {
   createId: randomUUID,
   enqueue: enqueueTask,
   audit: recordAudit,
+  createCampaign: createCampaignForPublishedPostTx,
 };
+
+type PublishingDependencyOverrides = Partial<PublishingDependencies>;
+
+function resolvePublishingDependencies(
+  dependencies: PublishingDependencyOverrides,
+): PublishingDependencies {
+  return { ...defaultDependencies, ...dependencies };
+}
 
 export function derivePostState(post: Pick<Post, "status" | "scheduledAt">): DerivedPostState {
   if (post.status === "draft" && post.scheduledAt !== null) return "scheduled";
@@ -88,8 +99,9 @@ async function writePostAudit(
 export async function schedulePost(
   postId: string,
   input: { scheduledAt: Date; actor: PublishingActor },
-  dependencies: PublishingDependencies = defaultDependencies,
+  dependencyOverrides: PublishingDependencyOverrides = {},
 ): Promise<Post> {
+  const dependencies = resolvePublishingDependencies(dependencyOverrides);
   return getDb().transaction(async (tx) => {
     const now = await databaseNow(tx);
     assertFutureSchedule(input.scheduledAt, now);
@@ -149,8 +161,9 @@ export async function reschedulePost(
     expectedScheduleToken: string;
     actor: PublishingActor;
   },
-  dependencies: PublishingDependencies = defaultDependencies,
+  dependencyOverrides: PublishingDependencyOverrides = {},
 ): Promise<Post> {
+  const dependencies = resolvePublishingDependencies(dependencyOverrides);
   return getDb().transaction(async (tx) => {
     const now = await databaseNow(tx);
     assertFutureSchedule(input.scheduledAt, now);
@@ -204,8 +217,9 @@ export async function reschedulePost(
 export async function cancelPostSchedule(
   postId: string,
   input: { expectedScheduleToken: string; actor: PublishingActor },
-  dependencies: PublishingDependencies = defaultDependencies,
+  dependencyOverrides: PublishingDependencyOverrides = {},
 ): Promise<Post> {
+  const dependencies = resolvePublishingDependencies(dependencyOverrides);
   return getDb().transaction(async (tx) => {
     const now = await databaseNow(tx);
     const before = await getPostForUpdate(tx, postId);
@@ -251,8 +265,9 @@ export async function publishPostNow(
         expectedScheduleToken: string;
         actor: PublishingActor;
       },
-  dependencies: PublishingDependencies = defaultDependencies,
+  dependencyOverrides: PublishingDependencyOverrides = {},
 ): Promise<Post> {
+  const dependencies = resolvePublishingDependencies(dependencyOverrides);
   return getDb().transaction(async (tx) => {
     const now = await databaseNow(tx);
     const before = await getPostForUpdate(tx, postId);
@@ -278,13 +293,22 @@ export async function publishPostNow(
       .returning();
     if (!after) return throwPublishingStaleOrNotFound(tx, postId);
 
-    await writePostAudit(tx, dependencies, {
+    const correlationId = dependencies.createId();
+    const audit = await writePostAudit(tx, dependencies, {
       postId,
       action: "post.published",
       actor: input.actor,
       before,
       after,
-      correlationId: dependencies.createId(),
+      correlationId,
+    });
+    await dependencies.createCampaign(tx, {
+      post: after,
+      before,
+      after,
+      source: "manual_publish",
+      correlationId,
+      causationId: audit.id,
     });
     return after;
   });
@@ -293,8 +317,9 @@ export async function publishPostNow(
 export async function archivePost(
   postId: string,
   input: { actor: PublishingActor },
-  dependencies: PublishingDependencies = defaultDependencies,
+  dependencyOverrides: PublishingDependencyOverrides = {},
 ): Promise<Post> {
+  const dependencies = resolvePublishingDependencies(dependencyOverrides);
   return getDb().transaction(async (tx) => {
     const now = await databaseNow(tx);
     const before = await getPostForUpdate(tx, postId);
@@ -324,8 +349,9 @@ export async function archivePost(
 export async function restorePost(
   postId: string,
   input: { actor: PublishingActor },
-  dependencies: PublishingDependencies = defaultDependencies,
+  dependencyOverrides: PublishingDependencyOverrides = {},
 ): Promise<Post> {
+  const dependencies = resolvePublishingDependencies(dependencyOverrides);
   return getDb().transaction(async (tx) => {
     const now = await databaseNow(tx);
     const before = await getPostForUpdate(tx, postId);
@@ -365,8 +391,9 @@ export async function executeScheduledPublish(
     correlationId: string;
     schedulingAuditId: string;
   },
-  dependencies: PublishingDependencies = defaultDependencies,
+  dependencyOverrides: PublishingDependencyOverrides = {},
 ): Promise<ScheduledPublishResult> {
+  const dependencies = resolvePublishingDependencies(dependencyOverrides);
   return getDb().transaction(async (tx) => {
     const now = await databaseNow(tx);
     const [before] = await tx
@@ -420,6 +447,14 @@ export async function executeScheduledPublish(
       actor: { type: "system", id: null },
       before,
       after,
+      correlationId: input.correlationId,
+      causationId: input.schedulingAuditId,
+    });
+    await dependencies.createCampaign(tx, {
+      post: after,
+      before,
+      after,
+      source: "scheduled_publish",
       correlationId: input.correlationId,
       causationId: input.schedulingAuditId,
     });

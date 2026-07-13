@@ -2,15 +2,29 @@ import { randomUUID } from "crypto";
 import { and, asc, desc, eq, inArray, lt, lte, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
-import { paymentProviderEvents, type Task, tasks } from "@/db/schema";
+import {
+  notificationCampaigns,
+  notificationDeliveries,
+  notificationDeliveryAttempts,
+  paymentProviderEvents,
+  type Task,
+  tasks,
+} from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
-import { DEFAULT_MAX_ATTEMPTS, enqueueTask } from "./enqueue";
+import { DEFAULT_MAX_ATTEMPTS, enqueueTask, enqueueTaskReturningId } from "./enqueue";
 import { PermanentTaskError, type TaskFailureClassification } from "./errors";
 import { paymentProviderEventPayloadSchema } from "./payloads";
+import { type TaskQueueClass } from "./queue-class";
 
-export { DEFAULT_MAX_ATTEMPTS, enqueueTask, PermanentTaskError };
+export {
+  DEFAULT_MAX_ATTEMPTS,
+  enqueueTask,
+  enqueueTaskReturningId,
+  PermanentTaskError,
+  type TaskQueueClass,
+};
 
 // Total execution limit: failures 1-4 retry after 1m/2m/4m/8m; failure 5 is dead.
 export const TASK_LEASE_MS = 60_000;
@@ -68,6 +82,55 @@ function safeFailureMessage(kind: string, error: unknown): string {
 
 type ClaimOptions = { lockToken?: string; leaseMs?: number };
 type ClaimInternalOptions = ClaimOptions & { now?: Date };
+export type ClaimOneTaskForClassOptions = ClaimOptions & { includeStale?: boolean };
+type ClaimOneTaskForClassInternalOptions = ClaimOptions & { includeStale?: boolean };
+export type ClaimedTaskForClass = Task & { reclaimedStale: boolean };
+
+type NotificationDeliverPayload = {
+  version: 1;
+  userId?: string;
+};
+
+type RawTaskRow = {
+  id: string;
+  kind: string;
+  dedupe_key: string | null;
+  payload_json: unknown;
+  run_after: Date;
+  status: TaskStatus;
+  attempts: number;
+  max_attempts: number;
+  locked_at: Date | null;
+  locked_by: string | null;
+  lease_until: Date | null;
+  last_error: string | null;
+  priority: number;
+  queue_class: TaskQueueClass;
+  created_at: Date;
+  updated_at: Date;
+};
+
+function rawTaskRowToTask(row: RawTaskRow, reclaimedStale: boolean): ClaimedTaskForClass {
+  return {
+    id: row.id,
+    kind: row.kind,
+    dedupeKey: row.dedupe_key,
+    payloadJson: row.payload_json,
+    runAfter: row.run_after,
+    status: row.status,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    lockedAt: row.locked_at,
+    lockedBy: row.locked_by,
+    leaseUntil: row.lease_until,
+    lastError: row.last_error,
+    priority: row.priority,
+    queueClass: row.queue_class,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    reclaimedStale,
+  };
+}
 
 async function sweepExpiredFinalAttemptTasksInternal(options: {
   now?: Date;
@@ -76,8 +139,8 @@ async function sweepExpiredFinalAttemptTasksInternal(options: {
   const updatedAt = clock ?? sql<Date>`now()`;
   const leaseExpired = clock ? lt(tasks.leaseUntil, clock) : sql`${tasks.leaseUntil} < now()`;
 
-  const swept = await getDb().transaction(async (tx) =>
-    tx
+  const swept = await getDb().transaction(async (tx) => {
+    const sweptTasks = await tx
       .update(tasks)
       .set({
         status: "dead",
@@ -99,8 +162,111 @@ async function sweepExpiredFinalAttemptTasksInternal(options: {
         kind: tasks.kind,
         attempts: tasks.attempts,
         payloadJson: tasks.payloadJson,
-      }),
-  );
+      });
+
+    const notificationTasks = sweptTasks.filter((task) => task.kind === "notification.deliver");
+    if (notificationTasks.length === 0) return sweptTasks;
+
+    const affectedDeliveries = await tx
+      .update(notificationDeliveries)
+      .set({
+        status: "dead",
+        lastOutcome: "lease_expired",
+        lastError: "Task lease expired after the final execution attempt",
+        nextAttemptAfter: null,
+        updatedAt,
+      })
+      .where(
+        and(
+          inArray(
+            notificationDeliveries.taskId,
+            notificationTasks.map((task) => task.id),
+          ),
+          inArray(notificationDeliveries.status, ["queued", "sending", "deferred", "failed"]),
+        ),
+      )
+      .returning({
+        id: notificationDeliveries.id,
+        campaignId: notificationDeliveries.campaignId,
+        taskId: notificationDeliveries.taskId,
+      });
+
+    for (const delivery of affectedDeliveries) {
+      const task = notificationTasks.find((candidate) => candidate.id === delivery.taskId);
+      const payload = task?.payloadJson as NotificationDeliverPayload | null | undefined;
+      const userId = typeof payload?.userId === "string" ? payload.userId : null;
+
+      // Global lock order is task -> delivery -> campaign -> attempt (shared
+      // with lockDeliveryGraphTx), so lock the campaign before any attempt
+      // row.
+      await tx
+        .update(notificationCampaigns)
+        .set({ status: "sending", updatedAt })
+        .where(
+          and(
+            eq(notificationCampaigns.id, delivery.campaignId),
+            inArray(notificationCampaigns.status, ["expanded", "sending"]),
+          ),
+        );
+
+      const [openAttempt] = await tx
+        .select({ id: notificationDeliveryAttempts.id })
+        .from(notificationDeliveryAttempts)
+        .where(
+          and(
+            eq(notificationDeliveryAttempts.deliveryId, delivery.id),
+            sql`${notificationDeliveryAttempts.completedAt} IS NULL`,
+          ),
+        )
+        .orderBy(desc(notificationDeliveryAttempts.attemptNumber))
+        .limit(1)
+        .for("update");
+
+      if (openAttempt) {
+        await tx
+          .update(notificationDeliveryAttempts)
+          .set({
+            outcome: "lease_expired",
+            errorKind: "lease_expired",
+            completedAt: updatedAt,
+          })
+          .where(eq(notificationDeliveryAttempts.id, openAttempt.id));
+      } else if (userId) {
+        // Reserve the synthetic attempt number by bumping attempt_count
+        // atomically, keeping the delivery.attempt_count === latest
+        // attempt_number ledger invariant that the finish-path fencing
+        // relies on.
+        const [deliveryState] = await tx
+          .update(notificationDeliveries)
+          .set({ attemptCount: sql`${notificationDeliveries.attemptCount} + 1` })
+          .where(eq(notificationDeliveries.id, delivery.id))
+          .returning({ attemptCount: notificationDeliveries.attemptCount });
+        await tx.insert(notificationDeliveryAttempts).values({
+          deliveryId: delivery.id,
+          campaignId: delivery.campaignId,
+          userId,
+          taskId: delivery.taskId,
+          attemptNumber: Math.max(1, deliveryState?.attemptCount ?? 1),
+          attemptUtcDay: sql`(now() at time zone 'utc')::date`,
+          attemptMinute: sql`date_trunc('minute', now())`,
+          smtpAttempted: false,
+          outcome: "lease_expired",
+          errorKind: "lease_expired",
+          completedAt: updatedAt,
+        });
+      }
+
+      await enqueueTask(tx, {
+        kind: "notification.campaign_finalize",
+        dedupeKey: `notification:campaign_finalize:${delivery.campaignId}`,
+        payload: { version: 1, campaignId: delivery.campaignId },
+        priority: 95,
+        queueClass: "notification",
+      });
+    }
+
+    return sweptTasks;
+  });
 
   for (const task of swept) {
     warnMailTaskDeadLettered(task, "lease_expired");
@@ -188,6 +354,87 @@ async function claimDueTasksInternal(
     const order = new Map(selectedIds.map((id, index) => [id, index]));
     return claimed.sort((left, right) => order.get(left.id)! - order.get(right.id)!);
   });
+}
+
+async function claimOneTaskForClassBranch(
+  queueClass: TaskQueueClass,
+  options: ClaimOneTaskForClassInternalOptions & { branch: "stale" | "due" },
+): Promise<ClaimedTaskForClass | null> {
+  const lockToken = options.lockToken ?? randomUUID();
+  const leaseMs = options.leaseMs ?? TASK_LEASE_MS;
+  return getDb().transaction(async (tx) => {
+    if (options.branch === "stale") {
+      const rows = await tx.execute(sql<RawTaskRow>`
+        WITH candidate AS (
+          SELECT id
+          FROM tasks
+          WHERE queue_class = ${queueClass}
+            AND status = 'processing'
+            AND lease_until < now()
+            AND attempts < max_attempts
+          ORDER BY lease_until ASC, priority ASC, id ASC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE tasks
+        SET status = 'processing',
+            attempts = attempts + 1,
+            locked_at = now(),
+            locked_by = ${lockToken},
+            lease_until = now() + (${leaseMs} * interval '1 millisecond'),
+            updated_at = now()
+        FROM candidate
+        WHERE tasks.id = candidate.id
+        RETURNING tasks.*;
+      `);
+      const row = rows[0] as RawTaskRow | undefined;
+      return row ? rawTaskRowToTask(row, true) : null;
+    }
+
+    const rows = await tx.execute(sql<RawTaskRow>`
+      WITH candidate AS (
+        SELECT id
+        FROM tasks
+        WHERE queue_class = ${queueClass}
+          AND status IN ('pending','failed')
+          AND run_after <= now()
+          AND attempts < max_attempts
+        ORDER BY run_after ASC, priority ASC, id ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE tasks
+      SET status = 'processing',
+          attempts = attempts + 1,
+          locked_at = now(),
+          locked_by = ${lockToken},
+          lease_until = now() + (${leaseMs} * interval '1 millisecond'),
+          updated_at = now()
+      FROM candidate
+      WHERE tasks.id = candidate.id
+      RETURNING tasks.*;
+    `);
+    const row = rows[0] as RawTaskRow | undefined;
+    return row ? rawTaskRowToTask(row, false) : null;
+  });
+}
+
+async function claimOneTaskForClassInternal(
+  queueClass: TaskQueueClass,
+  options: ClaimOneTaskForClassInternalOptions,
+): Promise<ClaimedTaskForClass | null> {
+  if (options.includeStale ?? true) {
+    const stale = await claimOneTaskForClassBranch(queueClass, { ...options, branch: "stale" });
+    if (stale) return stale;
+  }
+  return claimOneTaskForClassBranch(queueClass, { ...options, branch: "due" });
+}
+
+export async function claimOneTaskForClass(
+  queueClass: TaskQueueClass,
+  options: ClaimOneTaskForClassOptions = {},
+): Promise<ClaimedTaskForClass | null> {
+  return claimOneTaskForClassInternal(queueClass, options);
 }
 
 /** Production claim path. All due, lease and lock timestamps come from PostgreSQL. */

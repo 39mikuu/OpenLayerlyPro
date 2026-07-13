@@ -307,9 +307,10 @@ describeWithDatabase("payment review audit integration", () => {
       dedupeKey: `email:membership_activated:${request.id}`,
       status: "pending",
       payloadJson: {
+        version: 2,
         template: "membership_activated",
-        to: user.email,
-        locale: user.locale,
+        paymentRequestId: request.id,
+        membershipId: grants[0]?.id,
       },
     });
   });
@@ -454,15 +455,13 @@ describeWithDatabase("payment review audit integration", () => {
     expect(rejectionTask).toMatchObject({
       status: "pending",
       payloadJson: {
+        version: 2,
         template: "payment_rejected",
-        to: rejectedSeed.user.email,
-        locale: rejectedSeed.user.locale,
-        params: {
-          tierName: rejectedSeed.tier.name,
-          reviewNote: "proof is unclear",
-        },
+        paymentRequestId: rejectedSeed.request.id,
+        reviewedAt: rejected.reviewedAt?.toISOString(),
       },
     });
+    expect(JSON.stringify(rejectionTask?.payloadJson)).not.toContain(rejectedSeed.user.email);
   });
 
   it("stores structured rejection reasons as stable codes and defers localization", async () => {
@@ -499,9 +498,12 @@ describeWithDatabase("payment review audit integration", () => {
 
     const [rejectionTask] = await db.select().from(tasks).where(eq(tasks.kind, "email"));
     expect(rejectionTask?.payloadJson).toMatchObject({
+      version: 2,
       template: "payment_rejected",
-      params: { tierName: seeded.tier.name, reviewNote: rejected.reviewNote },
+      paymentRequestId: seeded.request.id,
+      reviewedAt: rejected.reviewedAt?.toISOString(),
     });
+    expect(JSON.stringify(rejectionTask?.payloadJson)).not.toContain(seeded.user.email);
   });
 
   it("rolls back approval when its audit event cannot be inserted", async () => {

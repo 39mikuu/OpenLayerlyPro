@@ -294,6 +294,12 @@ describe("auth-before-body static check", () => {
       "src/app/api/payments/webhook/stripe/route.ts": `
         import { readBoundedRawBody } from "@/lib/request-body";
         export async function POST(req: Request) { return Response.json(await readBoundedRawBody(req, 1024)); }`,
+      "src/app/api/notifications/unsubscribe/[token]/route.ts": `
+        import { readBoundedRawBody } from "@/lib/request-body";
+        export async function POST(req: Request) { return Response.json(await readBoundedRawBody(req, 1024)); }`,
+      "src/app/api/notifications/unsubscribe/route.ts": `
+        import { readFormDataWithLimit } from "@/lib/request-body";
+        export async function POST(req: Request) { return Response.json(await readFormDataWithLimit(req, 1024)); }`,
       "src/app/api/auth/logout/route.ts": `
         export async function POST() { return Response.json({ loggedOut: true }); }`,
     });
@@ -335,6 +341,12 @@ describe("auth-before-body static check", () => {
       "src/app/api/payments/webhook/stripe/route.ts": `
         import { readBoundedRawBody } from "@/lib/request-body";
         export async function POST(req: Request) { return Response.json(await readBoundedRawBody(req, 1024)); }`,
+      "src/app/api/notifications/unsubscribe/[token]/route.ts": `
+        import { readBoundedRawBody } from "@/lib/request-body";
+        export async function POST(req: Request) { return Response.json(await readBoundedRawBody(req, 1024)); }`,
+      "src/app/api/notifications/unsubscribe/route.ts": `
+        import { readFormDataWithLimit } from "@/lib/request-body";
+        export async function POST(req: Request) { return Response.json(await readFormDataWithLimit(req, 1024)); }`,
       "src/app/api/auth/logout/route.ts": `
         export async function POST() { return Response.json({ loggedOut: true }); }`,
     });

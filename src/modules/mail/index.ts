@@ -10,6 +10,23 @@ import { formatPaymentRejectionReviewNote } from "@/modules/payment/rejection-no
 
 import { classifyMailError, MailDeliveryError } from "./delivery";
 
+export type MailSafeLog = {
+  template: string;
+  category: "transactional" | "notification" | "test";
+  campaignId?: string;
+  deliveryId?: string;
+  attemptId?: string;
+  recipientDigest?: string;
+};
+
+type SendMailInput = {
+  to: string;
+  subject: string;
+  text: string;
+  headers?: Record<string, string>;
+  safeLog?: MailSafeLog;
+};
+
 // 按解析后配置缓存 transporter;配置变更(后台保存)后缓存键变化会自动重建,
 // 避免沿用旧连接配置。
 let cached: { key: string; transporter: Transporter } | null = null;
@@ -30,22 +47,44 @@ function getTransporter(cfg: ResolvedSmtpConfig): Transporter {
   return transporter;
 }
 
-async function sendMail(to: string, subject: string, text: string): Promise<void> {
+async function sendMail(input: SendMailInput): Promise<void> {
   const cfg = await getSmtpConfig();
   if (!cfg.configured) {
     throw new ApiError(500, "mailNotConfigured");
   }
   try {
-    await getTransporter(cfg).sendMail({ from: cfg.from, to, subject, text });
+    await getTransporter(cfg).sendMail({
+      from: cfg.from,
+      to: input.to,
+      subject: input.subject,
+      text: input.text,
+      headers: input.headers,
+    });
   } catch (error) {
     // Classify while the structured Nodemailer error is still available, then
     // discard the original object because it may include recipients, response
     // text, envelope data, or the rendered body (including login codes).
     throw new MailDeliveryError(classifyMailError(error));
   }
+  if (input.safeLog?.category === "notification") {
+    logger.info("notification email accepted by smtp", {
+      template: input.safeLog.template,
+      category: input.safeLog.category,
+      campaignId: input.safeLog.campaignId,
+      deliveryId: input.safeLog.deliveryId,
+      attemptId: input.safeLog.attemptId,
+      recipientDigest: input.safeLog.recipientDigest,
+      outcome: "accepted",
+    });
+    return;
+  }
+
   logger.info("邮件已发送", {
-    recipientDigest: hmacSha256WithPurpose("mail-log-recipient", to.trim().toLowerCase()),
-    subject,
+    template: input.safeLog?.template,
+    category: input.safeLog?.category ?? "transactional",
+    recipientDigest:
+      input.safeLog?.recipientDigest ??
+      hmacSha256WithPurpose("mail-log-recipient", input.to.trim().toLowerCase()),
   });
 }
 
@@ -64,7 +103,7 @@ export function renderLoginCodeEmail(code: string, locale?: Locale) {
 
 export async function sendLoginCodeEmail(to: string, code: string, locale?: Locale): Promise<void> {
   const message = renderLoginCodeEmail(code, locale);
-  await sendMail(to, message.subject, message.text);
+  await sendMail({ to, subject: message.subject, text: message.text });
 }
 
 export function renderMembershipActivatedEmail(tierName: string, endsAt: Date, locale?: Locale) {
@@ -89,7 +128,7 @@ export async function sendMembershipActivatedEmail(
   locale?: Locale,
 ): Promise<void> {
   const message = renderMembershipActivatedEmail(tierName, endsAt, locale);
-  await sendMail(to, message.subject, message.text);
+  await sendMail({ to, subject: message.subject, text: message.text });
 }
 
 export function renderMembershipRevokedEmail(tierName: string, locale?: Locale) {
@@ -112,7 +151,7 @@ export async function sendMembershipRevokedEmail(
   locale?: Locale,
 ): Promise<void> {
   const message = renderMembershipRevokedEmail(tierName, locale);
-  await sendMail(to, message.subject, message.text);
+  await sendMail({ to, subject: message.subject, text: message.text });
 }
 
 export function renderRenewalReminderEmail(tierName: string, endsAt: Date, locale?: Locale) {
@@ -137,7 +176,7 @@ export async function sendRenewalReminderEmail(
   locale?: Locale,
 ): Promise<void> {
   const message = renderRenewalReminderEmail(tierName, endsAt, locale);
-  await sendMail(to, message.subject, message.text);
+  await sendMail({ to, subject: message.subject, text: message.text });
 }
 
 export function renderPaymentRejectedEmail(
@@ -165,7 +204,7 @@ export async function sendPaymentRejectedEmail(
   locale?: Locale,
 ): Promise<void> {
   const message = renderPaymentRejectedEmail(tierName, reviewNote, locale);
-  await sendMail(to, message.subject, message.text);
+  await sendMail({ to, subject: message.subject, text: message.text });
 }
 
 export function renderTestEmail(locale?: Locale) {
@@ -175,5 +214,78 @@ export function renderTestEmail(locale?: Locale) {
 
 export async function sendTestEmail(to: string, locale?: Locale): Promise<void> {
   const message = renderTestEmail(locale);
-  await sendMail(to, message.subject, message.text);
+  await sendMail({
+    to,
+    subject: message.subject,
+    text: message.text,
+    safeLog: { template: "test", category: "test" },
+  });
+}
+
+export function renderNewPostNotificationEmail(
+  input: {
+    title: string;
+    summary: string | null;
+    postUrl: string;
+    unsubscribeConfirmUrl: string;
+    siteName: string;
+  },
+  locale?: Locale,
+) {
+  const t = mailT(locale);
+  return {
+    subject: t("mail.newPostSubject", { title: input.title }),
+    text: [
+      input.siteName,
+      "",
+      t("mail.newPostIntro"),
+      t("mail.newPostTitle", { title: input.title }),
+      input.summary ? t("mail.newPostSummary", { summary: input.summary }) : "",
+      "",
+      t("mail.newPostOpen", { url: input.postUrl }),
+      "",
+      t("mail.newPostUnsubscribe", { url: input.unsubscribeConfirmUrl }),
+    ]
+      .filter((line) => line.length > 0)
+      .join("\n"),
+  };
+}
+
+export async function sendNewPostNotificationEmail(
+  to: string,
+  input: {
+    title: string;
+    summary: string | null;
+    postUrl: string;
+    unsubscribeConfirmUrl: string;
+    unsubscribeOneClickUrl: string;
+    siteName: string;
+  },
+  locale: Locale,
+  headers: Record<string, string>,
+  safeLog: MailSafeLog,
+): Promise<void> {
+  const message = renderNewPostNotificationEmail(
+    {
+      title: input.title,
+      summary: input.summary,
+      postUrl: input.postUrl,
+      unsubscribeConfirmUrl: input.unsubscribeConfirmUrl,
+      siteName: input.siteName,
+    },
+    locale,
+  );
+  await sendMail({
+    to,
+    subject: message.subject,
+    text: message.text,
+    headers: {
+      ...headers,
+      // RFC 8058: the header carries the one-click POST endpoint; the human
+      // confirmation page link lives in the message body instead.
+      "List-Unsubscribe": `<${input.unsubscribeOneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+    safeLog: { ...safeLog, template: "new_post_notification", category: "notification" },
+  });
 }

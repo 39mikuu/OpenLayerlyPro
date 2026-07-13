@@ -166,6 +166,8 @@ reject_unsafe_payload_tree "$WORK_DIR" \
   || fail "intact payload tree was wrongly rejected by reject_unsafe_payload_tree"
 validate_archive_storage_contract "$WORK_DIR" 2 \
   || fail "intact archive storage contract was wrongly rejected"
+validate_archive_storage_contract "$WORK_DIR" 4 \
+  || fail "intact v4 archive storage contract was wrongly rejected"
 
 echo "Verifying malformed storage payload contracts are rejected before restore..."
 CONTRACT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/openlayerly-checksum-gate-contract.XXXXXX")
@@ -173,15 +175,34 @@ cp "$WORK_DIR/manifest.env" "$CONTRACT_DIR/manifest.env"
 if (validate_archive_storage_contract "$CONTRACT_DIR" 2) >/dev/null 2>&1; then
   fail "archive with no storage payload form was accepted"
 fi
+if (validate_archive_storage_contract "$CONTRACT_DIR" 4) >/dev/null 2>&1; then
+  fail "v4 archive with no storage payload form was accepted"
+fi
 mkdir -p "$CONTRACT_DIR/uploads"
 touch "$CONTRACT_DIR/UPLOADS_SKIPPED_S3"
 if (validate_archive_storage_contract "$CONTRACT_DIR" 2) >/dev/null 2>&1; then
   fail "archive with both storage payload forms was accepted"
 fi
+if (validate_archive_storage_contract "$CONTRACT_DIR" 4) >/dev/null 2>&1; then
+  fail "v4 archive with both storage payload forms was accepted"
+fi
 rm -rf "$CONTRACT_DIR/uploads"
 if (validate_archive_storage_contract "$CONTRACT_DIR" 2) >/dev/null 2>&1; then
   fail "archive whose manifest disagrees with its S3 marker was accepted"
 fi
+if (validate_archive_storage_contract "$CONTRACT_DIR" 4) >/dev/null 2>&1; then
+  fail "v4 archive whose manifest disagrees with its S3 marker was accepted"
+fi
+sed 's/^STORAGE_DRIVER=.*/STORAGE_DRIVER=s3/; s/^UPLOADS_INCLUDED=.*/UPLOADS_INCLUDED=false/' \
+  "$WORK_DIR/manifest.env" > "$CONTRACT_DIR/manifest.env"
+validate_archive_storage_contract "$CONTRACT_DIR" 4 \
+  || fail "valid v4 S3 skip-marker storage contract was rejected"
+rm -f "$CONTRACT_DIR/UPLOADS_SKIPPED_S3"
+mkdir -p "$CONTRACT_DIR/uploads"
+sed 's/^STORAGE_DRIVER=.*/STORAGE_DRIVER=local/; s/^UPLOADS_INCLUDED=.*/UPLOADS_INCLUDED=true/' \
+  "$WORK_DIR/manifest.env" > "$CONTRACT_DIR/manifest.env"
+validate_archive_storage_contract "$CONTRACT_DIR" 4 \
+  || fail "valid v4 local uploads storage contract was rejected"
 rm -rf "$CONTRACT_DIR"
 
 echo "Verifying a symlink-bearing archive is rejected before DB replacement..."

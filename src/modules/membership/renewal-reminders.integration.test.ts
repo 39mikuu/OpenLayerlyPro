@@ -119,13 +119,13 @@ describeWithDatabase("manual renewal reminders", () => {
       `email:renewal_reminder:${subscription!.id}:${membership.endsAt.toISOString()}`,
     );
     expect(emailTasks[0]!.payloadJson).toMatchObject({
+      version: 2,
       template: "renewal_reminder",
       subscriptionId: subscription!.id,
       periodEndsAt: membership.endsAt.toISOString(),
-      to: user.email,
-      locale: "ja",
-      params: { tierName: tier.name, endsAt: membership.endsAt.toISOString() },
     });
+    expect(JSON.stringify(emailTasks[0]!.payloadJson)).not.toContain(user.email);
+    expect(JSON.stringify(emailTasks[0]!.payloadJson)).not.toContain(tier.name);
 
     const later = new Date(membership.endsAt.getTime() + 30 * 24 * 60 * 60 * 1000);
     await db

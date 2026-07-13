@@ -18,6 +18,10 @@ const mocks = vi.hoisted(() => ({
   deliverLoginCodeEmailTask: vi.fn(),
   reconcileSubscriptions: vi.fn(),
   nextSubscriptionReconcileAt: vi.fn(),
+  handleCampaignExpandTask: vi.fn(),
+  handleCampaignFinalizeTask: vi.fn(),
+  handleNotificationDeliveryTask: vi.fn(),
+  createCampaignForPublishedPostTx: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/login-code", () => ({
@@ -39,12 +43,16 @@ vi.mock("@/modules/payment/subscriptions", () => ({
   reconcileSubscriptions: mocks.reconcileSubscriptions,
   nextSubscriptionReconcileAt: mocks.nextSubscriptionReconcileAt,
 }));
+vi.mock("@/modules/notifications", () => ({
+  createCampaignForPublishedPostTx: mocks.createCampaignForPublishedPostTx,
+  handleCampaignExpandTask: mocks.handleCampaignExpandTask,
+  handleCampaignFinalizeTask: mocks.handleCampaignFinalizeTask,
+  handleNotificationDeliveryTask: mocks.handleNotificationDeliveryTask,
+}));
 
 import type { Task } from "@/db/schema";
 import { ApiError } from "@/lib/api";
-import { MailDeliveryError } from "@/modules/mail/delivery";
 
-import { PermanentTaskError } from "./errors";
 import { runTaskHandler } from "./handlers";
 
 function task(payloadJson: Record<string, unknown>, kind = "email", createdAt = new Date()): Task {
@@ -62,6 +70,8 @@ function task(payloadJson: Record<string, unknown>, kind = "email", createdAt = 
     lockedBy: "worker",
     leaseUntil: new Date(now.getTime() + 60_000),
     lastError: null,
+    priority: kind === "auth.login_code_email" ? 0 : 10,
+    queueClass: "transactional",
     createdAt,
     updatedAt: now,
   };
@@ -80,137 +90,83 @@ describe("task handlers", () => {
     mocks.deliverLoginCodeEmailTask.mockResolvedValue(undefined);
     mocks.reconcileSubscriptions.mockResolvedValue(0);
     mocks.nextSubscriptionReconcileAt.mockReturnValue(new Date("2026-06-25T08:00:00.000Z"));
+    mocks.handleCampaignExpandTask.mockResolvedValue({});
+    mocks.handleCampaignFinalizeTask.mockResolvedValue({});
+    mocks.handleNotificationDeliveryTask.mockResolvedValue({});
+    mocks.createCampaignForPublishedPostTx.mockResolvedValue(null);
   });
 
-  it("defers missing SMTP configuration without marking the task succeeded", async () => {
-    mocks.sendPaymentRejectedEmail.mockRejectedValue(new ApiError(500, "mailNotConfigured"));
-    const before = Date.now();
-
-    const result = await runTaskHandler(
-      task({
-        template: "payment_rejected",
-        to: "fan@example.com",
-        locale: "ja",
-        params: { tierName: "Supporter", reviewNote: null },
-      }),
-    );
-
-    expect(result.note).toContain("delivery deferred");
-    expect(result.deferUntil?.getTime()).toBeGreaterThanOrEqual(before + 15 * 60 * 1_000);
-    expect(mocks.sendPaymentRejectedEmail).toHaveBeenCalledOnce();
+  it("rejects raw-recipient v1 business email payloads permanently", async () => {
+    await expect(
+      runTaskHandler(
+        task({
+          template: "payment_rejected",
+          to: "fan@example.com",
+          locale: "ja",
+          params: { tierName: "Supporter", reviewNote: null },
+        }),
+      ),
+    ).rejects.toThrow("Invalid email payload");
+    expect(mocks.sendPaymentRejectedEmail).not.toHaveBeenCalled();
   });
 
-  it("dead-letters an operator-blocked business email after the maximum age", async () => {
-    mocks.sendPaymentRejectedEmail.mockRejectedValue(new ApiError(500, "mailNotConfigured"));
-    const oldTask = task(
-      {
-        template: "payment_rejected",
-        to: "fan@example.com",
-        locale: "en",
-        params: { tierName: "Supporter", reviewNote: null },
-      },
-      "email",
-      new Date(Date.now() - 25 * 60 * 60 * 1_000),
-    );
-
-    await expect(runTaskHandler(oldTask)).rejects.toMatchObject({
-      message: "SMTP unavailable; email expired after 24 h",
-      classification: "needs_operator",
-    });
+  it("rejects malformed v2 business email payloads before SMTP", async () => {
+    await expect(
+      runTaskHandler(
+        task({
+          version: 2,
+          template: "payment_rejected",
+          paymentRequestId: "not-a-uuid",
+          reviewedAt: "2026-07-12T00:00:00.000Z",
+        }),
+      ),
+    ).rejects.toThrow("Invalid email payload");
+    expect(mocks.sendPaymentRejectedEmail).not.toHaveBeenCalled();
   });
 
-  it("turns permanent SMTP failures into an immediate permanent task error", async () => {
-    mocks.sendPaymentRejectedEmail.mockRejectedValue(new MailDeliveryError("permanent"));
+  it("rejects legacy membership activation payloads before SMTP", async () => {
+    await expect(
+      runTaskHandler(
+        task({
+          template: "membership_activated",
+          to: "fan@example.com",
+          locale: "ja",
+          params: {
+            tierName: "Supporter",
+            endsAt: "2026-07-18T10:00:00.000Z",
+          },
+        }),
+      ),
+    ).rejects.toThrow("Invalid email payload");
+    expect(mocks.sendMembershipActivatedEmail).not.toHaveBeenCalled();
+  });
 
+  it("rejects legacy membership revocation payloads before SMTP", async () => {
+    await expect(
+      runTaskHandler(
+        task({
+          template: "membership_revoked",
+          to: "fan@example.com",
+          locale: "zh",
+          params: { tierName: "Supporter" },
+        }),
+      ),
+    ).rejects.toThrow("Invalid email payload");
+    expect(mocks.sendMembershipRevokedEmail).not.toHaveBeenCalled();
+  });
+
+  it("rejects legacy payment rejection payloads before SMTP", async () => {
     await expect(
       runTaskHandler(
         task({
           template: "payment_rejected",
           to: "fan@example.com",
           locale: "en",
-          params: { tierName: "Supporter", reviewNote: null },
+          params: { tierName: "Supporter", reviewNote: "Proof unclear" },
         }),
       ),
-    ).rejects.toMatchObject({
-      message: "Email delivery failed permanently",
-      classification: "permanent",
-    } satisfies Partial<PermanentTaskError>);
-  });
-
-  it("keeps transient SMTP failures retryable while stripping raw transport details", async () => {
-    mocks.sendPaymentRejectedEmail.mockRejectedValue(
-      new Error("recipient fan@example.com rejected; body=private"),
-    );
-
-    await expect(
-      runTaskHandler(
-        task({
-          template: "payment_rejected",
-          to: "fan@example.com",
-          locale: "en",
-          params: { tierName: "Supporter", reviewNote: null },
-        }),
-      ),
-    ).rejects.toMatchObject({
-      message: "SMTP delivery failed",
-      kind: "transient",
-    });
-  });
-
-  it("renders membership activation parameters at dispatch time", async () => {
-    await runTaskHandler(
-      task({
-        template: "membership_activated",
-        to: "fan@example.com",
-        locale: "ja",
-        params: {
-          tierName: "Supporter",
-          endsAt: "2026-07-18T10:00:00.000Z",
-        },
-      }),
-    );
-
-    expect(mocks.sendMembershipActivatedEmail).toHaveBeenCalledWith(
-      "fan@example.com",
-      "Supporter",
-      new Date("2026-07-18T10:00:00.000Z"),
-      "ja",
-    );
-  });
-
-  it("dispatches membership revocation notifications without provider details", async () => {
-    await runTaskHandler(
-      task({
-        template: "membership_revoked",
-        to: "fan@example.com",
-        locale: "zh",
-        params: { tierName: "Supporter" },
-      }),
-    );
-
-    expect(mocks.sendMembershipRevokedEmail).toHaveBeenCalledWith(
-      "fan@example.com",
-      "Supporter",
-      "zh",
-    );
-  });
-
-  it("sends rejection parameters without exposing arbitrary payload shapes", async () => {
-    await runTaskHandler(
-      task({
-        template: "payment_rejected",
-        to: "fan@example.com",
-        locale: "en",
-        params: { tierName: "Supporter", reviewNote: "Proof unclear" },
-      }),
-    );
-
-    expect(mocks.sendPaymentRejectedEmail).toHaveBeenCalledWith(
-      "fan@example.com",
-      "Supporter",
-      "Proof unclear",
-      "en",
-    );
+    ).rejects.toThrow("Invalid email payload");
+    expect(mocks.sendPaymentRejectedEmail).not.toHaveBeenCalled();
   });
 
   it("runs first-stage orphan cleanup from an immutable file id payload", async () => {

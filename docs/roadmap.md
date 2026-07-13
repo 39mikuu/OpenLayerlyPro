@@ -14,7 +14,8 @@
 v1.0.0 发布 + 发布后审计硬化 ✅
 → WP1 第二主题 + 后台主题选择器（已实现并完成验收，PR #123 已合并）
 → WP1 follow-up 第三内置主题 WordPress 经典
-→ WP2–WP6 按 release-v1.1-plan.md §4 里程碑顺序
+→ WP2 新内容邮件通知（已交付代码与文档同步；真实 SMTP / 部署 dogfood 仍是发布门槛）
+→ WP5–WP6 按 release-v1.1-plan.md §4 里程碑顺序
 ```
 
 ## Phase 0：MVP 主链路 ✅
@@ -59,7 +60,7 @@ v1.0.0 发布 + 发布后审计硬化 ✅
 - 明暗模式、字体、颜色预设与受约束自由取色。
 - Theme 不负责权限、数据库访问或服务端 secret。
 
-**✅ WP1 已完成验收并合并：** 第二主题（Blog）与后台主题选择器，v1.1 WP1，见 [release-v1.1-plan.md](./release-v1.1-plan.md)。**当前状态：** 继续提高 v1.1 完成度；WP2–WP6 不再等待固定时间窗口，按计划书里程碑串行推进。**WP1 follow-up：** 第三内置主题 WordPress 经典。**⏸ 仍推迟：** 主题包上传/主题市场；不规划第三方主题生命周期。
+**✅ WP1 已完成验收并合并：** 第二主题（Blog）与后台主题选择器，v1.1 WP1，见 [release-v1.1-plan.md](./release-v1.1-plan.md)。**当前状态：** 继续提高 v1.1 完成度；WP2 已交付代码与文档同步，WP5–WP6 按计划书里程碑继续推进。**WP1 follow-up：** 第三内置主题 WordPress 经典。**⏸ 仍推迟：** 主题包上传/主题市场；不规划第三方主题生命周期。
 
 详见 [Theme 架构](./architecture/theme-system.md)。
 

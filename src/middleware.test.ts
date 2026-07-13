@@ -195,4 +195,12 @@ describe("document security middleware", () => {
       "max-age=31536000; includeSubDomains",
     );
   });
+
+  it("marks notification unsubscribe pages as non-cacheable and non-indexable", async () => {
+    const response = await middleware(request("/unsubscribe/notifications/token-value"));
+
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+  });
 });

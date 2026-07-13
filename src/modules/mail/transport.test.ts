@@ -24,7 +24,7 @@ vi.mock("@/lib/logger", () => ({
   logger: { info: mocks.loggerInfo, warn: vi.fn(), error: vi.fn() },
 }));
 
-import { sendLoginCodeEmail, sendTestEmail } from "./index";
+import { sendLoginCodeEmail, sendNewPostNotificationEmail, sendTestEmail } from "./index";
 
 describe("SMTP transport", () => {
   beforeEach(() => {
@@ -93,5 +93,50 @@ describe("SMTP transport", () => {
     expect(fullLoggerArguments).not.toContain(rawRecipient);
     expect(fullLoggerArguments).not.toContain(otherRecipient);
     expect(fullLoggerArguments).not.toContain(loginCode);
+  });
+
+  it("adds mandatory unsubscribe headers and logs only safe notification metadata", async () => {
+    await sendNewPostNotificationEmail(
+      "fan@example.com",
+      {
+        title: "Restricted launch notes",
+        summary: "Private summary",
+        postUrl: "https://example.test/posts/restricted",
+        unsubscribeConfirmUrl: "https://example.test/unsubscribe/notifications/token",
+        unsubscribeOneClickUrl: "https://example.test/api/notifications/unsubscribe/token",
+        siteName: "Example Site",
+      },
+      "en",
+      { "X-Test": "kept" },
+      {
+        template: "new_post_notification",
+        category: "notification",
+        campaignId: "campaign-1",
+        deliveryId: "delivery-1",
+        attemptId: "attempt-1",
+        recipientDigest: "a".repeat(64),
+      },
+    );
+
+    expect(mocks.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "fan@example.com",
+        subject: "New post: Restricted launch notes",
+        headers: {
+          "X-Test": "kept",
+          "List-Unsubscribe": "<https://example.test/api/notifications/unsubscribe/token>",
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+      }),
+    );
+
+    const logArguments = JSON.stringify(mocks.loggerInfo.mock.calls);
+    expect(logArguments).toContain("campaign-1");
+    expect(logArguments).toContain("delivery-1");
+    expect(logArguments).toContain("attempt-1");
+    expect(logArguments).toContain("a".repeat(64));
+    expect(logArguments).not.toContain("fan@example.com");
+    expect(logArguments).not.toContain("Restricted launch notes");
+    expect(logArguments).not.toContain("Private summary");
   });
 });

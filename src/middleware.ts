@@ -35,6 +35,13 @@ function isPublicIntegrationDocument(pathname: string): boolean {
   );
 }
 
+function isNotificationUnsubscribeDocument(pathname: string): boolean {
+  return (
+    pathname.startsWith("/unsubscribe/notifications/") ||
+    pathname === "/unsubscribe/notifications/result"
+  );
+}
+
 function isHttpsUrl(value: string): boolean {
   try {
     return new URL(value).protocol === "https:";
@@ -108,6 +115,11 @@ export async function middleware(request: NextRequest) {
   }
   if (env.SECURITY_HSTS_ENABLED) {
     response.headers.set("Strict-Transport-Security", HSTS_HEADER_VALUE);
+  }
+  if (isNotificationUnsubscribeDocument(request.nextUrl.pathname)) {
+    response.headers.set("Cache-Control", "no-store");
+    response.headers.set("Referrer-Policy", "no-referrer");
+    response.headers.set("X-Robots-Tag", "noindex, nofollow");
   }
   return response;
 }

@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  date,
   index,
   integer,
   jsonb,
@@ -567,6 +568,12 @@ export const tasks = pgTable(
     lockedBy: text("locked_by"),
     leaseUntil: timestamp("lease_until", { withTimezone: true }),
     lastError: text("last_error"),
+    priority: integer("priority").notNull().default(100),
+    queueClass: text("queue_class", {
+      enum: ["transactional", "notification", "maintenance", "default"],
+    })
+      .notNull()
+      .default("default"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -579,6 +586,243 @@ export const tasks = pgTable(
     index("tasks_stale_lease_idx")
       .on(table.leaseUntil)
       .where(sql`${table.status} = 'processing'`),
+    check(
+      "tasks_queue_class_check",
+      sql`${table.queueClass} in ('transactional', 'notification', 'maintenance', 'default')`,
+    ),
+    index("tasks_claimable_class_due_idx")
+      .on(table.queueClass, table.runAfter, table.priority, table.id)
+      .where(
+        sql`${table.status} in ('pending', 'failed') and ${table.attempts} < ${table.maxAttempts}`,
+      ),
+    index("tasks_stale_class_due_idx")
+      .on(table.queueClass, table.leaseUntil, table.priority, table.id)
+      .where(sql`${table.status} = 'processing' and ${table.attempts} < ${table.maxAttempts}`),
+  ],
+);
+
+export const notificationPreferences = pgTable(
+  "notification_preferences",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    newPostEmailEnabled: boolean("new_post_email_enabled").notNull().default(false),
+    version: integer("version").notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    check("notification_preferences_version_nonnegative", sql`${table.version} >= 0`),
+    uniqueIndex("notification_preferences_user_unique").on(table.userId),
+    index("notification_preferences_new_post_opt_in_idx")
+      .on(table.userId)
+      .where(sql`${table.newPostEmailEnabled} = true`),
+  ],
+);
+
+export const notificationCampaigns = pgTable(
+  "notification_campaigns",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    postId: uuid("post_id")
+      .notNull()
+      .references(() => posts.id, { onDelete: "cascade" }),
+    status: text("status", {
+      enum: ["pending", "expanding", "expanded", "sending", "completed", "dead"],
+    })
+      .notNull()
+      .default("pending"),
+    source: text("source", { enum: ["manual_publish", "scheduled_publish"] }).notNull(),
+    publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
+    cursorUserId: uuid("cursor_user_id"),
+    expansionCompletedAt: timestamp("expansion_completed_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("notification_campaigns_post_unique").on(table.postId),
+    index("notification_campaigns_status_cursor_idx").on(
+      table.status,
+      table.cursorUserId,
+      table.id,
+    ),
+    index("notification_campaigns_finalize_idx")
+      .on(table.status, table.updatedAt, table.id)
+      .where(sql`${table.status} in ('expanded', 'sending')`),
+  ],
+);
+
+export const notificationDeliveries = pgTable(
+  "notification_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => notificationCampaigns.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    taskId: uuid("task_id")
+      .notNull()
+      .unique()
+      .references(() => tasks.id, { onDelete: "restrict" }),
+    status: text("status", {
+      enum: [
+        "queued",
+        "sending",
+        "accepted",
+        "suppressed",
+        "skipped",
+        "deferred",
+        "failed",
+        "dead",
+      ],
+    })
+      .notNull()
+      .default("queued"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    nextAttemptAfter: timestamp("next_attempt_after", { withTimezone: true }),
+    lastOutcome: text("last_outcome"),
+    lastError: text("last_error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    check("notification_deliveries_attempt_count_nonnegative", sql`${table.attemptCount} >= 0`),
+    uniqueIndex("notification_deliveries_campaign_user_unique").on(table.campaignId, table.userId),
+    index("notification_deliveries_campaign_status_idx").on(
+      table.campaignId,
+      table.status,
+      table.userId,
+    ),
+    index("notification_deliveries_campaign_nonterminal_idx")
+      .on(table.campaignId, table.status, table.id)
+      .where(sql`${table.status} in ('queued', 'sending', 'deferred', 'failed')`),
+    index("notification_deliveries_user_idx").on(table.userId, table.createdAt.desc()),
+  ],
+);
+
+export const notificationDeliveryAttempts = pgTable(
+  "notification_delivery_attempts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    deliveryId: uuid("delivery_id")
+      .notNull()
+      .references(() => notificationDeliveries.id, { onDelete: "cascade" }),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => notificationCampaigns.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    taskId: uuid("task_id").references(() => tasks.id, { onDelete: "set null" }),
+    attemptNumber: integer("attempt_number").notNull(),
+    attemptUtcDay: date("attempt_utc_day", { mode: "date" }).notNull(),
+    attemptMinute: timestamp("attempt_minute", { withTimezone: true }).notNull(),
+    reservedUtcDay: date("reserved_utc_day", { mode: "date" }),
+    reservedMinute: timestamp("reserved_minute", { withTimezone: true }),
+    smtpAttempted: boolean("smtp_attempted").notNull().default(false),
+    outcome: text("outcome", {
+      enum: [
+        "started",
+        "accepted",
+        "permanent_failure",
+        "transient_failure",
+        "needs_operator_defer",
+        "lease_expired",
+        "budget_defer",
+        "pacing_defer",
+        "suppressed_skip",
+        "stale_skip",
+        "post_not_published_skip",
+        "access_lost_skip",
+        "preference_disabled_skip",
+        "user_missing_skip",
+      ],
+    }).notNull(),
+    recipientLocale: text("recipient_locale"),
+    recipientDigestKeyId: text("recipient_digest_key_id"),
+    recipientDigest: text("recipient_digest"),
+    messageSnapshot: jsonb("message_snapshot"),
+    errorKind: text("error_kind"),
+    operatorRecheckCount: integer("operator_recheck_count").notNull().default(0),
+    operatorLastCheckedAt: timestamp("operator_last_checked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    check("notification_delivery_attempts_number_positive", sql`${table.attemptNumber} > 0`),
+    check(
+      "notification_delivery_attempts_operator_recheck_count_nonnegative",
+      sql`${table.operatorRecheckCount} >= 0`,
+    ),
+    uniqueIndex("notification_delivery_attempts_delivery_number_unique").on(
+      table.deliveryId,
+      table.attemptNumber,
+    ),
+    index("notification_delivery_attempts_budget_idx")
+      .on(table.attemptUtcDay, table.createdAt, table.id)
+      .where(sql`${table.smtpAttempted} = true`),
+    index("notification_delivery_attempts_minute_idx")
+      .on(table.attemptMinute, table.createdAt, table.id)
+      .where(sql`${table.smtpAttempted} = true`),
+    index("notification_delivery_attempts_campaign_idx").on(
+      table.campaignId,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
+    index("notification_delivery_attempts_delivery_idx").on(
+      table.deliveryId,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
+  ],
+);
+
+export const notificationQuotaWindows = pgTable(
+  "notification_quota_windows",
+  {
+    windowKind: text("window_kind", { enum: ["utc_day", "utc_minute"] }).notNull(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    attemptedCount: integer("attempted_count").notNull().default(0),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.windowKind, table.windowStart] }),
+    check("notification_quota_windows_count_nonnegative", sql`${table.attemptedCount} >= 0`),
+  ],
+);
+
+export const notificationSuppressions = pgTable(
+  "notification_suppressions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    emailDigestKeyId: text("email_digest_key_id").notNull(),
+    emailDigest: text("email_digest").notNull(),
+    reason: text("reason", { enum: ["smtp_permanent_5xx"] })
+      .notNull()
+      .default("smtp_permanent_5xx"),
+    firstDeliveryId: uuid("first_delivery_id").references(() => notificationDeliveries.id, {
+      onDelete: "set null",
+    }),
+    lastDeliveryId: uuid("last_delivery_id").references(() => notificationDeliveries.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("notification_suppressions_email_digest_unique").on(
+      table.emailDigestKeyId,
+      table.emailDigest,
+    ),
+    index("notification_suppressions_first_delivery_idx").on(table.firstDeliveryId),
+    index("notification_suppressions_last_delivery_idx").on(table.lastDeliveryId),
   ],
 );
 
@@ -605,3 +849,9 @@ export type DownloadLog = typeof downloadLogs.$inferSelect;
 export type AppEvent = typeof appEvents.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
+export type NotificationPreference = typeof notificationPreferences.$inferSelect;
+export type NotificationCampaign = typeof notificationCampaigns.$inferSelect;
+export type NotificationDelivery = typeof notificationDeliveries.$inferSelect;
+export type NotificationDeliveryAttempt = typeof notificationDeliveryAttempts.$inferSelect;
+export type NotificationQuotaWindow = typeof notificationQuotaWindows.$inferSelect;
+export type NotificationSuppression = typeof notificationSuppressions.$inferSelect;

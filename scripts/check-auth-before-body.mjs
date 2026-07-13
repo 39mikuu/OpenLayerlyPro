@@ -74,6 +74,20 @@ const ALLOWLIST = [
     reason: "Stripe signature verification requires the untouched raw request body.",
   },
   {
+    file: "src/app/api/notifications/unsubscribe/[token]/route.ts",
+    method: "POST",
+    kind: "public-body",
+    reason:
+      "RFC 8058 one-click unsubscribe is intentionally public and must read only a bounded body before mutating the preference.",
+  },
+  {
+    file: "src/app/api/notifications/unsubscribe/route.ts",
+    method: "POST",
+    kind: "public-body",
+    reason:
+      "Browser unsubscribe confirmation is intentionally public and reads only a bounded form body before mutating the preference.",
+  },
+  {
     file: "src/app/api/auth/logout/route.ts",
     method: "POST",
     kind: "public-bodyless",
@@ -964,7 +978,7 @@ async function checkAllowlist(root, handlersByKey) {
 
   const failures = [];
   for (const entry of ALLOWLIST) {
-    if (/[*?[\]{}]/.test(entry.file)) {
+    if (/[*?{}]/.test(entry.file)) {
       failures.push(`${entry.file}: allowlist entries must be exact file paths, not globs`);
       continue;
     }

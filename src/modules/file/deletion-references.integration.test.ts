@@ -219,6 +219,9 @@ describeWithDatabase("file deletion reference existence checks", () => {
       lockedBy: "worker",
       leaseUntil: new Date(now.getTime() + 60_000),
       lastError: null,
+      priority: kind === "storage.delete_object" ? 120 : 100,
+      queueClass:
+        kind === "storage.delete_object" ? ("maintenance" as const) : ("default" as const),
       createdAt: now,
       updatedAt: now,
     };

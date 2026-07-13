@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -33,8 +34,9 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { getDb } from "@/db";
-import { tasks } from "@/db/schema";
+import { membershipTiers, paymentRequests, tasks, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { MailDeliveryError } from "@/modules/mail/delivery";
 import { claimDueTasks } from "@/modules/tasks";
 import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
@@ -42,34 +44,84 @@ import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
 
-const payload = {
-  template: "payment_rejected",
-  to: "fan@example.com",
-  locale: "en",
-  params: { tierName: "Supporter", reviewNote: null },
-} as const;
-
 describeWithDatabase("business email delivery policy", () => {
   const db = getDb();
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    await db.delete(tasks);
+    await resetDatabase(db);
   });
 
+  async function seedRejectedPaymentRequest() {
+    const [user] = await db
+      .insert(users)
+      .values({ email: `fan-${randomUUID()}@example.test`, locale: "en" })
+      .returning();
+    const [tier] = await db
+      .insert(membershipTiers)
+      .values({
+        name: "Supporter",
+        slug: `supporter-${randomUUID()}`,
+        priceLabel: "$5",
+        level: 10,
+        durationDays: 31,
+      })
+      .returning();
+    const reviewedAt = new Date("2026-07-12T10:00:00.000Z");
+    const [request] = await db
+      .insert(paymentRequests)
+      .values({
+        userId: user!.id,
+        tierId: tier!.id,
+        status: "rejected",
+        amountLabel: tier!.priceLabel,
+        durationDays: tier!.durationDays,
+        reviewNote: "Proof unclear",
+        reviewedAt,
+      })
+      .returning();
+    return { request: request!, reviewedAt, tier: tier!, user: user! };
+  }
+
   async function insertAndClaim(createdAt = new Date()) {
+    const { request, reviewedAt, user } = await seedRejectedPaymentRequest();
     const [created] = await db
       .insert(tasks)
       .values({
         kind: "email",
-        payloadJson: payload,
+        payloadJson: {
+          version: 2,
+          template: "payment_rejected",
+          paymentRequestId: request.id,
+          reviewedAt: reviewedAt.toISOString(),
+        },
         runAfter: sql`now() - interval '1 second'`,
         createdAt,
       })
       .returning();
     const [claimed] = await claimDueTasks(1, { lockToken: `claim-${created!.id}` });
-    return { created: created!, claimed: claimed! };
+    return { created: created!, claimed: claimed!, request, reviewedAt, user };
   }
+
+  it("dereferences latest user email and locale at send time", async () => {
+    mocks.sendPaymentRejectedEmail.mockResolvedValue(undefined);
+    const { claimed, user } = await insertAndClaim();
+    await db
+      .update(users)
+      .set({ email: `latest-${randomUUID()}@example.test`, locale: "ja" })
+      .where(eq(users.id, user.id));
+
+    await dispatchClaimedTask(claimed);
+
+    const [latestUser] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(mocks.sendPaymentRejectedEmail).toHaveBeenCalledWith(
+      latestUser!.email,
+      "Supporter",
+      "Proof unclear",
+      "ja",
+    );
+    expect(JSON.stringify(claimed.payloadJson)).not.toContain(latestUser!.email);
+  });
 
   it("defers missing SMTP without consuming the claimed attempt", async () => {
     mocks.sendPaymentRejectedEmail.mockRejectedValue(new ApiError(500, "mailNotConfigured"));
@@ -146,5 +198,21 @@ describeWithDatabase("business email delivery policy", () => {
       "email task dead-lettered",
       expect.anything(),
     );
+  });
+
+  it("dead-letters safely when the referenced user is gone", async () => {
+    const { created, claimed, user } = await insertAndClaim();
+    await db.delete(users).where(eq(users.id, user.id));
+
+    await dispatchClaimedTask(claimed);
+
+    const [stored] = await db.select().from(tasks).where(eq(tasks.id, created.id));
+    expect(stored).toMatchObject({
+      status: "dead",
+      attempts: 1,
+      lastError: "Transactional email domain reference is stale or missing",
+    });
+    expect(JSON.stringify(stored!.payloadJson)).not.toContain("@");
+    expect(mocks.sendPaymentRejectedEmail).not.toHaveBeenCalled();
   });
 });

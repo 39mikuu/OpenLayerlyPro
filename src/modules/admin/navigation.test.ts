@@ -39,5 +39,10 @@ describe("admin navigation matching", () => {
       "site",
       "system",
     ]);
+    expect(
+      adminNavGroups
+        .flatMap((group) => group.items)
+        .some((item) => item.href === "/admin/notifications"),
+    ).toBe(true);
   });
 });

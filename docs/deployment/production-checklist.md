@@ -8,6 +8,7 @@
 - [ ] `SESSION_SECRET` resolves from the intended env/file source; all replicas share it and it is not rotated unintentionally.
 - [ ] The config encryption key is backed up and readable only by the deployment.
 - [ ] SMTP is configured and failed/dead/deferred mail work is monitored.
+- [ ] Notification unsubscribe and suppression digest current keys are configured; previous keys are retained until token expiry or suppression rehash is complete.
 - [ ] `TRUSTED_PROXY_HEADER` and `TRUSTED_PROXY_HOPS` match the real edge topology.
 - [ ] Caddy/Tunnel merged Compose config does not publish app port 3000; trusted proxy headers cannot be bypassed through a direct origin port.
 - [ ] Only one app instance is running unless shared rate-limit/task coordination has been implemented.
@@ -34,7 +35,10 @@
 - [ ] Refund/dispute and subscription reconciliation have been exercised in Stripe Test Mode.
 - [ ] Missing or broken SMTP does not silently mark business mail successful.
 - [ ] Logs, admin task responses, normalized provider errors and delivery-ledger views do not expose raw recipient addresses, codes or provider secrets.
-- [ ] The task table and backups are protected as sensitive user data because durable email payloads currently store the recipient address in `payload_json.to`.
+- [ ] Transactional email task payloads contain only v2 domain references; `select count(*) from tasks where kind='email' and payload_json ? 'to'` returns zero.
+- [ ] Bulk notification opt-in defaults to off; archived/unpublished posts are skipped at send time.
+- [ ] SMTP accepted is treated as provider relay acceptance, not final mailbox delivery, and documentation/admin language states at-least-once semantics as `不承诺不重复投递`.
+- [ ] Notification suppression is limited to synchronous permanent SMTP failures from bulk notification sends; transactional email ignores the suppression list.
 
 ## Video and downloads
 
@@ -68,6 +72,8 @@
 - [ ] Every referenced local object is preserved even when the env fallback is `s3`.
 - [ ] Every referenced S3/R2 object has a matching version/snapshot recovery point even when the env fallback is `local`.
 - [ ] File-backed `SESSION_SECRET` is present in the checksummed archive, or the external value matches the recorded fingerprint.
+- [ ] File-backed notification unsubscribe/suppression keys, including configured previous keys, are present in the v4 archive with `0600` mode, or external values match the recorded fingerprints.
+- [ ] Restore drills verify notification task neutralization prevents replay of business email or bulk notification sends after restore.
 - [ ] `docker compose down -v` is prohibited unless the secrets volume has a tested recovery point.
 - [ ] An archive plus separately protected storage components has been restored in an isolated Compose project.
 - [ ] For your deployment, verify the S7 checksums, legacy schema probing, storage inventory/convergence, file-safety backfill and task/payment-event neutralization in isolated local and S3 restore drills.
@@ -84,5 +90,30 @@ gate passed on the exact `v1.0.0` release build.
 - `STRIPE_WEBHOOK_MAX_BYTES` defaults to 262,144 bytes and accepts 1,024–1,048,576.
 - `PAYMENT_PROOF_MAX_SIZE_MB` defaults to 10 MiB and accepts 1–100; multipart transport adds 256 KiB envelope allowance.
 - The application measures streamed bytes when `Content-Length` is absent or inaccurate.
+
+## Notification runtime configuration
+
+These values are read from runtime environment and validated by `src/lib/env.ts`:
+
+| Variable | Default | Bounds | Operational meaning |
+|---|---:|---:|---|
+| `TASK_TRANSACTIONAL_RESERVED_PER_BATCH` | `8` | `0`-`20` | Slots preserved for login/payment/membership/renewal transactional work in each dispatcher batch. |
+| `TASK_NOTIFICATION_MIN_PER_BATCH` | `2` | `0`-`20` | Minimum notification progress target per dispatcher batch. |
+| `TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH` | `2` | `0`-`20` | Maximum stale notification leases reclaimed per dispatcher batch; due notification work remains eligible. |
+| `TASK_MAINTENANCE_MAX_PER_BATCH` | `2` | `0`-`20` | Maximum maintenance tasks claimed per dispatcher batch. |
+| `NOTIFICATION_EMAIL_DAILY_BUDGET` | `500` | `1`-`100000` | UTC-day SMTP-attempt budget for bulk notifications only. |
+| `NOTIFICATION_EMAIL_PACING_PER_MINUTE` | `30` | `1`-`10000` | UTC-minute SMTP-attempt pacing for bulk notifications only. |
+| `NOTIFICATION_CAMPAIGN_EXPANSION_BATCH_SIZE` | `500` | `1`-`5000` | Keyset recipient expansion batch size. |
+| `NOTIFICATION_DELIVERY_MAX_AGE_HOURS` | `168` | `1`-`720` | Maximum age for a notification delivery before it expires/skips. |
+| `NOTIFICATION_UNSUBSCRIBE_TOKEN_MAX_AGE_DAYS` | `180` | `1`-`3650` | Maximum age for one-click unsubscribe tokens. |
+
+Notification key material is required for production notification delivery:
+
+- unsubscribe current key: `NOTIFICATION_UNSUBSCRIBE_KEY_ID` plus `NOTIFICATION_UNSUBSCRIBE_SECRET` or `NOTIFICATION_UNSUBSCRIBE_SECRET_FILE`;
+- unsubscribe previous key, optional during rotation: `NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID` plus `NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET` or `NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE`;
+- suppression digest current key: `NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID` plus `NOTIFICATION_SUPPRESSION_DIGEST_SECRET` or `NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE`;
+- suppression digest previous key, optional during rotation: `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID` plus `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET` or `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE`.
+
+Direct non-empty secret env values take precedence over file paths. Docker Compose production entrypoint defaults current key file paths to `/app/secrets/notification-unsubscribe-secret` and `/app/secrets/notification-suppression-digest-secret`, generates missing current key files atomically with `0600` permissions, and never auto-generates previous keys.
 
 See [Backup and Restore](backup-restore.md) for the current baseline limitations and required isolated restore drills.

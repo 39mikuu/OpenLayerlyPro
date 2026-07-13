@@ -128,6 +128,21 @@ try {
   if (activated.last_error !== NEUTRALIZED_EMAIL_LAST_ERROR) {
     fail("membership_activated email task missing neutralization marker");
   }
+  if (activated.payload_json?.recipientRedacted !== true || "to" in activated.payload_json) {
+    fail("membership_activated email task payload was not redacted");
+  }
+
+  const [rawEmailPayloads] = await sql`
+    select count(*)::text as count
+    from tasks
+    where kind = 'email'
+      and payload_json ? 'to'
+  `;
+  if (rawEmailPayloads?.count !== "0") {
+    fail(
+      `restore left raw email recipients in email task payloads (count=${rawEmailPayloads?.count})`,
+    );
+  }
 
   // The re-armed renewal_reminder carries a valid payload for a *stale* period, so the
   // worker must drive it to a concrete 'succeeded' (no-op skip) terminal state. An

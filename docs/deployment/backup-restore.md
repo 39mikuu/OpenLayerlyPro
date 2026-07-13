@@ -6,12 +6,20 @@ OpenLayerlyPro data is not recoverable from the PostgreSQL dump alone. A recover
 - every local `uploads` object still referenced by `files.storage_driver='local'`;
 - `/app/secrets/config-encryption-key` or the externally managed equivalent;
 - `/app/secrets/session-secret`, or the exact externally managed `SESSION_SECRET`;
+- notification unsubscribe current/previous key files, or the exact externally managed
+  `NOTIFICATION_UNSUBSCRIBE_*` secrets and fingerprints;
+- notification suppression digest current/previous key files, or the exact externally
+  managed `NOTIFICATION_SUPPRESSION_DIGEST_*` secrets and fingerprints;
 - every S3/R2 object still referenced by the database, protected through provider versions or snapshots.
 
 The config encryption key decrypts admin-managed settings. `SESSION_SECRET` is a separate
 secret: losing or rotating it invalidates sessions and can make in-flight encrypted
 login-code tasks undecryptable. New archives include a file-backed session secret.
 Externally managed values are never archived; only a SHA-256 fingerprint is recorded.
+Notification unsubscribe and suppression digest keys are separate operational secrets:
+losing them can invalidate still-valid unsubscribe links or orphan suppression digests.
+Previous notification keys must be retained until their tokens expire or a documented
+rehash/rotation procedure has completed.
 
 ## Requirements
 
@@ -49,7 +57,7 @@ For the strong-consistency path, let the script stop the normal app/dispatcher b
 
 `--stop-app` resolves the app environment and volume paths from the same app service container whose image provenance is recorded. It inspects every existing app-service container, stops the whole service even when a container is currently `restarting`, and records only containers that were active (`running`, `restarting`, or `paused`) as restart targets. Exit/signal cleanup restarts those exact containers; intentionally stopped or merely created containers remain stopped. If the resolved app container is stopped, backup still works with container-ID-bound `docker cp`; path canonicalization falls back to strict string checks and prints a notice.
 
-New archives use `FORMAT_VERSION=3` and are named like:
+New archives use `FORMAT_VERSION=4` and are named like:
 
 ```text
 openlayerly-backup-20260627-134500.tar.gz
@@ -63,6 +71,10 @@ manifest.env
 checksums.sha256
 secrets/config-encryption-key
 secrets/session-secret            # only for SESSION_SECRET_SOURCE=file
+secrets/notification-unsubscribe-secret                 # only for file-backed current key
+secrets/notification-unsubscribe-previous-secret        # only when configured file-backed
+secrets/notification-suppression-digest-secret          # only for file-backed current key
+secrets/notification-suppression-digest-previous-secret # only when configured file-backed
 uploads/                         # included only when container env STORAGE_DRIVER resolves to local
 UPLOADS_SKIPPED_S3               # written only when container env STORAGE_DRIVER resolves to s3
 ```
@@ -74,16 +86,23 @@ identity, the config-key path and fingerprint, capture consistency mode, and
 image ID, not from runtime/container environment overrides.
 `BACKUP_TOOL_COMMIT` and `BACKUP_TOOL_SCRIPT_SHA256` describe the checkout and script
 that produced the archive; they are deliberately separate from the runtime image fields.
-`APP_VERSION` is retained for compatibility and mirrors `RUNTIME_APP_VERSION` in v3.
+`APP_VERSION` is retained for compatibility and mirrors `RUNTIME_APP_VERSION` in v4.
 File-backed archives record the container path and `secrets/session-secret`; external
 sources record only `SESSION_SECRET_SHA256`.
+For notification keys, v4 manifests record each key family source, key id, SHA-256
+fingerprint, and archive path when file-backed. Externally managed notification keys are
+not archived and must be supplied on the restore target with matching fingerprints before
+the database is replaced.
 
-For `FORMAT_VERSION=3`, restore treats the runtime provenance, config-key fingerprint,
+For `FORMAT_VERSION=3` and `FORMAT_VERSION=4`, restore treats the runtime provenance, config-key fingerprint,
 and `CONFIG_ENCRYPTION_KEY_FORMAT` fields as required manifest fields. Missing,
 duplicated, empty, control-character-bearing, or malformed values fail before any
 destructive restore step. Legacy v1/v2 archives keep their compatibility defaults and
 warning path. `CONFIG_ENCRYPTION_KEY_FORMAT` is derived from the trimmed archived key
 material: keys beginning with `cek1:` are `v1`; any other non-empty key is `legacy`.
+For v4 archives, restore also validates notification key manifest fields and checks any
+file-backed current or previous notification key files are regular `0600` files whose
+contents match the recorded SHA-256 fingerprint.
 
 `CONFIG_ENCRYPTION_KEY_SHA256` is the SHA-256 of the archived config key after trimming
 leading/trailing whitespace, matching the runtime readers' `.trim()` semantics. Restore
@@ -96,7 +115,13 @@ encrypted settings. A whitespace-only archived config key fails closed.
 
 To keep that manifest unambiguous and portable, `backup.sh` rejects path components containing backslashes, ASCII control characters (`U+0000`–`U+001F`), or `DEL` (`U+007F`) before publishing an archive. Ordinary spaces and non-ASCII Unicode names remain supported. The validation runs on the assembled workspace before checksum/tar creation, so unsupported upload entries cannot be published.
 
-Legacy `FORMAT_VERSION=1` archives remain restorable through the compatibility path below, but they have no checksum protection and emit an explicit warning. `FORMAT_VERSION=1` and `FORMAT_VERSION=2` archives also warn that they predate image-authoritative provenance; restore may show `unknown` or host-derived runtime fields for those archives.
+Archives that include WP2 notification tables without v4 notification-key manifest fields
+fail closed before database replacement, unless an isolated compatibility probe proves
+there is no notification key continuity data to protect. Legacy `FORMAT_VERSION=1`
+archives remain restorable through the compatibility path below, but they have no checksum
+protection and emit an explicit warning. `FORMAT_VERSION=1` and `FORMAT_VERSION=2`
+archives also warn that they predate image-authoritative provenance; restore may show
+`unknown` or host-derived runtime fields for those archives.
 
 ### External Config Key
 
@@ -164,12 +189,13 @@ That flag only relaxes **unknown** v1 history. It cannot bypass confirmed newer/
 
 ```text
 validate archive paths
-→ verify v2/v3 checksums and manifest/payload bijection (v1 warns and continues)
+→ verify v2/v3/v4 checksums and manifest/payload bijection (v1 warns and continues)
 → warn for v1/v2 image-provenance gaps
-→ strictly validate required v3 provenance and config-key fingerprint/format fields
-→ verify v3 CONFIG_ENCRYPTION_KEY_SHA256 and CONFIG_ENCRYPTION_KEY_FORMAT against the archived trimmed key material
+→ strictly validate required v3/v4 provenance and config-key fingerprint/format fields
+→ verify v3/v4 CONFIG_ENCRYPTION_KEY_SHA256 and CONFIG_ENCRYPTION_KEY_FORMAT against the archived trimmed key material
+→ verify v4 notification unsubscribe/suppression key fingerprints and preflight restore targets
 → warn, never reject, on archive-vs-target image version/commit/image mismatches
-→ v2/v3 manifest compatibility check, or v1 isolated temporary-DB schema probe
+→ v2/v3/v4 manifest compatibility check, or v1 isolated temporary-DB schema probe
 → validate external SESSION_SECRET or restore the checksummed file-backed secret
 → pre-destructive archive config-key decrypt probe against archived app_settings data
 → import official DB and restore config key to the target CONFIG_ENCRYPTION_KEY_FILE path
@@ -188,10 +214,12 @@ Key invariants:
 - compatibility must pass before the official DB is dropped;
 - all restored `storage.delete_object` rows, including terminal rows, are removed so stale dedupe keys cannot block convergence;
 - provider-event rows and dispatch tasks are restored as a pair;
+- restored nonterminal v2 transactional payment/membership emails are neutralized to prevent unsafe replay; v2 renewal reminders are only re-armed when they carry a subscription/period reference and must revalidate freshness before sending;
+- restored nonterminal `notification.deliver`, `notification.campaign_expand`, and `notification.campaign_finalize` tasks are dead-lettered, and resolvable notification deliveries/campaigns are marked dead so no notification email is replayed after restore with unknown delivery outcome;
 - missing objects become quarantine/410, not storage 500;
 - only convergence may re-enqueue deletion for confirmed orphans;
 - any migrator/backfill/neutralization/convergence error prevents normal app startup;
-- v3 `CONFIG_ENCRYPTION_KEY_SHA256` and `CONFIG_ENCRYPTION_KEY_FORMAT` are checked against the archived key file before the official database, secrets, or uploads are replaced. This is complementary to the decrypt probe: fingerprint mismatch means archive integrity failure; decrypt failure means the archived key cannot read archived ciphertext;
+- v3/v4 `CONFIG_ENCRYPTION_KEY_SHA256` and `CONFIG_ENCRYPTION_KEY_FORMAT` are checked against the archived key file before the official database, secrets, or uploads are replaced. This is complementary to the decrypt probe: fingerprint mismatch means archive integrity failure; decrypt failure means the archived key cannot read archived ciphertext;
 - archive-vs-target runtime app version, source commit, and image ID mismatches are warnings only. Migration identity remains the hard compatibility gate. If an existing target app container sets `APP_VERSION`, `SOURCE_COMMIT`, or `BUILD_TIMESTAMP` to values that conflict with non-`unknown` image labels, backup/restore fails loudly because the container environment is overriding the image build identity;
 - before replacing the official database, restore extracts archived `app_settings` rows into an isolated scratch database and verifies the archived config key can decrypt every encrypted setting. Missing or empty `app_settings` data logs an explicit skip. After convergence, restore runs the same probe against the restored database to verify the active runtime key and fully restored state before app startup;
 - S3 convergence enumerates only controlled application key namespaces (`avatars/`, `payment-qr/`, `payment-proof/`, `content/`, `legacy/`, `remediated/`). Override with comma-separated `RESTORE_S3_ENUM_PREFIXES` when needed;
@@ -226,6 +254,37 @@ key work, so a weak or missing value aborts while the target database is still i
 warns that continuity cannot be proven. It never lets entrypoint silently generate a
 replacement during restore.
 
+### Notification Key Semantics
+
+Bulk notification unsubscribe tokens and suppression digests do not use `SESSION_SECRET`.
+They use dedicated current and optional previous key families. File-backed keys are
+archived under `secrets/notification-unsubscribe-secret`,
+`secrets/notification-unsubscribe-previous-secret`,
+`secrets/notification-suppression-digest-secret`, and
+`secrets/notification-suppression-digest-previous-secret`, restored as regular `0600`
+files, and fingerprint-checked before destructive restore work. External keys are never
+archived; the restore target must provide matching current secrets and key ids. Retain
+previous unsubscribe keys until all still-valid tokens signed by that key have expired.
+Retain previous suppression digest keys until an explicit suppression rehash/migration
+procedure exists, because raw recipient addresses are not stored.
+
+The runtime key environment is:
+
+- `NOTIFICATION_UNSUBSCRIBE_KEY_ID` with `NOTIFICATION_UNSUBSCRIBE_SECRET` or `NOTIFICATION_UNSUBSCRIBE_SECRET_FILE`;
+- optional `NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID` with `NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET` or `NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE`;
+- `NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID` with `NOTIFICATION_SUPPRESSION_DIGEST_SECRET` or `NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE`;
+- optional `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID` with `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET` or `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE`.
+
+A direct non-empty secret env value wins over its file variant. The Docker entrypoint
+generates only current file-backed unsubscribe and suppression digest secrets, under
+`/app/secrets/` by default, with `0600` permissions. It does not generate previous keys;
+operators must preserve or configure those explicitly during rotation.
+
+Restored notification tasks are deliberately neutralized: nonterminal
+`notification.deliver`, `notification.campaign_expand`, and `notification.campaign_finalize`
+tasks are dead-lettered, and resolvable deliveries/campaigns are marked dead. This
+prevents unsafe replay after restore when the original SMTP outcome is unknown.
+
 ### Stripe residual risk
 
 After restore, review payment/subscription/dispute state near the archive timestamp. Provider events are re-armed from the DB snapshot; reconcile runs afterward, but DB and live Stripe state are not atomically identical.
@@ -245,8 +304,8 @@ Only one project can bind host port 3000 with the default Compose file. Stop the
 
 ## Version Boundary
 
-- v2/v3 archives carry migration identity and must be a same-order/hash prefix of the target image journal;
-- v3 archives additionally carry image-authoritative provenance and a trimmed config-key fingerprint. These fields improve auditability and archive integrity checks, but do not replace migration identity as the compatibility boundary;
+- v2/v3/v4 archives carry migration identity and must be a same-order/hash prefix of the target image journal;
+- v3 archives additionally carry image-authoritative provenance and a trimmed config-key fingerprint. v4 adds notification key continuity metadata and archived file-backed notification keys. These fields improve auditability and archive integrity checks, but do not replace migration identity as the compatibility boundary;
 - runtime app version, source commit, build timestamp, and image ID mismatches warn during restore and are surfaced in the confirmation output; they never reject a restore by themselves;
 - v1 archives are imported into an isolated temporary database for Drizzle migration-history comparison before the official DB is replaced;
 - confirmed newer/divergent history is rejected;

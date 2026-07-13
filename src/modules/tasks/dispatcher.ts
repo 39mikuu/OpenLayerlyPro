@@ -1,6 +1,8 @@
+import { getEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import {
   claimDueTasks,
+  claimOneTaskForClass,
   deferTask,
   markTaskDead,
   markTaskFailed,
@@ -10,12 +12,14 @@ import {
   TASK_BATCH_SIZE,
   TASK_LEASE_MS,
   TASK_POLL_INTERVAL_MS,
+  type TaskQueueClass,
 } from "@/modules/tasks";
 import { PermanentTaskError } from "@/modules/tasks/errors";
 import { runTaskHandler } from "@/modules/tasks/handlers";
 
 type DispatcherDependencies = {
   claim: typeof claimDueTasks;
+  claimClass?: typeof claimOneTaskForClass;
   run: typeof runTaskHandler;
   succeed: typeof markTaskSucceeded;
   fail: typeof markTaskFailed;
@@ -27,6 +31,7 @@ type DispatcherDependencies = {
 
 const defaultDependencies: DispatcherDependencies = {
   claim: claimDueTasks,
+  claimClass: claimOneTaskForClass,
   run: runTaskHandler,
   succeed: markTaskSucceeded,
   fail: markTaskFailed,
@@ -92,9 +97,76 @@ export async function dispatchTaskBatch(
 ): Promise<number> {
   await dependencies.sweep();
 
+  const env = getEnv();
+  const claimOneForClass = dependencies.claimClass ?? claimOneTaskForClass;
   let processed = 0;
+  let transactionalClaimed = 0;
+  let notificationClaimed = 0;
+  let defaultClaimed = 0;
+  let notificationStaleClaimed = 0;
+  let maintenanceClaimed = 0;
+
+  const claimClass = async (queueClass: TaskQueueClass) => {
+    if (queueClass === "maintenance" && maintenanceClaimed >= env.TASK_MAINTENANCE_MAX_PER_BATCH) {
+      return null;
+    }
+    const includeStale =
+      queueClass !== "notification" ||
+      notificationStaleClaimed < env.TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH;
+    const task = await claimOneForClass(queueClass, { includeStale });
+    if (!task) return null;
+    if (queueClass === "transactional") transactionalClaimed += 1;
+    if (queueClass === "default") defaultClaimed += 1;
+    if (queueClass === "notification") {
+      notificationClaimed += 1;
+      if (task.reclaimedStale) notificationStaleClaimed += 1;
+    }
+    if (queueClass === "maintenance") maintenanceClaimed += 1;
+    return task;
+  };
+
+  const claimByOrder = async (order: TaskQueueClass[]) => {
+    for (const queueClass of order) {
+      const task = await claimClass(queueClass);
+      if (task) return task;
+    }
+    return null;
+  };
+
   for (; processed < TASK_BATCH_SIZE; processed += 1) {
-    const [task] = await dependencies.claim(1);
+    const remainingSlots = TASK_BATCH_SIZE - processed;
+    const notificationDeficit = env.TASK_NOTIFICATION_MIN_PER_BATCH - notificationClaimed;
+    const defaultDeficit = env.TASK_DEFAULT_MIN_PER_BATCH - defaultClaimed;
+    const notificationSlotsAtRisk = remainingSlots <= Math.max(notificationDeficit, 0);
+    const defaultSlotsAtRisk = remainingSlots <= Math.max(defaultDeficit, 0);
+    const reservedSlotsAtRisk =
+      remainingSlots <= Math.max(notificationDeficit, 0) + Math.max(defaultDeficit, 0);
+    const task =
+      defaultSlotsAtRisk && defaultDeficit > 0
+        ? await claimByOrder(["default", "notification", "maintenance"])
+        : notificationSlotsAtRisk && notificationDeficit > 0
+          ? await claimByOrder(["notification", "default", "maintenance"])
+          : reservedSlotsAtRisk && defaultDeficit > 0
+            ? await claimByOrder(["default", "notification", "maintenance"])
+            : reservedSlotsAtRisk && notificationDeficit > 0
+              ? await claimByOrder(["notification", "default", "maintenance"])
+              : transactionalClaimed < env.TASK_TRANSACTIONAL_RESERVED_PER_BATCH
+                ? await claimByOrder(["transactional", "notification", "default", "maintenance"])
+                : notificationDeficit > 0
+                  ? await claimByOrder(["notification", "transactional", "default", "maintenance"])
+                  : defaultDeficit > 0
+                    ? await claimByOrder([
+                        "default",
+                        "transactional",
+                        "notification",
+                        "maintenance",
+                      ])
+                    : await claimByOrder([
+                        "transactional",
+                        "default",
+                        "notification",
+                        "maintenance",
+                      ]);
     if (!task) break;
     await dispatchClaimedTask(task, dependencies);
   }

@@ -7,8 +7,21 @@ entrypoint_configure_secret_environment() {
   export CONFIG_ENCRYPTION_KEY_FILE
   SESSION_SECRET_FILE="${SESSION_SECRET_FILE:-/app/secrets/session-secret}"
   export SESSION_SECRET_FILE
+  NOTIFICATION_UNSUBSCRIBE_SECRET_FILE="${NOTIFICATION_UNSUBSCRIBE_SECRET_FILE:-/app/secrets/notification-unsubscribe-secret}"
+  export NOTIFICATION_UNSUBSCRIBE_SECRET_FILE
+  NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE="${NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE:-/app/secrets/notification-suppression-digest-secret}"
+  export NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE
+  # Upgraded Compose envs predate the key-id variables; default them so the
+  # runtime key-pair validation accepts the generated file-backed secrets
+  # (restore already assumes the "current" key id).
+  NOTIFICATION_UNSUBSCRIBE_KEY_ID="${NOTIFICATION_UNSUBSCRIBE_KEY_ID:-current}"
+  export NOTIFICATION_UNSUBSCRIBE_KEY_ID
+  NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID="${NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID:-current}"
+  export NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID
   SECRETS_DIR="$(dirname "$CONFIG_ENCRYPTION_KEY_FILE")"
   SESSION_SECRETS_DIR="$(dirname "$SESSION_SECRET_FILE")"
+  NOTIFICATION_UNSUBSCRIBE_SECRETS_DIR="$(dirname "$NOTIFICATION_UNSUBSCRIBE_SECRET_FILE")"
+  NOTIFICATION_SUPPRESSION_SECRETS_DIR="$(dirname "$NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE")"
 }
 
 entrypoint_provision_secrets() {
@@ -22,6 +35,17 @@ entrypoint_provision_secrets() {
   # 会话密钥：环境变量优先；否则由独占、原子发布流程首次生成并持久化。
   # 已存在但非法的文件会失败，不会被替换。
   node /app/docker/ensure-session-secret.mjs "$SESSION_SECRET_FILE"
+
+  # 通知退订与抑制摘要密钥：当前密钥支持 Compose 首启生成并持久化；
+  # previous key 永远不自动生成，必须由运维显式配置。
+  node /app/docker/ensure-notification-secret.mjs \
+    "$NOTIFICATION_UNSUBSCRIBE_SECRET_FILE" \
+    NOTIFICATION_UNSUBSCRIBE_SECRET \
+    NOTIFICATION_UNSUBSCRIBE_SECRET
+  node /app/docker/ensure-notification-secret.mjs \
+    "$NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE" \
+    NOTIFICATION_SUPPRESSION_DIGEST_SECRET \
+    NOTIFICATION_SUPPRESSION_DIGEST_SECRET
 }
 
 entrypoint_chown_regular_file_or_fail() {
@@ -52,21 +76,59 @@ entrypoint_apply_root_ownership() {
     session_file_mode=true
   fi
 
+  unsubscribe_file_mode=false
+  if [ -z "${NOTIFICATION_UNSUBSCRIBE_SECRET:-}" ]; then
+    unsubscribe_file_mode=true
+  fi
+
+  suppression_file_mode=false
+  if [ -z "${NOTIFICATION_SUPPRESSION_DIGEST_SECRET:-}" ]; then
+    suppression_file_mode=true
+  fi
+
+  unsubscribe_previous_file_mode=false
+  NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRETS_DIR=
+  if [ -z "${NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET:-}" ] && \
+    [ -n "${NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE:-}" ]; then
+    unsubscribe_previous_file_mode=true
+    NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRETS_DIR="$(dirname "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE")"
+  fi
+
+  suppression_previous_file_mode=false
+  NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR=
+  if [ -z "${NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET:-}" ] && \
+    [ -n "${NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE:-}" ]; then
+    suppression_previous_file_mode=true
+    NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR="$(dirname "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE")"
+  fi
+
   # In CONFIG_ENCRYPTION_KEY env mode, the config key file path is not touched at all:
   # no file tests, chmod, or chown. Still chown the shared secrets dir when the
   # file-backed SESSION_SECRET lives there, because the default session-secret path is
   # /app/secrets/session-secret and needs the directory writable by nextjs.
   if [ -d "$SECRETS_DIR" ] && {
     [ "$config_file_mode" = true ] || {
-      [ "$session_file_mode" = true ] && [ "$SESSION_SECRETS_DIR" = "$SECRETS_DIR" ]
+      { [ "$session_file_mode" = true ] && [ "$SESSION_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
+      { [ "$unsubscribe_file_mode" = true ] && [ "$NOTIFICATION_UNSUBSCRIBE_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
+      { [ "$suppression_file_mode" = true ] && [ "$NOTIFICATION_SUPPRESSION_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
+      { [ "$unsubscribe_previous_file_mode" = true ] && [ "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
+      { [ "$suppression_previous_file_mode" = true ] && [ "$NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR" = "$SECRETS_DIR" ]; }
     }
   }; then
     chown nextjs:nodejs "$SECRETS_DIR"
   fi
 
-  if [ "$SESSION_SECRETS_DIR" != "$SECRETS_DIR" ] && [ -d "$SESSION_SECRETS_DIR" ]; then
-    chown nextjs:nodejs "$SESSION_SECRETS_DIR"
-  fi
+  for notification_secret_dir in \
+    "$SESSION_SECRETS_DIR" \
+    "$NOTIFICATION_UNSUBSCRIBE_SECRETS_DIR" \
+    "$NOTIFICATION_SUPPRESSION_SECRETS_DIR" \
+    "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRETS_DIR" \
+    "$NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR"
+  do
+    if [ "$notification_secret_dir" != "$SECRETS_DIR" ] && [ -d "$notification_secret_dir" ]; then
+      chown nextjs:nodejs "$notification_secret_dir"
+    fi
+  done
 
   if [ "$config_file_mode" = true ]; then
     entrypoint_chown_regular_file_or_fail \
@@ -76,6 +138,34 @@ entrypoint_apply_root_ownership() {
 
   if [ "$session_file_mode" = true ]; then
     entrypoint_chown_regular_file_or_fail "$SESSION_SECRET_FILE" "SESSION_SECRET_FILE" \
+      || return 1
+  fi
+
+  if [ "$unsubscribe_file_mode" = true ]; then
+    entrypoint_chown_regular_file_or_fail \
+      "$NOTIFICATION_UNSUBSCRIBE_SECRET_FILE" "NOTIFICATION_UNSUBSCRIBE_SECRET_FILE" \
+      || return 1
+  fi
+
+  if [ "$suppression_file_mode" = true ]; then
+    entrypoint_chown_regular_file_or_fail \
+      "$NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE" "NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE" \
+      || return 1
+  fi
+
+  if [ "$unsubscribe_previous_file_mode" = true ] && \
+    [ -e "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" ]; then
+    entrypoint_chown_regular_file_or_fail \
+      "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" \
+      "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE" \
+      || return 1
+  fi
+
+  if [ "$suppression_previous_file_mode" = true ] && \
+    [ -e "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" ]; then
+    entrypoint_chown_regular_file_or_fail \
+      "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" \
+      "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" \
       || return 1
   fi
 }
