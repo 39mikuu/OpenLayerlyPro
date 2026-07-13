@@ -11,7 +11,9 @@ import {
   posts,
   postTags,
   siteSettings,
+  supporterWallEntries,
   tags,
+  users,
 } from "../src/db/schema";
 import { LOCALE_COOKIE } from "../src/modules/i18n/config";
 import { BLOG_DEFAULT_COLOR_PRESET_ID } from "../src/themes/blog/color-presets";
@@ -32,6 +34,8 @@ const POST_SLUG = "visual-baseline-studio-notes";
 const POST_TITLE = "Visual Baseline Studio Notes";
 const CATEGORY_NAME = "Studio Notes";
 const TAG_NAME = "Baseline";
+const SUPPORTER_DISPLAY_NAME = "Visual Baseline Supporter";
+const SUPPORTER_DEDICATION = "Thank you for the steady studio work.";
 const FIXED_PUBLISHED_AT = new Date("2025-03-15T09:30:00.000Z");
 const fixtureTierSlugs = ["visual-supporter", "visual-archive-member"] as const;
 const fixtureCategorySlug = "studio-notes";
@@ -52,6 +56,8 @@ const mutatedSettingKeys = [
   "artist_avatar_file_id",
   "site_logo_file_id",
   "site_icon_file_id",
+  "supporterWallEnabled",
+  "supporterWallMinLevel",
 ] as const;
 type SettingSnapshot = Record<string, unknown | undefined>;
 let originalSettings: SettingSnapshot = {};
@@ -66,9 +72,20 @@ type ThemeMode = "light" | "dark";
 const themes: readonly ThemeId[] = ["builtin", "blog", "wordpress"];
 const modes: readonly ThemeMode[] = ["light", "dark"];
 const pages = [
-  { id: "home", path: "/", expectTaxonomy: false },
-  { id: "posts", path: "/posts", expectTaxonomy: true },
-  { id: "post-detail", path: `/posts/${POST_SLUG}`, expectTaxonomy: true },
+  { id: "home", path: "/", expectTaxonomy: false, expectedText: POST_TITLE },
+  { id: "posts", path: "/posts", expectTaxonomy: true, expectedText: POST_TITLE },
+  {
+    id: "post-detail",
+    path: `/posts/${POST_SLUG}`,
+    expectTaxonomy: true,
+    expectedText: POST_TITLE,
+  },
+  {
+    id: "supporter-wall",
+    path: "/supporters",
+    expectTaxonomy: false,
+    expectedText: SUPPORTER_DISPLAY_NAME,
+  },
 ] as const;
 
 async function snapshotSettings(keys: readonly string[]): Promise<SettingSnapshot> {
@@ -112,12 +129,18 @@ async function cleanupFixtures() {
     await tx.delete(posts).where(sql`${posts.slug} = ${POST_SLUG}`);
     await tx.delete(categories).where(sql`${categories.slug} = ${fixtureCategorySlug}`);
     await tx.delete(tags).where(sql`${tags.slug} = ${fixtureTagSlug}`);
+    await tx
+      .delete(supporterWallEntries)
+      .where(
+        sql`${supporterWallEntries.userId} in (select id from users where email like 'visual-baseline-%@example.com')`,
+      );
     await tx.delete(memberships).where(
       sql`${memberships.tierId} in (select id from membership_tiers where slug in (${sql.join(
         fixtureTierSlugs.map((slug) => sql`${slug}`),
         sql`, `,
       )}))`,
     );
+    await tx.delete(users).where(sql`${users.email} like 'visual-baseline-%@example.com'`);
     await tx.delete(membershipTiers).where(inArray(membershipTiers.slug, [...fixtureTierSlugs]));
   });
 }
@@ -244,6 +267,8 @@ test.beforeAll(async () => {
       site_verification: [],
       public_integrations: [],
       public_csp_revision: "visual-baseline",
+      supporterWallEnabled: true,
+      supporterWallMinLevel: sql`'null'::jsonb`,
       // Each theme's own real default preset (not an arbitrary fixture choice) - this
       // is what a fresh, unconfigured install actually renders.
       theme_config: {
@@ -263,30 +288,57 @@ test.beforeAll(async () => {
         });
     }
 
-    await tx.insert(membershipTiers).values([
-      {
-        name: "Supporter",
-        slug: "visual-supporter",
-        description: "Access the public archive and support ongoing studio notes.",
-        priceLabel: "$9 / month",
-        level: 10,
-        durationDays: 31,
-        purchaseEnabled: true,
-        isActive: true,
-        sortOrder: 1,
-      },
-      {
-        name: "Archive Member",
-        slug: "visual-archive-member",
-        description: "A deterministic membership card for the home-page baseline.",
-        priceLabel: "$19 / month",
-        level: 20,
-        durationDays: 31,
-        purchaseEnabled: true,
-        isActive: true,
-        sortOrder: 2,
-      },
-    ]);
+    const seededTiers = await tx
+      .insert(membershipTiers)
+      .values([
+        {
+          name: "Supporter",
+          slug: "visual-supporter",
+          description: "Access the public archive and support ongoing studio notes.",
+          priceLabel: "$9 / month",
+          level: 10,
+          durationDays: 31,
+          purchaseEnabled: true,
+          isActive: true,
+          sortOrder: 1,
+        },
+        {
+          name: "Archive Member",
+          slug: "visual-archive-member",
+          description: "A deterministic membership card for the home-page baseline.",
+          priceLabel: "$19 / month",
+          level: 20,
+          durationDays: 31,
+          purchaseEnabled: true,
+          isActive: true,
+          sortOrder: 2,
+        },
+      ])
+      .returning({ id: membershipTiers.id, slug: membershipTiers.slug });
+    const supporterTier = seededTiers.find((tier) => tier.slug === "visual-archive-member");
+    if (!supporterTier) throw new Error("Visual supporter tier fixture was not created");
+    const [supporter] = await tx
+      .insert(users)
+      .values({
+        email: "visual-baseline-supporter@example.com",
+        displayName: SUPPORTER_DISPLAY_NAME,
+        role: "member",
+      })
+      .returning({ id: users.id });
+    await tx.insert(memberships).values({
+      userId: supporter.id,
+      tierId: supporterTier.id,
+      source: "manual",
+      status: "active",
+      startsAt: new Date("2025-01-01T00:00:00.000Z"),
+      endsAt: new Date("2027-01-01T00:00:00.000Z"),
+      note: "Visual baseline supporter wall fixture",
+    });
+    await tx.insert(supporterWallEntries).values({
+      userId: supporter.id,
+      dedication: SUPPORTER_DEDICATION,
+      status: "approved",
+    });
 
     const [category] = await tx
       .insert(categories)
@@ -339,7 +391,7 @@ for (const theme of themes) {
             ]);
 
             await page.goto(pageCase.path);
-            await expect(page.getByText(POST_TITLE)).toBeVisible();
+            await expect(page.getByText(pageCase.expectedText)).toBeVisible();
             if (pageCase.expectTaxonomy) {
               await expect(page.getByText(CATEGORY_NAME).first()).toBeVisible();
               await expect(page.getByText(`#${TAG_NAME}`).first()).toBeVisible();
@@ -399,7 +451,7 @@ test.describe("wordpress theme preset and mobile baselines", () => {
       ]);
 
       await page.goto(pageCase.path);
-      await expect(page.getByText(POST_TITLE)).toBeVisible();
+      await expect(page.getByText(pageCase.expectedText)).toBeVisible();
       await expect(page).toHaveScreenshot(`wordpress-mobile-${pageCase.id}.png`, {
         animations: "disabled",
         fullPage: true,

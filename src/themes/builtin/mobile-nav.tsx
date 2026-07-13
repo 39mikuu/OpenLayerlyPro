@@ -1,6 +1,6 @@
 "use client";
 
-import { Home, Menu, Newspaper, Sparkles, UserRound } from "lucide-react";
+import { HeartHandshake, Home, Menu, Newspaper, Sparkles, UserRound } from "lucide-react";
 
 import { LogoutButton } from "@/components/auth/logout-button";
 import { useT } from "@/components/i18n-provider";
@@ -8,7 +8,7 @@ import { LocaleSwitcher } from "@/components/locale-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
 import type { SiteChromeView } from "@/modules/theme/types";
 
-type MobileNavView = Pick<SiteChromeView, "isLoggedIn">;
+type MobileNavView = Pick<SiteChromeView, "isLoggedIn" | "supporterWallEnabled">;
 
 export function MobileNav({ view }: { view: MobileNavView }) {
   const t = useT();
@@ -16,6 +16,9 @@ export function MobileNav({ view }: { view: MobileNavView }) {
     { href: "/", label: t("nav.home"), icon: Home },
     { href: "/posts", label: t("nav.posts"), icon: Newspaper },
     { href: "/tiers", label: t("nav.tiers"), icon: Sparkles },
+    ...(view.supporterWallEnabled
+      ? [{ href: "/supporters", label: t("nav.supporters"), icon: HeartHandshake }]
+      : []),
     {
       href: view.isLoggedIn ? "/me" : "/login",
       label: view.isLoggedIn ? t("nav.me") : t("nav.login"),

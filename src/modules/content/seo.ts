@@ -75,7 +75,7 @@ export async function buildSiteMetadata(
   return buildSiteMetadataFromInfo(site, { ...options, canonicalPath });
 }
 
-export function buildListPageSeoCopy(page: "posts" | "tiers") {
+export function buildListPageSeoCopy(page: "posts" | "tiers" | "supporters") {
   return {
     title: translate(DEFAULT_LOCALE, `${page}.seoTitle`),
     description: translate(DEFAULT_LOCALE, `${page}.seoDescription`),

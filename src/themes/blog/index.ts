@@ -9,6 +9,7 @@ import {
 } from "./color-presets";
 import { Home } from "./home";
 import { PostList } from "./post-list";
+import { SupporterWall } from "./supporter-wall";
 
 /**
  * 博客主题：文字优先的阅读形态（窄栏外壳、列表流首页、无封面文章列表）。
@@ -23,6 +24,7 @@ export const blogTheme: Theme = {
     Chrome,
     Home,
     PostList,
+    SupporterWall,
   },
   colorPresets: BLOG_COLOR_PRESETS,
   defaultColorPresetId: BLOG_DEFAULT_COLOR_PRESET_ID,

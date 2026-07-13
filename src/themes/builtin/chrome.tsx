@@ -78,6 +78,11 @@ export function Chrome({
             <Button variant="ghost" size="sm" className="hidden sm:inline-flex" asChild>
               <a href="/tiers">{t("nav.tiers")}</a>
             </Button>
+            {view.supporterWallEnabled ? (
+              <Button variant="ghost" size="sm" className="hidden sm:inline-flex" asChild>
+                <a href="/supporters">{t("nav.supporters")}</a>
+              </Button>
+            ) : null}
             {view.isLoggedIn ? (
               <>
                 <Button variant="ghost" size="sm" asChild>

@@ -9,6 +9,7 @@ import {
   postTranslations,
   sessions,
   siteSettings,
+  supporterWallEntries,
   users,
 } from "../src/db/schema";
 import { generateSessionToken, hashPassword, hmacSha256 } from "../src/lib/crypto";
@@ -23,7 +24,7 @@ const ACTIVE_THEME_SETTING_KEY = "theme";
 const THEME_CONFIG_SETTING_KEY = "theme_config";
 
 const ADMIN_EMAIL = "blog-theme-admin@example.com";
-const smokeThemes = ["blog", "wordpress"] as const;
+const smokeThemes = ["builtin", "blog", "wordpress"] as const;
 const ADMIN_PASSWORD = "blog-theme-admin-password";
 const PUBLIC_SLUG = "blog-theme-public-smoke";
 const LOGIN_SLUG = "blog-theme-login-smoke";
@@ -53,6 +54,8 @@ const mutatedSettingKeys = [
   "artist_avatar_file_id",
   "site_logo_file_id",
   "site_icon_file_id",
+  "supporterWallEnabled",
+  "supporterWallMinLevel",
 ] as const;
 type SettingSnapshot = Record<string, unknown | undefined>;
 let originalSettings: SettingSnapshot = {};
@@ -117,6 +120,11 @@ async function restoreSettings(snapshot: SettingSnapshot) {
 async function cleanupFixtures() {
   await getDb().transaction(async (tx) => {
     await tx
+      .delete(supporterWallEntries)
+      .where(
+        sql`${supporterWallEntries.userId} in (select id from users where email like 'blog-theme-%@example.com')`,
+      );
+    await tx
       .delete(memberships)
       .where(
         sql`${memberships.userId} in (select id from users where email like 'blog-theme-%@example.com')`,
@@ -151,13 +159,13 @@ async function setActiveTheme(theme: (typeof smokeThemes)[number]) {
   await upsertSetting(ACTIVE_THEME_SETTING_KEY, theme);
 }
 
-async function seedUser(input: { email: string; role: "admin" | "member" }) {
+async function seedUser(input: { email: string; role: "admin" | "member"; displayName?: string }) {
   const [user] = await getDb()
     .insert(users)
     .values({
       email: input.email,
       role: input.role,
-      displayName: input.email,
+      displayName: input.displayName ?? input.email,
       passwordHash: input.role === "admin" ? await hashPassword(ADMIN_PASSWORD) : null,
     })
     .returning({ id: users.id, email: users.email, role: users.role });
@@ -260,6 +268,8 @@ async function seedFixtures() {
   await upsertSetting("site_verification", []);
   await upsertSetting("public_integrations", []);
   await upsertSetting("public_csp_revision", "theme-permission-locale-smoke");
+  await upsertSetting("supporterWallEnabled", false);
+  await upsertSetting("supporterWallMinLevel", sql`'null'::jsonb`);
   await upsertSetting(ACTIVE_THEME_SETTING_KEY, "blog");
   await upsertSetting(THEME_CONFIG_SETTING_KEY, {
     builtin: { colorPreset: "blue" },
@@ -435,6 +445,59 @@ test.describe.serial("theme functional permission and locale smoke", () => {
       await page.goto(`/posts/${MEMBER_SLUG}`);
       await expect(page.getByText(MEMBER_BODY)).toBeVisible();
       await expect(page.getByText(en.post.lockedTitle)).toBeHidden();
+    });
+  }
+
+  for (const smokeTheme of smokeThemes) {
+    test(`keeps supporter wall disabled at 404 and renders when enabled under ${smokeTheme}`, async ({
+      page,
+      context,
+    }) => {
+      await upsertSetting(ACTIVE_THEME_SETTING_KEY, smokeTheme);
+      await upsertSetting("supporterWallEnabled", false);
+      await upsertSetting("supporterWallMinLevel", sql`'null'::jsonb`);
+      await context.addCookies([{ name: LOCALE_COOKIE, value: "en", url: BASE_URL }]);
+
+      const disabledResponse = await page.goto("/supporters");
+      expect(disabledResponse?.status()).toBe(404);
+
+      const wallUser = await seedUser({
+        email: `blog-theme-wall-${smokeTheme}@example.com`,
+        role: "member",
+        displayName: `Wall Fan ${smokeTheme}`,
+      });
+      const [tier] = await getDb()
+        .select({ id: membershipTiers.id })
+        .from(membershipTiers)
+        .where(eq(membershipTiers.slug, fixtureTierSlug))
+        .limit(1);
+      expect(tier).toBeTruthy();
+      await getDb()
+        .insert(memberships)
+        .values({
+          userId: wallUser.id,
+          tierId: tier.id,
+          source: "manual",
+          status: "active",
+          startsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+          endsAt: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+          note: `Theme smoke supporter wall membership for ${smokeTheme}`,
+        });
+      await getDb()
+        .insert(supporterWallEntries)
+        .values({
+          userId: wallUser.id,
+          dedication: `Plain supporter wall thanks (${smokeTheme})`,
+          status: "approved",
+        });
+
+      await upsertSetting("supporterWallEnabled", true);
+      const enabledResponse = await page.goto("/supporters");
+      expect(enabledResponse?.status()).toBe(200);
+      await expect(page.getByText(`Wall Fan ${smokeTheme}`)).toBeVisible();
+      await expect(page.getByText(`Plain supporter wall thanks (${smokeTheme})`)).toBeVisible();
+      // The public wall must never surface an email address, even as a fallback.
+      await expect(page.getByText(wallUser.email)).toHaveCount(0);
     });
   }
 

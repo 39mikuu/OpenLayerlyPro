@@ -16,7 +16,12 @@ const t: Translate = (key) => key;
 function view(overrides: Partial<MeView> = {}): MeView {
   return {
     email: "fan@example.test",
+    displayName: "Fan Name",
     isAdmin: false,
+    supporterWall: {
+      settings: { enabled: true, minLevel: null },
+      entry: null,
+    },
     notificationPreferences: { newPostEmailEnabled: false, version: 0 },
     membership: null,
     subscription: null,

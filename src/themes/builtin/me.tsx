@@ -1,9 +1,21 @@
-import { Bell, CalendarDays, FileText, Home, Mail, Newspaper, Sparkles } from "lucide-react";
+import {
+  Bell,
+  CalendarDays,
+  FileText,
+  HeartHandshake,
+  Home,
+  Mail,
+  Newspaper,
+  Sparkles,
+  UserRound,
+} from "lucide-react";
 import Link from "next/link";
 
+import { DisplayNameEditor } from "@/components/me/display-name-editor";
 import { RenewalReminderToggle } from "@/components/membership/renewal-reminder-toggle";
 import { NewPostEmailToggle } from "@/components/notifications/new-post-email-toggle";
 import { SubscriptionCancelButton } from "@/components/payment/subscription-cancel-button";
+import { SupporterWallControls } from "@/components/supporter-wall/supporter-wall-controls";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatDate } from "@/lib/dates";
@@ -34,6 +46,23 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
       </section>
 
       <section className="rounded-xl border bg-card p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)] sm:p-6">
+        <div className="flex items-start gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-700 dark:bg-slate-900 dark:text-slate-200">
+            <UserRound className="size-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">{t("me.displayNameTitle")}</p>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              {t("me.displayNameDescription")}
+            </p>
+            <div className="mt-4">
+              <DisplayNameEditor displayName={view.displayName} />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border bg-card p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)] sm:p-6">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex items-start gap-3">
             <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
@@ -55,6 +84,27 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
                   : "me.newPostEmailOff",
               )}
             </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border bg-card p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)] sm:p-6">
+        <div className="flex items-start gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-pink-50 text-pink-700 dark:bg-pink-950/40 dark:text-pink-300">
+            <HeartHandshake className="size-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">{t("me.supporterWallTitle")}</p>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              {t("me.supporterWallDescription")}
+            </p>
+            <div className="mt-4">
+              <SupporterWallControls
+                displayName={view.displayName}
+                initialEntry={view.supporterWall.entry}
+                settings={view.supporterWall.settings}
+              />
+            </div>
           </div>
         </div>
       </section>

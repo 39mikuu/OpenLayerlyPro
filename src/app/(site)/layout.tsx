@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/modules/auth/session";
 import { getT } from "@/modules/i18n/server";
 import { getPublicSiteInfo, isInitialized } from "@/modules/site";
 import { getPublicRenderConfig } from "@/modules/site/public-security";
+import { getSupporterWallSettings } from "@/modules/supporter-wall";
 import { getActiveTheme } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
@@ -12,12 +13,13 @@ export default async function SiteLayout({ children }: { children: React.ReactNo
   if (!(await isInitialized())) {
     redirect("/admin/setup");
   }
-  const [site, publicSecurity, user, theme, t] = await Promise.all([
+  const [site, publicSecurity, user, theme, t, supporterWallSettings] = await Promise.all([
     getPublicSiteInfo(),
     getPublicRenderConfig(),
     getCurrentUser(),
     getActiveTheme(),
     getT(),
+    getSupporterWallSettings(),
   ]);
 
   const Chrome = theme.components.Chrome;
@@ -34,6 +36,7 @@ export default async function SiteLayout({ children }: { children: React.ReactNo
           .filter((link) => link.enabled !== false)
           .map((link) => ({ name: link.name, url: link.url })),
         isLoggedIn: !!user,
+        supporterWallEnabled: supporterWallSettings.enabled,
         customFooterMarkup: publicSecurity.footerHtml,
       }}
       t={t}
