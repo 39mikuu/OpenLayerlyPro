@@ -94,4 +94,17 @@ describe("root CSP revision fence", () => {
     expect(html).toContain("window.__revisionRaceIntegration = true");
     expect(html).toContain('nonce="request-nonce"');
   });
+
+  it("skips integration scripts when the public render header is missing", async () => {
+    mocks.requestHeaders.set("x-csp-config-revision", "current-revision");
+    mocks.requestHeaders.delete("x-public-security-render");
+
+    const html = renderToStaticMarkup(
+      await RootLayout({ children: createElement("main", null, "page") }),
+    );
+
+    expect(html).not.toContain("window.__revisionRaceIntegration = true");
+    expect(html).toContain("__themeInitialized");
+    expect(html).toContain('nonce="request-nonce"');
+  });
 });

@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
@@ -18,6 +18,7 @@ import { approvePaymentRequest, reversePaymentApproval } from "@/modules/payment
 import {
   applySupporterWallSettingsUpdate,
   approveSupporterWallEntry,
+  buildPublicSupporterWallQuery,
   getMyWallEntry,
   getSupporterWallViewModel,
   hideSupporterWallEntry,
@@ -29,6 +30,32 @@ import {
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
+
+type PlanNode = {
+  "Node Type"?: string;
+  "Relation Name"?: string;
+  "Index Name"?: string;
+  "Actual Rows"?: number;
+  Plans?: PlanNode[];
+  [key: string]: unknown;
+};
+
+type ExplainRow = {
+  "QUERY PLAN": Array<{ Plan: PlanNode }>;
+};
+
+function walkPlan(plan: PlanNode): PlanNode[] {
+  return [plan, ...(plan.Plans ?? []).flatMap(walkPlan)];
+}
+
+function findPlanPath(plan: PlanNode, predicate: (node: PlanNode) => boolean): PlanNode[] | null {
+  if (predicate(plan)) return [plan];
+  for (const child of plan.Plans ?? []) {
+    const path = findPlanPath(child, predicate);
+    if (path) return [plan, ...path];
+  }
+  return null;
+}
 
 describeWithDatabase("supporter wall domain integration", () => {
   const db = getDb();
@@ -309,6 +336,77 @@ describeWithDatabase("supporter wall domain integration", () => {
     expect(viewModel?.supporters.map((supporter) => supporter.displayName)).not.toContain(
       "Lowest Fan 201",
     );
+  });
+
+  it("drives public membership lookup from approved wall entries", async () => {
+    const tier = await seedTier(10, "Plan Shape Tier");
+    const now = Date.now();
+    const population = await db
+      .insert(users)
+      .values(
+        Array.from({ length: 250 }, (_, index) => ({
+          email: `plan-shape-${index}-${randomUUID()}@example.test`,
+          displayName: `Plan Shape Fan ${index.toString().padStart(3, "0")}`,
+        })),
+      )
+      .returning({ id: users.id });
+
+    await db.insert(memberships).values(
+      population.map((user, index) => ({
+        userId: user.id,
+        tierId: tier.id,
+        source: "manual" as const,
+        startsAt: new Date(now - 60_000),
+        endsAt: new Date(now + 24 * 60 * 60 * 1000 + index),
+        status: "active" as const,
+      })),
+    );
+    await db.insert(supporterWallEntries).values(
+      population.slice(0, 5).map((user) => ({
+        userId: user.id,
+        dedication: null,
+        status: "approved" as const,
+      })),
+    );
+
+    await db.execute(sql`analyze users`);
+    await db.execute(sql`analyze membership_tiers`);
+    await db.execute(sql`analyze memberships`);
+    await db.execute(sql`analyze supporter_wall_entries`);
+
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local enable_seqscan = off`);
+      const rows = await tx.execute<ExplainRow>(
+        sql`explain (analyze, format json, costs off, timing off, summary off) ${buildPublicSupporterWallQuery(null)}`,
+      );
+      const plan = rows[0]!["QUERY PLAN"][0]!.Plan;
+      const nodes = walkPlan(plan);
+      const membershipAccessNodes = nodes.filter((node) => node["Relation Name"] === "memberships");
+      const membershipAccessPath = findPlanPath(
+        plan,
+        (node) => node["Relation Name"] === "memberships",
+      );
+      const membershipIndexPath = findPlanPath(
+        plan,
+        (node) => node["Index Name"] === "memberships_user_active_idx",
+      );
+
+      expect(findPlanPath(plan, (node) => node["Node Type"] === "Unique")).toBeNull();
+      expect(
+        nodes.some((node) =>
+          ["Aggregate", "HashAggregate", "GroupAggregate"].includes(node["Node Type"] ?? ""),
+        ),
+      ).toBe(false);
+      expect(membershipAccessNodes.length).toBeGreaterThan(0);
+      expect(membershipAccessPath).not.toBeNull();
+      expect(membershipAccessPath!.some((node) => node["Node Type"] === "Nested Loop")).toBe(true);
+      expect(membershipAccessPath!.some((node) => node["Node Type"] === "Limit")).toBe(true);
+      expect(membershipIndexPath).not.toBeNull();
+      expect(membershipIndexPath!.some((node) => node["Node Type"] === "Nested Loop")).toBe(true);
+      expect(
+        Math.max(...membershipAccessNodes.map((node) => Number(node["Actual Rows"] ?? 0))),
+      ).toBeLessThanOrEqual(5);
+    });
   });
 
   it("moves an approved entry back to pending on fan re-edit and hides all dedication text", async () => {

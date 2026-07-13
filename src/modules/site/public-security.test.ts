@@ -130,6 +130,7 @@ describe("public integration registry", () => {
     ["/", true],
     ["/posts", true],
     ["/posts/x", true],
+    ["/supporters", true],
     ["/tiers", true],
     ["/me", false],
     ["/admin", false],

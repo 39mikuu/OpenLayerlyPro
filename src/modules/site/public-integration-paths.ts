@@ -1,4 +1,4 @@
-export const PUBLIC_INTEGRATION_EXACT_PATHS = ["/", "/posts", "/tiers"] as const;
+export const PUBLIC_INTEGRATION_EXACT_PATHS = ["/", "/posts", "/supporters", "/tiers"] as const;
 export const PUBLIC_INTEGRATION_PATH_PREFIXES = ["/posts/"] as const;
 
 export function isPublicIntegrationDocument(pathname: string): boolean {

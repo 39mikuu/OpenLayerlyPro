@@ -391,21 +391,20 @@ export async function getSupporterWallViewModel(): Promise<SupporterWallViewMode
   const db = getDb();
   const parsed = parseStoredSettings(await readSettingRows(db));
   if (!parsed.publicReadable || !parsed.settings.enabled) return null;
-  const threshold = parsed.settings.minLevel;
+  const supporters = await db.execute<RawPublicSupporter>(
+    buildPublicSupporterWallQuery(parsed.settings.minLevel),
+  );
+  return {
+    supporters: supporters.map(({ level, ...supporter }) => {
+      void level;
+      return supporter;
+    }),
+  };
+}
+
+export function buildPublicSupporterWallQuery(threshold: number | null) {
   const thresholdSql = threshold === null ? sql`true` : sql`active.level >= ${threshold}`;
-  const supporters = await db.execute<RawPublicSupporter>(sql`
-    with active as (
-      select distinct on (m.user_id)
-        m.user_id,
-        mt.name as tier_name,
-        mt.level
-      from memberships m
-      inner join membership_tiers mt on mt.id = m.tier_id
-      where m.status = 'active'
-        and m.starts_at <= now()
-        and m.ends_at > now()
-      order by m.user_id, mt.level desc, m.ends_at desc, m.id asc
-    )
+  return sql<RawPublicSupporter>`
     select
       u.display_name as "displayName",
       active.tier_name as "tierName",
@@ -413,18 +412,24 @@ export async function getSupporterWallViewModel(): Promise<SupporterWallViewMode
       active.level
     from supporter_wall_entries e
     inner join users u on u.id = e.user_id and u.display_name is not null
-    inner join active on active.user_id = e.user_id
+    inner join lateral (
+      select
+        mt.name as tier_name,
+        mt.level
+      from memberships m
+      inner join membership_tiers mt on mt.id = m.tier_id
+      where m.user_id = e.user_id
+        and m.status = 'active'
+        and m.starts_at <= now()
+        and m.ends_at > now()
+      order by mt.level desc, m.ends_at desc, m.id asc
+      limit 1
+    ) active on true
     where e.status = 'approved'
       and ${thresholdSql}
     order by active.level desc, e.created_at asc, e.id asc
     limit ${PUBLIC_WALL_MAX_ENTRIES}
-  `);
-  return {
-    supporters: supporters.map(({ level, ...supporter }) => {
-      void level;
-      return supporter;
-    }),
-  };
+  `;
 }
 
 export async function listSupporterWallEntriesPage(
