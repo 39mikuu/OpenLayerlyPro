@@ -132,7 +132,7 @@ describeWithDatabase("profile route integration", () => {
     },
   );
 
-  it("leaves a pending supporter wall entry pending without audit spam", async () => {
+  it("bumps a pending entry's version on rename so stale-version moderation fences", async () => {
     const [user] = await db
       .insert(users)
       .values({ email: `profile-${randomUUID()}@example.test`, displayName: "Pending Fan" })
@@ -159,7 +159,7 @@ describeWithDatabase("profile route integration", () => {
         })
         .from(supporterWallEntries)
         .where(eq(supporterWallEntries.id, entry!.id)),
-    ).resolves.toEqual([{ status: "pending", version: 4 }]);
-    await expect(db.select().from(auditEvents)).resolves.toHaveLength(0);
+    ).resolves.toEqual([{ status: "pending", version: 5 }]);
+    await expect(db.select().from(auditEvents)).resolves.toHaveLength(1);
   });
 });

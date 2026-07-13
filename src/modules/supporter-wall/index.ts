@@ -241,8 +241,12 @@ export async function updateUserDisplayNameWithWallReset(input: {
       .where(eq(supporterWallEntries.userId, input.userId))
       .limit(1)
       .for("update");
-    if (!before || before.status === "pending") return;
+    if (!before) return;
 
+    // A pending entry keeps its status, but the version must still bump:
+    // admin approve/hide fences on the version while the public wall reads
+    // users.display_name live, so a stale-version approve after a rename
+    // would publish a display name the moderator never reviewed.
     const [updated] = await tx
       .update(supporterWallEntries)
       .set({
