@@ -39,6 +39,14 @@
 - **建议时机**：搭车任意 workflow 改动，不单独立项。
 - **体量**：微。
 
+### G7 Plausible SPA 自动 pageview 未按公开页边界重判
+
+- **现状**：Plausible adapter 仍沿用其脚本默认自动追踪行为；若公开页上的 root layout 脚本在 SPA 导航后继续存活，客户端路由切到 `/me`、`/checkout/*`、`/admin` 等非公开页时仍可能上报 pageview。WP6 仅授权修复 Umami adapter；`release-v1.1-plan.md` §WP6 明确 Plausible 只做回归、兼容性和文档验收，不重复实现。
+- **风险**：与 Umami 修复后的公开页边界存在 parity gap，可能把非公开路径暴露给 Plausible 事件端。
+- **方向**：为 Plausible 单独立项时复用共享公开页路径谓词，关闭默认自动追踪并增加同等 nonce inline 手动追踪器；迁移前保持部署文档标注该差异。
+- **建议时机**：Plausible adapter 后续维护批次或隐私硬化批次。
+- **体量**：小。
+
 ## 已立项
 
 （当前无已立项但未完成的条目。）

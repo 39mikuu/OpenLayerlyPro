@@ -2,24 +2,28 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
-import { siteSettings } from "@/db/schema";
+import { auditEvents, siteSettings } from "@/db/schema";
 
 import {
   CUSTOM_FOOTER_MARKUP_KEY,
   LEGACY_CUSTOM_FOOTER_KEY,
   parsePublicSecuritySettings,
   PUBLIC_CSP_REVISION_KEY,
+  PUBLIC_INTEGRATIONS_KEY,
   PUBLIC_SECURITY_SETTING_KEYS,
+  publicIntegrationsSchema,
   updatePublicSecuritySettings,
 } from "./public-security";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
+const actor = { type: "admin" as const, id: "00000000-0000-4000-8000-000000000001" };
 
 describeWithDatabase("public security settings integration", () => {
   const db = getDb();
 
   beforeEach(async () => {
+    await db.delete(auditEvents);
     await db
       .delete(siteSettings)
       .where(inArray(siteSettings.key, [...PUBLIC_SECURITY_SETTING_KEYS, "site_name"]));
@@ -42,7 +46,7 @@ describeWithDatabase("public security settings integration", () => {
     const legacyMarkup = '<p class="filing"><a href="https://example.com">ICP</a></p>';
     await insertSetting(LEGACY_CUSTOM_FOOTER_KEY, legacyMarkup);
 
-    await updatePublicSecuritySettings({ legacyAction: "migrate-safe" });
+    await updatePublicSecuritySettings({ actor, legacyAction: "migrate-safe" });
 
     expect(await readSetting(CUSTOM_FOOTER_MARKUP_KEY)).toBe(legacyMarkup);
     expect(await readSetting(LEGACY_CUSTOM_FOOTER_KEY)).toBeUndefined();
@@ -56,6 +60,7 @@ describeWithDatabase("public security settings integration", () => {
 
     await expect(
       updatePublicSecuritySettings({
+        actor,
         customFooterMarkup: "<p>replacement</p>",
         legacyAction: "migrate-safe",
       }),
@@ -74,7 +79,7 @@ describeWithDatabase("public security settings integration", () => {
     await insertSetting(CUSTOM_FOOTER_MARKUP_KEY, "<p>Current filing</p>");
 
     await expect(
-      updatePublicSecuritySettings({ legacyAction: "migrate-safe" }),
+      updatePublicSecuritySettings({ actor, legacyAction: "migrate-safe" }),
     ).rejects.toMatchObject({
       status: 409,
       code: "legacyFooterMigrationTargetNotEmpty",
@@ -108,7 +113,7 @@ describeWithDatabase("public security settings integration", () => {
     });
 
     await lockAcquired;
-    const migration = updatePublicSecuritySettings({ legacyAction: "migrate-safe" });
+    const migration = updatePublicSecuritySettings({ actor, legacyAction: "migrate-safe" });
     release();
     await concurrentSave;
 
@@ -123,7 +128,7 @@ describeWithDatabase("public security settings integration", () => {
   it("clears executable legacy content explicitly and advances the revision", async () => {
     await insertSetting(LEGACY_CUSTOM_FOOTER_KEY, "<script>window.legacy=true</script>");
 
-    await updatePublicSecuritySettings({ legacyAction: "clear" });
+    await updatePublicSecuritySettings({ actor, legacyAction: "clear" });
 
     expect(await readSetting(LEGACY_CUSTOM_FOOTER_KEY)).toBeUndefined();
     expect(await readSetting(PUBLIC_CSP_REVISION_KEY)).toEqual(expect.any(String));
@@ -151,11 +156,12 @@ describeWithDatabase("public security settings integration", () => {
 
   it("sanitizes markup and changes the revision on every accepted update", async () => {
     await updatePublicSecuritySettings({
+      actor,
       customFooterMarkup: '<p onclick="run()">safe text</p><script>run()</script>',
     });
     const firstRevision = await readSetting(PUBLIC_CSP_REVISION_KEY);
 
-    await updatePublicSecuritySettings({ customFooterMarkup: "<p>second value</p>" });
+    await updatePublicSecuritySettings({ actor, customFooterMarkup: "<p>second value</p>" });
 
     expect(await readSetting(CUSTOM_FOOTER_MARKUP_KEY)).toBe("<p>second value</p>");
     expect(await readSetting(PUBLIC_CSP_REVISION_KEY)).not.toBe(firstRevision);
@@ -168,6 +174,7 @@ describeWithDatabase("public security settings integration", () => {
 
     await expect(
       updatePublicSecuritySettings({
+        actor,
         expectedRevision: "stale-revision",
         customFooterMarkup: "<p>Stale filing</p>",
         additionalSettings: { site_name: "Stale name" },
@@ -187,10 +194,12 @@ describeWithDatabase("public security settings integration", () => {
 
     const results = await Promise.allSettled([
       updatePublicSecuritySettings({
+        actor,
         expectedRevision: "shared-revision",
         customFooterMarkup: "<p>First writer</p>",
       }),
       updatePublicSecuritySettings({
+        actor,
         expectedRevision: "shared-revision",
         customFooterMarkup: "<p>Second writer</p>",
       }),
@@ -208,5 +217,62 @@ describeWithDatabase("public security settings integration", () => {
       await readSetting(CUSTOM_FOOTER_MARKUP_KEY),
     );
     expect(await readSetting(PUBLIC_CSP_REVISION_KEY)).not.toBe("shared-revision");
+  });
+
+  it("records changed public integrations in the public security audit without raw settings", async () => {
+    await updatePublicSecuritySettings({
+      actor,
+      publicIntegrations: publicIntegrationsSchema.parse([
+        {
+          id: "analytics",
+          provider: "umami",
+          websiteId: "11111111-1111-4111-8111-111111111111",
+        },
+      ]),
+    });
+
+    const audits = await db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, "public_security_settings_updated"));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      entityType: "public_security_settings",
+      actorType: "admin",
+      actorId: actor.id,
+    });
+    expect(audits[0]!.beforeJson).toEqual({ [PUBLIC_INTEGRATIONS_KEY]: [] });
+    expect(audits[0]!.afterJson).toEqual({
+      [PUBLIC_INTEGRATIONS_KEY]: [
+        {
+          provider: "umami",
+          id: "analytics",
+          enabled: true,
+          configHash: expect.any(String),
+        },
+      ],
+    });
+    expect(JSON.stringify(audits[0]!.afterJson)).not.toContain(
+      "11111111-1111-4111-8111-111111111111",
+    );
+  });
+
+  it("does not record misleading audit diffs for unchanged public integration keys", async () => {
+    const integrations = publicIntegrationsSchema.parse([
+      {
+        id: "analytics",
+        provider: "umami",
+        websiteId: "22222222-2222-4222-8222-222222222222",
+      },
+    ]);
+    await insertSetting(PUBLIC_INTEGRATIONS_KEY, integrations);
+
+    await updatePublicSecuritySettings({ actor, publicIntegrations: integrations });
+
+    const audits = await db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, "public_security_settings_updated"));
+    expect(audits).toHaveLength(0);
   });
 });

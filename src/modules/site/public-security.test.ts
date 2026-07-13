@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { isPublicIntegrationDocument } from "./public-integration-paths";
 import {
   buildFooterHtml,
   buildIntegrationRuntime,
@@ -125,6 +126,19 @@ describe("structured site verification", () => {
 });
 
 describe("public integration registry", () => {
+  it.each([
+    ["/", true],
+    ["/posts", true],
+    ["/posts/x", true],
+    ["/tiers", true],
+    ["/me", false],
+    ["/admin", false],
+    ["/checkout/x", false],
+    ["/login", false],
+  ])("shares the public integration route matcher for %s", (pathname, expected) => {
+    expect(isPublicIntegrationDocument(pathname)).toBe(expected);
+  });
+
   it("fences rendering when middleware and layout revisions differ", () => {
     expect(canRenderIntegrationRevision("revision-a", "revision-a", "nonce")).toBe(true);
     expect(canRenderIntegrationRevision("revision-a", "revision-b", "nonce")).toBe(false);
@@ -173,7 +187,13 @@ describe("public integration registry", () => {
         placement: "head",
         src: "https://cloud.umami.is/script.js",
         defer: true,
-        data: { "website-id": websiteId },
+        data: { "website-id": websiteId, "auto-track": "false" },
+      },
+      {
+        id: "analytics-manual-pageview",
+        placement: "head",
+        inlineCode: expect.any(String),
+        data: {},
       },
     ]);
     expect(runtime.sources.script).toEqual(["https://cloud.umami.is"]);
@@ -199,7 +219,17 @@ describe("public integration registry", () => {
         placement: "head",
         src: "https://cdn.example/umami/script.js",
         defer: true,
-        data: { "website-id": websiteId, "host-url": "https://analytics.example" },
+        data: {
+          "website-id": websiteId,
+          "auto-track": "false",
+          "host-url": "https://analytics.example",
+        },
+      },
+      {
+        id: "self-hosted-analytics-manual-pageview",
+        placement: "head",
+        inlineCode: expect.any(String),
+        data: {},
       },
     ]);
     expect(runtime.sources.script).toEqual(["https://cdn.example"]);

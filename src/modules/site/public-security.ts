@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { eq, inArray, sql } from "drizzle-orm";
 import { Parser } from "htmlparser2";
@@ -10,6 +10,7 @@ import { getDb } from "@/db";
 import { files, siteSettings } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
+import { type AuditActor, recordAudit } from "@/modules/audit";
 import { getStorageConfig, type ResolvedStorageConfig } from "@/modules/config";
 import { lockSiteFileSettingReferences } from "@/modules/file/references";
 import {
@@ -20,6 +21,10 @@ import {
   resolveEffectiveCspMode,
   type SecurityCspMode,
 } from "@/modules/security/csp";
+import {
+  PUBLIC_INTEGRATION_EXACT_PATHS,
+  PUBLIC_INTEGRATION_PATH_PREFIXES,
+} from "@/modules/site/public-integration-paths";
 import { resolveS3SignedDownloadOrigin } from "@/modules/storage/s3";
 
 export const PUBLIC_CSP_REVISION_KEY = "public_csp_revision";
@@ -163,9 +168,18 @@ export type IntegrationRenderPlan = {
 };
 
 type IntegrationAdapterRuntime = {
-  plan: IntegrationRenderPlan;
+  plan?: IntegrationRenderPlan;
+  plans?: IntegrationRenderPlan[];
   sources: Pick<CspSourceGroups, "script" | "image" | "connect" | "frame">;
 };
+
+function buildUmamiPublicPageTrackerInlineCode(): string {
+  const exact = JSON.stringify(
+    Object.fromEntries(PUBLIC_INTEGRATION_EXACT_PATHS.map((path) => [path, 1])),
+  );
+  const prefixes = JSON.stringify([...PUBLIC_INTEGRATION_PATH_PREFIXES]);
+  return `(function(){var e=${exact};var r=${prefixes};var l="";function m(p){if(e[p])return true;for(var i=0;i<r.length;i++){if(p.indexOf(r[i])===0)return true;}return false;}function t(){var p=location.pathname;if(!m(p)){l="";return;}if(p===l)return;if(!window.umami||typeof window.umami.track!=="function")return;l=p;window.umami.track();}var h=history;var p=h.pushState;var q=h.replaceState;if(p)h.pushState=function(){var v=p.apply(this,arguments);t();return v;};if(q)h.replaceState=function(){var v=q.apply(this,arguments);t();return v;};window.addEventListener("popstate",t);window.addEventListener("load",t);})();`;
+}
 
 const PUBLIC_INTEGRATION_ADAPTERS = {
   plausible: {
@@ -200,16 +214,25 @@ const PUBLIC_INTEGRATION_ADAPTERS = {
         : scriptOrigin;
       if (!scriptOrigin || !apiOrigin) return null;
       return {
-        plan: {
-          id: integration.id,
-          placement: "head",
-          src: integration.scriptUrl,
-          defer: true,
-          data: {
-            "website-id": integration.websiteId,
-            ...(apiOrigin !== scriptOrigin ? { "host-url": apiOrigin } : {}),
+        plans: [
+          {
+            id: integration.id,
+            placement: "head",
+            src: integration.scriptUrl,
+            defer: true,
+            data: {
+              "website-id": integration.websiteId,
+              "auto-track": "false",
+              ...(apiOrigin !== scriptOrigin ? { "host-url": apiOrigin } : {}),
+            },
           },
-        },
+          {
+            id: `${integration.id}-manual-pageview`,
+            placement: "head",
+            inlineCode: buildUmamiPublicPageTrackerInlineCode(),
+            data: {},
+          },
+        ],
         sources: {
           script: [scriptOrigin],
           image: [],
@@ -559,7 +582,7 @@ export function buildIntegrationRuntime(integrations: PublicIntegration[]): {
     const adapter = PUBLIC_INTEGRATION_ADAPTERS[integration.provider];
     const runtime = adapter.build(integration as never);
     if (!runtime) continue;
-    plans.push(runtime.plan);
+    plans.push(...(runtime.plans ?? (runtime.plan ? [runtime.plan] : [])));
     script.push(...runtime.sources.script);
     image.push(...runtime.sources.image);
     connect.push(...runtime.sources.connect);
@@ -716,6 +739,7 @@ export async function getPublicCspRuntimeConfig(): Promise<PublicCspRuntimeConfi
 }
 
 type PublicSecurityUpdate = {
+  actor: AuditActor;
   expectedRevision?: string;
   customFooterMarkup?: string;
   siteVerification?: SiteVerification;
@@ -725,11 +749,19 @@ type PublicSecurityUpdate = {
   deleteSettingKeys?: readonly string[];
 };
 
-async function upsertSetting(
-  tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0],
-  key: string,
-  value: unknown,
-): Promise<void> {
+type SiteSettingsTx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0];
+
+const PUBLIC_SECURITY_SETTINGS_AUDIT_ENTITY_ID = "00000000-0000-4000-8000-000000000164";
+const PUBLIC_SECURITY_AUDIT_SETTING_KEYS = [
+  CUSTOM_FOOTER_MARKUP_KEY,
+  SITE_VERIFICATION_KEY,
+  PUBLIC_INTEGRATIONS_KEY,
+  LEGACY_CUSTOM_FOOTER_KEY,
+] as const;
+
+type PublicSecurityAuditSettingKey = (typeof PUBLIC_SECURITY_AUDIT_SETTING_KEYS)[number];
+
+async function upsertSetting(tx: SiteSettingsTx, key: string, value: unknown): Promise<void> {
   await tx
     .insert(siteSettings)
     .values({ key, valueJson: value })
@@ -737,6 +769,103 @@ async function upsertSetting(
       target: siteSettings.key,
       set: { valueJson: value, updatedAt: new Date() },
     });
+}
+
+async function readAuditSettingValues(tx: SiteSettingsTx): Promise<Map<string, unknown>> {
+  const rows = await tx
+    .select({ key: siteSettings.key, valueJson: siteSettings.valueJson })
+    .from(siteSettings)
+    .where(inArray(siteSettings.key, [...PUBLIC_SECURITY_AUDIT_SETTING_KEYS]));
+  return new Map(rows.map((row) => [row.key, row.valueJson]));
+}
+
+function auditHash(value: unknown): string {
+  const normalized = normalizeAuditJson(value);
+  return createHash("sha256")
+    .update(JSON.stringify(normalized) ?? String(normalized))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function normalizeAuditJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => normalizeAuditJson(item));
+  if (!value || typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, normalizeAuditJson(item)]),
+  );
+}
+
+function summarizeMarkupAudit(value: unknown): Record<string, unknown> {
+  const markup = settingString(value);
+  return {
+    configured: markup.length > 0,
+    length: markup.length,
+    contentHash: markup ? auditHash(markup) : null,
+  };
+}
+
+function summarizeLegacyMarkupAudit(value: unknown): Record<string, unknown> {
+  const markup = settingString(value);
+  return {
+    present: markup.length > 0,
+    status: classifyLegacyFooter(markup),
+    length: markup.length,
+    contentHash: markup ? auditHash(markup) : null,
+  };
+}
+
+function summarizeVerificationAudit(value: unknown): unknown {
+  const parsed = siteVerificationSchema.safeParse(value ?? []);
+  if (!parsed.success) return { invalid: true };
+  return parsed.data.map((item) => ({
+    provider: item.provider,
+    ...(item.provider === "custom" ? { name: item.name } : {}),
+    contentHash: auditHash(item.content),
+  }));
+}
+
+function summarizeIntegrationAudit(value: unknown): unknown {
+  const parsed = publicIntegrationsSchema.safeParse(value ?? []);
+  if (!parsed.success) return { invalid: true };
+  return parsed.data.map((integration) => ({
+    provider: integration.provider,
+    id: integration.id,
+    enabled: integration.enabled,
+    configHash: auditHash(integration),
+  }));
+}
+
+function summarizeAuditSetting(key: PublicSecurityAuditSettingKey, value: unknown): unknown {
+  switch (key) {
+    case CUSTOM_FOOTER_MARKUP_KEY:
+      return summarizeMarkupAudit(value);
+    case SITE_VERIFICATION_KEY:
+      return summarizeVerificationAudit(value);
+    case PUBLIC_INTEGRATIONS_KEY:
+      return summarizeIntegrationAudit(value);
+    case LEGACY_CUSTOM_FOOTER_KEY:
+      return summarizeLegacyMarkupAudit(value);
+  }
+}
+
+function buildChangedAuditSnapshot(
+  beforeValues: Map<string, unknown>,
+  afterValues: Map<string, unknown>,
+): { before: Record<string, unknown>; after: Record<string, unknown> } | null {
+  const before: Record<string, unknown> = {};
+  const after: Record<string, unknown> = {};
+  for (const key of PUBLIC_SECURITY_AUDIT_SETTING_KEYS) {
+    const beforeValue = summarizeAuditSetting(key, beforeValues.get(key));
+    const afterValue = summarizeAuditSetting(key, afterValues.get(key));
+    if (JSON.stringify(beforeValue) === JSON.stringify(afterValue)) continue;
+    before[key] = beforeValue;
+    after[key] = afterValue;
+  }
+  return Object.keys(after).length > 0 ? { before, after } : null;
 }
 
 export async function updatePublicSecuritySettings(update: PublicSecurityUpdate): Promise<void> {
@@ -770,22 +899,33 @@ export async function updatePublicSecuritySettings(update: PublicSecurityUpdate)
     }
 
     await lockSiteFileSettingReferences(tx, update.additionalSettings ?? {});
+    const beforeAuditValues = await readAuditSettingValues(tx);
+    const afterAuditValues = new Map(beforeAuditValues);
 
     for (const key of update.deleteSettingKeys ?? []) {
       await tx.delete(siteSettings).where(eq(siteSettings.key, key));
+      if ((PUBLIC_SECURITY_AUDIT_SETTING_KEYS as readonly string[]).includes(key)) {
+        afterAuditValues.delete(key);
+      }
     }
     for (const [key, value] of Object.entries(update.additionalSettings ?? {})) {
       await upsertSetting(tx, key, value);
+      if ((PUBLIC_SECURITY_AUDIT_SETTING_KEYS as readonly string[]).includes(key)) {
+        afterAuditValues.set(key, value);
+      }
     }
 
     if (customFooterMarkup !== undefined) {
       await upsertSetting(tx, CUSTOM_FOOTER_MARKUP_KEY, customFooterMarkup);
+      afterAuditValues.set(CUSTOM_FOOTER_MARKUP_KEY, customFooterMarkup);
     }
     if (siteVerification !== undefined) {
       await upsertSetting(tx, SITE_VERIFICATION_KEY, siteVerification);
+      afterAuditValues.set(SITE_VERIFICATION_KEY, siteVerification);
     }
     if (publicIntegrations !== undefined) {
       await upsertSetting(tx, PUBLIC_INTEGRATIONS_KEY, publicIntegrations);
+      afterAuditValues.set(PUBLIC_INTEGRATIONS_KEY, publicIntegrations);
     }
 
     if (update.legacyAction === "migrate-safe") {
@@ -810,8 +950,11 @@ export async function updatePublicSecuritySettings(update: PublicSecurityUpdate)
       }
       await upsertSetting(tx, CUSTOM_FOOTER_MARKUP_KEY, migrated);
       await tx.delete(siteSettings).where(eq(siteSettings.key, LEGACY_CUSTOM_FOOTER_KEY));
+      afterAuditValues.set(CUSTOM_FOOTER_MARKUP_KEY, migrated);
+      afterAuditValues.delete(LEGACY_CUSTOM_FOOTER_KEY);
     } else if (update.legacyAction === "clear") {
       await tx.delete(siteSettings).where(eq(siteSettings.key, LEGACY_CUSTOM_FOOTER_KEY));
+      afterAuditValues.delete(LEGACY_CUSTOM_FOOTER_KEY);
     }
 
     if (
@@ -821,6 +964,18 @@ export async function updatePublicSecuritySettings(update: PublicSecurityUpdate)
       update.legacyAction !== undefined
     ) {
       await upsertSetting(tx, PUBLIC_CSP_REVISION_KEY, randomUUID());
+    }
+    const auditSnapshot = buildChangedAuditSnapshot(beforeAuditValues, afterAuditValues);
+    if (auditSnapshot) {
+      await recordAudit(tx, {
+        entityType: "public_security_settings",
+        entityId: PUBLIC_SECURITY_SETTINGS_AUDIT_ENTITY_ID,
+        action: "public_security_settings_updated",
+        actor: update.actor,
+        before: auditSnapshot.before,
+        after: auditSnapshot.after,
+        correlationId: randomUUID(),
+      });
     }
   });
 }

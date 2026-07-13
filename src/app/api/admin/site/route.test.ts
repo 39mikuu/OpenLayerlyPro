@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
+  requireAdminSession: vi.fn(),
   readAdminSiteInfo: vi.fn(),
   updatePublicSecuritySettings: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/session", () => ({
   requireAdmin: mocks.requireAdmin,
+  requireAdminSession: mocks.requireAdminSession,
 }));
 vi.mock("@/modules/site", () => ({
   readAdminSiteInfo: mocks.readAdminSiteInfo,
@@ -42,6 +44,7 @@ const siteInfo = {
   publicSecurityConfigurationErrors: [],
   socialLinks: [],
 };
+const admin = { id: "00000000-0000-4000-8000-000000000001", role: "admin" };
 
 function request(body: unknown): NextRequest {
   return new Request("http://localhost/api/admin/site", {
@@ -54,7 +57,8 @@ function request(body: unknown): NextRequest {
 describe("admin site settings API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.requireAdmin.mockResolvedValue({ id: "admin", role: "admin" });
+    mocks.requireAdmin.mockResolvedValue(admin);
+    mocks.requireAdminSession.mockResolvedValue({ user: admin, tokenHash: "current-hash" });
     mocks.readAdminSiteInfo.mockResolvedValue(siteInfo);
     mocks.updatePublicSecuritySettings.mockResolvedValue(undefined);
   });
@@ -80,6 +84,7 @@ describe("admin site settings API", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.updatePublicSecuritySettings).toHaveBeenCalledWith({
+      actor: { type: "admin", id: admin.id },
       expectedRevision: "revision",
       customFooterMarkup: "<p>ICP</p>",
       siteVerification: [{ provider: "google", content: "token" }],
@@ -112,6 +117,7 @@ describe("admin site settings API", () => {
     expect(response.status).toBe(200);
     expect(mocks.updatePublicSecuritySettings).toHaveBeenCalledWith(
       expect.objectContaining({
+        actor: { type: "admin", id: admin.id },
         expectedRevision: "revision",
         publicIntegrations: [
           {

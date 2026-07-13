@@ -8,6 +8,7 @@ import {
   type EffectiveCspMode,
   HSTS_HEADER_VALUE,
 } from "@/modules/security/csp";
+import { isPublicIntegrationDocument } from "@/modules/site/public-integration-paths";
 import {
   getConfiguredStorageCspSources,
   getPublicCspRuntimeConfig,
@@ -24,15 +25,6 @@ export const config = {
 function generateNonce(): string {
   const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
   return btoa(String.fromCharCode(...bytes));
-}
-
-function isPublicIntegrationDocument(pathname: string): boolean {
-  return (
-    pathname === "/" ||
-    pathname === "/posts" ||
-    pathname.startsWith("/posts/") ||
-    pathname === "/tiers"
-  );
 }
 
 function isNotificationUnsubscribeDocument(pathname: string): boolean {
