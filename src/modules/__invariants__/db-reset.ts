@@ -27,6 +27,7 @@ export async function resetDatabase(db: DbClient = getDb()): Promise<void> {
       post_translations,
       payment_requests,
       subscriptions,
+      supporter_wall_entries,
       memberships,
       posts,
       files,

@@ -45,6 +45,16 @@ export async function updateUserLocale(userId: string, locale: Locale): Promise<
   await getDb().update(users).set({ locale, updatedAt: new Date() }).where(eq(users.id, userId));
 }
 
+export async function updateUserDisplayName(
+  userId: string,
+  displayName: string | null,
+): Promise<void> {
+  await getDb()
+    .update(users)
+    .set({ displayName, updatedAt: new Date() })
+    .where(eq(users.id, userId));
+}
+
 export async function listUsers(): Promise<User[]> {
   return getDb().select().from(users).orderBy(desc(users.createdAt));
 }

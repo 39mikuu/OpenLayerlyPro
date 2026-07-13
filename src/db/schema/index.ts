@@ -11,6 +11,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -134,6 +135,35 @@ export const memberships = pgTable(
     index("memberships_user_active_idx").on(table.userId, table.startsAt, table.endsAt),
     index("memberships_tier_id_idx").on(table.tierId),
     index("memberships_created_id_idx").on(table.createdAt.desc(), table.id.desc()),
+  ],
+);
+
+export const supporterWallEntries = pgTable(
+  "supporter_wall_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    dedication: text("dedication"),
+    status: text("status", { enum: ["pending", "approved", "hidden"] })
+      .notNull()
+      .default("pending"),
+    version: integer("version").notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    unique("supporter_wall_entries_user_id_unique").on(table.userId),
+    index("supporter_wall_entries_status_created_id_idx").on(
+      table.status,
+      table.createdAt,
+      table.id,
+    ),
+    check(
+      "supporter_wall_entries_dedication_length_check",
+      sql`char_length(${table.dedication}) <= 200`,
+    ),
   ],
 );
 
@@ -832,6 +862,7 @@ export type LoginCode = typeof loginCodes.$inferSelect;
 export type SiteSetting = typeof siteSettings.$inferSelect;
 export type MembershipTier = typeof membershipTiers.$inferSelect;
 export type Membership = typeof memberships.$inferSelect;
+export type SupporterWallEntry = typeof supporterWallEntries.$inferSelect;
 export type Subscription = typeof subscriptions.$inferSelect;
 export type PaymentMethod = typeof paymentMethods.$inferSelect;
 export type PaymentRequest = typeof paymentRequests.$inferSelect;
