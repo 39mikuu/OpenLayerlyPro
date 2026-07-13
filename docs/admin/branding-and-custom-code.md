@@ -22,7 +22,7 @@ Image-purpose uploads are server-detected and raster-normalized. SVG/HTML/non-ra
 
 - `custom_footer_markup`: sanitized display-only footer markup;
 - `site_verification`: structured verification metadata rendered into `<head>`;
-- `public_integrations`: validated Plausible or advanced custom records whose
+- `public_integrations`: validated Plausible, Umami, or advanced custom records whose
   render plan and exact CSP origins come from one server registry.
 
 Footer markup is sanitized on write and read. Scripts, styles, frames, metadata
@@ -69,7 +69,9 @@ again.
 For executable legacy code, copy/download the original, recreate supported
 verification and analytics behavior as structured records, validate it in
 Report-Only, then clear the legacy value and switch to enforce (or let `auto`
-enforce). Production CSP never adds `script-src 'unsafe-inline'`,
+enforce). See [Umami Analytics](../deployment/umami-analytics.md) for the
+supported Umami record shape and CSP derivation. Production CSP never adds
+`script-src 'unsafe-inline'`,
 `'unsafe-eval'`, wildcard hosts, or a bare `https:` compatibility escape.
 
 The style policy uses the documented `style-src 'self' 'unsafe-inline'`

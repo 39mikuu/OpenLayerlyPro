@@ -56,7 +56,8 @@
   documented safe rollout state.
 - [ ] Report-Only browser observation covers admin, public pages, login,
   DB-enabled Turnstile, the actual signed storage origin, video and every
-  public integration before enforcement.
+  public integration before enforcement; Umami deployments should match
+  [Umami Analytics](./umami-analytics.md).
 - [ ] Production `script-src` contains neither `'unsafe-inline'` nor
   `'unsafe-eval'`; framework, theme, and integration scripts carry the response
   nonce and separate requests use separate nonces.

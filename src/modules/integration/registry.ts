@@ -11,12 +11,30 @@ import {
 } from "@/modules/config";
 import { sendTestEmail } from "@/modules/mail";
 import { testStripeConnection } from "@/modules/payment/providers";
+import { getSetting } from "@/modules/site";
+import {
+  parsePublicSecuritySettings,
+  PUBLIC_INTEGRATIONS_KEY,
+} from "@/modules/site/public-security";
 import { testS3Connection } from "@/modules/storage";
 
 import type { Integration, IntegrationId, IntegrationStatus } from "./types";
 
 function configSource(hasDbOverride: boolean): "database" | "environment" {
   return hasDbOverride ? "database" : "environment";
+}
+
+function hasStoredPublicIntegrationProvider(value: unknown, provider: string): boolean {
+  return (
+    Array.isArray(value) &&
+    value.some(
+      (item) =>
+        typeof item === "object" &&
+        item !== null &&
+        "provider" in item &&
+        Reflect.get(item, "provider") === provider,
+    )
+  );
 }
 
 const smtpIntegration: Integration = {
@@ -117,6 +135,49 @@ const translationIntegration: Integration = {
   },
 };
 
+const umamiIntegration: Integration = {
+  id: "umami",
+  kind: "service",
+  async getStatus() {
+    const storedPublicIntegrations = await getSetting<unknown>(PUBLIC_INTEGRATIONS_KEY);
+    const hasStoredUmami = hasStoredPublicIntegrationProvider(storedPublicIntegrations, "umami");
+    if (!hasStoredUmami) {
+      return {
+        id: "umami",
+        kind: "service",
+        configured: false,
+        enabled: false,
+        source: "none",
+      };
+    }
+
+    const state = parsePublicSecuritySettings({
+      [PUBLIC_INTEGRATIONS_KEY]: storedPublicIntegrations ?? [],
+    });
+    const umamiEntries = state.publicIntegrations.filter(
+      (integration) => integration.provider === "umami",
+    );
+    if (umamiEntries.length > 0) {
+      return {
+        id: "umami",
+        kind: "service",
+        configured: true,
+        enabled: umamiEntries.some((integration) => integration.enabled !== false),
+        source: "database",
+      };
+    }
+
+    return {
+      id: "umami",
+      kind: "service",
+      configured: false,
+      enabled: false,
+      source: "database",
+      error: true,
+    };
+  },
+};
+
 const tunnelIntegration: Integration = {
   id: "tunnel",
   kind: "deployment",
@@ -138,6 +199,7 @@ export const integrations: Integration[] = [
   stripeIntegration,
   turnstileIntegration,
   translationIntegration,
+  umamiIntegration,
   tunnelIntegration,
 ];
 

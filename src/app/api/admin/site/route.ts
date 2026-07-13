@@ -4,7 +4,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
-import { requireAdmin } from "@/modules/auth/session";
+import { requireAdmin, requireAdminSession } from "@/modules/auth/session";
 import { readAdminSiteInfo } from "@/modules/site";
 import {
   publicIntegrationsSchema,
@@ -51,7 +51,7 @@ const bodySchema = z.object({
 
 export async function PUT(req: NextRequest) {
   try {
-    await requireAdmin();
+    const { user } = await requireAdminSession();
     const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     if (input.customFooterHtml !== undefined) {
       throw new ApiError(409, "legacyFooterClientRefreshRequired");
@@ -85,6 +85,7 @@ export async function PUT(req: NextRequest) {
     }
     if (input.socialLinks !== undefined) additionalSettings.social_links = input.socialLinks;
     await updatePublicSecuritySettings({
+      actor: { type: "admin", id: user.id },
       expectedRevision: input.cspRevision,
       customFooterMarkup: input.customFooterMarkup,
       siteVerification: input.siteVerification,

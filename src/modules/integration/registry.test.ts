@@ -5,12 +5,14 @@ import { getEnv } from "@/lib/env";
 import {
   getSmtpAdminView,
   getStorageAdminView,
+  getStorageConfig,
   getStripeAdminView,
   getTranslationAdminView,
   getTurnstileAdminView,
 } from "@/modules/config";
 import { sendTestEmail } from "@/modules/mail";
 import { testStripeConnection } from "@/modules/payment/providers";
+import { getSetting } from "@/modules/site";
 import { testS3Connection } from "@/modules/storage";
 
 vi.mock("fs/promises", () => ({
@@ -24,6 +26,7 @@ vi.mock("@/lib/env", () => ({
 vi.mock("@/modules/config", () => ({
   getSmtpAdminView: vi.fn(),
   getStorageAdminView: vi.fn(),
+  getStorageConfig: vi.fn(),
   getStripeAdminView: vi.fn(),
   getTranslationAdminView: vi.fn(),
   getTurnstileAdminView: vi.fn(),
@@ -37,6 +40,10 @@ vi.mock("@/modules/payment/providers", () => ({
   testStripeConnection: vi.fn(),
 }));
 
+vi.mock("@/modules/site", () => ({
+  getSetting: vi.fn(),
+}));
+
 vi.mock("@/modules/storage", () => ({
   testS3Connection: vi.fn(),
 }));
@@ -45,10 +52,12 @@ const mockedAccess = vi.mocked(access);
 const mockedGetEnv = vi.mocked(getEnv);
 const mockedGetSmtpAdminView = vi.mocked(getSmtpAdminView);
 const mockedGetStorageAdminView = vi.mocked(getStorageAdminView);
+const mockedGetStorageConfig = vi.mocked(getStorageConfig);
 const mockedGetStripeAdminView = vi.mocked(getStripeAdminView);
 const mockedGetTranslationAdminView = vi.mocked(getTranslationAdminView);
 const mockedGetTurnstileAdminView = vi.mocked(getTurnstileAdminView);
 const mockedSendTestEmail = vi.mocked(sendTestEmail);
+const mockedGetSetting = vi.mocked(getSetting);
 const mockedTestStripeConnection = vi.mocked(testStripeConnection);
 const mockedTestS3Connection = vi.mocked(testS3Connection);
 
@@ -56,7 +65,12 @@ function mockEnv(tunnelToken?: string) {
   mockedGetEnv.mockReturnValue({
     UPLOAD_DIR: "/tmp/uploads",
     CLOUDFLARE_TUNNEL_TOKEN: tunnelToken,
+    SECURITY_CSP_MODE: "auto",
   } as ReturnType<typeof getEnv>);
+}
+
+function mockPublicIntegrations(value: unknown = null) {
+  mockedGetSetting.mockResolvedValue(value);
 }
 
 function mockSmtp(input?: { configured?: boolean; hasDbOverride?: boolean }) {
@@ -158,6 +172,8 @@ describe("integration registry", () => {
     mockStripe();
     mockTurnstile();
     mockTranslation();
+    mockPublicIntegrations();
+    mockedGetStorageConfig.mockResolvedValue({ s3Configured: false } as never);
     mockedAccess.mockResolvedValue(undefined);
   });
 
@@ -165,7 +181,7 @@ describe("integration registry", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns six integrations in stable order", async () => {
+  it("returns seven integrations in stable order", async () => {
     const { getIntegrationStatuses } = await import("./registry");
     const statuses = await getIntegrationStatuses();
 
@@ -175,6 +191,7 @@ describe("integration registry", () => {
       "stripe",
       "turnstile",
       "translation",
+      "umami",
       "tunnel",
     ]);
   });
@@ -274,7 +291,7 @@ describe("integration registry", () => {
   it("reports Tunnel token presence as environment deployment status", async () => {
     mockEnv(" tunnel-token ");
     const { getIntegrationStatuses } = await import("./registry");
-    let tunnel = (await getIntegrationStatuses())[5];
+    let tunnel = (await getIntegrationStatuses())[6];
     expect(tunnel).toEqual({
       id: "tunnel",
       kind: "deployment",
@@ -284,7 +301,7 @@ describe("integration registry", () => {
     });
 
     mockEnv(" ");
-    tunnel = (await getIntegrationStatuses())[5];
+    tunnel = (await getIntegrationStatuses())[6];
     expect(tunnel).toEqual({
       id: "tunnel",
       kind: "deployment",
@@ -315,12 +332,83 @@ describe("integration registry", () => {
     });
   });
 
+  it("reports missing Umami public integrations as unconfigured", async () => {
+    mockPublicIntegrations([]);
+    const { getIntegrationStatuses } = await import("./registry");
+    const umami = (await getIntegrationStatuses())[5];
+
+    expect(umami).toEqual({
+      id: "umami",
+      kind: "service",
+      configured: false,
+      enabled: false,
+      source: "none",
+    });
+  });
+
+  it("reports valid Umami public integrations from database settings", async () => {
+    mockPublicIntegrations([
+      {
+        id: "disabled-analytics",
+        provider: "umami",
+        enabled: false,
+        websiteId: "11111111-1111-4111-8111-111111111111",
+      },
+      {
+        id: "enabled-analytics",
+        provider: "umami",
+        websiteId: "22222222-2222-4222-8222-222222222222",
+      },
+    ]);
+    const { getIntegrationStatuses } = await import("./registry");
+    let umami = (await getIntegrationStatuses())[5];
+    expect(umami).toEqual({
+      id: "umami",
+      kind: "service",
+      configured: true,
+      enabled: true,
+      source: "database",
+    });
+
+    mockPublicIntegrations([
+      {
+        id: "disabled-analytics",
+        provider: "umami",
+        enabled: false,
+        websiteId: "11111111-1111-4111-8111-111111111111",
+      },
+    ]);
+    umami = (await getIntegrationStatuses())[5];
+    expect(umami).toEqual({
+      id: "umami",
+      kind: "service",
+      configured: true,
+      enabled: false,
+      source: "database",
+    });
+  });
+
+  it("reports invalid stored Umami public integrations as a database read error", async () => {
+    mockPublicIntegrations([{ id: "analytics", provider: "umami" }]);
+    const { getIntegrationStatuses } = await import("./registry");
+    const umami = (await getIntegrationStatuses())[5];
+
+    expect(umami).toEqual({
+      id: "umami",
+      kind: "service",
+      configured: false,
+      enabled: false,
+      source: "database",
+      error: true,
+    });
+  });
+
   it("isolates one integration failure and keeps remaining statuses", async () => {
     mockedGetTurnstileAdminView.mockRejectedValue(new Error("decrypt failed"));
     const { getIntegrationStatuses } = await import("./registry");
     const statuses = await getIntegrationStatuses();
 
-    expect(statuses).toHaveLength(6);
+    expect(statuses).toHaveLength(7);
     expect(statuses[0].error).toBeUndefined();
     expect(statuses[3]).toEqual({
       id: "turnstile",
@@ -330,7 +418,7 @@ describe("integration registry", () => {
       source: "none",
       error: true,
     });
-    expect(statuses[5].id).toBe("tunnel");
+    expect(statuses[6].id).toBe("tunnel");
   });
 
   it("reports Stripe configuration separately from its enabled state and tests connectivity", async () => {
@@ -362,6 +450,7 @@ describe("integration registry", () => {
     expect(
       integrations.find((integration) => integration.id === "translation")?.test,
     ).toBeUndefined();
+    expect(integrations.find((integration) => integration.id === "umami")?.test).toBeUndefined();
   });
 
   it("SMTP test sends a test email to the admin address", async () => {

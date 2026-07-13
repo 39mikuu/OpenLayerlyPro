@@ -752,7 +752,7 @@ export const en: Messages = {
         'Example: [{"provider":"google","content":"token"}]. Custom records use provider, name, and content; http-equiv is forbidden.',
       publicIntegrations: "Public integrations (JSON)",
       publicIntegrationsHelp:
-        'Use a structured "plausible" or "custom" record. Script and resource origins must be exact HTTPS values.',
+        'Use a structured "plausible", "umami", or "custom" record. Script and resource origins must be exact HTTPS values.',
       legacyFooter: "Legacy footer source (read only)",
       legacyFooterStatus:
         "Classification: {status}. The original remains available until migrated or cleared.",
@@ -876,6 +876,7 @@ export const en: Messages = {
       storage: "File storage",
       stripe: "Stripe payments",
       translation: "AI translation",
+      umami: "Umami analytics",
       sourceDatabase: "Admin settings",
       sourceEnvironment: "Environment variables",
       sourceNone: "Not set",

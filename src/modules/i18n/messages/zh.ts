@@ -727,7 +727,7 @@ export const zh = {
         '示例：[{"provider":"google","content":"token"}]。自定义记录使用 provider、name、content，禁止 http-equiv。',
       publicIntegrations: "公开集成（JSON）",
       publicIntegrationsHelp:
-        '使用结构化的 "plausible" 或 "custom" 记录；脚本及资源来源必须为精确 HTTPS origin。',
+        '使用结构化的 "plausible"、"umami" 或 "custom" 记录；脚本及资源来源必须为精确 HTTPS origin。',
       legacyFooter: "旧页脚原始内容（只读）",
       legacyFooterStatus: "分类：{status}。迁移或清除前会保留原值。",
       legacyFooterReportOnlyWarning:
@@ -833,6 +833,7 @@ export const zh = {
       storage: "文件存储",
       stripe: "Stripe 支付",
       translation: "AI 翻译",
+      umami: "Umami 统计",
       sourceDatabase: "后台配置",
       sourceEnvironment: "环境变量",
       sourceNone: "未设置",

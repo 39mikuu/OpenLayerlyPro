@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
+  requireAdminSession: vi.fn(),
   readAdminSiteInfo: vi.fn(),
   updatePublicSecuritySettings: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/session", () => ({
   requireAdmin: mocks.requireAdmin,
+  requireAdminSession: mocks.requireAdminSession,
 }));
 vi.mock("@/modules/site", () => ({
   readAdminSiteInfo: mocks.readAdminSiteInfo,
@@ -42,6 +44,7 @@ const siteInfo = {
   publicSecurityConfigurationErrors: [],
   socialLinks: [],
 };
+const admin = { id: "00000000-0000-4000-8000-000000000001", role: "admin" };
 
 function request(body: unknown): NextRequest {
   return new Request("http://localhost/api/admin/site", {
@@ -54,7 +57,8 @@ function request(body: unknown): NextRequest {
 describe("admin site settings API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.requireAdmin.mockResolvedValue({ id: "admin", role: "admin" });
+    mocks.requireAdmin.mockResolvedValue(admin);
+    mocks.requireAdminSession.mockResolvedValue({ user: admin, tokenHash: "current-hash" });
     mocks.readAdminSiteInfo.mockResolvedValue(siteInfo);
     mocks.updatePublicSecuritySettings.mockResolvedValue(undefined);
   });
@@ -80,6 +84,7 @@ describe("admin site settings API", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.updatePublicSecuritySettings).toHaveBeenCalledWith({
+      actor: { type: "admin", id: admin.id },
       expectedRevision: "revision",
       customFooterMarkup: "<p>ICP</p>",
       siteVerification: [{ provider: "google", content: "token" }],
@@ -93,6 +98,50 @@ describe("admin site settings API", () => {
       deleteSettingKeys: [],
     });
     expect(mocks.readAdminSiteInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts Umami public integrations through the site settings save path", async () => {
+    const response = await PUT(
+      request({
+        cspRevision: "revision",
+        publicIntegrations: [
+          {
+            id: "analytics",
+            provider: "umami",
+            websiteId: "11111111-1111-4111-8111-111111111111",
+          },
+        ],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.updatePublicSecuritySettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: { type: "admin", id: admin.id },
+        expectedRevision: "revision",
+        publicIntegrations: [
+          {
+            id: "analytics",
+            provider: "umami",
+            enabled: true,
+            websiteId: "11111111-1111-4111-8111-111111111111",
+            scriptUrl: "https://cloud.umami.is/script.js",
+          },
+        ],
+      }),
+    );
+  });
+
+  it("rejects incomplete Umami public integrations before saving settings", async () => {
+    const response = await PUT(
+      request({
+        cspRevision: "revision",
+        publicIntegrations: [{ id: "analytics", provider: "umami" }],
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.updatePublicSecuritySettings).not.toHaveBeenCalled();
   });
 
   it("deletes optional file settings instead of writing SQL null", async () => {
