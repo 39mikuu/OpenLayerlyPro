@@ -41,20 +41,6 @@ export function SupporterWallControls({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialEntry?.id, initialEntry?.status, initialEntry?.version]);
 
-  useEffect(() => {
-    let cancelled = false;
-    void api<{ entry: FanWallEntry | null }>("/api/me/supporter-wall")
-      .then((data) => {
-        if (cancelled) return;
-        setEntry(data.entry);
-        setDedication(data.entry?.dedication ?? "");
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   async function save() {
     setSaving(true);
     setError(null);
