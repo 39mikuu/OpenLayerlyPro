@@ -34,6 +34,7 @@ import {
   buildSitemapIndexResource,
   buildStaticSitemapResource,
 } from "@/modules/content/sitemap";
+import { applySupporterWallSettingsUpdate } from "@/modules/supporter-wall";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -379,6 +380,19 @@ describeWithDatabase("public projection SEO integration", () => {
     expect(byLoc.get(`${APP_URL}/tiers`)).toBe("2026-07-11T09:00:00.000Z");
     // …while /posts stays on post recency.
     expect(byLoc.get(`${APP_URL}/posts`)).toBe("2026-07-10T12:00:00.000Z");
+  });
+
+  it("includes /supporters in the static sitemap only while the wall is enabled", async () => {
+    const disabled = await buildStaticSitemapResource({ baseUrl: APP_URL });
+    expect(disabled.body).not.toContain(`${APP_URL}/supporters`);
+
+    await applySupporterWallSettingsUpdate({
+      enabled: true,
+      minLevel: null,
+      actor: { type: "system", id: null },
+    });
+    const enabled = await buildStaticSitemapResource({ baseUrl: APP_URL });
+    expect(enabled.body).toContain(`<loc>${APP_URL}/supporters</loc>`);
   });
 
   it("404s a trailing post sitemap shard that shrinks after count", async () => {

@@ -4,6 +4,7 @@ import { type DbClient, getDb } from "@/db";
 import { membershipTiers } from "@/db/schema";
 import { DEFAULT_LOCALE } from "@/modules/i18n";
 import { readPublicSiteInfoWithMetadata } from "@/modules/site";
+import { getSupporterWallSettings } from "@/modules/supporter-wall";
 
 import {
   buildPostUrl,
@@ -150,10 +151,11 @@ export async function buildStaticSitemapResource(
   } = {},
 ): Promise<PublicHttpResource> {
   const baseUrl = getPublicSeoRootUrl(opts.baseUrl);
-  const [site, latestPostUpdatedAt, latestTierUpdatedAt] = await Promise.all([
+  const [site, latestPostUpdatedAt, latestTierUpdatedAt, wallSettings] = await Promise.all([
     readPublicSiteInfoWithMetadata(),
     readPublicPostSitemapLastModified(),
     readPublicTierSitemapLastModified(),
+    getSupporterWallSettings(),
   ]);
   const listLastModifiedAt = maxPublicDateOrNull(site.feedIdentityUpdatedAt, latestPostUpdatedAt);
   const tiersLastModifiedAt = maxPublicDateOrNull(site.feedIdentityUpdatedAt, latestTierUpdatedAt);
@@ -168,6 +170,12 @@ export async function buildStaticSitemapResource(
     { loc: buildPublicUrl(baseUrl, "/posts"), lastmod: listLastModifiedAt },
     { loc: buildPublicUrl(baseUrl, "/tiers"), lastmod: tiersLastModifiedAt },
   ];
+  // /supporters only exists publicly while the wall is enabled (404 when
+  // off), so its sitemap entry is conditional; no lastmod — the wall's
+  // content is derived per request from membership state.
+  if (wallSettings.enabled) {
+    entries.push({ loc: buildPublicUrl(baseUrl, "/supporters") });
+  }
   return buildPublicHttpResource(renderSitemapUrlSet(entries));
 }
 
