@@ -745,7 +745,7 @@ export const ja: Messages = {
         '例：[{"provider":"google","content":"token"}]。カスタムは provider、name、content を使い、http-equiv は禁止です。',
       publicIntegrations: "公開連携（JSON）",
       publicIntegrationsHelp:
-        '構造化された "plausible" または "custom" レコードを使用し、リソース元は正確な HTTPS origin に限定します。',
+        '構造化された "plausible"、"umami"、または "custom" レコードを使用し、リソース元は正確な HTTPS origin に限定します。',
       legacyFooter: "旧フッターの原文（読み取り専用）",
       legacyFooterStatus: "分類：{status}。移行または削除まで原文を保持します。",
       legacyFooterReportOnlyWarning:

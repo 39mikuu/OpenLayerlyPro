@@ -109,6 +109,18 @@ const plausibleIntegrationSchema = z
   })
   .strict();
 
+const umamiWebsiteIdSchema = z.string().uuid();
+const umamiIntegrationSchema = z
+  .object({
+    id: identifierSchema,
+    provider: z.literal("umami"),
+    enabled: z.boolean().default(true),
+    websiteId: umamiWebsiteIdSchema,
+    scriptUrl: exactHttpsUrlSchema.default("https://cloud.umami.is/script.js"),
+    apiOrigin: exactOriginSchema.optional(),
+  })
+  .strict();
+
 const knownVerificationSchema = z
   .object({
     provider: z.enum(["google", "bing", "yandex"]),
@@ -132,8 +144,9 @@ export const siteVerificationSchema = z
   .max(20);
 
 type PlausibleIntegration = z.infer<typeof plausibleIntegrationSchema>;
+type UmamiIntegration = z.infer<typeof umamiIntegrationSchema>;
 type CustomIntegration = z.infer<typeof customIntegrationSchema>;
-export type PublicIntegration = PlausibleIntegration | CustomIntegration;
+export type PublicIntegration = PlausibleIntegration | UmamiIntegration | CustomIntegration;
 export type SiteVerification = z.infer<typeof siteVerificationSchema>;
 export type LegacyFooterStatus = "empty" | "safe_markup" | "needs_migration";
 
@@ -168,6 +181,34 @@ const PUBLIC_INTEGRATION_ADAPTERS = {
           src: integration.scriptUrl,
           defer: true,
           data: { domain: integration.domain, api: `${apiOrigin}/api/event` },
+        },
+        sources: {
+          script: [scriptOrigin],
+          image: [],
+          connect: [apiOrigin],
+          frame: [],
+        },
+      };
+    },
+  },
+  umami: {
+    schema: umamiIntegrationSchema,
+    build(integration: UmamiIntegration): IntegrationAdapterRuntime | null {
+      const scriptOrigin = exactHttpsOriginFromUrl(integration.scriptUrl);
+      const apiOrigin = integration.apiOrigin
+        ? parseExactHttpsOrigin(integration.apiOrigin)
+        : scriptOrigin;
+      if (!scriptOrigin || !apiOrigin) return null;
+      return {
+        plan: {
+          id: integration.id,
+          placement: "head",
+          src: integration.scriptUrl,
+          defer: true,
+          data: {
+            "website-id": integration.websiteId,
+            ...(apiOrigin !== scriptOrigin ? { "host-url": apiOrigin } : {}),
+          },
         },
         sources: {
           script: [scriptOrigin],

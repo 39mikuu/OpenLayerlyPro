@@ -156,6 +156,106 @@ describe("public integration registry", () => {
     expect(runtime.sources.connect).toEqual(["https://stats.example"]);
   });
 
+  it("derives Umami cloud rendering and CSP origins from one parsed record", () => {
+    const websiteId = "11111111-1111-4111-8111-111111111111";
+    const integrations = publicIntegrationsSchema.parse([
+      {
+        id: "analytics",
+        provider: "umami",
+        websiteId,
+      },
+    ]);
+    const runtime = buildIntegrationRuntime(integrations);
+
+    expect(runtime.plans).toEqual([
+      {
+        id: "analytics",
+        placement: "head",
+        src: "https://cloud.umami.is/script.js",
+        defer: true,
+        data: { "website-id": websiteId },
+      },
+    ]);
+    expect(runtime.sources.script).toEqual(["https://cloud.umami.is"]);
+    expect(runtime.sources.connect).toEqual(["https://cloud.umami.is"]);
+  });
+
+  it("derives Umami custom host rendering and CSP origins from explicit origins", () => {
+    const websiteId = "22222222-2222-4222-8222-222222222222";
+    const integrations = publicIntegrationsSchema.parse([
+      {
+        id: "self-hosted-analytics",
+        provider: "umami",
+        websiteId,
+        scriptUrl: "https://cdn.example/umami/script.js",
+        apiOrigin: "https://analytics.example",
+      },
+    ]);
+    const runtime = buildIntegrationRuntime(integrations);
+
+    expect(runtime.plans).toEqual([
+      {
+        id: "self-hosted-analytics",
+        placement: "head",
+        src: "https://cdn.example/umami/script.js",
+        defer: true,
+        data: { "website-id": websiteId, "host-url": "https://analytics.example" },
+      },
+    ]);
+    expect(runtime.sources.script).toEqual(["https://cdn.example"]);
+    expect(runtime.sources.connect).toEqual(["https://analytics.example"]);
+  });
+
+  it("does not render disabled Umami integrations", () => {
+    const integrations = publicIntegrationsSchema.parse([
+      {
+        id: "analytics",
+        provider: "umami",
+        enabled: false,
+        websiteId: "33333333-3333-4333-8333-333333333333",
+      },
+    ]);
+
+    expect(buildIntegrationRuntime(integrations)).toMatchObject({
+      plans: [],
+      sources: { script: [], connect: [] },
+    });
+  });
+
+  it("renders nothing when public integrations are unconfigured", () => {
+    expect(buildIntegrationRuntime(publicIntegrationsSchema.parse([]))).toMatchObject({
+      plans: [],
+      sources: { script: [], image: [], connect: [], frame: [] },
+    });
+  });
+
+  it("rejects invalid Umami website ids and script URLs", () => {
+    for (const integration of [
+      {
+        id: "bad-website",
+        provider: "umami",
+        websiteId: "not-a-uuid",
+      },
+      {
+        id: "bad-script",
+        provider: "umami",
+        websiteId: "44444444-4444-4444-8444-444444444444",
+        scriptUrl: "http://analytics.example/script.js",
+      },
+    ]) {
+      expect(publicIntegrationsSchema.safeParse([integration]).success).toBe(false);
+    }
+  });
+
+  it("surfaces invalid stored Umami configuration as a public security configuration error", () => {
+    const state = parsePublicSecuritySettings({
+      public_integrations: [{ id: "analytics", provider: "umami" }],
+    });
+
+    expect(state.publicIntegrations).toEqual([]);
+    expect(state.configurationErrors).toEqual([expect.stringContaining("public_integrations:")]);
+  });
+
   it("derives custom rendering and all CSP origins from the registered adapter", () => {
     const integrations = publicIntegrationsSchema.parse([
       {

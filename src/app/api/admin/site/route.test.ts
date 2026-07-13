@@ -95,6 +95,49 @@ describe("admin site settings API", () => {
     expect(mocks.readAdminSiteInfo).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts Umami public integrations through the site settings save path", async () => {
+    const response = await PUT(
+      request({
+        cspRevision: "revision",
+        publicIntegrations: [
+          {
+            id: "analytics",
+            provider: "umami",
+            websiteId: "11111111-1111-4111-8111-111111111111",
+          },
+        ],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.updatePublicSecuritySettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedRevision: "revision",
+        publicIntegrations: [
+          {
+            id: "analytics",
+            provider: "umami",
+            enabled: true,
+            websiteId: "11111111-1111-4111-8111-111111111111",
+            scriptUrl: "https://cloud.umami.is/script.js",
+          },
+        ],
+      }),
+    );
+  });
+
+  it("rejects incomplete Umami public integrations before saving settings", async () => {
+    const response = await PUT(
+      request({
+        cspRevision: "revision",
+        publicIntegrations: [{ id: "analytics", provider: "umami" }],
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.updatePublicSecuritySettings).not.toHaveBeenCalled();
+  });
+
   it("deletes optional file settings instead of writing SQL null", async () => {
     const response = await PUT(
       request({
