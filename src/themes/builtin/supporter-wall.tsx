@@ -26,18 +26,20 @@ export function SupporterWall({ view, t }: { view: SupporterWallViewModel; t: Tr
           <p className="mt-3 text-sm text-muted-foreground">{t("supporters.empty")}</p>
         </section>
       ) : (
-        <section className="grid gap-4 sm:grid-cols-2">
+        <section className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2">
           {view.supporters.map((supporter, index) => (
             <article
               key={`${supporter.displayName}-${supporter.tierName}-${index}`}
-              className="rounded-xl border bg-card p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)]"
+              className="min-w-0 rounded-xl border bg-card p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)]"
             >
-              <p className="break-words text-lg font-semibold">{supporter.displayName}</p>
+              <p className="[overflow-wrap:anywhere] text-lg font-semibold">
+                {supporter.displayName}
+              </p>
               <p className="mt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 {supporter.tierName}
               </p>
               {supporter.dedication ? (
-                <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-6">
+                <p className="mt-4 whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-6">
                   {supporter.dedication}
                 </p>
               ) : (

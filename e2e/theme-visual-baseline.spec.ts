@@ -496,8 +496,9 @@ test.describe("wordpress theme preset and mobile baselines", () => {
 
   // The public contract allows a 50-char display name and a 200-char plain
   // dedication with no break opportunities (e.g. an unlinked URL); this
-  // baseline pins the break-words handling at the narrowest layout.
-  test("wordpress mobile supporter-wall overflow visual baseline", async ({ page, context }) => {
+  // baseline pins overflow-wrap:anywhere and shrinkable grid tracks at the
+  // narrowest layout.
+  test("supporter-wall themes wrap unbroken mobile content", async ({ page, context }) => {
     const OVERFLOW_DISPLAY_NAME = `Overflow${"M".repeat(42)}`;
     const OVERFLOW_DEDICATION = `https://example.com/${"m".repeat(180)}`;
     const db = getDb();
@@ -530,7 +531,6 @@ test.describe("wordpress theme preset and mobile baselines", () => {
     });
 
     try {
-      await setActiveTheme("wordpress");
       await upsertSetting("theme_config", {
         builtin: { colorPreset: BUILTIN_DEFAULT_COLOR_PRESET_ID },
         blog: { colorPreset: BLOG_DEFAULT_COLOR_PRESET_ID },
@@ -542,12 +542,18 @@ test.describe("wordpress theme preset and mobile baselines", () => {
         { name: LOCALE_COOKIE, value: SCREENSHOT_LOCALE, url: BASE_URL },
       ]);
 
-      await page.goto("/supporters");
-      await expect(page.getByText(OVERFLOW_DISPLAY_NAME)).toBeVisible();
-      // Unbroken values must wrap inside the card instead of widening the
-      // 390px layout into horizontal overflow.
-      const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-      expect(scrollWidth).toBeLessThanOrEqual(390);
+      for (const themeId of ["builtin", "blog", "wordpress"] as const) {
+        await setActiveTheme(themeId);
+        await page.goto("/supporters");
+        await expect(page.getByText(OVERFLOW_DISPLAY_NAME)).toBeVisible();
+        // Unbroken values must wrap inside the theme instead of widening the
+        // 390px layout into horizontal overflow.
+        const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+        expect(scrollWidth, `${themeId} supporter wall overflowed`).toBeLessThanOrEqual(390);
+      }
+
+      // The loop intentionally leaves WordPress active for the narrow-layout
+      // visual baseline that originally exposed this regression.
       await expect(page).toHaveScreenshot("wordpress-mobile-supporter-wall-overflow.png", {
         animations: "disabled",
         fullPage: true,

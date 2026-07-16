@@ -3,7 +3,7 @@ import type { SupporterWallViewModel } from "@/modules/supporter-wall";
 
 export function SupporterWall({ view, t }: { view: SupporterWallViewModel; t: Translate }) {
   return (
-    <article className="space-y-8">
+    <article className="min-w-0 space-y-8">
       <header className="border-b pb-6">
         <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
           {t("supporters.eyebrow")}
@@ -19,12 +19,14 @@ export function SupporterWall({ view, t }: { view: SupporterWallViewModel; t: Tr
           {view.supporters.map((supporter, index) => (
             <section
               key={`${supporter.displayName}-${supporter.tierName}-${index}`}
-              className="py-6"
+              className="min-w-0 py-6"
             >
-              <h2 className="break-words text-xl font-semibold">{supporter.displayName}</h2>
+              <h2 className="[overflow-wrap:anywhere] text-xl font-semibold">
+                {supporter.displayName}
+              </h2>
               <p className="mt-1 text-sm text-muted-foreground">{supporter.tierName}</p>
               {supporter.dedication ? (
-                <p className="mt-4 whitespace-pre-wrap break-words leading-7">
+                <p className="mt-4 whitespace-pre-wrap [overflow-wrap:anywhere] leading-7">
                   {supporter.dedication}
                 </p>
               ) : (
