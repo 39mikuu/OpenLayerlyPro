@@ -342,22 +342,46 @@ assert_legacy_sentinels_untouched() {
 
 # --- Signal cleanup: interrupt mid-restore and prove the probe DB is not orphaned. ---
 echo "TEST: probe database is cleaned up when restore is signalled..."
-start_restore_stack
-run_restore "$V1_OK" --yes >/tmp/openlayerly-s7-v1-signal.log 2>&1 &
-RESTORE_PID=$!
-seen_probe=false
-attempt=0
-while [ "$attempt" -lt 100 ]; do
-  if ! kill -0 "$RESTORE_PID" 2>/dev/null; then break; fi
-  if [ "$(probe_db_count)" != "0" ]; then
-    seen_probe=true
-    break
+# On fast runners the restore can complete before the signal lands, which is
+# a missed race window, not a cleanup bug. Only that exact case retries: the
+# process must have exited on its own BEFORE the TERM was sent. If TERM was
+# delivered to a live restore and it still exited 0, that is a real
+# signal-swallowing failure and stays fatal on the first attempt.
+signal_attempt=1
+while :; do
+  start_restore_stack
+  run_restore "$V1_OK" --yes >/tmp/openlayerly-s7-v1-signal.log 2>&1 &
+  RESTORE_PID=$!
+  seen_probe=false
+  attempt=0
+  # Poll fast: a 1s interval loses the race on runners where the whole
+  # restore takes only a few seconds.
+  while [ "$attempt" -lt 500 ]; do
+    if ! kill -0 "$RESTORE_PID" 2>/dev/null; then break; fi
+    if [ "$(probe_db_count)" != "0" ]; then
+      seen_probe=true
+      break
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.2
+  done
+  kill -TERM "$RESTORE_PID" 2>/dev/null || true
+  wait "$RESTORE_PID" 2>/dev/null && signal_rc=0 || signal_rc=$?
+  if [ "$signal_rc" = "0" ]; then
+    # Exit 0 is only acceptable when the restore genuinely ran to successful
+    # completion before the TERM could interrupt it (missed race window). An
+    # exit 0 without the completion marker means the signal was swallowed
+    # mid-run — that is the real bug this case exists to catch.
+    grep -q "^Restore completed from:" /tmp/openlayerly-s7-v1-signal.log \
+      || fail "signalled restore unexpectedly exited 0 without completing"
+    [ "$signal_attempt" -lt 3 ] \
+      || fail "could not interrupt a live restore in $signal_attempt attempts (restore keeps finishing before TERM)"
+    echo "  (restore completed before TERM on attempt $signal_attempt; retrying the race window)"
+    signal_attempt=$((signal_attempt + 1))
+    continue
   fi
-  attempt=$((attempt + 1))
-  sleep 1
+  break
 done
-kill -TERM "$RESTORE_PID" 2>/dev/null || true
-wait "$RESTORE_PID" 2>/dev/null && signal_rc=0 || signal_rc=$?
 [ "$signal_rc" != "0" ] || fail "signalled restore unexpectedly exited 0"
 # Allow the trap-driven cleanup to settle, then assert no probe DB remains.
 sleep 3
