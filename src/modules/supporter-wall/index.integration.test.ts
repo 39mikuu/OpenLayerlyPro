@@ -445,11 +445,23 @@ describeWithDatabase("supporter wall domain integration", () => {
         })),
       )
       .returning({ id: users.id });
+    const nonApprovedPopulation = await db
+      .insert(users)
+      .values(
+        Array.from({ length: 750 }, (_, index) => ({
+          email: `plan-shape-decoy-${index}-${randomUUID()}@example.test`,
+          displayName: `Plan Shape Decoy ${index.toString().padStart(3, "0")}`,
+        })),
+      )
+      .returning({ id: users.id });
 
     // Only the oldest 50 entries qualify. The latest 200 approved candidates
     // all have revoked memberships, so an eligibility-driven outer LIMIT
     // would scan/probe all 250 rows trying to fill its result. The candidate
-    // boundary must stop after the newest 200 regardless of eligibility.
+    // boundary must stop after the newest 200 regardless of eligibility. The
+    // newer pending/hidden decoys also make the status-leading entry index
+    // observably necessary instead of letting an all-approved fixture choose
+    // the narrower all-status created_id index at equal physical cost.
     await db.insert(memberships).values(
       population.flatMap((user, index) =>
         Array.from({ length: membershipsPerUser }, (_, slot) => ({
@@ -469,6 +481,15 @@ describeWithDatabase("supporter wall domain integration", () => {
         status: "approved" as const,
         createdAt: new Date(now - (population.length - index) * 1_000),
         updatedAt: new Date(now - (population.length - index) * 1_000),
+      })),
+    );
+    await db.insert(supporterWallEntries).values(
+      nonApprovedPopulation.map((user, index) => ({
+        userId: user.id,
+        dedication: null,
+        status: index % 2 === 0 ? ("pending" as const) : ("hidden" as const),
+        createdAt: new Date(now + (index + 1) * 1_000),
+        updatedAt: new Date(now + (index + 1) * 1_000),
       })),
     );
 
