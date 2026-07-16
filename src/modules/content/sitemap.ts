@@ -4,10 +4,7 @@ import { type DbClient, getDb } from "@/db";
 import { membershipTiers } from "@/db/schema";
 import { DEFAULT_LOCALE } from "@/modules/i18n";
 import { readPublicSiteInfoWithMetadata } from "@/modules/site";
-import {
-  getSupporterWallSettings,
-  getSupporterWallSettingsLastModified,
-} from "@/modules/supporter-wall";
+import { getSupporterWallSettings, getSupporterWallSitemapState } from "@/modules/supporter-wall";
 
 import {
   buildPostUrl,
@@ -118,29 +115,28 @@ export async function buildSitemapIndexResource(
 ): Promise<PublicHttpResource> {
   const baseUrl = getPublicSeoRootUrl(opts.baseUrl);
   const dbc = opts.dbc ?? getDb();
-  const [site, postCount, latestPostUpdatedAt, latestTierUpdatedAt, wallSettingsUpdatedAt] =
-    await Promise.all([
-      readPublicSiteInfoWithMetadata(),
-      countPublicPosts(dbc),
-      readPublicPostSitemapLastModified(dbc),
-      readPublicTierSitemapLastModified(dbc),
-      getSupporterWallSettingsLastModified(dbc),
-    ]);
+  const [site, postCount, latestPostUpdatedAt, latestTierUpdatedAt, wallState] = await Promise.all([
+    readPublicSiteInfoWithMetadata(),
+    countPublicPosts(dbc),
+    readPublicPostSitemapLastModified(dbc),
+    readPublicTierSitemapLastModified(dbc),
+    getSupporterWallSitemapState(dbc),
+  ]);
   const shardSize = opts.shardSize ?? PUBLIC_SITEMAP_SHARD_SIZE;
   // Zero public posts advertise no post shards: an empty <urlset> is invalid
   // to some sitemap validators, so fresh/private-only sites list static only.
   const postShardCount = countPublicSitemapPostShards(postCount, shardSize);
   // Per-entry <lastmod> below is informational; the HTTP resource itself is
   // validated by strong ETag only (see buildPublicHttpResource).
-  // Toggling the supporter wall adds/removes /supporters inside static.xml,
-  // so the wall settings' update time must feed the static child's lastmod:
-  // the index resource is validated by strong ETag, and without this input a
-  // conditional revalidation would keep answering 304 after the toggle.
+  // Toggling the supporter wall adds/removes /supporters inside static.xml.
+  // The settings clock feeds the child's informational lastmod, while the
+  // parsed enabled value below also feeds the strong ETag so same-millisecond
+  // writes cannot leave the index validator unchanged.
   const staticLastModifiedAt = maxPublicDateOrNull(
     site.feedIdentityUpdatedAt,
     latestPostUpdatedAt,
     latestTierUpdatedAt,
-    wallSettingsUpdatedAt,
+    wallState.lastModifiedAt,
   );
   const entries: SitemapEntry[] = [
     {
@@ -152,7 +148,10 @@ export async function buildSitemapIndexResource(
       lastmod: latestPostUpdatedAt,
     })),
   ];
-  return buildPublicHttpResource(renderSitemapIndex(entries));
+  return buildPublicHttpResource(
+    renderSitemapIndex(entries),
+    `supporter-wall-enabled:${wallState.settings.enabled}`,
+  );
 }
 
 export async function buildStaticSitemapResource(

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
@@ -9,12 +9,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/client";
 import type { SupporterWallSettings } from "@/modules/supporter-wall";
 
-type FanWallEntry = {
-  id: string;
-  dedication: string | null;
-  status: "pending" | "approved" | "hidden";
-  version: number;
-};
+import {
+  createSupporterWallControlsState,
+  type FanWallEntry,
+  supporterWallControlsReducer,
+} from "./supporter-wall-controls-model";
 
 export function SupporterWallControls({
   displayName,
@@ -27,16 +26,14 @@ export function SupporterWallControls({
 }) {
   const router = useRouter();
   const t = useT();
-  const [entry, setEntry] = useState<FanWallEntry | null>(initialEntry);
-  const [dedication, setDedication] = useState(initialEntry?.dedication ?? "");
+  const [controls, dispatch] = useReducer(
+    supporterWallControlsReducer,
+    initialEntry,
+    createSupporterWallControlsState,
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Tracks whether the textarea holds input the server hasn't confirmed yet.
-  // router.refresh() is not awaitable, so a refresh triggered by save() or by
-  // the adjacent display-name editor can land while the fan is already typing
-  // again; syncing the text in that window would silently erase their input.
-  const dirtyRef = useRef(false);
-  const latestDedicationRef = useRef(dedication);
+  const { dedication, entry } = controls;
 
   // router.refresh() after a display-name change hands down a new
   // initialEntry (e.g. approved → pending) while client state persists;
@@ -44,13 +41,8 @@ export function SupporterWallControls({
   // Status/version always sync; the dedication text only syncs while the
   // fan has no unconfirmed input.
   useEffect(() => {
-    setEntry(initialEntry);
-    if (!dirtyRef.current) {
-      latestDedicationRef.current = initialEntry?.dedication ?? "";
-      setDedication(initialEntry?.dedication ?? "");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialEntry?.id, initialEntry?.status, initialEntry?.version]);
+    dispatch({ type: "server-synced", entry: initialEntry });
+  }, [initialEntry]);
 
   async function save() {
     setSaving(true);
@@ -61,10 +53,7 @@ export function SupporterWallControls({
         method: "PUT",
         body: { dedication: submitted || null },
       });
-      setEntry(next);
-      // Only mark clean if the fan didn't keep typing while the request was
-      // in flight; otherwise the pending text must survive the refresh.
-      if (latestDedicationRef.current === submitted) dirtyRef.current = false;
+      dispatch({ type: "save-succeeded", entry: next, submittedDedication: submitted });
       router.refresh();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("me.supporterWallSaveFailed"));
@@ -78,10 +67,7 @@ export function SupporterWallControls({
     setError(null);
     try {
       await api("/api/me/supporter-wall", { method: "DELETE" });
-      setEntry(null);
-      setDedication("");
-      latestDedicationRef.current = "";
-      dirtyRef.current = false;
+      dispatch({ type: "opted-out" });
       router.refresh();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("me.supporterWallOptOutFailed"));
@@ -113,9 +99,7 @@ export function SupporterWallControls({
           rows={4}
           value={dedication}
           onChange={(event) => {
-            dirtyRef.current = true;
-            latestDedicationRef.current = event.target.value;
-            setDedication(event.target.value);
+            dispatch({ type: "dedication-changed", dedication: event.target.value });
           }}
           placeholder={t("me.supporterWallDedicationPlaceholder")}
         />

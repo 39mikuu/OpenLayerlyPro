@@ -22,7 +22,9 @@ const SUPPORTER_WALL_SETTING_KEYS = [
   SUPPORTER_WALL_MIN_LEVEL_KEY,
 ] as const;
 const MAX_DEDICATION_LENGTH = 200;
-// Deterministic order means the top-200 by level/created_at render; boundedness per WP5 plan.
+// Only this many approved rows may enter the anonymous eligibility projection.
+// The candidate boundary comes before user/membership joins, so stale or
+// otherwise ineligible entries cannot turn one request into a full-wall scan.
 const PUBLIC_WALL_MAX_ENTRIES = 200;
 
 type SupporterWallEntryStatus = "pending" | "approved" | "hidden";
@@ -163,21 +165,27 @@ export async function getSupporterWallSettings(
 }
 
 /**
- * Latest update time of the wall settings rows. The sitemap index folds this
- * into the static child's lastmod/ETag input: toggling the wall changes
- * static.xml, so the index must change too or conditional revalidation keeps
- * serving 304 for a stale child list.
+ * One-snapshot projection for the sitemap index. The parsed enabled value is
+ * part of the index ETag identity because two settings transactions can share
+ * the same millisecond timestamp while still changing static.xml membership.
  */
-export async function getSupporterWallSettingsLastModified(
+export async function getSupporterWallSitemapState(
   dbc: DbClient = getDb(),
-): Promise<Date | null> {
-  const [row] = await dbc
-    .select({ lastModifiedAt: sql<Date | string | null>`max(${siteSettings.updatedAt})` })
+): Promise<{ settings: SupporterWallSettings; lastModifiedAt: Date | null }> {
+  const rows = await dbc
+    .select({
+      id: siteSettings.id,
+      key: siteSettings.key,
+      valueJson: siteSettings.valueJson,
+      updatedAt: siteSettings.updatedAt,
+    })
     .from(siteSettings)
     .where(inArray(siteSettings.key, [...SUPPORTER_WALL_SETTING_KEYS]));
-  const value = row?.lastModifiedAt;
-  if (!value) return null;
-  return value instanceof Date ? value : new Date(value);
+  const lastModifiedAt = rows.reduce<Date | null>((latest, row) => {
+    const updatedAt = coerceDate(row.updatedAt);
+    return !latest || updatedAt > latest ? updatedAt : latest;
+  }, null);
+  return { settings: parseStoredSettings(rows).settings, lastModifiedAt };
 }
 
 export async function applySupporterWallSettingsUpdate(input: {
@@ -433,42 +441,45 @@ export async function getSupporterWallViewModel(): Promise<SupporterWallViewMode
 export function buildPublicSupporterWallQuery(threshold: number | null) {
   // The level threshold is pushed into the tier join: max(qualifying level)
   // equals max(overall level) whenever the user qualifies at all, so pruning
-  // non-qualifying memberships before dedup cannot change who is shown or
-  // which tier is displayed.
+  // non-qualifying memberships before top-tier selection cannot change who
+  // is shown or which tier is displayed.
   const thresholdSql = threshold === null ? sql`true` : sql`mt.level >= ${threshold}`;
-  // WP5 forbids caching or scheduled projection of the wall, so per-request
-  // work cannot be O(limit); this shape keeps it bounded by the current
-  // eligible set (approved entries with a qualifying active membership)
-  // instead of forcing a correlated membership probe per approved entry:
-  // plain joins let the planner drive from whichever side is smaller, and
-  // the outer sort is a top-N over already-deduplicated eligible rows.
+  // Select the latest 200 approved entries before any user or membership
+  // lookup. The subquery LIMIT is a semantic boundary: even when every
+  // candidate is stale or ineligible, one request performs at most 200
+  // effective-membership probes. The outer ascending order keeps rendering
+  // stable and chronological within that bounded, most-recent window.
   return sql<RawPublicSupporter>`
     select
-      best."displayName",
-      best.tier_name as "tierName",
-      best.dedication,
-      best.level
+      u.display_name as "displayName",
+      active.tier_name as "tierName",
+      e.dedication,
+      active.level
     from (
-      select distinct on (e.id)
-        e.id,
-        e.dedication,
-        e.created_at,
-        u.display_name as "displayName",
-        mt.name as tier_name,
-        mt.level
-      from supporter_wall_entries e
-      inner join users u on u.id = e.user_id and u.display_name is not null
-      inner join memberships m
-        on m.user_id = e.user_id
+      select id, user_id, dedication, created_at
+      from supporter_wall_entries
+      where status = 'approved'
+      order by created_at desc, id desc
+      limit ${PUBLIC_WALL_MAX_ENTRIES}
+    ) e
+    inner join lateral (
+      select display_name
+      from users
+      where id = e.user_id and display_name is not null
+      limit 1
+    ) u on true
+    inner join lateral (
+      select mt.name as tier_name, mt.level
+      from memberships m
+      inner join membership_tiers mt on mt.id = m.tier_id and ${thresholdSql}
+      where m.user_id = e.user_id
         and m.status = 'active'
         and m.starts_at <= now()
         and m.ends_at > now()
-      inner join membership_tiers mt on mt.id = m.tier_id and ${thresholdSql}
-      where e.status = 'approved'
-      order by e.id, mt.level desc, m.ends_at desc, m.id asc
-    ) best
-    order by best.level desc, best.created_at asc, best.id asc
-    limit ${PUBLIC_WALL_MAX_ENTRIES}
+      order by mt.level desc, m.ends_at desc, m.id asc
+      limit 1
+    ) active on true
+    order by e.created_at asc, e.id asc
   `;
 }
 

@@ -38,6 +38,9 @@ type PlanNode = {
   "Relation Name"?: string;
   "Index Name"?: string;
   "Actual Rows"?: number;
+  "Actual Loops"?: number;
+  "Rows Removed by Filter"?: number;
+  "Rows Removed by Index Recheck"?: number;
   Plans?: PlanNode[];
   [key: string]: unknown;
 };
@@ -57,6 +60,18 @@ function findPlanPath(plan: PlanNode, predicate: (node: PlanNode) => boolean): P
     if (path) return [plan, ...path];
   }
   return null;
+}
+
+function actualRowsAcrossLoops(node: PlanNode): number {
+  return Number(node["Actual Rows"] ?? 0) * Number(node["Actual Loops"] ?? 0);
+}
+
+function actualTupleVisitsAcrossLoops(node: PlanNode): number {
+  const rowsPerLoop =
+    Number(node["Actual Rows"] ?? 0) +
+    Number(node["Rows Removed by Filter"] ?? 0) +
+    Number(node["Rows Removed by Index Recheck"] ?? 0);
+  return rowsPerLoop * Number(node["Actual Loops"] ?? 0);
 }
 
 // Drizzle wraps database errors ("Failed query: ..."), so assertions about
@@ -305,9 +320,10 @@ describeWithDatabase("supporter wall domain integration", () => {
     await reversePaymentApproval(request!.id, admin.id, "supporter wall reversal test");
 
     const viewModel = await getSupporterWallViewModel();
-    expect(viewModel?.supporters.map((supporter) => supporter.displayName)).not.toEqual(
-      expect.arrayContaining(["Expired Fan", "Suspended Fan", "Revoked Fan", "Reversed Fan"]),
-    );
+    const publicNames = viewModel?.supporters.map((supporter) => supporter.displayName) ?? [];
+    for (const delistedName of ["Expired Fan", "Suspended Fan", "Revoked Fan", "Reversed Fan"]) {
+      expect(publicNames).not.toContain(delistedName);
+    }
   });
 
   it("applies feature toggle, threshold, overlap max-level, and discontinued-tier semantics", async () => {
@@ -332,10 +348,10 @@ describeWithDatabase("supporter wall domain integration", () => {
       actor: { type: "admin", id: admin.id },
     });
     await expect(getSupporterWallViewModel()).resolves.toMatchObject({
-      supporters: [
+      supporters: expect.arrayContaining([
         expect.objectContaining({ displayName: "High Fan" }),
         expect.objectContaining({ displayName: "Low Fan" }),
-      ],
+      ]),
     });
 
     await db
@@ -378,65 +394,48 @@ describeWithDatabase("supporter wall domain integration", () => {
     await expect(getSupporterWallViewModel()).resolves.toBeNull();
   });
 
-  it("caps the public wall at the deterministic top 200 supporters", async () => {
+  it("derives the latest 200 approved candidates in deterministic creation order", async () => {
     await enableWall();
-    const topTier = await seedTier(10, "Top 200 Tier");
-    const lowTier = await seedTier(0, "Lowest Tier");
-    const topUsers = await db
-      .insert(users)
-      .values(
-        Array.from({ length: 200 }, (_, index) => ({
-          email: `top-${index}-${randomUUID()}@example.test`,
-          displayName: `Top Fan ${index.toString().padStart(3, "0")}`,
-        })),
-      )
-      .returning({ id: users.id, displayName: users.displayName });
-    const [lowestUser] = await db
-      .insert(users)
-      .values({
-        email: `lowest-${randomUUID()}@example.test`,
-        displayName: "Lowest Fan 201",
-      })
-      .returning({ id: users.id, displayName: users.displayName });
-
-    await db.insert(memberships).values([
-      ...topUsers.map((user) => ({
+    const tier = await seedTier(10, "Public Wall Tier");
+    const now = Date.now();
+    const population = Array.from({ length: 201 }, (_, index) => ({
+      id: randomUUID(),
+      email: `ordered-${index}-${randomUUID()}@example.test`,
+      displayName: `Ordered Fan ${index.toString().padStart(3, "0")}`,
+    }));
+    await db.insert(users).values(population);
+    await db.insert(memberships).values(
+      population.map((user) => ({
         userId: user.id,
-        tierId: topTier.id,
+        tierId: tier.id,
         source: "manual" as const,
         startsAt: new Date(Date.now() - 60_000),
         endsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
         status: "active" as const,
       })),
-      {
-        userId: lowestUser!.id,
-        tierId: lowTier.id,
-        source: "manual" as const,
-        startsAt: new Date(Date.now() - 60_000),
-        endsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        status: "active" as const,
-      },
-    ]);
-    await db.insert(supporterWallEntries).values([
-      ...topUsers.map((user) => ({
+    );
+    await db.insert(supporterWallEntries).values(
+      population.map((user, index) => ({
         userId: user.id,
         dedication: null,
         status: "approved" as const,
+        createdAt: new Date(now - (population.length - index) * 1_000),
+        updatedAt: new Date(now - (population.length - index) * 1_000),
       })),
-      { userId: lowestUser!.id, dedication: null, status: "approved" as const },
-    ]);
+    );
 
     const viewModel = await getSupporterWallViewModel();
 
     expect(viewModel?.supporters).toHaveLength(200);
-    expect(viewModel?.supporters.map((supporter) => supporter.displayName)).not.toContain(
-      "Lowest Fan 201",
+    expect(viewModel?.supporters.map((supporter) => supporter.displayName)).toEqual(
+      population.slice(1).map((user) => user.displayName),
     );
   });
 
-  it("keeps public membership work bounded by the eligible entries", async () => {
+  it("bounds public entry and membership work when the newest candidates are ineligible", async () => {
     const tier = await seedTier(10, "Plan Shape Tier");
     const now = Date.now();
+    const membershipsPerUser = 3;
     const population = await db
       .insert(users)
       .values(
@@ -447,26 +446,29 @@ describeWithDatabase("supporter wall domain integration", () => {
       )
       .returning({ id: users.id });
 
-    // Eight active memberships per user make the membership side large
-    // enough (2000 rows) that the planner's choice between probing per
-    // eligible entry and scanning the whole set is unambiguous.
+    // Only the oldest 50 entries qualify. The latest 200 approved candidates
+    // all have revoked memberships, so an eligibility-driven outer LIMIT
+    // would scan/probe all 250 rows trying to fill its result. The candidate
+    // boundary must stop after the newest 200 regardless of eligibility.
     await db.insert(memberships).values(
       population.flatMap((user, index) =>
-        Array.from({ length: 8 }, (_, slot) => ({
+        Array.from({ length: membershipsPerUser }, (_, slot) => ({
           userId: user.id,
           tierId: tier.id,
           source: "manual" as const,
           startsAt: new Date(now - 60_000),
           endsAt: new Date(now + 24 * 60 * 60 * 1000 + index * 10 + slot),
-          status: "active" as const,
+          status: index < 50 ? ("active" as const) : ("revoked" as const),
         })),
       ),
     );
     await db.insert(supporterWallEntries).values(
-      population.slice(0, 5).map((user) => ({
+      population.map((user, index) => ({
         userId: user.id,
         dedication: null,
         status: "approved" as const,
+        createdAt: new Date(now - (population.length - index) * 1_000),
+        updatedAt: new Date(now - (population.length - index) * 1_000),
       })),
     );
 
@@ -477,33 +479,72 @@ describeWithDatabase("supporter wall domain integration", () => {
 
     await db.transaction(async (tx) => {
       await tx.execute(sql`set local enable_seqscan = off`);
+      const publicQuery = buildPublicSupporterWallQuery(null);
       const rows = await tx.execute<ExplainRow>(
-        sql`explain (analyze, format json, costs off, timing off, summary off) ${buildPublicSupporterWallQuery(null)}`,
+        sql`explain (analyze, format json, costs off, timing off, summary off) ${publicQuery}`,
       );
       const plan = rows[0]!["QUERY PLAN"][0]!.Plan;
       const nodes = walkPlan(plan);
-      const membershipAccessNodes = nodes.filter((node) => node["Relation Name"] === "memberships");
-      const membershipAccessPath = findPlanPath(
+      expect(actualRowsAcrossLoops(plan)).toBe(0);
+      const entryAccessPath = findPlanPath(
         plan,
-        (node) => node["Relation Name"] === "memberships",
+        (node) => node["Index Name"] === "supporter_wall_entries_status_created_id_idx",
       );
+      const membershipAccessNodes = nodes.filter((node) => node["Relation Name"] === "memberships");
+      const membershipUserIndexNodes = nodes.filter(
+        (node) => node["Index Name"] === "memberships_user_active_idx",
+      );
+      const userAccessNodes = nodes.filter((node) => node["Relation Name"] === "users");
 
-      // The join form leaves the driving side to the planner: with few
-      // approved entries against a large membership population it must probe
-      // memberships per eligible entry (5 users × 8 memberships here), not
-      // scan the whole 2000-row set.
-      expect(
-        nodes.some((node) =>
-          ["Aggregate", "HashAggregate", "GroupAggregate"].includes(node["Node Type"] ?? ""),
-        ),
-      ).toBe(false);
+      // The candidate Limit must consume the newest approved entries directly
+      // from the (status, created_at, id) index. An outer Sort is allowed only
+      // after this boundary, where it can order at most 200 rows for display.
+      expect(entryAccessPath).not.toBeNull();
+      const candidateLimitIndex = entryAccessPath!.findIndex(
+        (node) => node["Node Type"] === "Limit",
+      );
+      expect(candidateLimitIndex).toBeGreaterThanOrEqual(0);
+      for (const node of entryAccessPath!.slice(candidateLimitIndex + 1)) {
+        expect(node["Node Type"]).not.toBe("Sort");
+      }
+      const entryAccess = entryAccessPath!.at(-1)!;
+      const entryRowsVisited = actualRowsAcrossLoops(entryAccess);
+      expect(entryRowsVisited).toBe(200);
+      expect(entryRowsVisited).toBeLessThan(population.length);
+      expect(nodes.some((node) => node["Index Name"] === "users_pkey")).toBe(true);
+      expect(userAccessNodes.some((node) => node["Node Type"] === "Seq Scan")).toBe(false);
+      const userProbeLoops = userAccessNodes.reduce(
+        (total, node) => total + Number(node["Actual Loops"] ?? 0),
+        0,
+      );
+      const userTupleVisits = userAccessNodes.reduce(
+        (total, node) => total + actualTupleVisitsAcrossLoops(node),
+        0,
+      );
+      // A membership-first plan may never execute the user lookup when all
+      // candidates are ineligible, hence zero is valid; a global users index
+      // scan would still exceed one bounded candidate window.
+      expect(userProbeLoops).toBeLessThanOrEqual(200);
+      expect(userTupleVisits).toBeLessThanOrEqual(200);
+
+      // The lateral lookup must be parameterized by user_id. Counting loops
+      // and filtered tuples closes the EXPLAIN loophole where a global/tier
+      // scan emits few rows per loop only after inspecting the full table.
       expect(membershipAccessNodes.length).toBeGreaterThan(0);
-      expect(membershipAccessPath).not.toBeNull();
-      expect(membershipAccessPath!.some((node) => node["Node Type"] === "Nested Loop")).toBe(true);
-      expect(membershipAccessPath!.some((node) => node["Node Type"] === "Limit")).toBe(true);
-      expect(
-        Math.max(...membershipAccessNodes.map((node) => Number(node["Actual Rows"] ?? 0))),
-      ).toBeLessThanOrEqual(8);
+      expect(membershipUserIndexNodes.length).toBeGreaterThan(0);
+      expect(membershipAccessNodes.some((node) => node["Node Type"] === "Seq Scan")).toBe(false);
+      const membershipProbeLoops = membershipAccessNodes.reduce(
+        (total, node) => total + Number(node["Actual Loops"] ?? 0),
+        0,
+      );
+      expect(membershipProbeLoops).toBe(200);
+      const membershipTupleVisits = membershipAccessNodes.reduce(
+        (total, node) => total + actualTupleVisitsAcrossLoops(node),
+        0,
+      );
+      expect(membershipTupleVisits).toBeGreaterThan(0);
+      expect(membershipTupleVisits).toBeLessThanOrEqual(200 * membershipsPerUser);
+      expect(membershipTupleVisits).toBeLessThan(population.length * membershipsPerUser);
     });
   });
 

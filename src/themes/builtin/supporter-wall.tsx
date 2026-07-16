@@ -35,7 +35,7 @@ export function SupporterWall({ view, t }: { view: SupporterWallViewModel; t: Tr
               <p className="[overflow-wrap:anywhere] text-lg font-semibold">
                 {supporter.displayName}
               </p>
-              <p className="mt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <p className="mt-1 [overflow-wrap:anywhere] text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 {supporter.tierName}
               </p>
               {supporter.dedication ? (

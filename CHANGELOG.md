@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### v1.1 WP5 Supporter Wall
+
+- Added the default-off public `/supporters` wall with explicit fan opt-in, display-name prerequisite, effective-membership eligibility derived on every request, and no email or payment-amount fallback.
+- Added plain-text dedications with pending/approved/hidden moderation, one entry per user, optimistic moderation fencing, and transactional audit events.
+- Added `/admin/supporter-wall` settings and moderation, including an optional minimum effective membership level, plus fan display-name and wall controls on the account page.
+- Extended the static Theme contract with the mandatory `SupporterWall` slot across `builtin`, `blog`, and `wordpress`, with zh/en/ja coverage and desktop/mobile visual baselines.
+- Added conditional `/supporters` sitemap membership and supporter-setting revalidation in the sitemap index strong ETag.
+
 ### v1.1 WP2 Email Notifications
 
 - Added opt-in new-post email notifications with default-off user preferences, campaign creation on first publish/scheduled publish, recipient expansion, delivery tasks, campaign finalization, and an admin `/admin/notifications` observability page.

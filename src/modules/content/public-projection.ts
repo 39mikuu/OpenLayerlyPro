@@ -565,10 +565,18 @@ export async function getPublicPostProjectionBySlug(
 // Last-Modified could move backward when rows leave the public projection,
 // letting If-Modified-Since-only clients keep stale 304s — so these routes
 // deliberately advertise no Last-Modified and ignore If-Modified-Since.
-export function buildPublicHttpResource(body: string): PublicHttpResource {
+export function buildPublicHttpResource(body: string, etagRevision?: string): PublicHttpResource {
+  const identity = createHash("sha256").update(body);
+  if (etagRevision !== undefined) {
+    // Some collection resources depend on child membership that is not
+    // represented byte-for-byte in their own body. Delimit an optional
+    // revision so those dependencies can invalidate the validator without
+    // changing the response payload.
+    identity.update("\0").update(etagRevision);
+  }
   return {
     body,
-    etag: `"${createHash("sha256").update(body).digest("base64url")}"`,
+    etag: `"${identity.digest("base64url")}"`,
   };
 }
 

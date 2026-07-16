@@ -36,8 +36,11 @@ const CATEGORY_NAME = "Studio Notes";
 const TAG_NAME = "Baseline";
 const SUPPORTER_DISPLAY_NAME = "Visual Baseline Supporter";
 const SUPPORTER_DEDICATION = "Thank you for the steady studio work.";
+const SUPPORTER_TIER_NAME = "Archive Member";
+const OVERFLOW_TIER_NAME = "T".repeat(100);
+const OVERFLOW_TIER_SLUG = "visual-overflow-tier";
 const FIXED_PUBLISHED_AT = new Date("2025-03-15T09:30:00.000Z");
-const fixtureTierSlugs = ["visual-supporter", "visual-archive-member"] as const;
+const fixtureTierSlugs = ["visual-supporter", "visual-archive-member", OVERFLOW_TIER_SLUG] as const;
 const fixtureCategorySlug = "studio-notes";
 const fixtureTagSlug = "baseline";
 const mutatedSettingKeys = [
@@ -335,7 +338,7 @@ test.beforeAll(async () => {
           sortOrder: 1,
         },
         {
-          name: "Archive Member",
+          name: SUPPORTER_TIER_NAME,
           slug: "visual-archive-member",
           description: "A deterministic membership card for the home-page baseline.",
           priceLabel: "$19 / month",
@@ -494,40 +497,54 @@ test.describe("wordpress theme preset and mobile baselines", () => {
     });
   }
 
-  // The public contract allows a 50-char display name and a 200-char plain
-  // dedication with no break opportunities (e.g. an unlinked URL); this
-  // baseline pins overflow-wrap:anywhere and shrinkable grid tracks at the
-  // narrowest layout.
+  // The public contract allows a 50-char display name, a 100-char tier name,
+  // and a 200-char plain dedication with no break opportunities (e.g. an
+  // unlinked URL); this test pins overflow-wrap:anywhere and shrinkable grid
+  // tracks at the narrowest layout.
   test("supporter-wall themes wrap unbroken mobile content", async ({ page, context }) => {
     const OVERFLOW_DISPLAY_NAME = `Overflow${"M".repeat(42)}`;
     const OVERFLOW_DEDICATION = `https://example.com/${"m".repeat(180)}`;
     const db = getDb();
-    const supporterTier = await db
-      .select({ id: membershipTiers.id })
-      .from(membershipTiers)
-      .where(sql`${membershipTiers.slug} = 'visual-archive-member'`);
-    if (!supporterTier[0]) throw new Error("Visual supporter tier fixture was not created");
-    const [overflowUser] = await db
-      .insert(users)
-      .values({
-        email: "visual-baseline-overflow@example.com",
-        displayName: OVERFLOW_DISPLAY_NAME,
-        role: "member",
-      })
-      .returning({ id: users.id });
-    await db.insert(memberships).values({
-      userId: overflowUser!.id,
-      tierId: supporterTier[0].id,
-      source: "manual",
-      status: "active",
-      startsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
-      endsAt: new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
-      note: "Visual baseline supporter wall overflow fixture",
-    });
-    await db.insert(supporterWallEntries).values({
-      userId: overflowUser!.id,
-      dedication: OVERFLOW_DEDICATION,
-      status: "approved",
+    const { overflowTierId, overflowUserId } = await db.transaction(async (tx) => {
+      const [overflowTier] = await tx
+        .insert(membershipTiers)
+        .values({
+          name: OVERFLOW_TIER_NAME,
+          slug: OVERFLOW_TIER_SLUG,
+          description: "A maximum-length tier name for supporter wall overflow coverage.",
+          priceLabel: "$29 / month",
+          level: 30,
+          durationDays: 31,
+          purchaseEnabled: true,
+          isActive: true,
+          sortOrder: 3,
+        })
+        .returning({ id: membershipTiers.id });
+      if (!overflowTier) throw new Error("Visual overflow tier fixture was not created");
+      const [overflowUser] = await tx
+        .insert(users)
+        .values({
+          email: "visual-baseline-overflow@example.com",
+          displayName: OVERFLOW_DISPLAY_NAME,
+          role: "member",
+        })
+        .returning({ id: users.id });
+      if (!overflowUser) throw new Error("Visual overflow user fixture was not created");
+      await tx.insert(memberships).values({
+        userId: overflowUser.id,
+        tierId: overflowTier.id,
+        source: "manual",
+        status: "active",
+        startsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+        endsAt: new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
+        note: "Visual baseline supporter wall overflow fixture",
+      });
+      await tx.insert(supporterWallEntries).values({
+        userId: overflowUser.id,
+        dedication: OVERFLOW_DEDICATION,
+        status: "approved",
+      });
+      return { overflowTierId: overflowTier.id, overflowUserId: overflowUser.id };
     });
 
     try {
@@ -546,14 +563,23 @@ test.describe("wordpress theme preset and mobile baselines", () => {
         await setActiveTheme(themeId);
         await page.goto("/supporters");
         await expect(page.getByText(OVERFLOW_DISPLAY_NAME)).toBeVisible();
+        await expect(page.getByText(OVERFLOW_TIER_NAME, { exact: true })).toBeVisible();
         // Unbroken values must wrap inside the theme instead of widening the
         // 390px layout into horizontal overflow.
         const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
         expect(scrollWidth, `${themeId} supporter wall overflowed`).toBeLessThanOrEqual(390);
       }
 
-      // The loop intentionally leaves WordPress active for the narrow-layout
-      // visual baseline that originally exposed this regression.
+      // The loop above exercises the legal 100-character tier name. Restore
+      // the existing screenshot's short label and reload before comparing its
+      // pixels, so this behavioral regression check does not create unrelated
+      // baseline churn.
+      await db
+        .update(membershipTiers)
+        .set({ name: SUPPORTER_TIER_NAME })
+        .where(sql`${membershipTiers.id} = ${overflowTierId}`);
+      await page.reload();
+      await expect(page.getByText(OVERFLOW_DISPLAY_NAME)).toBeVisible();
       await expect(page).toHaveScreenshot("wordpress-mobile-supporter-wall-overflow.png", {
         animations: "disabled",
         fullPage: true,
@@ -562,11 +588,14 @@ test.describe("wordpress theme preset and mobile baselines", () => {
     } finally {
       // Later suites and the shared supporter-wall baselines must not see
       // this extra approved supporter.
-      await db
-        .delete(supporterWallEntries)
-        .where(sql`${supporterWallEntries.userId} = ${overflowUser!.id}`);
-      await db.delete(memberships).where(sql`${memberships.userId} = ${overflowUser!.id}`);
-      await db.delete(users).where(sql`${users.id} = ${overflowUser!.id}`);
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(supporterWallEntries)
+          .where(sql`${supporterWallEntries.userId} = ${overflowUserId}`);
+        await tx.delete(memberships).where(sql`${memberships.userId} = ${overflowUserId}`);
+        await tx.delete(users).where(sql`${users.id} = ${overflowUserId}`);
+        await tx.delete(membershipTiers).where(sql`${membershipTiers.id} = ${overflowTierId}`);
+      });
     }
   });
 });
