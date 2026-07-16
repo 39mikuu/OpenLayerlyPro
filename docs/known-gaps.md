@@ -14,38 +14,18 @@
 
 ## 待立项
 
-### G2 `monthlyCharLimit` 保存但不强制
-
-- **现状**：AI 翻译的月字符预算仅保存与展示，不做本地强制（PRD §Phase 7 自注）。
-- **风险**：诚实性缺口——创作者会误以为存在成本保护。
-- **方向**：二选一：实现本地用量记账与强制；或在后台 UI 明确标注「仅记录，不限制」。
-- **建议时机**：半天体量，搭车当前里程碑或任意小型维护批次。
-- **体量**：小。
-
-### G5 CI actions 的 Node 20 弃用警告
-
-- **现状**：`checkout@v4`、`configure-pages@v5` 等被 runner 强制运行于 Node 24
-  并打印弃用警告（2026-07 Pages 部署日志可见）。
-- **方向**：下次修改 workflow 时顺手升级各 action 到当前主版本；仍须保持第三方 action 使用不可变 commit SHA。
-- **建议时机**：搭车任意 workflow 改动，不单独立项。
-- **体量**：微。
-
-### G7 Plausible SPA 自动 pageview 未按公开页边界重判
-
-- **现状**：Plausible adapter 仍沿用其脚本默认自动追踪行为；若公开页上的 root layout 脚本在 SPA 导航后继续存活，客户端路由切到 `/me`、`/checkout/*`、`/admin` 等非公开页时仍可能上报 pageview。WP6 仅授权修复 Umami adapter；`release-v1.1-plan.md` §WP6 明确 Plausible 只做回归、兼容性和文档验收，不重复实现。
-  同一范围边界也适用于后台集成面板：PR #164 只把 Umami 纳入 System integrations registry，Plausible 仍不进入该 registry，待单独立项补齐同等状态语义。
-- **风险**：与 Umami 修复后的公开页边界存在 parity gap，可能把非公开路径暴露给 Plausible 事件端。
-- **方向**：为 Plausible 单独立项时复用共享公开页路径谓词，关闭默认自动追踪并增加同等 nonce inline 手动追踪器；迁移前保持部署文档标注该差异。
-- **建议时机**：Plausible adapter 后续维护批次或隐私硬化批次。
-- **体量**：小。
+- **G3（legacy compatibility removal，待立项）**：移除 v1 archive restore（含 `--allow-legacy-v1-unknown-schema`）、legacy footer 迁移、pre-v1.0 文件 backfill 三条兼容路径。目标为 2026-10-14 之后的首个 release（预期 v1.3）；v1.2 不搭载本移除项，更旧实例须先经 v1.1.x 升级/恢复。
 
 ## 已立项
 
-（当前无已立项但未完成的条目。）
+- **G5（v1.2 M4 债务包）**：处理 CI actions 的 Node 20 deprecation 警告，升级相关 action 到当前主版本；仍须保持第三方 action 使用不可变 commit SHA，`pages.yml` 不再使用浮动 tag。体量：微。
+- **G7（v1.2 M4 债务包）**：补齐 Plausible SPA tracking parity，复用共享公开页路径谓词，关闭默认自动 pageview 并增加同等 nonce inline 手动追踪器；后台 Integration status registry 补齐 Plausible 同等状态语义。体量：小。
 
 ## 已完成
 
-- **G3（政策公告部分）**：随 v1.1.0 release notes 公告弃用政策（见 `docs/releases/v1.1.0-release-notes.md` 的 Legacy Compatibility Deprecation Policy 节）：v1 archive restore（含 `--allow-legacy-v1-unknown-schema`）、legacy footer 迁移、pre-v1.0 文件 backfill 三条兼容路径在整个 v1.1.x 内继续支持，于 v1.2.0 移除（若 v1.2.0 距公告不足 90 天则顺延到公告后至少 90 天的首个版本）；更旧实例须先经 v1.1.x 升级/恢复。**代码移除本身按公告时间表在 v1.2 立项执行，届时另开条目/issue。**
+- **G2（label-only 关闭）**：按维护者 2026-07-17 决策，本地用量账本与 enforcement 不进入 v1.2；该缺口以明确标注方式关闭。现有后台 UI 已把 Translation `monthlyCharLimit` 标为「仅记录，不限制」（zh/en/ja 文案均同步），`docs/architecture/config-center.md` 也明确该值只持久化/展示，不是强制预算，运维应使用 provider 侧 hard limit/alert。
+
+- **G3（政策公告部分）**：随 v1.1.0 release notes 公告弃用政策（见 `docs/releases/v1.1.0-release-notes.md` 的 Legacy Compatibility Deprecation Policy 节）：v1 archive restore（含 `--allow-legacy-v1-unknown-schema`）、legacy footer 迁移、pre-v1.0 文件 backfill 三条兼容路径在整个 v1.1.x 内继续支持；若移除版本距 2026-07-16 公告不足 90 天，则顺延到公告后至少 90 天的首个版本。按维护者 2026-07-17 决策，v1.2 尽快发布且不搭载 G3 removal；实际代码移除已移入「待立项」G3 条目，防止在 v1.2 后静默消失。
 
 - **G1**：随 v1.1 WP2 Phase 5 完成并移入本节。业务邮件任务 payload 改为 v2 domain-reference 格式；worker 在发送时根据业务行重新解析最新邮箱和 locale。迁移会移除 `kind='email'` 任务里的 `payload_json.to`：可安全还原业务事件的 retryable 行改写为 v2，不能安全还原的 retryable 行 dead-letter 并脱敏，terminal 行脱敏保留。登录码任务保持不存收件人地址。
 - **G4**：随 PR #123 完成，exact-head CI run #554 通过。`src/modules/i18n/key-completeness.test.ts` 递归比较 zh/en/ja 完整 key 路径集合，一次性报出所有 missing/extra；`tsc --noEmit` 已隐式保护多余/缺失 key（本条目把这层保护改为显式、具名、CI 可见，防止未来重构悄悄移除）。

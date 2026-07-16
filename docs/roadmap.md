@@ -2,24 +2,23 @@
 
 > ✅ 已完成｜▶ 当前主线｜🚧 计划中｜⏸ 推迟。只有一个阶段可以标记为当前主线。
 
-## 当前主线：v1.1「不只画师」 ▶
+## 当前主线：v1.2「登录与会员权益完成度」 ▶
 
-`v1.0.0` 已于 2026-07-06 正式发布（tag、GitHub Release、验收证据均已归档；#88、#64 已关闭）。发布后的审计复查（dead-letter 可见性、provider event fencing/ownership、translation 硬化、文档准确性、membership 分页、restore drills 上 CI、session-secret 符号链接加固等）已全部完成并合并，详见 CHANGELOG。
+`v1.1.0` 已于 2026-07-17 正式发布（tag `3a80b34`，验收证据见 [v1.1.0 release notes](./releases/v1.1.0-release-notes.md)）。`v1.0.0` 发布后的审计复查与 v1.1「不只画师」工作包均已完成并进入发布基线。
 
-当前状态：v1.1.0 release-ready。M1-M4 已合并（`97547b6`），package version 1.1.0；M5 全部验收证据（真实 SMTP 含 pacing/预算/operator 故障恢复、部署 dogfood、`v1.0.0` 原地升级演练含强制 file-safety remediation、带通知 key 的 backup/restore drill）已记录于 docs/releases/v1.1.0-release-notes.md，待发布 PR 合并后打 tag。
+当前状态：v1.1.0 已发布（2026-07-17，tag `3a80b34`）；v1.2 正在规划，范围、产品优先级、实施顺序与发布门槛见 [release-v1.2-plan.md](./release-v1.2-plan.md)。
 
-`v1.1` 新功能工作包不再等待固定发布后窗口。维护者已明确决定继续提高产品完成度，避免真实使用者长期停留在半成品状态；后续 WP 按需求明确度、实现风险和验收质量串行推进。范围、产品优先级、实施顺序与发布门槛见 [release-v1.1-plan.md](./release-v1.1-plan.md)。
+`v1.2` 不设置固定等待窗口。维护者已明确决定继续提高产品完成度，按需求明确度、实现风险和验收质量串行推进；G3 legacy compatibility removal 不搭载 v1.2，按 v1.1.0 release notes 的 90 天 policy 顺延至不早于 2026-10-14 的首个版本（预期 v1.3）。
 
 固定顺序：
 
 ```text
-v1.0.0 发布 + 发布后审计硬化 ✅
-→ WP1 第二主题 + 后台主题选择器（已实现并完成验收，PR #123 已合并）
-→ WP1 follow-up 第三内置主题 WordPress 经典（PR #156 已合并）
-→ WP3 Atom feed + WP4 SEO（PR #160/#161 已合并）
-→ WP2 新内容邮件通知（已交付代码与文档同步；真实 SMTP / 部署 dogfood 仍是发布门槛）
-→ WP5 赞助者鸣谢墙 + WP6 Umami 统计集成（PR #163/#164 已合并）
-→ M5 v1.1.0 验收与发布（进行中）
+v1.1.0 发布完成 ✅
+→ M1 邮件 Magic Link（粉丝/会员；验证码 fallback 保留）
+→ M2 Google / GitHub OAuth（粉丝/会员；管理员仍邮箱 + 密码）
+→ M3 Membership Bundle（`membership_tiers` 白名单 entitlements，Core-only）
+→ M4 债务包（G5 CI actions、G7 Plausible parity；dispatcher baseline 回归保持绿）
+→ M5 v1.2 验收与发布（不包含 G3 legacy removal）
 ```
 
 ## Phase 0：MVP 主链路 ✅
@@ -64,7 +63,7 @@ v1.0.0 发布 + 发布后审计硬化 ✅
 - 明暗模式、字体、颜色预设与受约束自由取色。
 - Theme 不负责权限、数据库访问或服务端 secret。
 
-**✅ WP1 已完成验收并合并：** 第二主题（Blog）、后台主题选择器与第三内置主题 WordPress 经典，见 [release-v1.1-plan.md](./release-v1.1-plan.md)。**当前状态：** v1.1.0 release-ready；WP2/WP3/WP4/WP5/WP6 均已交付并完成 M5 验收（证据见 docs/releases/v1.1.0-release-notes.md）。WP5 已把主题契约新增必选 `SupporterWall` 槽并同步三主题。**⏸ 仍推迟：** 主题包上传/主题市场；不规划第三方主题生命周期。
+**✅ WP1 已完成验收并合并：** 第二主题（Blog）、后台主题选择器与第三内置主题 WordPress 经典，见 [release-v1.1-plan.md](./release-v1.1-plan.md)。**当前状态：** v1.1.0 已发布；WP2/WP3/WP4/WP5/WP6 均已交付并完成 M5 验收（证据见 docs/releases/v1.1.0-release-notes.md）。WP5 已把主题契约新增必选 `SupporterWall` 槽并同步三主题。**⏸ 仍推迟：** 主题包上传/主题市场；不规划第三方主题生命周期。
 
 详见 [Theme 架构](./architecture/theme-system.md)。
 
@@ -113,15 +112,21 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 - 后续扩展优先以官方内置能力交付：主题、Integration adapter、邮件、SEO、统计、内容组织与运营工具都随 Core 版本一起维护和验收。
 - 若出现强需求，先以明确的 Core/Integration 功能设计进入路线图，不引入第三方任意扩展点。
 
-**Core Auth 候选项**：
+**Core Auth v1.2 主线**：
 
-- 邮件 Magic Link 登录：在现有邮箱验证码登录基础上增加一次性登录链接；保留验证码 fallback。实现时必须覆盖 token 哈希存储、短有效期、单次使用、重放保护、redirect allowlist、邮件客户端预取防误登录、Turnstile/限流复用与审计记录。
-- Google / GitHub OAuth：作为粉丝登录补充入口；后台加密配置 client secret，Integration 状态展示 provider 启用/配置状态。管理员登录第一版继续使用邮箱 + 密码。
+- 邮件 Magic Link 登录：在现有邮箱验证码登录基础上增加一次性登录链接；保留验证码 fallback。实现时必须覆盖 token 哈希存储、短有效期、单次使用 CAS、keyring/rotation、token-bearing 响应 `no-store` / `no-referrer` / `noindex`、tokenless result redirect、账号枚举抵抗、redirect allowlist、邮件客户端预取防误登录、Turnstile/限流复用与审计记录。
+- Google / GitHub OAuth：作为粉丝登录补充入口；后台加密配置 client secret，Integration 状态展示 provider 3-state。管理员登录继续使用邮箱 + 密码。provider identity 表唯一约束 `(provider, provider_account_id)`；绑定优先级为 provider identity first、verified-email auto-bind second、冲突 fail closed，GitHub 无 verified email 或 Google 未验证 email 均拒绝。
 
-**Membership 候选项**：
+**Membership v1.2 主线**：
 
-- Membership Bundle（会员权益组合）：在 `membership_tiers` 上配置一组可审计、白名单化的 entitlements，用于表达阅读、不同附件下载、提前观看、Beta 内容、邮件通讯等权益。第一版保留现有 tier level / required tier 兼容逻辑，不引入通用 `EntitlementGrant`，也不把 PPV/Tips 作为前置。
-- 后续如要让内容或文件声明精细权益要求，应先扩 Core 授权 helper 和下载鉴权测试，再逐步从 `requiredTierId` 过渡，避免绕过现有 `canAccessPost()` / `canAccessFile()` 保护。
+- Membership Bundle（会员权益组合）：在 `membership_tiers` 上配置一组可审计、白名单化的 entitlements，用于表达阅读、不同附件下载、提前观看、Beta 内容、邮件通讯等权益。第一版保留现有 tier level / required tier 兼容逻辑；entitlements 按当前 tier row 在访问时解析，编辑会立即影响既有会员；entitlement 写入必须与 ADR-0002 audit 同事务提交。不引入通用 `EntitlementGrant`，也不把 PPV/Tips 作为前置。
+- 后续如要让内容或文件声明精细权益要求，应先扩 Core 授权 helper 和下载鉴权测试，再逐步从 `requiredTierId` 过渡，避免绕过现有 `canAccessPost()` / `canAccessFile()` 保护。视频封面/缩略图/时长 metadata 不进入 v1.2。
+
+**v1.2 债务包**：
+
+- G5 CI actions Node 20 deprecation 处理：升级 action 主版本但保持不可变 commit SHA pin。
+- G7 Plausible SPA tracking parity：复用公开页谓词，补齐与 Umami 同等的非公开路径保护和 Integration status 语义。
+- dispatcher low-risk query optimization 已属 v1.1.0 baseline（migration 0021 indexes、once-per-tick sweep、real-PG split-claim tests）；v1.2 只要求保持回归绿，batch-claim worker model 继续范围外。
 
 ## Phase 9：Hub / 聚合发现暂不规划 ⏸
 
