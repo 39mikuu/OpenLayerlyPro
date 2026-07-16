@@ -22,15 +22,6 @@
 - **建议时机**：半天体量，搭车当前里程碑或任意小型维护批次。
 - **体量**：小。
 
-### G3 legacy 兼容面没有退场时间表
-
-- **现状**：v1 archive 探测、legacy footer 迁移、历史文件 backfill 等兼容代码
-  无限期存活，构成永久维护税。
-- **方向**：制定并公告弃用政策（例：v1 archive 支持至 v1.2；更旧实例须先升级到
-  v1.x 再跳）。弃用宣布得越早成本越低。
-- **建议时机**：v1.0.0 已发布但公告尚未包含弃用政策——**随 v1.1 首个沟通（release notes 或官网更新）补上**，代码移除按公告的时间表执行。
-- **体量**：政策宣布小；后续移除各自小。
-
 ### G5 CI actions 的 Node 20 弃用警告
 
 - **现状**：`checkout@v4`、`configure-pages@v5` 等被 runner 强制运行于 Node 24
@@ -53,6 +44,8 @@
 （当前无已立项但未完成的条目。）
 
 ## 已完成
+
+- **G3（政策公告部分）**：随 v1.1.0 release notes 公告弃用政策（见 `docs/releases/v1.1.0-release-notes.md` 的 Legacy Compatibility Deprecation Policy 节）：v1 archive restore（含 `--allow-legacy-v1-unknown-schema`）、legacy footer 迁移、pre-v1.0 文件 backfill 三条兼容路径在整个 v1.1.x 内继续支持，于 v1.2.0 移除（若 v1.2.0 距公告不足 90 天则顺延到公告后至少 90 天的首个版本）；更旧实例须先经 v1.1.x 升级/恢复。**代码移除本身按公告时间表在 v1.2 立项执行，届时另开条目/issue。**
 
 - **G1**：随 v1.1 WP2 Phase 5 完成并移入本节。业务邮件任务 payload 改为 v2 domain-reference 格式；worker 在发送时根据业务行重新解析最新邮箱和 locale。迁移会移除 `kind='email'` 任务里的 `payload_json.to`：可安全还原业务事件的 retryable 行改写为 v2，不能安全还原的 retryable 行 dead-letter 并脱敏，terminal 行脱敏保留。登录码任务保持不存收件人地址。
 - **G4**：随 PR #123 完成，exact-head CI run #554 通过。`src/modules/i18n/key-completeness.test.ts` 递归比较 zh/en/ja 完整 key 路径集合，一次性报出所有 missing/extra；`tsc --noEmit` 已隐式保护多余/缺失 key（本条目把这层保护改为显式、具名、CI 可见，防止未来重构悄悄移除）。

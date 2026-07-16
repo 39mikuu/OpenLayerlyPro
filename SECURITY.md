@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-OpenLayerlyPro's current published release is **v1.0.0** (the `v1.0.0` tag, published after the #88 real-environment acceptance gate passed on the exact release build). `v1.1.0` release prep is in progress at `97547b6` with M5 acceptance pending; it is not the published security-support gate until the release tag exists. Security fixes land on `main`. The older v0.1/v0.2 preview documentation is historical and is not the current release or security-support gate.
+OpenLayerlyPro's current published release is **v1.0.0** (the `v1.0.0` tag, published after the #88 real-environment acceptance gate passed on the exact release build). `v1.1.0` is release-ready: M1-M4 are merged at `97547b6` and all M5 acceptance evidence was collected on 2026-07-16 (see `docs/releases/v1.1.0-release-notes.md`); v1.0.0 remains the published security-support tag until the v1.1.0 release tag exists. Security fixes land on `main`. The older v0.1/v0.2 preview documentation is historical and is not the current release or security-support gate.
 
 Self-hosters running an older commit should reproduce against the latest `main` or upgrade through the documented migration/remediation flow before assuming a fix can be backported safely.
 
