@@ -428,7 +428,9 @@ for (const theme of themes) {
             ]);
 
             await page.goto(pageCase.path);
-            await expect(page.getByText(pageCase.expectedText)).toBeVisible();
+            await expect(
+              page.locator("body").getByText(pageCase.expectedText, { exact: true }),
+            ).toBeVisible();
             if (pageCase.expectTaxonomy) {
               await expect(page.getByText(CATEGORY_NAME).first()).toBeVisible();
               await expect(page.getByText(`#${TAG_NAME}`).first()).toBeVisible();
