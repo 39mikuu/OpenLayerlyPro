@@ -1,10 +1,51 @@
 # Upgrade
 
-> This procedure describes the current `main` upgrade path. It requires pending-payment remediation, a one-off forward migrator, and the mandatory file-safety backfill before the app starts. The merged S7 restore path adds archive integrity, schema probing, task neutralization, and DB↔storage convergence. For a production `v1.0.0` release, also complete [the v1.0 acceptance checklist](../release-v1.0-checklist.md).
+> This procedure describes the current `main` upgrade path. It requires pending-payment remediation, a one-off forward migrator, and the mandatory file-safety backfill before the app starts. The merged S7 restore path adds archive integrity, schema probing, task neutralization, and DB↔storage convergence. For `v1.1.0` release preparation, also complete the M5 acceptance evidence in [the v1.1.0 release notes](../releases/v1.1.0-release-notes.md).
 
 The v1.0 acceptance path is tested from the `v0.1.0` tag. The unreleased v0.2
 candidate and arbitrary historical commits are not supported upgrade sources.
 Downgrade migrations are not supported.
+
+## v1.0.0 to v1.1.0 Notes
+
+Before upgrading a `v1.0.0` deployment to `v1.1.0`, create a complete recovery
+point and keep the old app image/source, database/config/local archive, matching
+S3/R2 recovery point, and external secrets until the upgraded deployment and an
+isolated restore drill pass.
+
+`v1.1.0` adds migrations `0021` through `0027` for task claim indexes, public
+feed indexing, opt-in notification campaigns/deliveries/attempts/suppression,
+G1 transactional email payload privacy, notification delivery fencing, and the
+supporter wall. The normal app entrypoint reruns forward migrations
+idempotently, but production upgrades should still stage the new image, stop
+writes, and run the one-off migrator before starting the app.
+
+Compare `.env.example` with the deployment's `.env`. New notification queue and
+delivery controls include `TASK_TRANSACTIONAL_RESERVED_PER_BATCH`,
+`TASK_NOTIFICATION_MIN_PER_BATCH`,
+`TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH`,
+`NOTIFICATION_EMAIL_DAILY_BUDGET`, `NOTIFICATION_EMAIL_PACING_PER_MINUTE`,
+`NOTIFICATION_CAMPAIGN_EXPANSION_BATCH_SIZE`,
+`NOTIFICATION_DELIVERY_MAX_AGE_HOURS`, and
+`NOTIFICATION_UNSUBSCRIBE_TOKEN_MAX_AGE_DAYS`.
+
+Notification unsubscribe and suppression digest keys are separate from
+`SESSION_SECRET`. Compose production starts may leave the current direct secret
+values unset: the entrypoint defaults `NOTIFICATION_UNSUBSCRIBE_KEY_ID` and
+`NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID` to `current` and creates persistent
+`0600` files at `NOTIFICATION_UNSUBSCRIBE_SECRET_FILE` and
+`NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE`. Non-Compose deployments must
+provide direct `*_SECRET` values or readable regular files. Previous keys are
+never auto-generated; configure `NOTIFICATION_UNSUBSCRIBE_PREVIOUS_*` and
+`NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_*` only during explicit rotation and
+retain them until old tokens/digests no longer need verification.
+
+Backups created by `v1.1.0` use manifest `FORMAT_VERSION=4` and record
+notification key sources, key IDs, file paths when file-backed, and SHA-256
+fingerprints. Restore validates notification key continuity before replacing the
+production database. An archive containing WP2 notification data but lacking v4
+notification-key manifest fields fails closed unless the compatibility probe
+proves there is no notification continuity data to protect.
 
 ## 1. Review the Release
 
@@ -24,9 +65,10 @@ Create and retain a complete archive immediately before upgrading:
 ./scripts/backup.sh /srv/backups/openlayerly
 ```
 
-Do not proceed unless the command exits successfully. For local storage, the archive contains
-PostgreSQL, file-backed config/session secrets, and uploads. An environment-managed
-`SESSION_SECRET` is not archived; its fingerprint is recorded and the exact value must remain
+Do not proceed unless the command exits successfully. For local storage, the
+archive contains PostgreSQL, file-backed config/session/notification secrets,
+and uploads. Environment-managed `SESSION_SECRET` or notification secrets are
+not archived; their fingerprints are recorded and the exact values must remain
 in the operator's secret manager.
 
 For S3/R2, record and verify a matching bucket version/snapshot/provider recovery point. The archive alone cannot restore object bytes.
@@ -37,14 +79,15 @@ Record the archive, current commit/image, and object-storage recovery point:
 git rev-parse HEAD
 ```
 
-Current archives use manifest format v3: v2's checksums and the hardened S7
-restore pipeline plus mandatory image-authoritative runtime provenance,
-backup-tool provenance, and config-key fingerprint/format fields, all validated
+Current archives use manifest format v4: v3's image-authoritative runtime
+provenance, backup-tool provenance, and config-key fingerprint/format fields
+plus notification unsubscribe/suppression key continuity fields, all validated
 fail-closed before the production database is touched (see
 [backup-restore](backup-restore.md)). v1/v2 archives remain supported only as
 compatibility restore paths and warn that they predate image-authoritative
-provenance. Use `backup.sh --stop-app` when a self-consistent local snapshot is
-required, and keep the old deployment intact until verification completes.
+provenance; v3 archives predate WP2 notification key continuity. Use
+`backup.sh --stop-app` when a self-consistent local snapshot is required, and
+keep the old deployment intact until verification completes.
 
 ## 3. Stage the New Version Without Starting It
 
