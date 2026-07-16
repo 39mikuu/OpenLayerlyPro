@@ -6,6 +6,7 @@ export const ADMIN_LIST_CURSOR_MAX_LENGTH = 512;
 
 export type AdminListCursorScope =
   | "memberships"
+  | "supporter-wall"
   | "payments:pending"
   | "payments:history"
   | "files:active"
@@ -28,6 +29,7 @@ const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const CURSOR_KEYS = ["id", "scope", "timestamp", "version"];
 const CURSOR_SCOPES = new Set<AdminListCursorScope>([
   "memberships",
+  "supporter-wall",
   "payments:pending",
   "payments:history",
   "files:active",

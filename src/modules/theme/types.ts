@@ -1,6 +1,11 @@
 import type { ComponentType, ReactNode } from "react";
 
 import type { Translate } from "@/modules/i18n";
+import type {
+  SupporterWallFanEntry,
+  SupporterWallSettings,
+  SupporterWallViewModel,
+} from "@/modules/supporter-wall";
 
 /** 站内已注册的主题 id；后续新增主题在此扩展。 */
 export type ThemeId = "builtin" | "blog" | "wordpress";
@@ -28,6 +33,7 @@ export type SiteChromeView = {
   logoUrl: string | null;
   socialLinks: { name: string; url: string }[];
   isLoggedIn: boolean;
+  supporterWallEnabled: boolean;
   customFooterMarkup: string;
 };
 
@@ -110,7 +116,12 @@ export type LoginView = {
 
 export type MeView = {
   email: string;
+  displayName: string | null;
   isAdmin: boolean;
+  supporterWall: {
+    settings: SupporterWallSettings;
+    entry: Pick<SupporterWallFanEntry, "id" | "dedication" | "status" | "version"> | null;
+  };
   notificationPreferences: {
     newPostEmailEnabled: boolean;
     version: number;
@@ -179,6 +190,7 @@ export type ThemeComponents = {
   Me: ComponentType<{ view: MeView; t: Translate }>;
   MeOrders: ComponentType<{ view: MeOrdersView; t: Translate }>;
   Checkout: ComponentType<{ view: CheckoutView; t: Translate }>;
+  SupporterWall: ComponentType<{ view: SupporterWallViewModel; t: Translate }>;
 };
 
 export type ThemeColorVars = {

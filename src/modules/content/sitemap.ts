@@ -4,6 +4,7 @@ import { type DbClient, getDb } from "@/db";
 import { membershipTiers } from "@/db/schema";
 import { DEFAULT_LOCALE } from "@/modules/i18n";
 import { readPublicSiteInfoWithMetadata } from "@/modules/site";
+import { getSupporterWallSettings, getSupporterWallSitemapState } from "@/modules/supporter-wall";
 
 import {
   buildPostUrl,
@@ -114,11 +115,12 @@ export async function buildSitemapIndexResource(
 ): Promise<PublicHttpResource> {
   const baseUrl = getPublicSeoRootUrl(opts.baseUrl);
   const dbc = opts.dbc ?? getDb();
-  const [site, postCount, latestPostUpdatedAt, latestTierUpdatedAt] = await Promise.all([
+  const [site, postCount, latestPostUpdatedAt, latestTierUpdatedAt, wallState] = await Promise.all([
     readPublicSiteInfoWithMetadata(),
     countPublicPosts(dbc),
     readPublicPostSitemapLastModified(dbc),
     readPublicTierSitemapLastModified(dbc),
+    getSupporterWallSitemapState(dbc),
   ]);
   const shardSize = opts.shardSize ?? PUBLIC_SITEMAP_SHARD_SIZE;
   // Zero public posts advertise no post shards: an empty <urlset> is invalid
@@ -126,10 +128,15 @@ export async function buildSitemapIndexResource(
   const postShardCount = countPublicSitemapPostShards(postCount, shardSize);
   // Per-entry <lastmod> below is informational; the HTTP resource itself is
   // validated by strong ETag only (see buildPublicHttpResource).
+  // Toggling the supporter wall adds/removes /supporters inside static.xml.
+  // The settings clock feeds the child's informational lastmod, while the
+  // parsed enabled value below also feeds the strong ETag so same-millisecond
+  // writes cannot leave the index validator unchanged.
   const staticLastModifiedAt = maxPublicDateOrNull(
     site.feedIdentityUpdatedAt,
     latestPostUpdatedAt,
     latestTierUpdatedAt,
+    wallState.lastModifiedAt,
   );
   const entries: SitemapEntry[] = [
     {
@@ -141,7 +148,10 @@ export async function buildSitemapIndexResource(
       lastmod: latestPostUpdatedAt,
     })),
   ];
-  return buildPublicHttpResource(renderSitemapIndex(entries));
+  return buildPublicHttpResource(
+    renderSitemapIndex(entries),
+    `supporter-wall-enabled:${wallState.settings.enabled}`,
+  );
 }
 
 export async function buildStaticSitemapResource(
@@ -150,10 +160,11 @@ export async function buildStaticSitemapResource(
   } = {},
 ): Promise<PublicHttpResource> {
   const baseUrl = getPublicSeoRootUrl(opts.baseUrl);
-  const [site, latestPostUpdatedAt, latestTierUpdatedAt] = await Promise.all([
+  const [site, latestPostUpdatedAt, latestTierUpdatedAt, wallSettings] = await Promise.all([
     readPublicSiteInfoWithMetadata(),
     readPublicPostSitemapLastModified(),
     readPublicTierSitemapLastModified(),
+    getSupporterWallSettings(),
   ]);
   const listLastModifiedAt = maxPublicDateOrNull(site.feedIdentityUpdatedAt, latestPostUpdatedAt);
   const tiersLastModifiedAt = maxPublicDateOrNull(site.feedIdentityUpdatedAt, latestTierUpdatedAt);
@@ -168,6 +179,12 @@ export async function buildStaticSitemapResource(
     { loc: buildPublicUrl(baseUrl, "/posts"), lastmod: listLastModifiedAt },
     { loc: buildPublicUrl(baseUrl, "/tiers"), lastmod: tiersLastModifiedAt },
   ];
+  // /supporters only exists publicly while the wall is enabled (404 when
+  // off), so its sitemap entry is conditional; no lastmod — the wall's
+  // content is derived per request from membership state.
+  if (wallSettings.enabled) {
+    entries.push({ loc: buildPublicUrl(baseUrl, "/supporters") });
+  }
   return buildPublicHttpResource(renderSitemapUrlSet(entries));
 }
 

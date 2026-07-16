@@ -20,6 +20,7 @@ export type AdminNavItemKey =
   | "paymentMethods"
   | "downloads"
   | "notifications"
+  | "supporterWall"
   | "tasks"
   | "site"
   | "settings"
@@ -85,6 +86,11 @@ export const adminNavGroups: AdminNavGroup[] = [
     items: [
       { href: "/admin/downloads", key: "downloads", labelKey: "admin.nav.downloads" },
       { href: "/admin/notifications", key: "notifications", labelKey: "admin.nav.notifications" },
+      {
+        href: "/admin/supporter-wall",
+        key: "supporterWall",
+        labelKey: "admin.nav.supporterWall",
+      },
       { href: "/admin/tasks", key: "tasks", labelKey: "admin.nav.tasks" },
     ],
   },

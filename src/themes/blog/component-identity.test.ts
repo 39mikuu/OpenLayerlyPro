@@ -9,9 +9,15 @@ import { builtinTheme } from "@/themes/builtin";
 import { wordpressTheme } from "@/themes/wordpress";
 
 const blogReusedBodySlots = ["PostDetail", "Tiers", "Login", "Me", "MeOrders", "Checkout"] as const;
-const blogOverriddenSlots = ["Chrome", "Home", "PostList"] as const;
+const blogOverriddenSlots = ["Chrome", "Home", "PostList", "SupporterWall"] as const;
 const wordpressReusedSlots = ["Tiers", "Login", "Me", "MeOrders", "Checkout"] as const;
-const wordpressOverriddenSlots = ["Chrome", "Home", "PostList", "PostDetail"] as const;
+const wordpressOverriddenSlots = [
+  "Chrome",
+  "Home",
+  "PostList",
+  "PostDetail",
+  "SupporterWall",
+] as const;
 
 function expectSyntacticThemeCss(css: string, expectedFragment: string) {
   expect(css).toContain(".site-theme{");

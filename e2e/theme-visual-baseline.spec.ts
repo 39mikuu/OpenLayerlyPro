@@ -11,7 +11,9 @@ import {
   posts,
   postTags,
   siteSettings,
+  supporterWallEntries,
   tags,
+  users,
 } from "../src/db/schema";
 import { LOCALE_COOKIE } from "../src/modules/i18n/config";
 import { BLOG_DEFAULT_COLOR_PRESET_ID } from "../src/themes/blog/color-presets";
@@ -32,8 +34,13 @@ const POST_SLUG = "visual-baseline-studio-notes";
 const POST_TITLE = "Visual Baseline Studio Notes";
 const CATEGORY_NAME = "Studio Notes";
 const TAG_NAME = "Baseline";
+const SUPPORTER_DISPLAY_NAME = "Visual Baseline Supporter";
+const SUPPORTER_DEDICATION = "Thank you for the steady studio work.";
+const SUPPORTER_TIER_NAME = "Archive Member";
+const OVERFLOW_TIER_NAME = "T".repeat(100);
+const OVERFLOW_TIER_SLUG = "visual-overflow-tier";
 const FIXED_PUBLISHED_AT = new Date("2025-03-15T09:30:00.000Z");
-const fixtureTierSlugs = ["visual-supporter", "visual-archive-member"] as const;
+const fixtureTierSlugs = ["visual-supporter", "visual-archive-member", OVERFLOW_TIER_SLUG] as const;
 const fixtureCategorySlug = "studio-notes";
 const fixtureTagSlug = "baseline";
 const mutatedSettingKeys = [
@@ -52,6 +59,8 @@ const mutatedSettingKeys = [
   "artist_avatar_file_id",
   "site_logo_file_id",
   "site_icon_file_id",
+  "supporterWallEnabled",
+  "supporterWallMinLevel",
 ] as const;
 type SettingSnapshot = Record<string, unknown | undefined>;
 let originalSettings: SettingSnapshot = {};
@@ -59,6 +68,8 @@ type HiddenPostSnapshot = { id: string };
 type HiddenTierSnapshot = { id: string };
 let hiddenPublishedPosts: HiddenPostSnapshot[] = [];
 let hiddenActiveTiers: HiddenTierSnapshot[] = [];
+type HiddenSupporterSnapshot = { id: string; status: "pending" | "approved" | "hidden" };
+let hiddenApprovedSupporters: HiddenSupporterSnapshot[] = [];
 
 type ThemeId = "builtin" | "blog" | "wordpress";
 type ThemeMode = "light" | "dark";
@@ -66,9 +77,20 @@ type ThemeMode = "light" | "dark";
 const themes: readonly ThemeId[] = ["builtin", "blog", "wordpress"];
 const modes: readonly ThemeMode[] = ["light", "dark"];
 const pages = [
-  { id: "home", path: "/", expectTaxonomy: false },
-  { id: "posts", path: "/posts", expectTaxonomy: true },
-  { id: "post-detail", path: `/posts/${POST_SLUG}`, expectTaxonomy: true },
+  { id: "home", path: "/", expectTaxonomy: false, expectedText: POST_TITLE },
+  { id: "posts", path: "/posts", expectTaxonomy: true, expectedText: POST_TITLE },
+  {
+    id: "post-detail",
+    path: `/posts/${POST_SLUG}`,
+    expectTaxonomy: true,
+    expectedText: POST_TITLE,
+  },
+  {
+    id: "supporter-wall",
+    path: "/supporters",
+    expectTaxonomy: false,
+    expectedText: SUPPORTER_DISPLAY_NAME,
+  },
 ] as const;
 
 async function snapshotSettings(keys: readonly string[]): Promise<SettingSnapshot> {
@@ -112,12 +134,18 @@ async function cleanupFixtures() {
     await tx.delete(posts).where(sql`${posts.slug} = ${POST_SLUG}`);
     await tx.delete(categories).where(sql`${categories.slug} = ${fixtureCategorySlug}`);
     await tx.delete(tags).where(sql`${tags.slug} = ${fixtureTagSlug}`);
+    await tx
+      .delete(supporterWallEntries)
+      .where(
+        sql`${supporterWallEntries.userId} in (select id from users where email like 'visual-baseline-%@example.com')`,
+      );
     await tx.delete(memberships).where(
       sql`${memberships.tierId} in (select id from membership_tiers where slug in (${sql.join(
         fixtureTierSlugs.map((slug) => sql`${slug}`),
         sql`, `,
       )}))`,
     );
+    await tx.delete(users).where(sql`${users.email} like 'visual-baseline-%@example.com'`);
     await tx.delete(membershipTiers).where(inArray(membershipTiers.slug, [...fixtureTierSlugs]));
   });
 }
@@ -160,6 +188,25 @@ async function hideNonVisualFixtureContent() {
           ),
         );
     }
+    // Non-fixture approved supporters would leak into the /supporters
+    // screenshot (discontinued tiers intentionally stay visible), so hide
+    // them for the run and restore their original status afterwards —
+    // mirroring the posts/tiers snapshot pattern above instead of deleting.
+    hiddenApprovedSupporters = await tx
+      .select({ id: supporterWallEntries.id, status: supporterWallEntries.status })
+      .from(supporterWallEntries)
+      .where(sql`${supporterWallEntries.status} = 'approved'`);
+    if (hiddenApprovedSupporters.length > 0) {
+      await tx
+        .update(supporterWallEntries)
+        .set({ status: "hidden" })
+        .where(
+          inArray(
+            supporterWallEntries.id,
+            hiddenApprovedSupporters.map((entry) => entry.id),
+          ),
+        );
+    }
   });
 }
 
@@ -184,6 +231,17 @@ async function restoreNonVisualFixtureContent() {
           inArray(
             membershipTiers.id,
             hiddenActiveTiers.map((tier) => tier.id),
+          ),
+        );
+    }
+    if (hiddenApprovedSupporters.length > 0) {
+      await tx
+        .update(supporterWallEntries)
+        .set({ status: "approved" })
+        .where(
+          inArray(
+            supporterWallEntries.id,
+            hiddenApprovedSupporters.map((entry) => entry.id),
           ),
         );
     }
@@ -244,6 +302,8 @@ test.beforeAll(async () => {
       site_verification: [],
       public_integrations: [],
       public_csp_revision: "visual-baseline",
+      supporterWallEnabled: true,
+      supporterWallMinLevel: sql`'null'::jsonb`,
       // Each theme's own real default preset (not an arbitrary fixture choice) - this
       // is what a fresh, unconfigured install actually renders.
       theme_config: {
@@ -263,30 +323,59 @@ test.beforeAll(async () => {
         });
     }
 
-    await tx.insert(membershipTiers).values([
-      {
-        name: "Supporter",
-        slug: "visual-supporter",
-        description: "Access the public archive and support ongoing studio notes.",
-        priceLabel: "$9 / month",
-        level: 10,
-        durationDays: 31,
-        purchaseEnabled: true,
-        isActive: true,
-        sortOrder: 1,
-      },
-      {
-        name: "Archive Member",
-        slug: "visual-archive-member",
-        description: "A deterministic membership card for the home-page baseline.",
-        priceLabel: "$19 / month",
-        level: 20,
-        durationDays: 31,
-        purchaseEnabled: true,
-        isActive: true,
-        sortOrder: 2,
-      },
-    ]);
+    const seededTiers = await tx
+      .insert(membershipTiers)
+      .values([
+        {
+          name: "Supporter",
+          slug: "visual-supporter",
+          description: "Access the public archive and support ongoing studio notes.",
+          priceLabel: "$9 / month",
+          level: 10,
+          durationDays: 31,
+          purchaseEnabled: true,
+          isActive: true,
+          sortOrder: 1,
+        },
+        {
+          name: SUPPORTER_TIER_NAME,
+          slug: "visual-archive-member",
+          description: "A deterministic membership card for the home-page baseline.",
+          priceLabel: "$19 / month",
+          level: 20,
+          durationDays: 31,
+          purchaseEnabled: true,
+          isActive: true,
+          sortOrder: 2,
+        },
+      ])
+      .returning({ id: membershipTiers.id, slug: membershipTiers.slug });
+    const supporterTier = seededTiers.find((tier) => tier.slug === "visual-archive-member");
+    if (!supporterTier) throw new Error("Visual supporter tier fixture was not created");
+    const [supporter] = await tx
+      .insert(users)
+      .values({
+        email: "visual-baseline-supporter@example.com",
+        displayName: SUPPORTER_DISPLAY_NAME,
+        role: "member",
+      })
+      .returning({ id: users.id });
+    await tx.insert(memberships).values({
+      userId: supporter.id,
+      tierId: supporterTier.id,
+      source: "manual",
+      status: "active",
+      startsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      // Relative far-future end: the page never displays it, and a fixed date
+      // would silently expire the fixture and blank the wall screenshots.
+      endsAt: new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
+      note: "Visual baseline supporter wall fixture",
+    });
+    await tx.insert(supporterWallEntries).values({
+      userId: supporter.id,
+      dedication: SUPPORTER_DEDICATION,
+      status: "approved",
+    });
 
     const [category] = await tx
       .insert(categories)
@@ -339,7 +428,9 @@ for (const theme of themes) {
             ]);
 
             await page.goto(pageCase.path);
-            await expect(page.getByText(POST_TITLE)).toBeVisible();
+            await expect(
+              page.locator("body").getByText(pageCase.expectedText, { exact: true }),
+            ).toBeVisible();
             if (pageCase.expectTaxonomy) {
               await expect(page.getByText(CATEGORY_NAME).first()).toBeVisible();
               await expect(page.getByText(`#${TAG_NAME}`).first()).toBeVisible();
@@ -399,7 +490,7 @@ test.describe("wordpress theme preset and mobile baselines", () => {
       ]);
 
       await page.goto(pageCase.path);
-      await expect(page.getByText(POST_TITLE)).toBeVisible();
+      await expect(page.getByText(pageCase.expectedText)).toBeVisible();
       await expect(page).toHaveScreenshot(`wordpress-mobile-${pageCase.id}.png`, {
         animations: "disabled",
         fullPage: true,
@@ -407,4 +498,106 @@ test.describe("wordpress theme preset and mobile baselines", () => {
       });
     });
   }
+
+  // The public contract allows a 50-char display name, a 100-char tier name,
+  // and a 200-char plain dedication with no break opportunities (e.g. an
+  // unlinked URL); this test pins overflow-wrap:anywhere and shrinkable grid
+  // tracks at the narrowest layout.
+  test("supporter-wall themes wrap unbroken mobile content", async ({ page, context }) => {
+    const OVERFLOW_DISPLAY_NAME = `Overflow${"M".repeat(42)}`;
+    const OVERFLOW_DEDICATION = `https://example.com/${"m".repeat(180)}`;
+    const db = getDb();
+    const { overflowTierId, overflowUserId } = await db.transaction(async (tx) => {
+      const [overflowTier] = await tx
+        .insert(membershipTiers)
+        .values({
+          name: OVERFLOW_TIER_NAME,
+          slug: OVERFLOW_TIER_SLUG,
+          description: "A maximum-length tier name for supporter wall overflow coverage.",
+          priceLabel: "$29 / month",
+          level: 30,
+          durationDays: 31,
+          purchaseEnabled: true,
+          isActive: true,
+          sortOrder: 3,
+        })
+        .returning({ id: membershipTiers.id });
+      if (!overflowTier) throw new Error("Visual overflow tier fixture was not created");
+      const [overflowUser] = await tx
+        .insert(users)
+        .values({
+          email: "visual-baseline-overflow@example.com",
+          displayName: OVERFLOW_DISPLAY_NAME,
+          role: "member",
+        })
+        .returning({ id: users.id });
+      if (!overflowUser) throw new Error("Visual overflow user fixture was not created");
+      await tx.insert(memberships).values({
+        userId: overflowUser.id,
+        tierId: overflowTier.id,
+        source: "manual",
+        status: "active",
+        startsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+        endsAt: new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
+        note: "Visual baseline supporter wall overflow fixture",
+      });
+      await tx.insert(supporterWallEntries).values({
+        userId: overflowUser.id,
+        dedication: OVERFLOW_DEDICATION,
+        status: "approved",
+      });
+      return { overflowTierId: overflowTier.id, overflowUserId: overflowUser.id };
+    });
+
+    try {
+      await upsertSetting("theme_config", {
+        builtin: { colorPreset: BUILTIN_DEFAULT_COLOR_PRESET_ID },
+        blog: { colorPreset: BLOG_DEFAULT_COLOR_PRESET_ID },
+        wordpress: { colorPreset: WORDPRESS_DEFAULT_COLOR_PRESET_ID },
+      });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await context.addCookies([
+        { name: THEME_MODE_COOKIE, value: "light", url: BASE_URL },
+        { name: LOCALE_COOKIE, value: SCREENSHOT_LOCALE, url: BASE_URL },
+      ]);
+
+      for (const themeId of ["builtin", "blog", "wordpress"] as const) {
+        await setActiveTheme(themeId);
+        await page.goto("/supporters");
+        await expect(page.getByText(OVERFLOW_DISPLAY_NAME)).toBeVisible();
+        await expect(page.getByText(OVERFLOW_TIER_NAME, { exact: true })).toBeVisible();
+        // Unbroken values must wrap inside the theme instead of widening the
+        // 390px layout into horizontal overflow.
+        const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+        expect(scrollWidth, `${themeId} supporter wall overflowed`).toBeLessThanOrEqual(390);
+      }
+
+      // The loop above exercises the legal 100-character tier name. Restore
+      // the existing screenshot's short label and reload before comparing its
+      // pixels, so this behavioral regression check does not create unrelated
+      // baseline churn.
+      await db
+        .update(membershipTiers)
+        .set({ name: SUPPORTER_TIER_NAME })
+        .where(sql`${membershipTiers.id} = ${overflowTierId}`);
+      await page.reload();
+      await expect(page.getByText(OVERFLOW_DISPLAY_NAME)).toBeVisible();
+      await expect(page).toHaveScreenshot("wordpress-mobile-supporter-wall-overflow.png", {
+        animations: "disabled",
+        fullPage: true,
+        mask: [page.getByText(/©\s*\d{4}/)],
+      });
+    } finally {
+      // Later suites and the shared supporter-wall baselines must not see
+      // this extra approved supporter.
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(supporterWallEntries)
+          .where(sql`${supporterWallEntries.userId} = ${overflowUserId}`);
+        await tx.delete(memberships).where(sql`${memberships.userId} = ${overflowUserId}`);
+        await tx.delete(users).where(sql`${users.id} = ${overflowUserId}`);
+        await tx.delete(membershipTiers).where(sql`${membershipTiers.id} = ${overflowTierId}`);
+      });
+    }
+  });
 });

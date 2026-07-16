@@ -37,6 +37,11 @@ export function Chrome({
             <a href="/tiers" className="transition-colors hover:text-foreground">
               {t("nav.tiers")}
             </a>
+            {view.supporterWallEnabled ? (
+              <a href="/supporters" className="transition-colors hover:text-foreground">
+                {t("nav.supporters")}
+              </a>
+            ) : null}
             {view.isLoggedIn ? (
               <>
                 <a href="/me" className="transition-colors hover:text-foreground">

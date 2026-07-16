@@ -1,0 +1,1 @@
+CREATE INDEX "supporter_wall_entries_created_id_idx" ON "supporter_wall_entries" USING btree ("created_at","id");

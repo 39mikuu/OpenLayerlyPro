@@ -93,9 +93,14 @@ describe("public projection helpers", () => {
 
   it("builds strong validators and public route headers", () => {
     const resource = buildPublicHttpResource("<xml/>");
+    const disabledRevision = buildPublicHttpResource("<xml/>", "wall:false");
+    const enabledRevision = buildPublicHttpResource("<xml/>", "wall:true");
     const headers = publicXmlHeaders(resource, "application/xml; charset=utf-8");
 
     expect(resource.etag).toMatch(/^"[A-Za-z0-9_-]+"$/);
+    expect(disabledRevision.etag).not.toBe(resource.etag);
+    expect(enabledRevision.etag).not.toBe(disabledRevision.etag);
+    expect(buildPublicHttpResource("<xml/>", "wall:false").etag).toBe(disabledRevision.etag);
     expect(headers.get("content-type")).toBe("application/xml; charset=utf-8");
     expect(headers.get("cache-control")).toBe(PUBLIC_SEO_CACHE_CONTROL);
     expect(headers.get("x-content-type-options")).toBe("nosniff");

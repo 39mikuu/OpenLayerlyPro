@@ -33,3 +33,18 @@ The active theme (`builtin`, `blog`, or `wordpress`, selectable from the appeara
 ## WordPress 经典主题
 
 The `wordpress` theme is a built-in classic blog theme with a main content column and right sidebar. It offers two fixed color presets, `gofun-seiji` and `layer-seal`; admins can select the preset from the appearance card, but the API does not expose or accept raw CSS variables.
+
+## Supporter Wall Administration
+
+Admin path: `/admin/supporter-wall`
+
+The supporter wall is separate from general site settings and is disabled by default. On its admin
+page, the creator can enable or disable the public `/supporters` page, set an optional minimum
+effective membership level, review pending dedications, approve entries, and hide entries.
+
+Supporters must first set a display name and explicitly opt in from their account page. The public
+wall shows only the display name, effective tier name, and approved plain-text dedication; it never
+falls back to an email address and never exposes payment amounts. Eligibility is re-derived on each
+public request, so expiry, suspension, revocation, payment reversal, or falling below the configured
+level removes the entry without a scheduled cleanup task. Settings and moderation changes are
+audited; stale moderation actions are rejected by entry version.

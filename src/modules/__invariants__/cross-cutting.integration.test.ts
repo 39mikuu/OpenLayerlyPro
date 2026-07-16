@@ -19,6 +19,12 @@ import { executeScheduledPublish, getPublishedPostBySlug, schedulePost } from "@
 import { canAccessFile } from "@/modules/download";
 import { getActiveMembership } from "@/modules/membership";
 import { approvePaymentRequest, reversePaymentApproval } from "@/modules/payment";
+import {
+  applySupporterWallSettingsUpdate,
+  approveSupporterWallEntry,
+  getSupporterWallViewModel,
+  upsertOptIn,
+} from "@/modules/supporter-wall";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -39,7 +45,7 @@ describeWithDatabase("cross-cutting core invariants", () => {
       .insert(users)
       .values([
         { email: `admin-${randomUUID()}@example.test`, role: "admin" },
-        { email: `fan-${randomUUID()}@example.test` },
+        { email: `fan-${randomUUID()}@example.test`, displayName: "Cross Fan" },
       ])
       .returning();
     const [tier] = await db
@@ -103,6 +109,20 @@ describeWithDatabase("cross-cutting core invariants", () => {
       membership: { id: approved.grantedMembershipId, status: "active" },
     });
     await expect(canAccessFile(fan, file)).resolves.toMatchObject({ allowed: true });
+    await applySupporterWallSettingsUpdate({
+      enabled: true,
+      minLevel: null,
+      actor: { type: "admin", id: admin.id },
+    });
+    const wallEntry = await upsertOptIn({ userId: fan.id, dedication: "cross-cutting thanks" });
+    await approveSupporterWallEntry({
+      id: wallEntry.id,
+      expectedVersion: wallEntry.version,
+      actor: { type: "admin", id: admin.id },
+    });
+    await expect(getSupporterWallViewModel()).resolves.toMatchObject({
+      supporters: [expect.objectContaining({ displayName: "Cross Fan" })],
+    });
 
     await expect(approvePaymentRequest(request.id, admin.id)).rejects.toMatchObject({
       code: "paymentNotPending",
@@ -138,6 +158,7 @@ describeWithDatabase("cross-cutting core invariants", () => {
     await reversePaymentApproval(request.id, admin.id, "duplicate transfer");
     await expect(getActiveMembership(fan.id)).resolves.toBeNull();
     await expect(canAccessFile(fan, file)).resolves.toMatchObject({ allowed: false });
+    await expect(getSupporterWallViewModel()).resolves.toMatchObject({ supporters: [] });
 
     const [reverseAudit] = await db
       .select()

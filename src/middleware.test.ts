@@ -141,8 +141,31 @@ describe("document security middleware", () => {
     expect(forwardedRequestHeader(response, "x-public-security-render")).toBeNull();
   });
 
+  it("adds public integration sources and render marker to supporter wall", async () => {
+    mocks.getPublicCspRuntimeConfig.mockResolvedValue({
+      effectiveMode: "enforce",
+      revision: "public-revision",
+      sources: {
+        ...emptySources,
+        script: ["https://plausible.io", "https://custom-analytics.example"],
+        connect: ["https://analytics.umami.is"],
+      },
+    });
+
+    const response = await middleware(request("/supporters"));
+    const policy = response.headers.get("content-security-policy");
+
+    expect(mocks.getPublicCspRuntimeConfig).toHaveBeenCalledTimes(1);
+    expect(mocks.readPublicSecurityState).not.toHaveBeenCalled();
+    expect(policy).toContain("https://plausible.io");
+    expect(policy).toContain("https://custom-analytics.example");
+    expect(policy).toContain("https://analytics.umami.is");
+    expect(forwardedRequestHeader(response, "x-csp-config-revision")).toBe("public-revision");
+    expect(forwardedRequestHeader(response, "x-public-security-render")).toBe("1");
+  });
+
   it("keeps integrations out of login and member documents without overriding rollout mode", async () => {
-    for (const pathname of ["/login", "/me", "/checkout/tier-id"]) {
+    for (const pathname of ["/login", "/me", "/checkout", "/checkout/tier-id"]) {
       const response = await middleware(request(pathname));
 
       expect(response.headers.get("content-security-policy")).toBeNull();
@@ -150,7 +173,7 @@ describe("document security middleware", () => {
       expect(forwardedRequestHeader(response, "x-public-security-render")).toBeNull();
     }
     expect(mocks.getPublicCspRuntimeConfig).not.toHaveBeenCalled();
-    expect(mocks.readPublicSecurityState).toHaveBeenCalledTimes(3);
+    expect(mocks.readPublicSecurityState).toHaveBeenCalledTimes(4);
   });
 
   it("preserves report-only mode when optional storage-source derivation fails", async () => {

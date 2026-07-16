@@ -6,6 +6,7 @@ import { WORDPRESS_COLOR_PRESETS, WORDPRESS_DEFAULT_COLOR_PRESET_ID } from "./co
 import { Home } from "./home";
 import { PostDetail } from "./post-detail";
 import { PostList } from "./post-list";
+import { SupporterWall } from "./supporter-wall";
 
 /** WordPress 经典主题：主栏 + 侧栏的传统博客阅读形态。 */
 export const wordpressTheme: Theme = {
@@ -17,6 +18,7 @@ export const wordpressTheme: Theme = {
     Home,
     PostList,
     PostDetail,
+    SupporterWall,
   },
   colorPresets: WORDPRESS_COLOR_PRESETS,
   defaultColorPresetId: WORDPRESS_DEFAULT_COLOR_PRESET_ID,

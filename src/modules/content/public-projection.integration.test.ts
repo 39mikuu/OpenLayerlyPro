@@ -2,7 +2,7 @@
 // side effect can read it (same pattern as feed.integration.test.ts).
 process.env.APP_URL = "https://seo.example";
 
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { GET as sitemapIndexGET } from "@/app/sitemap.xml/route";
@@ -34,6 +34,7 @@ import {
   buildSitemapIndexResource,
   buildStaticSitemapResource,
 } from "@/modules/content/sitemap";
+import { applySupporterWallSettingsUpdate } from "@/modules/supporter-wall";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -379,6 +380,45 @@ describeWithDatabase("public projection SEO integration", () => {
     expect(byLoc.get(`${APP_URL}/tiers`)).toBe("2026-07-11T09:00:00.000Z");
     // …while /posts stays on post recency.
     expect(byLoc.get(`${APP_URL}/posts`)).toBe("2026-07-10T12:00:00.000Z");
+  });
+
+  it("changes the sitemap index strong ETag when wall toggles share one timestamp", async () => {
+    const sharedUpdatedAt = new Date("2026-07-12T00:00:00.000Z");
+    const writeWallSettings = async (enabled: boolean) => {
+      await applySupporterWallSettingsUpdate({
+        enabled,
+        minLevel: null,
+        actor: { type: "system", id: null },
+      });
+      // Reproduce two real writes landing in the same JS millisecond. The
+      // index body stays byte-identical, so only the enabled-state revision
+      // can invalidate its strong ETag when static.xml membership changes.
+      await db
+        .update(siteSettings)
+        .set({ updatedAt: sharedUpdatedAt })
+        .where(inArray(siteSettings.key, ["supporterWallEnabled", "supporterWallMinLevel"]));
+      return Promise.all([
+        buildSitemapIndexResource({ baseUrl: APP_URL }),
+        buildStaticSitemapResource({ baseUrl: APP_URL }),
+      ]);
+    };
+
+    const [disabledIndex, disabledStatic] = await writeWallSettings(false);
+    expect(disabledStatic.body).not.toContain(`${APP_URL}/supporters`);
+    expect(disabledIndex.body).toContain("2026-07-12T00:00:00.000Z");
+    expect(disabledIndex.etag).toMatch(/^"[^"]+"$/);
+
+    const [enabledIndex, enabledStatic] = await writeWallSettings(true);
+    expect(enabledStatic.body).toContain(`<loc>${APP_URL}/supporters</loc>`);
+    expect(enabledIndex.body).toBe(disabledIndex.body);
+    expect(enabledIndex.etag).not.toBe(disabledIndex.etag);
+
+    const [redisabledIndex, redisabledStatic] = await writeWallSettings(false);
+    expect(redisabledStatic.body).not.toContain(`${APP_URL}/supporters`);
+    expect(redisabledStatic).toEqual(disabledStatic);
+    expect(redisabledIndex.body).toBe(enabledIndex.body);
+    expect(redisabledIndex.etag).not.toBe(enabledIndex.etag);
+    expect(redisabledIndex.etag).toBe(disabledIndex.etag);
   });
 
   it("404s a trailing post sitemap shard that shrinks after count", async () => {
