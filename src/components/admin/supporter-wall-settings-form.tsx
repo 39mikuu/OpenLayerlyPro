@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/client";
 import type { SupporterWallSettings } from "@/modules/supporter-wall";
+import { SUPPORTER_WALL_MAX_MIN_LEVEL } from "@/modules/supporter-wall/constants";
 
 export function SupporterWallSettingsForm({ settings }: { settings: SupporterWallSettings }) {
   const router = useRouter();
@@ -24,7 +25,12 @@ export function SupporterWallSettingsForm({ settings }: { settings: SupporterWal
     try {
       const trimmed = minLevel.trim();
       const parsedMinLevel = trimmed === "" ? null : Number(trimmed);
-      if (parsedMinLevel !== null && (!Number.isInteger(parsedMinLevel) || parsedMinLevel < 0)) {
+      if (
+        parsedMinLevel !== null &&
+        (!Number.isInteger(parsedMinLevel) ||
+          parsedMinLevel < 0 ||
+          parsedMinLevel > SUPPORTER_WALL_MAX_MIN_LEVEL)
+      ) {
         throw new Error(t("errors.supporterWallInvalidMinLevel"));
       }
       await api<SupporterWallSettings>("/api/admin/supporter-wall/settings", {
@@ -55,6 +61,7 @@ export function SupporterWallSettingsForm({ settings }: { settings: SupporterWal
         <Input
           inputMode="numeric"
           min={0}
+          max={SUPPORTER_WALL_MAX_MIN_LEVEL}
           step={1}
           type="number"
           value={minLevel}

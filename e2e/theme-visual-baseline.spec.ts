@@ -493,4 +493,74 @@ test.describe("wordpress theme preset and mobile baselines", () => {
       });
     });
   }
+
+  // The public contract allows a 50-char display name and a 200-char plain
+  // dedication with no break opportunities (e.g. an unlinked URL); this
+  // baseline pins the break-words handling at the narrowest layout.
+  test("wordpress mobile supporter-wall overflow visual baseline", async ({ page, context }) => {
+    const OVERFLOW_DISPLAY_NAME = `Overflow${"M".repeat(42)}`;
+    const OVERFLOW_DEDICATION = `https://example.com/${"m".repeat(180)}`;
+    const db = getDb();
+    const supporterTier = await db
+      .select({ id: membershipTiers.id })
+      .from(membershipTiers)
+      .where(sql`${membershipTiers.slug} = 'visual-archive-member'`);
+    if (!supporterTier[0]) throw new Error("Visual supporter tier fixture was not created");
+    const [overflowUser] = await db
+      .insert(users)
+      .values({
+        email: "visual-baseline-overflow@example.com",
+        displayName: OVERFLOW_DISPLAY_NAME,
+        role: "member",
+      })
+      .returning({ id: users.id });
+    await db.insert(memberships).values({
+      userId: overflowUser!.id,
+      tierId: supporterTier[0].id,
+      source: "manual",
+      status: "active",
+      startsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      endsAt: new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
+      note: "Visual baseline supporter wall overflow fixture",
+    });
+    await db.insert(supporterWallEntries).values({
+      userId: overflowUser!.id,
+      dedication: OVERFLOW_DEDICATION,
+      status: "approved",
+    });
+
+    try {
+      await setActiveTheme("wordpress");
+      await upsertSetting("theme_config", {
+        builtin: { colorPreset: BUILTIN_DEFAULT_COLOR_PRESET_ID },
+        blog: { colorPreset: BLOG_DEFAULT_COLOR_PRESET_ID },
+        wordpress: { colorPreset: WORDPRESS_DEFAULT_COLOR_PRESET_ID },
+      });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await context.addCookies([
+        { name: THEME_MODE_COOKIE, value: "light", url: BASE_URL },
+        { name: LOCALE_COOKIE, value: SCREENSHOT_LOCALE, url: BASE_URL },
+      ]);
+
+      await page.goto("/supporters");
+      await expect(page.getByText(OVERFLOW_DISPLAY_NAME)).toBeVisible();
+      // Unbroken values must wrap inside the card instead of widening the
+      // 390px layout into horizontal overflow.
+      const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+      expect(scrollWidth).toBeLessThanOrEqual(390);
+      await expect(page).toHaveScreenshot("wordpress-mobile-supporter-wall-overflow.png", {
+        animations: "disabled",
+        fullPage: true,
+        mask: [page.getByText(/©\s*\d{4}/)],
+      });
+    } finally {
+      // Later suites and the shared supporter-wall baselines must not see
+      // this extra approved supporter.
+      await db
+        .delete(supporterWallEntries)
+        .where(sql`${supporterWallEntries.userId} = ${overflowUser!.id}`);
+      await db.delete(memberships).where(sql`${memberships.userId} = ${overflowUser!.id}`);
+      await db.delete(users).where(sql`${users.id} = ${overflowUser!.id}`);
+    }
+  });
 });

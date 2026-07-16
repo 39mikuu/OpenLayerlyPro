@@ -4,7 +4,9 @@ import type { SupporterWallViewModel } from "@/modules/supporter-wall";
 export function SupporterWall({ view, t }: { view: SupporterWallViewModel; t: Translate }) {
   return (
     <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]">
-      <main className="space-y-6">
+      {/* The WordPress chrome already wraps page children in <main>; a nested
+          main landmark is invalid, so this inner column is a plain section. */}
+      <section className="space-y-6">
         <header className="border-b pb-5">
           <p className="text-xs font-bold uppercase tracking-[0.24em] text-primary">
             {t("supporters.eyebrow")}
@@ -24,12 +26,12 @@ export function SupporterWall({ view, t }: { view: SupporterWallViewModel; t: Tr
                 key={`${supporter.displayName}-${supporter.tierName}-${index}`}
                 className="rounded-lg border bg-card p-5"
               >
-                <h2 className="font-bold">{supporter.displayName}</h2>
+                <h2 className="break-words font-bold">{supporter.displayName}</h2>
                 <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   {supporter.tierName}
                 </p>
                 {supporter.dedication ? (
-                  <p className="mt-4 whitespace-pre-wrap text-sm leading-6">
+                  <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-6">
                     {supporter.dedication}
                   </p>
                 ) : (
@@ -41,7 +43,7 @@ export function SupporterWall({ view, t }: { view: SupporterWallViewModel; t: Tr
             ))}
           </div>
         )}
-      </main>
+      </section>
 
       <aside className="rounded-lg border bg-card p-5 text-sm text-muted-foreground">
         <h2 className="font-bold text-foreground">{t("supporters.sidebarTitle")}</h2>

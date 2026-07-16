@@ -160,6 +160,9 @@ export const supporterWallEntries = pgTable(
       table.createdAt,
       table.id,
     ),
+    // Backward scan satisfies the admin list's all-status
+    // (created_at desc, id desc) keyset order without a sort.
+    index("supporter_wall_entries_created_id_idx").on(table.createdAt, table.id),
     check(
       "supporter_wall_entries_dedication_length_check",
       sql`char_length(${table.dedication}) <= 200`,

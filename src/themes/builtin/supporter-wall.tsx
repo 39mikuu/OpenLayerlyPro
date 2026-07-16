@@ -32,12 +32,14 @@ export function SupporterWall({ view, t }: { view: SupporterWallViewModel; t: Tr
               key={`${supporter.displayName}-${supporter.tierName}-${index}`}
               className="rounded-xl border bg-card p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)]"
             >
-              <p className="text-lg font-semibold">{supporter.displayName}</p>
+              <p className="break-words text-lg font-semibold">{supporter.displayName}</p>
               <p className="mt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 {supporter.tierName}
               </p>
               {supporter.dedication ? (
-                <p className="mt-4 whitespace-pre-wrap text-sm leading-6">{supporter.dedication}</p>
+                <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-6">
+                  {supporter.dedication}
+                </p>
               ) : (
                 <p className="mt-4 text-sm text-muted-foreground">{t("supporters.noDedication")}</p>
               )}

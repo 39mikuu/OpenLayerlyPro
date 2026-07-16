@@ -11,6 +11,10 @@ import {
 } from "@/modules/admin/pagination";
 import { type AuditActor, recordAudit } from "@/modules/audit";
 
+import { SUPPORTER_WALL_MAX_MIN_LEVEL } from "./constants";
+
+export { SUPPORTER_WALL_MAX_MIN_LEVEL } from "./constants";
+
 const SUPPORTER_WALL_ENABLED_KEY = "supporterWallEnabled";
 const SUPPORTER_WALL_MIN_LEVEL_KEY = "supporterWallMinLevel";
 const SUPPORTER_WALL_SETTING_KEYS = [
@@ -118,7 +122,8 @@ function parseStoredSettings(rows: SettingRow[]): StoredSettingsParse {
   if (
     typeof minLevelRow.valueJson === "number" &&
     Number.isInteger(minLevelRow.valueJson) &&
-    minLevelRow.valueJson >= 0
+    minLevelRow.valueJson >= 0 &&
+    minLevelRow.valueJson <= SUPPORTER_WALL_MAX_MIN_LEVEL
   ) {
     return {
       settings: { enabled, minLevel: minLevelRow.valueJson },
@@ -157,12 +162,35 @@ export async function getSupporterWallSettings(
   return parseStoredSettings(await readSettingRows(dbc)).settings;
 }
 
+/**
+ * Latest update time of the wall settings rows. The sitemap index folds this
+ * into the static child's lastmod/ETag input: toggling the wall changes
+ * static.xml, so the index must change too or conditional revalidation keeps
+ * serving 304 for a stale child list.
+ */
+export async function getSupporterWallSettingsLastModified(
+  dbc: DbClient = getDb(),
+): Promise<Date | null> {
+  const [row] = await dbc
+    .select({ lastModifiedAt: sql<Date | string | null>`max(${siteSettings.updatedAt})` })
+    .from(siteSettings)
+    .where(inArray(siteSettings.key, [...SUPPORTER_WALL_SETTING_KEYS]));
+  const value = row?.lastModifiedAt;
+  if (!value) return null;
+  return value instanceof Date ? value : new Date(value);
+}
+
 export async function applySupporterWallSettingsUpdate(input: {
   enabled: boolean;
   minLevel: number | null;
   actor: AuditActor;
 }): Promise<SupporterWallSettings> {
-  if (input.minLevel !== null && (!Number.isInteger(input.minLevel) || input.minLevel < 0)) {
+  if (
+    input.minLevel !== null &&
+    (!Number.isInteger(input.minLevel) ||
+      input.minLevel < 0 ||
+      input.minLevel > SUPPORTER_WALL_MAX_MIN_LEVEL)
+  ) {
     throw new ApiError(400, "supporterWallInvalidMinLevel");
   }
   return getDb().transaction(async (tx) => {
@@ -403,56 +431,58 @@ export async function getSupporterWallViewModel(): Promise<SupporterWallViewMode
 }
 
 export function buildPublicSupporterWallQuery(threshold: number | null) {
-  const thresholdSql = threshold === null ? sql`true` : sql`active.level >= ${threshold}`;
+  // The level threshold is pushed into the tier join: max(qualifying level)
+  // equals max(overall level) whenever the user qualifies at all, so pruning
+  // non-qualifying memberships before dedup cannot change who is shown or
+  // which tier is displayed.
+  const thresholdSql = threshold === null ? sql`true` : sql`mt.level >= ${threshold}`;
+  // WP5 forbids caching or scheduled projection of the wall, so per-request
+  // work cannot be O(limit); this shape keeps it bounded by the current
+  // eligible set (approved entries with a qualifying active membership)
+  // instead of forcing a correlated membership probe per approved entry:
+  // plain joins let the planner drive from whichever side is smaller, and
+  // the outer sort is a top-N over already-deduplicated eligible rows.
   return sql<RawPublicSupporter>`
     select
-      u.display_name as "displayName",
-      active.tier_name as "tierName",
-      e.dedication,
-      active.level
-    from supporter_wall_entries e
-    inner join users u on u.id = e.user_id and u.display_name is not null
-    inner join lateral (
-      select
+      best."displayName",
+      best.tier_name as "tierName",
+      best.dedication,
+      best.level
+    from (
+      select distinct on (e.id)
+        e.id,
+        e.dedication,
+        e.created_at,
+        u.display_name as "displayName",
         mt.name as tier_name,
         mt.level
-      from memberships m
-      inner join membership_tiers mt on mt.id = m.tier_id
-      where m.user_id = e.user_id
+      from supporter_wall_entries e
+      inner join users u on u.id = e.user_id and u.display_name is not null
+      inner join memberships m
+        on m.user_id = e.user_id
         and m.status = 'active'
         and m.starts_at <= now()
         and m.ends_at > now()
-      order by mt.level desc, m.ends_at desc, m.id asc
-      limit 1
-    ) active on true
-    where e.status = 'approved'
-      and ${thresholdSql}
-    order by active.level desc, e.created_at asc, e.id asc
+      inner join membership_tiers mt on mt.id = m.tier_id and ${thresholdSql}
+      where e.status = 'approved'
+      order by e.id, mt.level desc, m.ends_at desc, m.id asc
+    ) best
+    order by best.level desc, best.created_at asc, best.id asc
     limit ${PUBLIC_WALL_MAX_ENTRIES}
   `;
 }
 
-export async function listSupporterWallEntriesPage(
-  opts: { cursor?: string | null; limit?: number } = {},
-): Promise<SupporterWallAdminPage> {
-  const limit = normalizeAdminPageSize(opts.limit);
-  const cursor = decodeAdminListCursor(opts.cursor, "supporter-wall");
-  const cursorSql = cursor
-    ? sql`where (e.created_at, e.id) < (${cursor.timestamp}::timestamptz, ${cursor.id}::uuid)`
+export function buildAdminSupporterWallPageQuery(opts: {
+  cursor: { timestamp: string; id: string } | null;
+  limit: number;
+}) {
+  const cursorSql = opts.cursor
+    ? sql`where (e.created_at, e.id) < (${opts.cursor.timestamp}::timestamptz, ${opts.cursor.id}::uuid)`
     : sql``;
-  const rows = await getDb().execute<RawAdminSupporter>(sql`
-    with active as (
-      select distinct on (m.user_id)
-        m.user_id,
-        mt.name as tier_name,
-        mt.level
-      from memberships m
-      inner join membership_tiers mt on mt.id = m.tier_id
-      where m.status = 'active'
-        and m.starts_at <= now()
-        and m.ends_at > now()
-      order by m.user_id, mt.level desc, m.ends_at desc, m.id asc
-    )
+  // Page rows come from a backward scan of (created_at, id); the active-tier
+  // lookup is a per-row lateral capped at limit + 1 executions, so page cost
+  // no longer scales with the global entry or membership sets.
+  return sql<RawAdminSupporter>`
     select
       e.id,
       u.display_name as "displayName",
@@ -465,11 +495,31 @@ export async function listSupporterWallEntriesPage(
       to_char(e.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorCreatedAt"
     from supporter_wall_entries e
     inner join users u on u.id = e.user_id
-    left join active on active.user_id = e.user_id
+    left join lateral (
+      select mt.name as tier_name
+      from memberships m
+      inner join membership_tiers mt on mt.id = m.tier_id
+      where m.user_id = e.user_id
+        and m.status = 'active'
+        and m.starts_at <= now()
+        and m.ends_at > now()
+      order by mt.level desc, m.ends_at desc, m.id asc
+      limit 1
+    ) active on true
     ${cursorSql}
     order by e.created_at desc, e.id desc
-    limit ${limit + 1}
-  `);
+    limit ${opts.limit + 1}
+  `;
+}
+
+export async function listSupporterWallEntriesPage(
+  opts: { cursor?: string | null; limit?: number } = {},
+): Promise<SupporterWallAdminPage> {
+  const limit = normalizeAdminPageSize(opts.limit);
+  const cursor = decodeAdminListCursor(opts.cursor, "supporter-wall");
+  const rows = await getDb().execute<RawAdminSupporter>(
+    buildAdminSupporterWallPageQuery({ cursor, limit }),
+  );
   const pageRows = rows.slice(0, limit);
   const items = pageRows.map(({ cursorCreatedAt, ...row }) => {
     void cursorCreatedAt;

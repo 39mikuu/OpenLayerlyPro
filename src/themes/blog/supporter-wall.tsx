@@ -21,10 +21,12 @@ export function SupporterWall({ view, t }: { view: SupporterWallViewModel; t: Tr
               key={`${supporter.displayName}-${supporter.tierName}-${index}`}
               className="py-6"
             >
-              <h2 className="text-xl font-semibold">{supporter.displayName}</h2>
+              <h2 className="break-words text-xl font-semibold">{supporter.displayName}</h2>
               <p className="mt-1 text-sm text-muted-foreground">{supporter.tierName}</p>
               {supporter.dedication ? (
-                <p className="mt-4 whitespace-pre-wrap leading-7">{supporter.dedication}</p>
+                <p className="mt-4 whitespace-pre-wrap break-words leading-7">
+                  {supporter.dedication}
+                </p>
               ) : (
                 <p className="mt-4 text-sm text-muted-foreground">{t("supporters.noDedication")}</p>
               )}

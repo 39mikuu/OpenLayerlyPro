@@ -18,8 +18,10 @@ import { approvePaymentRequest, reversePaymentApproval } from "@/modules/payment
 import {
   applySupporterWallSettingsUpdate,
   approveSupporterWallEntry,
+  buildAdminSupporterWallPageQuery,
   buildPublicSupporterWallQuery,
   getMyWallEntry,
+  getSupporterWallSettings,
   getSupporterWallViewModel,
   hideSupporterWallEntry,
   listSupporterWallEntriesPage,
@@ -55,6 +57,19 @@ function findPlanPath(plan: PlanNode, predicate: (node: PlanNode) => boolean): P
     if (path) return [plan, ...path];
   }
   return null;
+}
+
+// Drizzle wraps database errors ("Failed query: ..."), so assertions about
+// the underlying failure must look down the cause chain.
+function flattenErrorChain(error: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = error;
+  while (current instanceof Error) {
+    const code = (current as { code?: string }).code;
+    parts.push(`${code ?? ""} ${current.message}`);
+    current = current.cause;
+  }
+  return parts.join(" | ");
 }
 
 describeWithDatabase("supporter wall domain integration", () => {
@@ -139,7 +154,11 @@ describeWithDatabase("supporter wall domain integration", () => {
     return { admin, approved, entry, membership, tier, user };
   }
 
-  it("uses the user_id unique constraint for concurrent fan opt-ins", async () => {
+  // upsertOptIn locks the user row up front, so concurrent service calls
+  // serialize on that lock and the second call sees the first call's row.
+  // This covers the service path; the constraint race itself is exercised by
+  // the raw-transaction test below, which bypasses the row lock.
+  it("serializes concurrent fan opt-ins on the user row lock", async () => {
     const user = await seedUser("Concurrent Fan");
 
     const [first, second] = await Promise.all([
@@ -155,6 +174,57 @@ describeWithDatabase("supporter wall domain integration", () => {
     expect(first.id).toBe(second.id);
     expect(rows[0]).toMatchObject({ userId: user.id, status: "pending" });
     expect(["first", "second"]).toContain(rows[0]!.dedication);
+  });
+
+  it("lets the user_id unique constraint win a true concurrent insert race", async () => {
+    const user = await seedUser("Race Fan");
+
+    // Two raw transactions insert for the same user with neither committed:
+    // no application lock is involved, so only the database constraint can
+    // prevent a duplicate entry.
+    let firstInserted!: () => void;
+    const firstInsertedGate = new Promise<void>((resolve) => {
+      firstInserted = resolve;
+    });
+    let commitFirst!: () => void;
+    const commitGate = new Promise<void>((resolve) => {
+      commitFirst = resolve;
+    });
+
+    const first = db.transaction(async (tx) => {
+      await tx
+        .insert(supporterWallEntries)
+        .values({ userId: user.id, dedication: "first", status: "pending" });
+      firstInserted();
+      await commitGate;
+    });
+    await firstInsertedGate;
+
+    // This insert blocks inside PostgreSQL on the uncommitted unique-index
+    // entry until the first transaction commits, then raises 23505.
+    const second = db
+      .transaction(async (tx) => {
+        await tx
+          .insert(supporterWallEntries)
+          .values({ userId: user.id, dedication: "second", status: "pending" });
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    commitFirst();
+    await first;
+    const raceError = await second;
+
+    expect(raceError).toBeInstanceOf(Error);
+    expect(flattenErrorChain(raceError)).toMatch(/23505|duplicate key/i);
+    const rows = await db
+      .select()
+      .from(supporterWallEntries)
+      .where(eq(supporterWallEntries.userId, user.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.dedication).toBe("first");
   });
 
   it("rejects stale versioned moderation without double-applying audit", async () => {
@@ -282,6 +352,32 @@ describeWithDatabase("supporter wall domain integration", () => {
     await expect(getSupporterWallViewModel()).resolves.toBeNull();
   });
 
+  it("rejects minLevel outside int4 and degrades safely if one is already stored", async () => {
+    const admin = await enableWall();
+    await createApprovedSupporter({ displayName: "Int4 Fan", level: 10 });
+
+    // The public query compares minLevel against membership_tiers.level
+    // (int4); values beyond int4 max must be rejected before they are stored.
+    await expect(
+      applySupporterWallSettingsUpdate({
+        enabled: true,
+        minLevel: 2147483648,
+        actor: { type: "admin", id: admin.id },
+      }),
+    ).rejects.toMatchObject({ status: 400, code: "supporterWallInvalidMinLevel" });
+    await expect(getSupporterWallViewModel()).resolves.toMatchObject({
+      supporters: [expect.objectContaining({ displayName: "Int4 Fan" })],
+    });
+
+    // A value written behind the API's back must hide the wall instead of
+    // making every public read fail at bind time.
+    await db
+      .update(siteSettings)
+      .set({ valueJson: 2147483648 })
+      .where(eq(siteSettings.key, "supporterWallMinLevel"));
+    await expect(getSupporterWallViewModel()).resolves.toBeNull();
+  });
+
   it("caps the public wall at the deterministic top 200 supporters", async () => {
     await enableWall();
     const topTier = await seedTier(10, "Top 200 Tier");
@@ -338,7 +434,7 @@ describeWithDatabase("supporter wall domain integration", () => {
     );
   });
 
-  it("drives public membership lookup from approved wall entries", async () => {
+  it("keeps public membership work bounded by the eligible entries", async () => {
     const tier = await seedTier(10, "Plan Shape Tier");
     const now = Date.now();
     const population = await db
@@ -351,15 +447,20 @@ describeWithDatabase("supporter wall domain integration", () => {
       )
       .returning({ id: users.id });
 
+    // Eight active memberships per user make the membership side large
+    // enough (2000 rows) that the planner's choice between probing per
+    // eligible entry and scanning the whole set is unambiguous.
     await db.insert(memberships).values(
-      population.map((user, index) => ({
-        userId: user.id,
-        tierId: tier.id,
-        source: "manual" as const,
-        startsAt: new Date(now - 60_000),
-        endsAt: new Date(now + 24 * 60 * 60 * 1000 + index),
-        status: "active" as const,
-      })),
+      population.flatMap((user, index) =>
+        Array.from({ length: 8 }, (_, slot) => ({
+          userId: user.id,
+          tierId: tier.id,
+          source: "manual" as const,
+          startsAt: new Date(now - 60_000),
+          endsAt: new Date(now + 24 * 60 * 60 * 1000 + index * 10 + slot),
+          status: "active" as const,
+        })),
+      ),
     );
     await db.insert(supporterWallEntries).values(
       population.slice(0, 5).map((user) => ({
@@ -386,12 +487,11 @@ describeWithDatabase("supporter wall domain integration", () => {
         plan,
         (node) => node["Relation Name"] === "memberships",
       );
-      const membershipIndexPath = findPlanPath(
-        plan,
-        (node) => node["Index Name"] === "memberships_user_active_idx",
-      );
 
-      expect(findPlanPath(plan, (node) => node["Node Type"] === "Unique")).toBeNull();
+      // The join form leaves the driving side to the planner: with few
+      // approved entries against a large membership population it must probe
+      // memberships per eligible entry (5 users × 8 memberships here), not
+      // scan the whole 2000-row set.
       expect(
         nodes.some((node) =>
           ["Aggregate", "HashAggregate", "GroupAggregate"].includes(node["Node Type"] ?? ""),
@@ -401,12 +501,88 @@ describeWithDatabase("supporter wall domain integration", () => {
       expect(membershipAccessPath).not.toBeNull();
       expect(membershipAccessPath!.some((node) => node["Node Type"] === "Nested Loop")).toBe(true);
       expect(membershipAccessPath!.some((node) => node["Node Type"] === "Limit")).toBe(true);
-      expect(membershipIndexPath).not.toBeNull();
-      expect(membershipIndexPath!.some((node) => node["Node Type"] === "Nested Loop")).toBe(true);
       expect(
         Math.max(...membershipAccessNodes.map((node) => Number(node["Actual Rows"] ?? 0))),
-      ).toBeLessThanOrEqual(5);
+      ).toBeLessThanOrEqual(8);
     });
+  });
+
+  it("serves admin pages from the created_id index without a global sort", async () => {
+    const tier = await seedTier(10, "Admin Plan Tier");
+    const now = Date.now();
+    const population = await db
+      .insert(users)
+      .values(
+        Array.from({ length: 300 }, (_, index) => ({
+          email: `admin-plan-${index}-${randomUUID()}@example.test`,
+          displayName: `Admin Plan Fan ${index.toString().padStart(3, "0")}`,
+        })),
+      )
+      .returning({ id: users.id });
+    await db.insert(memberships).values(
+      population.slice(0, 50).map((user, index) => ({
+        userId: user.id,
+        tierId: tier.id,
+        source: "manual" as const,
+        startsAt: new Date(now - 60_000),
+        endsAt: new Date(now + 24 * 60 * 60 * 1000 + index),
+        status: "active" as const,
+      })),
+    );
+    await db.insert(supporterWallEntries).values(
+      population.map((user, index) => ({
+        userId: user.id,
+        dedication: null,
+        status: (["pending", "approved", "hidden"] as const)[index % 3]!,
+        createdAt: new Date(now - index * 1_000),
+        updatedAt: new Date(now - index * 1_000),
+      })),
+    );
+
+    await db.execute(sql`analyze users`);
+    await db.execute(sql`analyze memberships`);
+    await db.execute(sql`analyze supporter_wall_entries`);
+
+    const page = await listSupporterWallEntriesPage({ limit: 20 });
+    expect(page.items).toHaveLength(20);
+    expect(page.nextCursor).not.toBeNull();
+    const cursor = {
+      timestamp: page.items.at(-1)!.createdAt.toISOString(),
+      id: page.items.at(-1)!.id,
+    };
+
+    for (const pageCursor of [null, cursor]) {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`set local enable_seqscan = off`);
+        const rows = await tx.execute<ExplainRow>(
+          sql`explain (analyze, format json, costs off, timing off, summary off) ${buildAdminSupporterWallPageQuery({ cursor: pageCursor, limit: 20 })}`,
+        );
+        const plan = rows[0]!["QUERY PLAN"][0]!.Plan;
+        const pathToIndexScan = findPlanPath(
+          plan,
+          (node) => node["Index Name"] === "supporter_wall_entries_created_id_idx",
+        );
+
+        // The keyset page must come straight off the (created_at, id) index:
+        // a Limit above the scan and no Sort in between means PostgreSQL
+        // never materializes or orders the global entry set for a page.
+        expect(pathToIndexScan).not.toBeNull();
+        const limitIndex = pathToIndexScan!.findLastIndex((node) => node["Node Type"] === "Limit");
+        expect(limitIndex).toBeGreaterThanOrEqual(0);
+        for (const node of pathToIndexScan!.slice(limitIndex + 1)) {
+          expect(node["Node Type"]).not.toBe("Sort");
+        }
+        // The active-tier lateral is per returned row, so each membership
+        // probe touches one user's memberships, not the global set.
+        const membershipNodes = walkPlan(plan).filter(
+          (node) => node["Relation Name"] === "memberships",
+        );
+        expect(membershipNodes.length).toBeGreaterThan(0);
+        expect(
+          Math.max(...membershipNodes.map((node) => Number(node["Actual Rows"] ?? 0))),
+        ).toBeLessThanOrEqual(1);
+      });
+    }
   });
 
   it("moves an approved entry back to pending on fan re-edit and hides all dedication text", async () => {
@@ -537,6 +713,165 @@ describeWithDatabase("supporter wall domain integration", () => {
         afterJson: { status: "pending", version: 3 },
       },
     ]);
+  });
+
+  // ADR 0002: an audit insert failure must roll back the business mutation.
+  // The trigger forces the audit insert for one action to fail, then each
+  // test asserts the corresponding state change did not survive.
+  async function withFailingAudit(action: string, run: () => Promise<void>) {
+    await db.execute(
+      sql.raw(`
+      create function fail_wall_audit() returns trigger as $$
+      begin
+        if new.action = '${action}' then
+          raise exception 'forced audit failure';
+        end if;
+        return new;
+      end;
+      $$ language plpgsql;
+      create trigger fail_wall_audit_trigger
+      before insert on audit_events
+      for each row execute function fail_wall_audit();
+    `),
+    );
+    try {
+      await run();
+    } finally {
+      await db.execute(
+        sql.raw(`
+        drop trigger if exists fail_wall_audit_trigger on audit_events;
+        drop function if exists fail_wall_audit();
+      `),
+      );
+    }
+  }
+
+  it("rolls back a settings update when audit insertion fails", async () => {
+    const admin = await seedAdmin();
+
+    await withFailingAudit("settings_update", async () => {
+      const error = await applySupporterWallSettingsUpdate({
+        enabled: true,
+        minLevel: 5,
+        actor: { type: "admin", id: admin.id },
+      }).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(flattenErrorChain(error)).toMatch(/forced audit failure/);
+    });
+
+    await expect(getSupporterWallSettings()).resolves.toEqual({ enabled: false, minLevel: null });
+    await expect(
+      db.select().from(auditEvents).where(eq(auditEvents.action, "settings_update")),
+    ).resolves.toHaveLength(0);
+  });
+
+  it("rolls back a display-name change when the wall reset audit fails", async () => {
+    const { approved, user } = await createApprovedSupporter({
+      displayName: "Original Name",
+      dedication: "keep me",
+      level: 10,
+    });
+
+    await withFailingAudit("display_name_reset", async () => {
+      const error = await updateUserDisplayNameWithWallReset({
+        userId: user.id,
+        displayName: "New Name",
+      }).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(flattenErrorChain(error)).toMatch(/forced audit failure/);
+    });
+
+    await expect(
+      db.select({ displayName: users.displayName }).from(users).where(eq(users.id, user.id)),
+    ).resolves.toEqual([{ displayName: "Original Name" }]);
+    await expect(
+      db
+        .select({ status: supporterWallEntries.status, version: supporterWallEntries.version })
+        .from(supporterWallEntries)
+        .where(eq(supporterWallEntries.id, approved.id)),
+    ).resolves.toEqual([{ status: "approved", version: 1 }]);
+  });
+
+  it("rolls back a fan edit when the reset audit fails", async () => {
+    const { approved, user } = await createApprovedSupporter({
+      displayName: "Audit Edit Fan",
+      dedication: "approved text",
+      level: 10,
+    });
+
+    await withFailingAudit("fan_edit_reset", async () => {
+      const error = await upsertOptIn({ userId: user.id, dedication: "replacement" }).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(flattenErrorChain(error)).toMatch(/forced audit failure/);
+    });
+
+    await expect(
+      db
+        .select({
+          status: supporterWallEntries.status,
+          version: supporterWallEntries.version,
+          dedication: supporterWallEntries.dedication,
+        })
+        .from(supporterWallEntries)
+        .where(eq(supporterWallEntries.id, approved.id)),
+    ).resolves.toEqual([{ status: "approved", version: 1, dedication: "approved text" }]);
+  });
+
+  it("rolls back a fan opt-out when audit insertion fails", async () => {
+    const { approved, user } = await createApprovedSupporter({
+      displayName: "Audit OptOut Fan",
+      dedication: "still here",
+      level: 10,
+    });
+
+    await withFailingAudit("opt_out", async () => {
+      const error = await optOut({ userId: user.id }).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(flattenErrorChain(error)).toMatch(/forced audit failure/);
+    });
+
+    await expect(
+      db
+        .select({ id: supporterWallEntries.id, status: supporterWallEntries.status })
+        .from(supporterWallEntries)
+        .where(eq(supporterWallEntries.userId, user.id)),
+    ).resolves.toEqual([{ id: approved.id, status: "approved" }]);
+  });
+
+  it("rolls back moderation when audit insertion fails", async () => {
+    const admin = await seedAdmin();
+    const user = await seedUser("Audit Moderation Fan");
+    const entry = await upsertOptIn({ userId: user.id, dedication: "moderate me" });
+
+    await withFailingAudit("approve", async () => {
+      const error = await approveSupporterWallEntry({
+        id: entry.id,
+        expectedVersion: 0,
+        actor: { type: "admin", id: admin.id },
+      }).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(flattenErrorChain(error)).toMatch(/forced audit failure/);
+    });
+
+    await expect(
+      db
+        .select({ status: supporterWallEntries.status, version: supporterWallEntries.version })
+        .from(supporterWallEntries)
+        .where(eq(supporterWallEntries.id, entry.id)),
+    ).resolves.toEqual([{ status: "pending", version: 0 }]);
+    await expect(
+      db.select().from(auditEvents).where(eq(auditEvents.entityId, entry.id)),
+    ).resolves.toHaveLength(0);
   });
 
   it("keeps email out of supporter wall fan, public, admin, and audit payloads", async () => {

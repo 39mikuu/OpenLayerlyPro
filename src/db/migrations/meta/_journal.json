@@ -190,6 +190,13 @@
       "when": 1784160000000,
       "tag": "0026_wp5_supporter_wall",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1784185262763,
+      "tag": "0027_supporter_wall_admin_page_index",
+      "breakpoints": true
     }
   ]
 }

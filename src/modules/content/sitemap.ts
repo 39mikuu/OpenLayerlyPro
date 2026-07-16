@@ -4,7 +4,10 @@ import { type DbClient, getDb } from "@/db";
 import { membershipTiers } from "@/db/schema";
 import { DEFAULT_LOCALE } from "@/modules/i18n";
 import { readPublicSiteInfoWithMetadata } from "@/modules/site";
-import { getSupporterWallSettings } from "@/modules/supporter-wall";
+import {
+  getSupporterWallSettings,
+  getSupporterWallSettingsLastModified,
+} from "@/modules/supporter-wall";
 
 import {
   buildPostUrl,
@@ -115,22 +118,29 @@ export async function buildSitemapIndexResource(
 ): Promise<PublicHttpResource> {
   const baseUrl = getPublicSeoRootUrl(opts.baseUrl);
   const dbc = opts.dbc ?? getDb();
-  const [site, postCount, latestPostUpdatedAt, latestTierUpdatedAt] = await Promise.all([
-    readPublicSiteInfoWithMetadata(),
-    countPublicPosts(dbc),
-    readPublicPostSitemapLastModified(dbc),
-    readPublicTierSitemapLastModified(dbc),
-  ]);
+  const [site, postCount, latestPostUpdatedAt, latestTierUpdatedAt, wallSettingsUpdatedAt] =
+    await Promise.all([
+      readPublicSiteInfoWithMetadata(),
+      countPublicPosts(dbc),
+      readPublicPostSitemapLastModified(dbc),
+      readPublicTierSitemapLastModified(dbc),
+      getSupporterWallSettingsLastModified(dbc),
+    ]);
   const shardSize = opts.shardSize ?? PUBLIC_SITEMAP_SHARD_SIZE;
   // Zero public posts advertise no post shards: an empty <urlset> is invalid
   // to some sitemap validators, so fresh/private-only sites list static only.
   const postShardCount = countPublicSitemapPostShards(postCount, shardSize);
   // Per-entry <lastmod> below is informational; the HTTP resource itself is
   // validated by strong ETag only (see buildPublicHttpResource).
+  // Toggling the supporter wall adds/removes /supporters inside static.xml,
+  // so the wall settings' update time must feed the static child's lastmod:
+  // the index resource is validated by strong ETag, and without this input a
+  // conditional revalidation would keep answering 304 after the toggle.
   const staticLastModifiedAt = maxPublicDateOrNull(
     site.feedIdentityUpdatedAt,
     latestPostUpdatedAt,
     latestTierUpdatedAt,
+    wallSettingsUpdatedAt,
   );
   const entries: SitemapEntry[] = [
     {
