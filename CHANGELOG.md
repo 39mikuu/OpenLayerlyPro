@@ -2,10 +2,12 @@
 
 ## v1.1.0 — 2026-07-16
 
-OpenLayerlyPro v1.1.0 is in release preparation at `97547b6`. M1-M4 are merged;
-M5 acceptance remains pending for real SMTP evidence, deployed dogfood, a
-`v1.0.0` in-place upgrade drill, and backup/restore drills with notification
-keys before the release tag is created.
+OpenLayerlyPro v1.1.0 is release-ready: M1-M4 are merged at `97547b6` and all
+M5 acceptance evidence (real SMTP incl. pacing/budget/operator-recovery,
+deployed dogfood, the `v1.0.0` in-place upgrade drill with mandatory
+file-safety remediation, and backup/restore drills with notification keys) is
+recorded in `docs/releases/v1.1.0-release-notes.md`. The `v1.1.0` tag and
+GitHub Release are created from the merge of this release PR.
 
 ### Post-v1.0.0 Hardening
 

@@ -6,7 +6,7 @@
 
 `v1.0.0` 已于 2026-07-06 正式发布（tag、GitHub Release、验收证据均已归档；#88、#64 已关闭）。发布后的审计复查（dead-letter 可见性、provider event fencing/ownership、translation 硬化、文档准确性、membership 分页、restore drills 上 CI、session-secret 符号链接加固等）已全部完成并合并，详见 CHANGELOG。
 
-当前状态：v1.1.0 release prep in progress at `97547b6`。M1-M4 已合并，package version 已冻结为 1.1.0；M5 验收仍待真实 SMTP、部署 dogfood、`v1.0.0` 原地升级和带通知 key 的 backup/restore drill 完成。
+当前状态：v1.1.0 release-ready。M1-M4 已合并（`97547b6`），package version 1.1.0；M5 全部验收证据（真实 SMTP 含 pacing/预算/operator 故障恢复、部署 dogfood、`v1.0.0` 原地升级演练含强制 file-safety remediation、带通知 key 的 backup/restore drill）已记录于 docs/releases/v1.1.0-release-notes.md，待发布 PR 合并后打 tag。
 
 `v1.1` 新功能工作包不再等待固定发布后窗口。维护者已明确决定继续提高产品完成度，避免真实使用者长期停留在半成品状态；后续 WP 按需求明确度、实现风险和验收质量串行推进。范围、产品优先级、实施顺序与发布门槛见 [release-v1.1-plan.md](./release-v1.1-plan.md)。
 
@@ -64,7 +64,7 @@ v1.0.0 发布 + 发布后审计硬化 ✅
 - 明暗模式、字体、颜色预设与受约束自由取色。
 - Theme 不负责权限、数据库访问或服务端 secret。
 
-**✅ WP1 已完成验收并合并：** 第二主题（Blog）、后台主题选择器与第三内置主题 WordPress 经典，见 [release-v1.1-plan.md](./release-v1.1-plan.md)。**当前状态：** v1.1.0 release prep in progress at `97547b6`；WP2/WP3/WP4/WP5/WP6 均已交付代码与文档同步，M5 验收待执行。WP5 已把主题契约新增必选 `SupporterWall` 槽并同步三主题。**⏸ 仍推迟：** 主题包上传/主题市场；不规划第三方主题生命周期。
+**✅ WP1 已完成验收并合并：** 第二主题（Blog）、后台主题选择器与第三内置主题 WordPress 经典，见 [release-v1.1-plan.md](./release-v1.1-plan.md)。**当前状态：** v1.1.0 release-ready；WP2/WP3/WP4/WP5/WP6 均已交付并完成 M5 验收（证据见 docs/releases/v1.1.0-release-notes.md）。WP5 已把主题契约新增必选 `SupporterWall` 槽并同步三主题。**⏸ 仍推迟：** 主题包上传/主题市场；不规划第三方主题生命周期。
 
 详见 [Theme 架构](./architecture/theme-system.md)。
 
