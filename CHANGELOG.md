@@ -1,26 +1,57 @@
 # Changelog
 
-## Unreleased
+## v1.1.0 — 2026-07-16
 
-### v1.1 WP5 Supporter Wall
+OpenLayerlyPro v1.1.0 is in release preparation at `97547b6`. M1-M4 are merged;
+M5 acceptance remains pending for real SMTP evidence, deployed dogfood, a
+`v1.0.0` in-place upgrade drill, and backup/restore drills with notification
+keys before the release tag is created.
 
-- Added the default-off public `/supporters` wall with explicit fan opt-in, display-name prerequisite, effective-membership eligibility derived on every request, and no email or payment-amount fallback.
-- Added plain-text dedications with pending/approved/hidden moderation, one entry per user, optimistic moderation fencing, and transactional audit events.
-- Added `/admin/supporter-wall` settings and moderation, including an optional minimum effective membership level, plus fan display-name and wall controls on the account page.
-- Extended the static Theme contract with the mandatory `SupporterWall` slot across `builtin`, `blog`, and `wordpress`, with zh/en/ja coverage and desktop/mobile visual baselines.
-- Added conditional `/supporters` sitemap membership and supporter-setting revalidation in the sitemap index strong ETag.
+### Post-v1.0.0 Hardening
 
-### v1.1 WP2 Email Notifications
+These merged after the `v1.0.0` tag and ship for the first time in v1.1.0:
+
+- Fenced provider-event dispatch end to end: claims return a discriminated claimed/already-processed/dead result, dead events dead-letter their task with an admin retry surface, all Stripe I/O moved outside the fenced business transaction, and legacy one-time paid/expired paths were unified into the same fenced pattern (PRs #135/#137).
+- Fail-closed subscription event ownership: split id/ref lookups with cross-binding consistency rules, `appOwned` invoice marker propagation, and provider-clock `observedAt` fencing for pending→expired checkout transitions (PR #137).
+- Hardened the AI translation endpoint URL handling (http/https only, no userinfo/fragment/query, parse-then-append call paths, `redirect: "error"`) and clarified that the monthly character limit is record-keeping only (PRs #138/#139).
+- Added post-basil Stripe mock fixture variants so provider shape drift fails in CI instead of production (PR #141).
+- Split the dispatcher claim query onto partial indexes and reduced stale-lease sweeps to once per tick (PR #142).
+- Closed the `ensure-session-secret.mjs` TOCTOU symlink race and the FIFO-hang case with fd-based `O_NOFOLLOW|O_NONBLOCK` handling, and applied the same single-descriptor guard to the runtime `session-secret.ts` reader (PRs #143/#146).
+- Bounded the admin membership history query with a default/hard-capped limit (PR #144).
+- Run all three restore E2E drills in CI on every push to `main` and on demand (PR #145).
+- Fixed the fan login button overflow on desktop (PR #134).
+
+### Themes, Publishing, and Discovery
+
+- Added the v1.1 plan, known-gaps ledger, and release-gate refresh for the "not only illustrators" direction: single-creator, self-hosted Core remains the product boundary; generic Plugin runtime, Hub, and theme marketplace are not in scope.
+- Added the Blog theme and admin Appearance theme selector, then added the WordPress Classic theme with fixed presets. All landed themes share the Core view-model boundary, static theme registry, G4 zh/en/ja i18n completeness gate, and G6 Playwright visual baselines.
+- Added the public Atom feed at `/feed.xml`, limited to public posts, fixed to the app default locale, capped at 100 entries, stable across cookies/headers, with strong conditional request behavior and GUIDs independent of slug changes.
+- Added WP4 SEO support: sitemap index and shards, `robots.txt`, canonical/Open Graph/Twitter metadata for public content, and noindex/non-leaking metadata for login/member content.
+- Added optional Umami analytics through the existing public integration/CSP revision path, with zero injection when unconfigured and deployment documentation for the supported Umami record shape.
+
+### Admin Hardening and Editor Quality
+
+- Completed the #147-#155 admin hardening batch: responsive shell navigation, shared admin UI primitives, payment review workflow fixes, post-editor unsaved-state protection, mobile table patterns, clearer settings source labels, keyboard/accessibility feedback, admin visual regression coverage, and safer dangerous-action dialogs.
+- Closed #157 review follow-ups across admin payment APIs, editor state, dialogs, and accessibility.
+- Fixed the iOS Safari Chinese IME editor freeze by stabilizing textarea height behavior and dirty-guard history/selection handling.
+
+### Notifications and Backup Safety
 
 - Added opt-in new-post email notifications with default-off user preferences, campaign creation on first publish/scheduled publish, recipient expansion, delivery tasks, campaign finalization, and an admin `/admin/notifications` observability page.
-- Added notification queue class/priority handling so notification backlog has progress while transactional login/payment/membership/renewal email keeps reserved dispatcher capacity.
+- Added notification queue class/priority handling so notification backlog can progress while transactional login/payment/membership/renewal email keeps reserved dispatcher capacity.
 - Added notification delivery quota windows, UTC daily budget, per-minute pacing, attempt ledger, safe logging metadata, `List-Unsubscribe` / `List-Unsubscribe-Post` headers, and at-least-once product semantics. SMTP accepted means relay acceptance, not final mailbox delivery; the product wording is `不承诺不重复投递`.
 - Added POST-first one-click unsubscribe tokens with dedicated current/previous unsubscribe keyring, tokenless result redirects, no-store/no-referrer/noindex token-bearing responses, and settings UI/API re-enable behavior that invalidates old tokens.
 - Added notification suppression for synchronous SMTP permanent rejection from `notification.deliver` only. This is not asynchronous DSN/provider processing, and transactional email ignores the suppression list.
 - Completed known-gaps G1 convergence: transactional `email` tasks now use v2 domain-reference payloads, unsafe retryable legacy rows are dead-lettered/redacted, terminal rows are redacted, and login-code tasks remain email-free.
 - Upgraded backup archives to manifest v4 for notification unsubscribe/suppression key continuity, archives file-backed current/previous notification keys, validates external fingerprints before destructive restore, and neutralizes restored notification/business email tasks so unknown outcomes are not replayed.
 
-Pending release-gate evidence remains real SMTP accepted/permanent/operator-defer testing, deployed dogfood, v1.0.0 upgrade, and backup/restore drills with notification keys.
+### Supporter Wall
+
+- Added the default-off public `/supporters` wall with explicit fan opt-in, display-name prerequisite, effective-membership eligibility derived on every request, and no email or payment-amount fallback.
+- Added plain-text dedications with pending/approved/hidden moderation, one entry per user, optimistic moderation fencing, transactional audit events, and a bounded latest-200 approved-candidate public query.
+- Added `/admin/supporter-wall` settings and moderation, including an optional minimum effective membership level, plus fan display-name and wall controls on the account page.
+- Extended the static Theme contract with the mandatory `SupporterWall` slot across `builtin`, `blog`, and `wordpress`, with zh/en/ja coverage and desktop/mobile visual baselines.
+- Added conditional `/supporters` sitemap membership and supporter-setting revalidation in the sitemap index strong ETag.
 
 ## v1.0.0 — 2026-07-06
 
