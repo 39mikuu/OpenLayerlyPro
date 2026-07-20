@@ -1,32 +1,27 @@
 # v1.2 计划书：登录与会员权益完成度
 
-> 状态：**规划中**。基线为 `main` 上已发布的 `v1.1.0`（2026-07-17，tag `3a80b34`）。本文档定义 v1.2 的目标、产品优先级、实施顺序与发布门槛。
-> 前置条件：`v1.1.0` 已正式发布。不设置固定等待窗口；v1.2 按需求明确度、实现风险和验收质量推进，达到门槛后即可发布。
+> 状态：**规划中**。基线为 2026-07-17 发布的 `v1.1.0`（tag `3a80b34`）。
 >
-> **决策记录（2026-07-17）**：维护者决定 v1.2 同时纳入邮件 Magic Link 与 Google/GitHub OAuth，但必须串行：先 Magic Link，后 OAuth。两者仅用于粉丝/会员登录；管理员登录继续使用邮箱 + 密码；现有邮箱验证码登录保留为 fallback。OAuth client secret 复用既有加密配置存储，provider 状态进入后台 Integration status registry。
+> 2026-07-17 确认的范围：
 >
-> **决策记录（2026-07-17）**：维护者决定 v1.2 尽快发布，不把 G3 legacy compatibility removal 搭载到本版。按 `docs/releases/v1.1.0-release-notes.md` 的 Legacy Compatibility Deprecation Policy，2026-07-16 公告后不足 90 天发布的 v1.2 不移除 legacy compatibility；代码移除顺延到首个满足公告后至少 90 天的版本，即不早于 2026-10-14，预期 v1.3。
->
-> **决策记录（2026-07-17）**：维护者决定 Membership Bundle 纳入 v1.2：第一版仅在 `membership_tiers` 上配置白名单 entitlements，属于 Core 能力；包含后台 UI 和真实 PostgreSQL 访问测试。不引入通用 `EntitlementGrant`，不与 PPV/Tips 绑定。entitlements 按访问时的当前 tier 行解析，沿用现有 level / `requiredTierId` 语义：编辑 tier 权益会立即影响既有会员。视频封面/缩略图/时长 metadata 不纳入 v1.2，继续作为未来候选。
->
-> **决策记录（2026-07-17）**：G2 `monthlyCharLimit` 以 label-only 方式关闭：现有后台 UI 与文档已明确「仅记录，不限制」，v1.2 不做本地 enforcement。
+> - 粉丝登录依次实现邮件 Magic Link、Google OAuth 和 GitHub OAuth；管理员继续使用邮箱 + 密码，邮箱验证码保留。
+> - Membership Bundle 只在 `membership_tiers` 上配置 Core 白名单权益，并按当前 tier 实时解析；不引入通用 `EntitlementGrant`。
+> - G3 legacy compatibility removal 不进入 v1.2，另行安排在不早于 2026-10-14 的版本（当前预期 v1.3）。
+> - G2 `monthlyCharLimit` 保持“仅记录，不限制”，不在 v1.2 增加本地强制预算。
 
 ## 1. 版本主题与背景
 
-**一句话主题：让粉丝更容易登录，让创作者更清楚地表达会员权益。**
+v1.2 聚焦粉丝登录和会员权益配置，同时处理两项低风险工程债：
 
-决策依据：
-
-1. **降低粉丝登录摩擦。** 邮箱验证码继续保留，但 Magic Link 与 OAuth 能覆盖更自然的登录路径。
-2. **不改变管理员安全边界。** 管理员登录不切换到第三方 OAuth，仍使用邮箱 + 密码；v1.2 的 Auth 增强只服务粉丝/会员入口。
-3. **让会员等级从价格表走向权益表。** Membership Bundle 先把 tier 的权益表达收口到 Core 白名单，避免提前引入通用授权系统。
-4. **小步还债。** G5、G7 作为低风险债务包处理；dispatcher query optimization 已在 v1.1.0 baseline 完成，v1.2 只要求保持回归绿；大改 worker execution model 留到独立条件触发。
+1. 增加 Magic Link 和 OAuth，保留现有管理员认证边界及邮箱验证码入口。
+2. 在现有 tier 模型内增加白名单权益，不新建并行授权系统。
+3. 处理 G5、G7；dispatcher 查询优化保持 v1.1.0 现有回归，不扩展 worker 执行模型。
 
 ## 2. 产品优先级与实施顺序
 
 工作包编号表示**产品优先级**：WP1 → WP2 → WP3 → WP4。WP1/WP2 属 Core Auth，WP3 属 Membership Core，WP4 属债务包。
 
-实际施工按 §4 里程碑串行执行。施工顺序可以为了先交付基础安全能力、降低风险或集中验收而与产品优先级保持一一对应；两者不得再混写成同一个“顺序”。
+实施顺序与工作包编号一致，并按 §4 的里程碑串行合并。
 
 ## 3. 范围：四个工作包
 
@@ -142,18 +137,16 @@ M5  v1.2 验收与发布（明确不包含 G3 legacy removal）
 
 M1-M4 必须串行合并；每个里程碑合并后由创作者实例 dogfood。发现 Auth、会员授权、通知、统计或 task regression 时，在下一个里程碑前优先修复。
 
-M5 只验收本计划纳入的 WP。G3 legacy compatibility removal 不进入 v1.2；即使 v1.2 在 2026-10-14 前发布，也不得删除 v1 archive restore、legacy footer migration 或 pre-v1.0 file backfill compatibility paths。
+M5 只验收本计划纳入的 WP。G3 legacy compatibility removal 不进入 v1.2，无论 v1.2 的发布日期为何，都保留 v1 archive restore、legacy footer migration 和 pre-v1.0 file backfill compatibility paths。
 
 ## 5. v1.2 范围外与后续候选
 
 | 项 | 状态 | 理由 / 触发条件 |
 |---|---|---|
-| G3 legacy compatibility removal | 顺延 v1.3 预期 | v1.1.0 release notes 已公告政策；v1.2 若早于 2026-10-14 发布，不满足 90 天 notice，移除顺延到首个公告后至少 90 天的版本 |
-| G2 `monthlyCharLimit` enforcement | 已以 label-only 关闭 | 后台 UI 与文档已明确「仅记录，不限制」；v1.2 不做本地用量账本或强制预算 |
-| dispatcher low-risk query optimization | baseline 已完成，保持回归绿 | v1.1.0 已含 migration 0021 claimable/stale lease indexes、once-per-tick sweep 与 real-PG split-claim tests；v1.2 不再重复立项 |
+| G3 legacy compatibility removal | 顺延，当前预期 v1.3 | v1.2 明确保留三条兼容路径；移除需另行立项，且不得早于 2026-10-14 |
 | 通用 `EntitlementGrant` | 不做 | v1.2 Membership Bundle 只在 `membership_tiers` 配置 Core 白名单 entitlements，避免引入并行授权事实源 |
 | PPV / Tips coupling | 不做 | 支付型新商业能力需要单独产品定义、退款/撤销语义和文件鉴权设计 |
-| 视频封面/缩略图/时长 metadata | 未来候选 | 与 Auth/Membership 主线不同线，维护者决定不纳入 v1.2 |
+| 视频封面/缩略图/时长 metadata | 未来候选 | 与 Auth/Membership 主线不同，不纳入 v1.2 |
 | batch-claim worker model | 条件触发 | `issue-101` §4.1 指出 lease-before-start 风险；需独立设计 bounded parallelism 与 lease protection 后再推进 |
 | 管理员 OAuth / passkeys | 后续候选 | v1.2 Auth 仅粉丝/会员登录；管理员继续邮箱 + 密码 |
 | 评论系统 | 不做 | 反垃圾、审核、法务和对话状态不进入 Core |
@@ -185,18 +178,13 @@ M5 只验收本计划纳入的 WP。G3 legacy compatibility removal 不进入 v1
 | Membership Bundle 变成并行授权系统 | 只允许 `membership_tiers` 白名单 entitlements；保留 membership 生命周期和 tier level 兼容逻辑 |
 | 下载鉴权被 UI entitlement 绕过 | Core helper 统一授权；真实 PostgreSQL 覆盖 `canAccessPost()` / `canAccessFile()` 与 suspend/revoke/expired 路径 |
 | 债务包扩大成 worker 重构 | dispatcher query optimization 已属 v1.1.0 baseline；M4 不新增 task query/worker scope，batch claim 与 bounded parallelism 明确范围外 |
-| v1.2 被 G3 removal 阻塞 | 按 release notes policy 顺延移除；v1.2 发布门槛明确不包含 legacy removal |
-
-已解决历史（不再作为 v1.2 未决风险）：
-
-- v1.1 新内容邮件通知已完成真实 SMTP、部署 dogfood、`v1.0.0` 原地升级和 backup/restore drill 证据收集，v1.2 仅复用其 SMTP/task 基座。
-- Theme、RSS/Atom、SEO、WP5 SupporterWall 与 Umami 已进入 v1.1.0 已发布基线；v1.2 只要求这些门禁持续为绿。
+| G3 removal 扩大 v1.2 范围 | v1.2 明确保留三条兼容路径；移除另行立项 |
 
 ## 8. 成功信号
 
 - 粉丝可通过 Magic Link、Google OAuth 或 GitHub OAuth 完成登录，验证码 fallback 仍可用。
-- 创作者实例 dogfood 后，登录失败率、重复登录邮件和 OAuth support burden 没有异常。
+- 创作者实例 dogfood 后，登录失败率、重复登录邮件和 OAuth 支持请求没有异常。
 - 会员 tier 页面能清楚表达权益，且没有引入绕过现有内容/文件鉴权的路径。
 - CI 与 Plausible tracking 的 v1.1 后债务关闭；dispatcher v1.1 baseline 回归保持绿，未扩大到高风险执行模型重构。
 
-发布后 4 周复盘，并据真实使用确定 v1.3 主题；G3 legacy removal 最早只能进入 2026-10-14 之后的首个 release。
+发布后 4 周复盘，并据真实使用确定 v1.3 主题。G3 legacy removal 的最早实施日期为 2026-10-14。

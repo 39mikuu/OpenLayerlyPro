@@ -1,6 +1,6 @@
 # Upgrade
 
-> This procedure describes the current `main` upgrade path. It requires pending-payment remediation, a one-off forward migrator, and the mandatory file-safety backfill before the app starts. The merged S7 restore path adds archive integrity, schema probing, task neutralization, and DB↔storage convergence. For `v1.1.0` release preparation, also complete the M5 acceptance evidence in [the v1.1.0 release notes](../releases/v1.1.0-release-notes.md).
+> This procedure describes the current `main` upgrade path. It requires pending-payment remediation, a one-off forward migrator, and the mandatory file-safety backfill before the app starts. The merged S7 restore path adds archive integrity, schema probing, task neutralization, and DB↔storage convergence. The completed v1.1.0 release evidence is archived in [the v1.1.0 release notes](../releases/v1.1.0-release-notes.md).
 
 The v1.0 acceptance path is tested from the `v0.1.0` tag. The unreleased v0.2
 candidate and arbitrary historical commits are not supported upgrade sources.
