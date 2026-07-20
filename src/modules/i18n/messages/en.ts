@@ -277,6 +277,12 @@ export const en: Messages = {
     sendCode: "Send code",
     changeEmail: "Change email",
     codeSent: "Code request accepted. Check your inbox; delivery may be slightly delayed.",
+    magicLinkHint:
+      "Enter your email to receive a one-time login link, or sign in with an email code instead.",
+    sendMagicLink: "Send login link",
+    magicLinkResend: "Resend login link",
+    magicLinkSent:
+      "Login link request accepted. Open the link in the email and confirm to sign in.",
     signin: "Sign in",
     adminEmail: "Admin email",
     password: "Password",
@@ -533,6 +539,7 @@ export const en: Messages = {
       description: "Delivery tasks, retry state, and recent failures.",
       businessEmail: "Business email delivery",
       loginCodeEmail: "Login code email delivery",
+      magicLinkEmail: "Login link email delivery",
       all: "All",
       kind: "Kind",
       attempts: "Attempts",
@@ -1081,6 +1088,8 @@ export const en: Messages = {
     passwordTooShort: "Password must contain at least {min} characters",
     adminAccountChanged: "The administrator account changed; refresh and try again",
     sessionNotFound: "The login session does not exist or was already revoked",
+    magicLinkNotConfigured:
+      "Email login links are not configured. Please contact the site administrator.",
     requestRateLimited: "Too many requests. Please try again later.",
     hourlyRateLimited: "Too many requests. Please try again in an hour.",
     cooldownRateLimited: "Please wait {seconds} seconds before sending again.",
@@ -1194,6 +1203,23 @@ export const en: Messages = {
       "This tier is still referenced (memberships: {memberships}, payment requests: {payments}, content: {posts}) and cannot be deleted. Disable it instead.",
     userCreateFailed: "User creation failed",
   },
+  magicLink: {
+    eyebrow: "Email sign-in",
+    confirmTitle: "Confirm sign-in?",
+    confirmDescription:
+      "Click the button below to finish signing in. This login link works only once; if you did not request it, do not confirm.",
+    confirmAction: "Confirm sign-in",
+    backToLogin: "Back to login",
+    resultTitleexpired: "Login link expired",
+    resultDescriptionexpired:
+      "This login link is past its validity window. Request a new one from the login page.",
+    resultTitlereplayed: "Login link already used",
+    resultDescriptionreplayed:
+      "This login link has already completed a sign-in. If that was not you, sign in again from the login page and review your account security.",
+    resultTitleinvalid: "Login link unavailable",
+    resultDescriptioninvalid:
+      "This login link is invalid or no longer works. Request a new one from the login page.",
+  },
   unsubscribe: {
     notifications: {
       eyebrow: "Email notifications",
@@ -1241,5 +1267,11 @@ export const en: Messages = {
     newPostSummary: "Summary: {summary}",
     newPostOpen: "Read: {url}",
     newPostUnsubscribe: "Unsubscribe from new-post emails: {url}",
+    magicLinkSubject: "Your login link",
+    magicLinkIntro:
+      "Open the link below and confirm on the page to sign in to your member account:",
+    magicLinkExpiry: "The link is valid for 15 minutes and works only once.",
+    magicLinkConfirmNote:
+      "After opening the link, you still need to click \u201cConfirm sign-in\u201d on the page.",
   },
 };

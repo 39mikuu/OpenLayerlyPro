@@ -264,6 +264,10 @@ export const zh = {
     sendCode: "发送验证码",
     changeEmail: "更换邮箱",
     codeSent: "验证码请求已受理，请检查邮箱，投递可能稍有延迟",
+    magicLinkHint: "输入邮箱后可发送一次性登录链接；也可以改用邮箱验证码登录。",
+    sendMagicLink: "发送登录链接",
+    magicLinkResend: "重新发送登录链接",
+    magicLinkSent: "登录链接请求已受理，请在邮件中打开链接并确认登录",
     signin: "登录",
     adminEmail: "管理员邮箱",
     password: "密码",
@@ -513,6 +517,7 @@ export const zh = {
       description: "查看通知投递任务、重试状态和最近失败。",
       businessEmail: "业务邮件投递",
       loginCodeEmail: "登录码邮件投递",
+      magicLinkEmail: "登录链接邮件投递",
       all: "全部",
       kind: "类型",
       attempts: "尝试次数",
@@ -1028,6 +1033,7 @@ export const zh = {
     passwordTooShort: "密码至少需要 {min} 位",
     adminAccountChanged: "管理员账号已发生变化，请刷新后重试",
     sessionNotFound: "登录会话不存在或已被吊销",
+    magicLinkNotConfigured: "邮件登录链接未配置，请联系站点管理员",
     requestRateLimited: "请求过于频繁，请稍后再试",
     hourlyRateLimited: "请求过于频繁，请一小时后再试",
     cooldownRateLimited: "发送过于频繁，请 {seconds} 秒后再试",
@@ -1132,6 +1138,21 @@ export const zh = {
       "该等级仍被引用（会员记录：{memberships}，付款申请：{payments}，内容：{posts}），无法删除。如需下架请改为停用。",
     userCreateFailed: "用户创建失败",
   },
+  magicLink: {
+    eyebrow: "邮件登录",
+    confirmTitle: "确认登录？",
+    confirmDescription:
+      "点击下方按钮完成登录。登录链接只能使用一次；如果这不是你本人发起的登录，请不要确认。",
+    confirmAction: "确认登录",
+    backToLogin: "返回登录页",
+    resultTitleexpired: "登录链接已过期",
+    resultDescriptionexpired: "这个登录链接已超过有效期。请回到登录页重新发送一封。",
+    resultTitlereplayed: "登录链接已被使用",
+    resultDescriptionreplayed:
+      "这个登录链接已经完成过一次登录。如果不是你本人操作，请回到登录页重新登录并留意账号安全。",
+    resultTitleinvalid: "登录链接不可用",
+    resultDescriptioninvalid: "这个登录链接无效或已失效。请回到登录页重新发送。",
+  },
   unsubscribe: {
     notifications: {
       eyebrow: "邮件通知",
@@ -1177,6 +1198,10 @@ export const zh = {
     newPostSummary: "摘要：{summary}",
     newPostOpen: "阅读：{url}",
     newPostUnsubscribe: "退订新内容邮件：{url}",
+    magicLinkSubject: "你的登录链接",
+    magicLinkIntro: "点击下面的链接并在页面上确认，即可登录你的会员账户：",
+    magicLinkExpiry: "链接 15 分钟内有效，且只能使用一次。",
+    magicLinkConfirmNote: "打开链接后需要在页面上点击「确认登录」才会生效。",
   },
 };
 

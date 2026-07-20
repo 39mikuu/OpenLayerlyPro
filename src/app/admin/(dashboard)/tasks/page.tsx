@@ -49,7 +49,7 @@ export default async function AdminTasksPage({
         <p className="mt-1 text-sm text-muted-foreground">{t("admin.tasks.description")}</p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <div className="rounded-lg border p-4">
           <p className="text-sm font-medium">{t("admin.tasks.businessEmail")}</p>
           <div className="mt-2 flex gap-2 text-sm">
@@ -69,6 +69,17 @@ export default async function AdminTasksPage({
             </Badge>
             <Badge variant="destructive">
               {t("admin.tasks.statusdead")}: {mailFailures.loginCodeEmail.dead}
+            </Badge>
+          </div>
+        </div>
+        <div className="rounded-lg border p-4">
+          <p className="text-sm font-medium">{t("admin.tasks.magicLinkEmail")}</p>
+          <div className="mt-2 flex gap-2 text-sm">
+            <Badge variant="destructive">
+              {t("admin.tasks.statusfailed")}: {mailFailures.magicLinkEmail.failed}
+            </Badge>
+            <Badge variant="destructive">
+              {t("admin.tasks.statusdead")}: {mailFailures.magicLinkEmail.dead}
             </Badge>
           </div>
         </div>

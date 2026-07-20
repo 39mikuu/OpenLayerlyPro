@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
 import { getEnv } from "@/lib/env";
+import { isMagicLinkConfigured, normalizeMagicLinkRedirectPath } from "@/modules/auth/magic-link";
 import { getLoginCodePolicy } from "@/modules/auth/rate-limit-policy";
 import { getCurrentUser } from "@/modules/auth/session";
 import { getTurnstileConfig } from "@/modules/config";
@@ -16,11 +17,11 @@ export const metadata: Metadata = {
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ admin?: string }>;
+  searchParams: Promise<{ admin?: string; next?: string }>;
 }) {
   const user = await getCurrentUser();
   if (user) redirect("/me");
-  const { admin } = await searchParams;
+  const { admin, next } = await searchParams;
   const loginCodePolicy = getLoginCodePolicy(getEnv());
   // site key 在服务端运行时读取后下发，避免依赖构建期内联（Docker 镜像构建时无 .env）
   const [turnstile, theme, t] = await Promise.all([getTurnstileConfig(), getActiveTheme(), getT()]);
@@ -33,6 +34,8 @@ export default async function LoginPage({
         turnstileSiteKey: turnstile.enabled ? (turnstile.siteKey ?? undefined) : undefined,
         loginCodeLength: loginCodePolicy.length,
         loginCodePattern: loginCodePolicy.pattern.source,
+        magicLinkEnabled: isMagicLinkConfigured(),
+        magicLinkNext: normalizeMagicLinkRedirectPath(next) ?? undefined,
       }}
     />
   );

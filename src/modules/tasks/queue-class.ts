@@ -9,6 +9,7 @@ export type TaskQueueClass = (typeof TASK_QUEUE_CLASSES)[number];
 
 const QUEUE_DEFAULTS: Record<string, { queueClass: TaskQueueClass; priority: number }> = {
   "auth.login_code_email": { queueClass: "transactional", priority: 0 },
+  "auth.magic_link_email": { queueClass: "transactional", priority: 0 },
   email: { queueClass: "transactional", priority: 10 },
   "subscription.renewal_reminder": { queueClass: "transactional", priority: 10 },
   publish_post: { queueClass: "default", priority: 20 },

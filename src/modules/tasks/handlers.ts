@@ -13,6 +13,7 @@ import {
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { deliverLoginCodeEmailTask } from "@/modules/auth/login-code";
+import { deliverMagicLinkEmailTask } from "@/modules/auth/magic-link";
 import { executeScheduledPublish } from "@/modules/content/publishing";
 import {
   cleanupOrphanFile,
@@ -98,6 +99,12 @@ const loginCodeEmailPayloadSchema = z.object({
   version: z.literal(1),
   codeId: z.string().uuid(),
   encryptedCode: z.string().min(1),
+  locale: z.enum(SUPPORTED_LOCALES).optional(),
+});
+const magicLinkEmailPayloadSchema = z.object({
+  version: z.literal(1),
+  tokenId: z.string().uuid(),
+  encryptedToken: z.string().min(1),
   locale: z.enum(SUPPORTED_LOCALES).optional(),
 });
 
@@ -327,6 +334,15 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
       const parsed = loginCodeEmailPayloadSchema.safeParse(task.payloadJson);
       if (!parsed.success) throw new PermanentTaskError("Invalid auth.login_code_email payload");
       const note = await deliverLoginCodeEmailTask(parsed.data, {
+        taskId: task.id,
+        lockToken: task.lockedBy,
+      });
+      return note ? { note } : {};
+    }
+    case "auth.magic_link_email": {
+      const parsed = magicLinkEmailPayloadSchema.safeParse(task.payloadJson);
+      if (!parsed.success) throw new PermanentTaskError("Invalid auth.magic_link_email payload");
+      const note = await deliverMagicLinkEmailTask(parsed.data, {
         taskId: task.id,
         lockToken: task.lockedBy,
       });

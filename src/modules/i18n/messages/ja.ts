@@ -274,6 +274,12 @@ export const ja: Messages = {
     sendCode: "認証コードを送信",
     changeEmail: "メールアドレスを変更",
     codeSent: "認証コードのリクエストを受け付けました。配信が少し遅れる場合があります。",
+    magicLinkHint:
+      "メールアドレスを入力するとワンタイムログインリンクを送信できます。認証コードでのログインも利用できます。",
+    sendMagicLink: "ログインリンクを送信",
+    magicLinkResend: "ログインリンクを再送信",
+    magicLinkSent:
+      "ログインリンクのリクエストを受け付けました。メール内のリンクを開き、確認してログインしてください。",
     signin: "ログイン",
     adminEmail: "管理者メールアドレス",
     password: "パスワード",
@@ -526,6 +532,7 @@ export const ja: Messages = {
       description: "通知配信タスク、再試行状態、最近の失敗を確認します。",
       businessEmail: "業務メール配信",
       loginCodeEmail: "ログインコードメール配信",
+      magicLinkEmail: "ログインリンクメール配信",
       all: "すべて",
       kind: "種類",
       attempts: "試行回数",
@@ -1069,6 +1076,8 @@ export const ja: Messages = {
     passwordTooShort: "パスワードは{min}文字以上必要です",
     adminAccountChanged: "管理者アカウントが変更されました。更新して再試行してください",
     sessionNotFound: "ログインセッションが存在しないか、すでに無効化されています",
+    magicLinkNotConfigured:
+      "メールログインリンクが設定されていません。サイト管理者にお問い合わせください。",
     requestRateLimited: "リクエストが多すぎます。しばらくしてから再度お試しください。",
     hourlyRateLimited: "リクエストが多すぎます。1時間後に再度お試しください。",
     cooldownRateLimited: "{seconds} 秒待ってから再送信してください。",
@@ -1181,6 +1190,23 @@ export const ja: Messages = {
       "このプランは使用中です（メンバーシップ：{memberships}、支払い申請：{payments}、コンテンツ：{posts}）。削除せず無効にしてください。",
     userCreateFailed: "ユーザーの作成に失敗しました",
   },
+  magicLink: {
+    eyebrow: "メールログイン",
+    confirmTitle: "ログインを確認しますか？",
+    confirmDescription:
+      "下のボタンをクリックするとログインが完了します。このログインリンクは一度しか使えません。心当たりがない場合は確認しないでください。",
+    confirmAction: "ログインを確認",
+    backToLogin: "ログインページへ戻る",
+    resultTitleexpired: "ログインリンクの有効期限切れ",
+    resultDescriptionexpired:
+      "このログインリンクは有効期限を過ぎています。ログインページから再送信してください。",
+    resultTitlereplayed: "ログインリンクは使用済みです",
+    resultDescriptionreplayed:
+      "このログインリンクはすでにログインに使用されています。心当たりがない場合は、ログインページから再度ログインし、アカウントの安全をご確認ください。",
+    resultTitleinvalid: "ログインリンクが利用できません",
+    resultDescriptioninvalid:
+      "このログインリンクは無効か、すでに利用できません。ログインページから再送信してください。",
+  },
   unsubscribe: {
     notifications: {
       eyebrow: "メール通知",
@@ -1229,5 +1255,10 @@ export const ja: Messages = {
     newPostSummary: "概要：{summary}",
     newPostOpen: "読む：{url}",
     newPostUnsubscribe: "新着投稿メールを解除：{url}",
+    magicLinkSubject: "ログインリンク",
+    magicLinkIntro: "下のリンクを開き、ページ上で確認するとメンバーアカウントにログインできます：",
+    magicLinkExpiry: "リンクの有効期限は 15 分で、一度しか使えません。",
+    magicLinkConfirmNote:
+      "リンクを開いた後、ページ上で「ログインを確認」をクリックする必要があります。",
   },
 };

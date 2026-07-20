@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   acceptFanLoginCodeRequest,
+  acceptFanLoginLinkRequest,
   canSubmitFanLoginCode,
   changeFanLoginCode,
   changeFanLoginEmail,
@@ -49,6 +50,30 @@ describe("fan login form flow", () => {
     const resent = acceptFanLoginCodeRequest(withOldCode, withOldCode.requestedEmail!);
     expect(resent.code).toBe("");
     expect(canSubmitFanLoginCode(resent, 16, codePattern)).toBe(false);
+  });
+
+  it("tracks magic link sends independently of the code flow and resets with it", () => {
+    const linkSent = acceptFanLoginLinkRequest(INITIAL_FAN_LOGIN_FLOW, " Fan@Example.com ");
+    expect(linkSent).toMatchObject({
+      email: "fan@example.com",
+      requestedEmail: "fan@example.com",
+      linkSent: true,
+      codeSent: false,
+    });
+
+    // Falling back to a code afterwards keeps the link-sent state.
+    const alsoCode = acceptFanLoginCodeRequest(linkSent);
+    expect(alsoCode).toMatchObject({ linkSent: true, codeSent: true });
+
+    expect(changeFanLoginEmail(alsoCode, "second@example.com")).toMatchObject({
+      linkSent: false,
+      codeSent: false,
+      requestedEmail: null,
+    });
+    expect(resetFanLoginRequestedEmail(alsoCode)).toMatchObject({
+      linkSent: false,
+      codeSent: false,
+    });
   });
 
   it("requires a requested email and exactly 16 valid normalized characters", () => {

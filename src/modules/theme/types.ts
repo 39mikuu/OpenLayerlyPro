@@ -112,6 +112,10 @@ export type LoginView = {
   turnstileSiteKey?: string;
   loginCodeLength: number;
   loginCodePattern: string;
+  /** Magic Link keyring 已配置时为 true;未配置的部署隐藏发送登录链接入口。 */
+  magicLinkEnabled?: boolean;
+  /** 服务端已按站内相对路径 allowlist 校验过的登录后跳转目标。 */
+  magicLinkNext?: string;
 };
 
 export type MeView = {

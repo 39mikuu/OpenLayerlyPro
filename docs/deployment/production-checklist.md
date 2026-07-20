@@ -115,6 +115,13 @@ Notification key material is required for production notification delivery:
 - suppression digest current key: `NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID` plus `NOTIFICATION_SUPPRESSION_DIGEST_SECRET` or `NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE`;
 - suppression digest previous key, optional during rotation: `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID` plus `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET` or `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE`.
 
-Direct non-empty secret env values take precedence over file paths. Docker Compose production entrypoint defaults current key file paths to `/app/secrets/notification-unsubscribe-secret` and `/app/secrets/notification-suppression-digest-secret`, generates missing current key files atomically with `0600` permissions, and never auto-generates previous keys.
+Magic Link login (fan email login links) uses its own keyring with the same
+current+previous semantics; leaving every `MAGIC_LINK_*` variable unset hides
+the login-link entry on the login page instead of failing startup:
+
+- magic link current key: `MAGIC_LINK_KEY_ID` plus `MAGIC_LINK_SECRET` or `MAGIC_LINK_SECRET_FILE`;
+- magic link previous key, optional during rotation: `MAGIC_LINK_PREVIOUS_KEY_ID` plus `MAGIC_LINK_PREVIOUS_SECRET` or `MAGIC_LINK_PREVIOUS_SECRET_FILE`.
+
+Direct non-empty secret env values take precedence over file paths. Docker Compose production entrypoint defaults current key file paths to `/app/secrets/notification-unsubscribe-secret`, `/app/secrets/notification-suppression-digest-secret`, and `/app/secrets/magic-link-secret`, generates missing current key files atomically with `0600` permissions, and never auto-generates previous keys.
 
 See [Backup and Restore](backup-restore.md) for the current baseline limitations and required isolated restore drills.

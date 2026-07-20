@@ -37,6 +37,7 @@ export async function resetDatabase(db: DbClient = getDb()): Promise<void> {
       payment_methods,
       sessions,
       login_codes,
+      magic_link_tokens,
       users,
       site_settings,
       app_settings

@@ -104,6 +104,12 @@ const envSchema = z.object({
   NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID: z.string().optional(),
   NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET: z.string().optional(),
   NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE: z.string().optional(),
+  MAGIC_LINK_KEY_ID: z.string().optional(),
+  MAGIC_LINK_SECRET: z.string().optional(),
+  MAGIC_LINK_SECRET_FILE: z.string().optional(),
+  MAGIC_LINK_PREVIOUS_KEY_ID: z.string().optional(),
+  MAGIC_LINK_PREVIOUS_SECRET: z.string().optional(),
+  MAGIC_LINK_PREVIOUS_SECRET_FILE: z.string().optional(),
 
   STORAGE_DRIVER: z.enum(["local", "s3"]).default("local"),
   UPLOAD_DIR: z.string().default("./uploads"),
@@ -251,6 +257,18 @@ function assertRuntimeSecurity(env: Env) {
     previousSecretFile: env.NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE,
     previousKeyIdLabel: "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_ID",
     previousSecretLabel: "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET",
+  });
+  validateNotificationRuntimeKeyEnv({
+    currentKeyId: env.MAGIC_LINK_KEY_ID,
+    currentSecret: env.MAGIC_LINK_SECRET,
+    currentSecretFile: env.MAGIC_LINK_SECRET_FILE,
+    currentKeyIdLabel: "MAGIC_LINK_KEY_ID",
+    currentSecretLabel: "MAGIC_LINK_SECRET",
+    previousKeyId: env.MAGIC_LINK_PREVIOUS_KEY_ID,
+    previousSecret: env.MAGIC_LINK_PREVIOUS_SECRET,
+    previousSecretFile: env.MAGIC_LINK_PREVIOUS_SECRET_FILE,
+    previousKeyIdLabel: "MAGIC_LINK_PREVIOUS_KEY_ID",
+    previousSecretLabel: "MAGIC_LINK_PREVIOUS_SECRET",
   });
 
   if (env.SECURITY_HSTS_ENABLED && new URL(env.APP_URL).protocol !== "https:") {

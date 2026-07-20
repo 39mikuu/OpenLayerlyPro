@@ -28,6 +28,12 @@ const keys = [
   "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_ID",
   "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET",
   "NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRET_FILE",
+  "MAGIC_LINK_KEY_ID",
+  "MAGIC_LINK_SECRET",
+  "MAGIC_LINK_SECRET_FILE",
+  "MAGIC_LINK_PREVIOUS_KEY_ID",
+  "MAGIC_LINK_PREVIOUS_SECRET",
+  "MAGIC_LINK_PREVIOUS_SECRET_FILE",
 ] as const;
 const originals = new Map(keys.map((key) => [key, process.env[key]]));
 const originalNodeEnv = process.env.NODE_ENV;
@@ -194,6 +200,16 @@ describe("notification key startup validation", () => {
         NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET: validSecret,
       },
     ],
+    ["magic link previous key id only", { MAGIC_LINK_PREVIOUS_KEY_ID: "old" }],
+    ["magic link previous secret only", { MAGIC_LINK_PREVIOUS_SECRET: validSecret }],
+    [
+      "magic link previous id + secret without current",
+      {
+        MAGIC_LINK_PREVIOUS_KEY_ID: "old",
+        MAGIC_LINK_PREVIOUS_SECRET: validSecret,
+      },
+    ],
+    ["magic link secret without key id", { MAGIC_LINK_SECRET: validSecret }],
   ] as const)("fails closed at startup for %s", async (_name, overrides) => {
     await expect(load({ ...overrides })).rejects.toThrow("is missing or invalid");
   });
@@ -208,5 +224,16 @@ describe("notification key startup validation", () => {
     await expect(
       load({ NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE: previousSecretFile }),
     ).rejects.toThrow("is missing or invalid");
+  });
+
+  it("accepts a complete magic link current+previous keyring", async () => {
+    await expect(
+      load({
+        MAGIC_LINK_KEY_ID: "k2",
+        MAGIC_LINK_SECRET: validSecret,
+        MAGIC_LINK_PREVIOUS_KEY_ID: "k1",
+        MAGIC_LINK_PREVIOUS_SECRET_FILE: previousSecretFile,
+      }),
+    ).resolves.toMatchObject({ MAGIC_LINK_KEY_ID: "k2" });
   });
 });

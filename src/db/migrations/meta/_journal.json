@@ -197,6 +197,13 @@
       "when": 1784185262763,
       "tag": "0027_supporter_wall_admin_page_index",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1784574204058,
+      "tag": "0028_wp1_magic_link",
+      "breakpoints": true
     }
   ]
 }

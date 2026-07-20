@@ -834,6 +834,7 @@ describeWithDatabase("durable tasks integration", () => {
     await expect(countMailTaskFailures()).resolves.toEqual({
       businessEmail: { failed: 205, dead: 3 },
       loginCodeEmail: { failed: 4, dead: 5 },
+      magicLinkEmail: { failed: 0, dead: 0 },
     });
   });
 

@@ -5,6 +5,7 @@ import { useMemo, useRef, useState } from "react";
 
 import {
   acceptFanLoginCodeRequest,
+  acceptFanLoginLinkRequest,
   canSubmitFanLoginCode,
   changeFanLoginCode,
   changeFanLoginEmail,
@@ -24,16 +25,20 @@ export function LoginForm({
   turnstileSiteKey,
   loginCodeLength,
   loginCodePattern,
+  magicLinkEnabled,
+  magicLinkNext,
 }: {
   mode: "fan" | "admin";
   turnstileSiteKey?: string;
   loginCodeLength: number;
   loginCodePattern: string;
+  magicLinkEnabled?: boolean;
+  magicLinkNext?: string;
 }) {
   const t = useT();
 
   const [fanFlow, setFanFlow] = useState(INITIAL_FAN_LOGIN_FLOW);
-  const { email, requestedEmail, code, codeSent } = fanFlow;
+  const { email, requestedEmail, code, codeSent, linkSent } = fanFlow;
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
   const [adminEmail, setAdminEmail] = useState("");
@@ -106,7 +111,7 @@ export function LoginForm({
     <div className="space-y-5">
       <div className="flex items-start gap-3 rounded-lg bg-blue-50/60 px-3 py-3 text-sm text-blue-900 dark:bg-blue-950/20 dark:text-blue-100">
         <Mail className="mt-0.5 size-4 shrink-0" />
-        <span>{t("login.passwordlessHint")}</span>
+        <span>{magicLinkEnabled ? t("login.magicLinkHint") : t("login.passwordlessHint")}</span>
       </div>
 
       <div className="space-y-2">
@@ -167,13 +172,46 @@ export function LoginForm({
         />
       )}
 
+      {magicLinkEnabled && (
+        <Button
+          className="w-full"
+          variant={linkSent ? "outline" : "default"}
+          disabled={loading || !email || (Boolean(turnstileSiteKey) && !turnstileToken)}
+          onClick={() =>
+            run(async () => {
+              try {
+                const targetEmail = requestedEmail ?? normalizeEmail(email);
+                await api("/api/auth/magic-link/request", {
+                  method: "POST",
+                  body: {
+                    email: targetEmail,
+                    turnstileToken: turnstileToken ?? undefined,
+                    next: magicLinkNext,
+                  },
+                });
+                setFanFlow((current) => acceptFanLoginLinkRequest(current, targetEmail));
+                setMessage(t("login.magicLinkSent"));
+              } finally {
+                // Token is single-use, so reset it after every request attempt.
+                if (turnstileSiteKey) {
+                  turnstileRef.current?.reset();
+                  setTurnstileToken(null);
+                }
+              }
+            })
+          }
+        >
+          {linkSent ? t("login.magicLinkResend") : t("login.sendMagicLink")}
+        </Button>
+      )}
+
       {/* The Button base class carries `shrink-0`, so two `w-full` buttons in the
           `sm:` row would each keep 100% width and push past the card edge;
           `sm:flex-1` (basis 0 + grow) makes them share the row instead. */}
       <div className="flex flex-col gap-2 sm:flex-row">
         <Button
           className="w-full sm:flex-1"
-          variant={codeSent ? "outline" : "default"}
+          variant={codeSent || magicLinkEnabled ? "outline" : "default"}
           disabled={loading || !email || (Boolean(turnstileSiteKey) && !turnstileToken)}
           onClick={() =>
             run(async () => {

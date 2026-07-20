@@ -73,6 +73,27 @@ export const loginCodes = pgTable(
   ],
 );
 
+export const magicLinkTokens = pgTable(
+  "magic_link_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    keyId: text("key_id").notNull(),
+    redirectPath: text("redirect_path"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+  },
+  (table) => [
+    uniqueIndex("magic_link_tokens_token_hash_key_idx").on(table.tokenHash, table.keyId),
+    index("magic_link_tokens_email_created_idx").on(table.email, table.createdAt.desc()),
+    index("magic_link_tokens_email_active_idx").on(table.email, table.expiresAt, table.consumedAt),
+  ],
+);
+
 export const siteSettings = pgTable("site_settings", {
   id: uuid("id").primaryKey().defaultRandom(),
   key: text("key").unique().notNull(),

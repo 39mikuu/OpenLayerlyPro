@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased (v1.2 in progress)
+
+### WP1 Email Magic Link Login
+
+- Added fan/member Magic Link login: the login page can request a one-time
+  login link, the emailed link lands on a non-consuming confirmation page, and
+  only an explicit POST confirmation atomically consumes the token and creates
+  the session. The email-code flow stays available as the fallback and the
+  admin entry keeps email + password.
+- Tokens are stored only as keyed HMAC hashes in the new `magic_link_tokens`
+  table (migration 0028) with a recorded key id, 15-minute TTL, single-use
+  compare-and-swap consumption, and delivery through a durable
+  `auth.magic_link_email` transactional task that shares the login-code
+  suppression, dedupe, and rate-limit budgets.
+- Added the `MAGIC_LINK_*` current+previous keyring (same semantics and Docker
+  auto-provisioning as the notification unsubscribe keys). Leaving it
+  unconfigured hides the login-link entry; partial configuration fails closed
+  at startup.
+- Token-bearing confirm pages and APIs send `Cache-Control: no-store`,
+  `Referrer-Policy: no-referrer`, and `X-Robots-Tag: noindex`; confirmation
+  redirects are tokenless and post-login redirects only accept allowlisted
+  in-site relative paths. Request responses stay uniform to resist account
+  enumeration, and magic link request/send/consume/reject security events are
+  recorded with safe summaries only.
+
 ## v1.1.0 — 2026-07-17
 
 OpenLayerlyPro v1.1.0 was released from merge commit `3a80b34`. Its acceptance
