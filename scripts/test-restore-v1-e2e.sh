@@ -342,23 +342,72 @@ assert_legacy_sentinels_untouched() {
 
 # --- Signal cleanup: interrupt mid-restore and prove the probe DB is not orphaned. ---
 echo "TEST: probe database is cleaned up when restore is signalled..."
-start_restore_stack
-run_restore "$V1_OK" --yes >/tmp/openlayerly-s7-v1-signal.log 2>&1 &
-RESTORE_PID=$!
-seen_probe=false
-attempt=0
-while [ "$attempt" -lt 100 ]; do
-  if ! kill -0 "$RESTORE_PID" 2>/dev/null; then break; fi
-  if [ "$(probe_db_count)" != "0" ]; then
-    seen_probe=true
-    break
+# On fast runners the restore can complete before the signal lands, which is
+# a missed race window, not a cleanup bug. Only that exact case retries: the
+# process must have exited on its own BEFORE the TERM was sent. If TERM was
+# delivered to a live restore and it still exited 0, that is a real
+# signal-swallowing failure and stays fatal on the first attempt.
+signal_attempt=1
+while :; do
+  start_restore_stack
+  run_restore "$V1_OK" --yes >/tmp/openlayerly-s7-v1-signal.log 2>&1 &
+  RESTORE_PID=$!
+  seen_probe=false
+  attempt=0
+  # Poll fast: a 1s interval loses the race on runners where the whole
+  # restore takes only a few seconds.
+  while [ "$attempt" -lt 500 ]; do
+    if ! kill -0 "$RESTORE_PID" 2>/dev/null; then break; fi
+    if [ "$(probe_db_count)" != "0" ]; then
+      seen_probe=true
+      break
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.2
+  done
+  term_delivered=true
+  kill -TERM "$RESTORE_PID" 2>/dev/null || term_delivered=false
+  wait "$RESTORE_PID" 2>/dev/null && signal_rc=0 || signal_rc=$?
+  if [ "$signal_rc" = "0" ]; then
+    # Exit 0 after a TERM that reached a live restore is the real bug this
+    # case exists to catch (a signal-handling regression that lets the
+    # restore run on to success) — never retry it.
+    [ "$term_delivered" = false ] \
+      || fail "signalled restore unexpectedly exited 0 after TERM was delivered"
+    # TERM missed a child that had already exited and been reaped. That is
+    # only the benign fast-runner race when the restore provably ran to
+    # successful completion; exit 0 without the completion marker is still
+    # a failure.
+    grep -q "^Restore completed from:" /tmp/openlayerly-s7-v1-signal.log \
+      || fail "signalled restore unexpectedly exited 0 without completing"
+    [ "$signal_attempt" -lt 3 ] \
+      || fail "could not interrupt a live restore in $signal_attempt attempts (restore keeps finishing before TERM)"
+    echo "  (restore completed before TERM on attempt $signal_attempt; retrying the race window)"
+    signal_attempt=$((signal_attempt + 1))
+    continue
   fi
-  attempt=$((attempt + 1))
+  break
+done
+[ "$signal_rc" != "0" ] || fail "signalled restore unexpectedly exited 0"
+# The TERM reaches only restore.sh: a `compose run` client it had in flight
+# is orphaned and can create its one-off container AFTER the next case's
+# start_restore_stack sweep (the #131 force-rm only removes containers that
+# already exist). Wait for orphaned compose clients to finish, then sweep
+# this case's own residue so the case is self-contained.
+settle=0
+while [ "$settle" -lt 60 ] && pgrep -f '[d]ocker compose' >/dev/null 2>&1; do
+  settle=$((settle + 1))
   sleep 1
 done
-kill -TERM "$RESTORE_PID" 2>/dev/null || true
-wait "$RESTORE_PID" 2>/dev/null && signal_rc=0 || signal_rc=$?
-[ "$signal_rc" != "0" ] || fail "signalled restore unexpectedly exited 0"
+# Sweep only app-service residue: the orphaned one-offs are app containers,
+# and the postgres container must survive for assert_no_probe_db below.
+sig_stale=$(sudo -n docker ps -aq \
+  --filter "label=com.docker.compose.project=$RST_PROJECT" \
+  --filter "label=com.docker.compose.service=app")
+if [ -n "$sig_stale" ]; then
+  # shellcheck disable=SC2086 # word-splitting the ID list is intended
+  sudo -n docker rm -f $sig_stale >/dev/null 2>&1 || true
+fi
 # Allow the trap-driven cleanup to settle, then assert no probe DB remains.
 sleep 3
 assert_no_probe_db "SIGTERM during restore"
