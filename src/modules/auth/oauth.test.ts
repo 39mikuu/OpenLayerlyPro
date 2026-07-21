@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { getOAuthApiBasePath, getOAuthCookiePath } from "./oauth";
+import { __test, getOAuthApiBasePath, getOAuthCookiePath } from "./oauth";
+
+describe("OAuth database error classification", () => {
+  it("recognizes only PostgreSQL unique violations as expected bind races", () => {
+    expect(__test.isUniqueViolation({ code: "23505" })).toBe(true);
+    expect(__test.isUniqueViolation({ code: "08006" })).toBe(false);
+    expect(__test.isUniqueViolation(new Error("connection lost"))).toBe(false);
+  });
+});
 
 describe("getOAuthApiBasePath", () => {
   it("is empty for a root APP_URL", () => {

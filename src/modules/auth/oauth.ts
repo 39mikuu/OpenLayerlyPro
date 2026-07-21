@@ -19,6 +19,7 @@ import {
   saveOAuthProviderConfig,
 } from "@/modules/config/oauth";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
+import type { Locale } from "@/modules/i18n/config";
 import { recordEvent } from "@/modules/system/events";
 import { touchLastLogin } from "@/modules/user";
 
@@ -78,6 +79,10 @@ export function getOAuthCookiePath(appUrl = getEnv().APP_URL): string {
 
 function hashState(state: string): string {
   return hmacSha256WithPurpose(STATE_PURPOSE, state);
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 }
 
 function pkceChallengeS256(verifier: string): string {
@@ -393,6 +398,10 @@ async function resolveUserFromProfile(
     });
   } catch (error) {
     if (error instanceof ApiError) throw error;
+    // Only a PostgreSQL unique violation can represent the expected first-link
+    // race. Preserve every other database/infrastructure error so it is not
+    // misreported as an account-binding conflict.
+    if (!isUniqueViolation(error)) throw error;
     // The identity insert failed inside the transaction (concurrent first-link).
     // Identity-first precedence: whoever now owns this provider account is the user;
     // resolve to that winner idempotently rather than failing the login.
@@ -432,7 +441,12 @@ export async function cancelOAuthLogin(
 
 export async function completeOAuthLogin(
   provider: OAuthProviderId,
-  input: { code: string; state: string; browserBinding: string | null },
+  input: {
+    code: string;
+    state: string;
+    browserBinding: string | null;
+    locale?: Locale;
+  },
 ): Promise<OAuthCallbackSuccess> {
   if (!input.state?.trim()) {
     await recordEvent("oauth_login_rejected", { provider, reason: "missing_state" });
@@ -458,7 +472,10 @@ export async function completeOAuthLogin(
   });
   const profile = await fetchOAuthProfile(provider, accessToken);
   const user = await resolveUserFromProfile(provider, profile);
-  await touchLastLogin(user.id);
+  // Keep OAuth consistent with email-code and Magic Link logins: persist the
+  // locale resolved from the callback request so OAuth-only members do not
+  // remain on the schema default language for downstream notifications.
+  await touchLastLogin(user.id, input.locale);
   await recordEvent("user_login", { userId: user.id, via: `oauth:${provider}` });
   await recordEvent("oauth_login_succeeded", {
     provider,
@@ -489,6 +506,7 @@ export {
 // test helpers
 export const __test = {
   hashState,
+  isUniqueViolation,
   pkceChallengeS256,
   resolveUserFromProfile,
   safeEqualHex,

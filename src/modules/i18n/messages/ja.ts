@@ -969,7 +969,7 @@ export const ja: Messages = {
       storage: "ファイルストレージ",
       stripe: "Stripe 決済",
       translation: "AI 翻訳",
-      umami: "Umami 統計",
+      umami: "Umami アナリティクス",
       oauthGoogle: "Google OAuth",
       oauthGithub: "GitHub OAuth",
       sourceDatabase: "管理画面の設定",

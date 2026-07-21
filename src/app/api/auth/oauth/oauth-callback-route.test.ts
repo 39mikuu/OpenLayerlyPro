@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   cancelOAuthLogin: vi.fn(),
   createSession: vi.fn(),
   setSessionCookie: vi.fn(),
+  resolveLocale: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/oauth", async (importOriginal) => {
@@ -20,6 +21,9 @@ vi.mock("@/modules/auth/session", () => ({
   createSession: mocks.createSession,
   setSessionCookie: mocks.setSessionCookie,
 }));
+vi.mock("@/modules/i18n/server", () => ({
+  resolveLocale: mocks.resolveLocale,
+}));
 
 import { GET as githubCallbackGET } from "@/app/api/auth/oauth/github/callback/route";
 import { GET as googleCallbackGET } from "@/app/api/auth/oauth/google/callback/route";
@@ -28,6 +32,7 @@ import { ApiError } from "@/lib/api";
 describe("OAuth callback API routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.resolveLocale.mockResolvedValue("en");
   });
 
   it("completes Google login and sets session cookie on success", async () => {
@@ -51,6 +56,7 @@ describe("OAuth callback API routes", () => {
       code: "c",
       state: "s",
       browserBinding: null,
+      locale: "en",
     });
     expect(mocks.createSession).toHaveBeenCalledWith("user-google-1", expect.any(Object));
     expect(mocks.setSessionCookie).toHaveBeenCalledWith("session-tok-1", expect.any(Date));

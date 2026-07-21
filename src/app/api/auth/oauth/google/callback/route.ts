@@ -2,15 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getClientIp, getUserAgent, handleApiError } from "@/lib/api";
 import { ApiError } from "@/lib/api";
+import { resolveClientRateLimitIdentity } from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
+import { rateLimit } from "@/lib/rate-limit";
 import {
   cancelOAuthLogin,
   completeOAuthLogin,
   getOAuthBrowserBindingCookie,
   getOAuthCookiePath,
 } from "@/modules/auth/oauth";
+import { getOAuthStartRateLimit } from "@/modules/auth/rate-limit-policy";
 import { createSession, setSessionCookie } from "@/modules/auth/session";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
+import { resolveLocale } from "@/modules/i18n/server";
 
 export const runtime = "nodejs";
 
@@ -44,6 +48,14 @@ function failureRedirect(code: string, clearCookie = true): NextResponse {
 
 export async function GET(req: NextRequest) {
   try {
+    // Bound unauthenticated callback attempts before invalid states can amplify
+    // into unbounded audit-event writes. Use a distinct namespace from starts.
+    const env = getEnv();
+    const identity = resolveClientRateLimitIdentity(getClientIp(req));
+    const limit = getOAuthStartRateLimit("google-callback", identity, env);
+    if (!rateLimit(limit.key, limit.max, limit.windowMs)) {
+      return failureRedirect("rate_limited");
+    }
     const state = req.nextUrl.searchParams.get("state") ?? "";
     const browserBinding = req.cookies.get(getOAuthBrowserBindingCookie("google"))?.value ?? null;
     if (req.nextUrl.searchParams.get("error")) {
@@ -51,7 +63,8 @@ export async function GET(req: NextRequest) {
       return failureRedirect("denied");
     }
     const code = req.nextUrl.searchParams.get("code") ?? "";
-    const result = await completeOAuthLogin("google", { code, state, browserBinding });
+    const locale = await resolveLocale();
+    const result = await completeOAuthLogin("google", { code, state, browserBinding, locale });
     const { token, expiresAt } = await createSession(result.user.id, {
       ip: getClientIp(req),
       userAgent: getUserAgent(req),

@@ -281,8 +281,18 @@ describeWithDatabase("WP2 OAuth login integration", () => {
     const url = new URL(authorizationUrl);
     const state = url.searchParams.get("state")!;
 
-    const result = await completeOAuthLogin("google", { code: "mock-code", state, browserBinding });
+    const result = await completeOAuthLogin("google", {
+      code: "mock-code",
+      state,
+      browserBinding,
+      locale: "ja",
+    });
     expect(result.user.email).toBe("fan@example.com");
+    const [localizedUser] = await db
+      .select()
+      .from(users)
+      .where(sql`${users.id} = ${result.user.id}`);
+    expect(localizedUser.locale).toBe("ja");
 
     // 2. Replay fails (already consumed state)
     await expect(
