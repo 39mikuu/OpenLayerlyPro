@@ -129,6 +129,18 @@ describe("OAuth callback API routes", () => {
     expect(mocks.completeOAuthLogin).not.toHaveBeenCalled();
   });
 
+  it("preserves the binding cookie when a callback has no validated state", async () => {
+    mocks.completeOAuthLogin.mockRejectedValueOnce(new ApiError(400, "oauthInvalidState"));
+    const req = new NextRequest("http://localhost:3000/api/auth/oauth/google/callback?code=c", {
+      headers: { cookie: "olp_oauth_bind_google=binding" },
+    });
+    const res = await googleCallbackGET(req);
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get("Location")).toBe("http://localhost:3000/login?oauth_error=state");
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
   it("handles specific ApiErrors by mapping to failure codes", async () => {
     mocks.completeOAuthLogin.mockRejectedValueOnce(new ApiError(400, "oauthEmailUnverified"));
     const req = new NextRequest(

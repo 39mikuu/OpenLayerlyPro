@@ -457,7 +457,9 @@ export async function completeOAuthLogin(
 ): Promise<OAuthCallbackSuccess> {
   if (!input.state?.trim()) {
     await recordEvent("oauth_login_rejected", { provider, reason: "missing_state" });
-    throw new ApiError(400, "oauthInvalidCallback");
+    // No state was validated or consumed, so callback routes must preserve the
+    // browser-binding cookie for any still-pending legitimate OAuth flow.
+    throw new ApiError(400, "oauthInvalidState");
   }
 
   // Once a callback presents a state, validate and atomically burn it before
