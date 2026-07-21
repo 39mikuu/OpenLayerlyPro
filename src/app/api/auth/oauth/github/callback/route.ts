@@ -53,7 +53,9 @@ export async function GET(req: NextRequest) {
     const identity = resolveClientRateLimitIdentity(getClientIp(req));
     const limit = getOAuthStartRateLimit("github-callback", identity, env);
     if (!rateLimit(limit.key, limit.max, limit.windowMs)) {
-      return failureRedirect("rate_limited");
+      // No state has been validated or consumed yet. Preserve the binding
+      // cookie so a pending legitimate provider callback can still complete.
+      return failureRedirect("rate_limited", false);
     }
     const state = req.nextUrl.searchParams.get("state") ?? "";
     const browserBinding = req.cookies.get(getOAuthBrowserBindingCookie("github"))?.value ?? null;

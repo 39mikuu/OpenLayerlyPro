@@ -82,7 +82,14 @@ function hashState(state: string): string {
 }
 
 function isUniqueViolation(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+  let current: unknown = error;
+  const seen = new Set<object>();
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    if ("code" in current && current.code === "23505") return true;
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return false;
 }
 
 function pkceChallengeS256(verifier: string): string {

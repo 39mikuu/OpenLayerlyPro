@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   createSession: vi.fn(),
   setSessionCookie: vi.fn(),
   resolveLocale: vi.fn(),
+  rateLimit: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/oauth", async (importOriginal) => {
@@ -24,6 +25,9 @@ vi.mock("@/modules/auth/session", () => ({
 vi.mock("@/modules/i18n/server", () => ({
   resolveLocale: mocks.resolveLocale,
 }));
+vi.mock("@/lib/rate-limit", () => ({
+  rateLimit: mocks.rateLimit,
+}));
 
 import { GET as githubCallbackGET } from "@/app/api/auth/oauth/github/callback/route";
 import { GET as googleCallbackGET } from "@/app/api/auth/oauth/google/callback/route";
@@ -33,6 +37,7 @@ describe("OAuth callback API routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.resolveLocale.mockResolvedValue("en");
+    mocks.rateLimit.mockReturnValue(true);
   });
 
   it("completes Google login and sets session cookie on success", async () => {
@@ -106,6 +111,22 @@ describe("OAuth callback API routes", () => {
     expect(res.status).toBe(303);
     expect(res.headers.get("Location")).toBe("http://localhost:3000/login?oauth_error=state");
     expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("preserves the binding cookie when rate limiting happens before state validation", async () => {
+    mocks.rateLimit.mockReturnValueOnce(false);
+    const req = new NextRequest(
+      "http://localhost:3000/api/auth/oauth/google/callback?code=c&state=s",
+      { headers: { cookie: "olp_oauth_bind_google=binding" } },
+    );
+    const res = await googleCallbackGET(req);
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get("Location")).toBe(
+      "http://localhost:3000/login?oauth_error=rate_limited",
+    );
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(mocks.completeOAuthLogin).not.toHaveBeenCalled();
   });
 
   it("handles specific ApiErrors by mapping to failure codes", async () => {
