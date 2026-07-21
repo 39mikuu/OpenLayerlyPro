@@ -226,6 +226,38 @@ describeWithDatabase("WP1 magic link integration", () => {
     await expect(verifyMagicLinkToken(token)).resolves.toEqual({ status: "replayed" });
   });
 
+  it("silently declines to mint links for admin mailboxes", async () => {
+    await db.insert(users).values({ email: "boss@example.com", role: "admin" });
+
+    // Same accepted-shaped suppression as the dedupe path: no enumeration signal.
+    await expect(
+      requestMagicLink("Boss@Example.com", { identity, ip: identity.value }),
+    ).resolves.toEqual({ suppressed: true });
+    await expect(db.select().from(magicLinkTokens)).resolves.toHaveLength(0);
+    await expect(db.select().from(tasks)).resolves.toHaveLength(0);
+  });
+
+  it("fails closed when a minted token's mailbox belongs to an admin", async () => {
+    await db.insert(users).values({ email: "boss@example.com", role: "admin" });
+    const { token } = await insertToken({
+      key: getMagicLinkKeys().current,
+      email: "boss@example.com",
+    });
+
+    await expect(consumeMagicLinkToken(token)).resolves.toEqual({ status: "invalid" });
+
+    // The token is burned by the failed confirmation and cannot be replayed.
+    const [row] = await db.select().from(magicLinkTokens);
+    expect(row.consumedAt).not.toBeNull();
+    await expect(consumeMagicLinkToken(token)).resolves.toEqual({ status: "replayed" });
+
+    // The admin row is untouched: no role change, no fan account minted.
+    const adminRows = await db.select().from(users).where(eq(users.email, "boss@example.com"));
+    expect(adminRows).toHaveLength(1);
+    expect(adminRows[0].role).toBe("admin");
+    expect(adminRows[0].lastLoginAt).toBeNull();
+  });
+
   it("lets exactly one of two concurrent confirmations win", async () => {
     const { token } = await insertToken({
       key: getMagicLinkKeys().current,

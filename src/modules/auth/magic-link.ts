@@ -25,7 +25,7 @@ import { type MagicLinkKey, tryGetMagicLinkKeys } from "@/modules/security/magic
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask } from "@/modules/tasks";
 import { PermanentTaskError } from "@/modules/tasks/errors";
-import { findOrCreateUserByEmail, touchLastLogin } from "@/modules/user";
+import { findOrCreateUserByEmail, findUserByEmail, touchLastLogin } from "@/modules/user";
 
 export const MAGIC_LINK_TTL_MINUTES = 15;
 const TOKEN_PREFIX = "olp_mlk";
@@ -152,6 +152,17 @@ export async function requestMagicLink(
   const smtp = await getSmtpConfig();
   if (!smtp.configured) {
     throw new ApiError(500, "mailNotConfigured");
+  }
+
+  // 管理员入口保持邮箱 + 密码:管理员邮箱静默不发登录链接。响应仍是统一的
+  // accepted,不暴露该邮箱是否属于管理员;晋升竞态由消费路径的同一检查兜底。
+  const existingUser = await findUserByEmail(normalized);
+  if (existingUser?.role === "admin") {
+    await recordEvent("magic_link_rejected", {
+      reason: "adminEmail",
+      emailDigest: hmacSha256WithPurpose("auth-log-email", normalized),
+    });
+    return { suppressed: true };
   }
 
   const result = await getDb().transaction(async (tx): Promise<RequestMagicLinkResult> => {
@@ -474,6 +485,18 @@ export async function consumeMagicLinkToken(
       ...(existing ? { tokenId: existing.id, keyId: resolved.keyId } : {}),
     });
     return { status: reason };
+  }
+
+  // Magic Link 只用于粉丝/会员登录。若消费瞬间该邮箱已是管理员账号(例如链接
+  // 发出后被晋升),fail closed:token 已被烧毁,不创建 session,只回通用 invalid。
+  const existingUser = await findUserByEmail(consumed.email);
+  if (existingUser?.role === "admin") {
+    await recordEvent("magic_link_rejected", {
+      reason: "adminUser",
+      tokenId: consumed.id,
+      keyId: resolved.keyId,
+    });
+    return { status: "invalid" };
   }
 
   const user = await findOrCreateUserByEmail(consumed.email);
