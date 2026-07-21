@@ -226,4 +226,21 @@ describe("document security middleware", () => {
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
   });
+
+  it("marks magic link confirm and result pages as non-cacheable and non-indexable", async () => {
+    for (const path of ["/login/magic/olp_mlk.v1.current.token-value", "/login/magic/result"]) {
+      const response = await middleware(request(path));
+
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    }
+  });
+
+  it("does not apply token-page headers to the plain login page", async () => {
+    const response = await middleware(request("/login"));
+
+    expect(response.headers.get("cache-control")).not.toBe("no-store");
+    expect(response.headers.get("x-robots-tag")).toBeNull();
+  });
 });

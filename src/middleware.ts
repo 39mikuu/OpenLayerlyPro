@@ -27,10 +27,13 @@ function generateNonce(): string {
   return btoa(String.fromCharCode(...bytes));
 }
 
-function isNotificationUnsubscribeDocument(pathname: string): boolean {
+function isTokenBearingDocument(pathname: string): boolean {
   return (
     pathname.startsWith("/unsubscribe/notifications/") ||
-    pathname === "/unsubscribe/notifications/result"
+    pathname === "/unsubscribe/notifications/result" ||
+    // Magic Link 确认页 URL 携带一次性登录 token;结果页与其共享 no-store /
+    // no-referrer / noindex 边界,避免缓存或 Referer 泄露。
+    pathname.startsWith("/login/magic/")
   );
 }
 
@@ -108,7 +111,7 @@ export async function middleware(request: NextRequest) {
   if (env.SECURITY_HSTS_ENABLED) {
     response.headers.set("Strict-Transport-Security", HSTS_HEADER_VALUE);
   }
-  if (isNotificationUnsubscribeDocument(request.nextUrl.pathname)) {
+  if (isTokenBearingDocument(request.nextUrl.pathname)) {
     response.headers.set("Cache-Control", "no-store");
     response.headers.set("Referrer-Policy", "no-referrer");
     response.headers.set("X-Robots-Tag", "noindex, nofollow");

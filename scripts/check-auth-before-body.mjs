@@ -74,6 +74,20 @@ const ALLOWLIST = [
     reason: "Stripe signature verification requires the untouched raw request body.",
   },
   {
+    file: "src/app/api/auth/magic-link/request/route.ts",
+    method: "POST",
+    kind: "public-body",
+    reason:
+      "Public magic-link request endpoint must read unauthenticated email and challenge fields.",
+  },
+  {
+    file: "src/app/api/auth/magic-link/confirm/route.ts",
+    method: "POST",
+    kind: "public-body",
+    reason:
+      "Public magic-link confirmation reads only a bounded form body; the one-time token in the body is the credential being verified.",
+  },
+  {
     file: "src/app/api/notifications/unsubscribe/[token]/route.ts",
     method: "POST",
     kind: "public-body",

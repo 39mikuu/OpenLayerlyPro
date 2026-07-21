@@ -300,6 +300,12 @@ describe("auth-before-body static check", () => {
       "src/app/api/notifications/unsubscribe/route.ts": `
         import { readFormDataWithLimit } from "@/lib/request-body";
         export async function POST(req: Request) { return Response.json(await readFormDataWithLimit(req, 1024)); }`,
+      "src/app/api/auth/magic-link/request/route.ts": `
+        import { readJsonWithLimit } from "@/lib/request-body";
+        export async function POST(req: Request) { return Response.json(await readJsonWithLimit(req, 1024, schema)); }`,
+      "src/app/api/auth/magic-link/confirm/route.ts": `
+        import { readFormDataWithLimit } from "@/lib/request-body";
+        export async function POST(req: Request) { return Response.json(await readFormDataWithLimit(req, 1024)); }`,
       "src/app/api/auth/logout/route.ts": `
         export async function POST() { return Response.json({ loggedOut: true }); }`,
     });
@@ -345,6 +351,12 @@ describe("auth-before-body static check", () => {
         import { readBoundedRawBody } from "@/lib/request-body";
         export async function POST(req: Request) { return Response.json(await readBoundedRawBody(req, 1024)); }`,
       "src/app/api/notifications/unsubscribe/route.ts": `
+        import { readFormDataWithLimit } from "@/lib/request-body";
+        export async function POST(req: Request) { return Response.json(await readFormDataWithLimit(req, 1024)); }`,
+      "src/app/api/auth/magic-link/request/route.ts": `
+        import { readJsonWithLimit } from "@/lib/request-body";
+        export async function POST(req: Request) { return Response.json(await readJsonWithLimit(req, 1024, schema)); }`,
+      "src/app/api/auth/magic-link/confirm/route.ts": `
         import { readFormDataWithLimit } from "@/lib/request-body";
         export async function POST(req: Request) { return Response.json(await readFormDataWithLimit(req, 1024)); }`,
       "src/app/api/auth/logout/route.ts": `

@@ -4,6 +4,7 @@ import { serializePaymentRejectionReviewNote } from "@/modules/payment/rejection
 
 import {
   renderLoginCodeEmail,
+  renderMagicLinkEmail,
   renderMembershipActivatedEmail,
   renderMembershipRevokedEmail,
   renderPaymentRejectedEmail,
@@ -22,6 +23,22 @@ describe("localized mail templates", () => {
       ].join("\n"),
     });
     expect(renderLoginCodeEmail("123456").subject).toBe("你的登录验证码");
+  });
+
+  it("renders magic link emails with the confirm URL and localized framing", () => {
+    const url = "https://site.example/login/magic/olp_mlk.v1.current.abc";
+    const en = renderMagicLinkEmail(url, "en");
+    expect(en.subject).toBe("Your login link");
+    expect(en.text).toContain(url);
+    expect(en.text).toContain("15 minutes");
+
+    const zh = renderMagicLinkEmail(url);
+    expect(zh.subject).toBe("你的登录链接");
+    expect(zh.text).toContain(url);
+
+    const ja = renderMagicLinkEmail(url, "ja");
+    expect(ja.subject).toBe("ログインリンク");
+    expect(ja.text).toContain(url);
   });
 
   it("renders membership and rejection data without translating user content", () => {

@@ -20,6 +20,8 @@ export function Login({ view, t }: { view: LoginView; t: Translate }) {
           turnstileSiteKey={view.turnstileSiteKey}
           loginCodeLength={view.loginCodeLength}
           loginCodePattern={view.loginCodePattern}
+          magicLinkEnabled={view.magicLinkEnabled}
+          magicLinkNext={view.magicLinkNext}
         />
       </div>
 

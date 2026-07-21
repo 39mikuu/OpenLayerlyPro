@@ -45,18 +45,19 @@ export type TaskFinalizationResult =
 export type MailTaskFailureCounts = {
   businessEmail: { failed: number; dead: number };
   loginCodeEmail: { failed: number; dead: number };
+  magicLinkEmail: { failed: number; dead: number };
 };
 
 export type DeadLetterTask = Pick<Task, "id" | "kind" | "attempts" | "payloadJson">;
 
 function isMailTaskKind(kind: string): boolean {
-  return kind === "email" || kind === "auth.login_code_email";
+  return kind === "email" || kind === "auth.login_code_email" || kind === "auth.magic_link_email";
 }
 
-function loginCodeIdFromPayload(payload: unknown): string | undefined {
+function payloadStringId(payload: unknown, field: "codeId" | "tokenId"): string | undefined {
   if (typeof payload !== "object" || payload === null) return undefined;
-  const codeId = (payload as { codeId?: unknown }).codeId;
-  return typeof codeId === "string" ? codeId : undefined;
+  const value = (payload as Record<string, unknown>)[field];
+  return typeof value === "string" ? value : undefined;
 }
 
 function warnMailTaskDeadLettered(
@@ -65,13 +66,18 @@ function warnMailTaskDeadLettered(
 ): void {
   if (!isMailTaskKind(task.kind)) return;
   const codeId =
-    task.kind === "auth.login_code_email" ? loginCodeIdFromPayload(task.payloadJson) : undefined;
+    task.kind === "auth.login_code_email" ? payloadStringId(task.payloadJson, "codeId") : undefined;
+  const tokenId =
+    task.kind === "auth.magic_link_email"
+      ? payloadStringId(task.payloadJson, "tokenId")
+      : undefined;
   logger.warn("email task dead-lettered", {
     taskId: task.id,
     kind: task.kind,
     attempts: task.attempts,
     classification,
     ...(codeId ? { codeId } : {}),
+    ...(tokenId ? { tokenId } : {}),
   });
 }
 
@@ -624,6 +630,8 @@ export async function countMailTaskFailures(): Promise<MailTaskFailureCounts> {
       businessDead: sql<number>`count(*) filter (where ${tasks.kind} = ${"email"} and ${tasks.status} = ${"dead"})::int`,
       loginCodeFailed: sql<number>`count(*) filter (where ${tasks.kind} = ${"auth.login_code_email"} and ${tasks.status} = ${"failed"})::int`,
       loginCodeDead: sql<number>`count(*) filter (where ${tasks.kind} = ${"auth.login_code_email"} and ${tasks.status} = ${"dead"})::int`,
+      magicLinkFailed: sql<number>`count(*) filter (where ${tasks.kind} = ${"auth.magic_link_email"} and ${tasks.status} = ${"failed"})::int`,
+      magicLinkDead: sql<number>`count(*) filter (where ${tasks.kind} = ${"auth.magic_link_email"} and ${tasks.status} = ${"dead"})::int`,
     })
     .from(tasks);
 
@@ -635,6 +643,10 @@ export async function countMailTaskFailures(): Promise<MailTaskFailureCounts> {
     loginCodeEmail: {
       failed: Number(row?.loginCodeFailed ?? 0),
       dead: Number(row?.loginCodeDead ?? 0),
+    },
+    magicLinkEmail: {
+      failed: Number(row?.magicLinkFailed ?? 0),
+      dead: Number(row?.magicLinkDead ?? 0),
     },
   };
 }

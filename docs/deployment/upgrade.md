@@ -40,6 +40,16 @@ never auto-generated; configure `NOTIFICATION_UNSUBSCRIBE_PREVIOUS_*` and
 `NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_*` only during explicit rotation and
 retain them until old tokens/digests no longer need verification.
 
+Since v1.2, fan Magic Link login uses a dedicated `MAGIC_LINK_*` keyring with
+the same current+previous rotation semantics. Compose upgrades need no manual
+step: the entrypoint defaults `MAGIC_LINK_KEY_ID` to `current` and creates a
+persistent `0600` file at `MAGIC_LINK_SECRET_FILE`
+(`/app/secrets/magic-link-secret` by default). Non-Compose deployments enable
+the feature by providing `MAGIC_LINK_KEY_ID` plus `MAGIC_LINK_SECRET` or
+`MAGIC_LINK_SECRET_FILE`; leaving them unset keeps the login page code-only.
+Magic link tokens live for 15 minutes, so rotation only needs the previous key
+retained briefly, and restores never require magic link key continuity.
+
 Backups created by `v1.1.0` use manifest `FORMAT_VERSION=4` and record
 notification key sources, key IDs, file paths when file-backed, and SHA-256
 fingerprints. Restore validates notification key continuity before replacing the

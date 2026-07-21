@@ -18,10 +18,15 @@ entrypoint_configure_secret_environment() {
   export NOTIFICATION_UNSUBSCRIBE_KEY_ID
   NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID="${NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID:-current}"
   export NOTIFICATION_SUPPRESSION_DIGEST_KEY_ID
+  MAGIC_LINK_SECRET_FILE="${MAGIC_LINK_SECRET_FILE:-/app/secrets/magic-link-secret}"
+  export MAGIC_LINK_SECRET_FILE
+  MAGIC_LINK_KEY_ID="${MAGIC_LINK_KEY_ID:-current}"
+  export MAGIC_LINK_KEY_ID
   SECRETS_DIR="$(dirname "$CONFIG_ENCRYPTION_KEY_FILE")"
   SESSION_SECRETS_DIR="$(dirname "$SESSION_SECRET_FILE")"
   NOTIFICATION_UNSUBSCRIBE_SECRETS_DIR="$(dirname "$NOTIFICATION_UNSUBSCRIBE_SECRET_FILE")"
   NOTIFICATION_SUPPRESSION_SECRETS_DIR="$(dirname "$NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE")"
+  MAGIC_LINK_SECRETS_DIR="$(dirname "$MAGIC_LINK_SECRET_FILE")"
 }
 
 entrypoint_provision_secrets() {
@@ -46,6 +51,13 @@ entrypoint_provision_secrets() {
     "$NOTIFICATION_SUPPRESSION_DIGEST_SECRET_FILE" \
     NOTIFICATION_SUPPRESSION_DIGEST_SECRET \
     NOTIFICATION_SUPPRESSION_DIGEST_SECRET
+
+  # Magic Link 登录 token 哈希密钥：与通知密钥同一 current+previous 语义，
+  # previous key 永远不自动生成。
+  node /app/docker/ensure-notification-secret.mjs \
+    "$MAGIC_LINK_SECRET_FILE" \
+    MAGIC_LINK_SECRET \
+    MAGIC_LINK_SECRET
 }
 
 entrypoint_chown_regular_file_or_fail() {
@@ -102,6 +114,19 @@ entrypoint_apply_root_ownership() {
     NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR="$(dirname "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE")"
   fi
 
+  magic_link_file_mode=false
+  if [ -z "${MAGIC_LINK_SECRET:-}" ]; then
+    magic_link_file_mode=true
+  fi
+
+  magic_link_previous_file_mode=false
+  MAGIC_LINK_PREVIOUS_SECRETS_DIR=
+  if [ -z "${MAGIC_LINK_PREVIOUS_SECRET:-}" ] && \
+    [ -n "${MAGIC_LINK_PREVIOUS_SECRET_FILE:-}" ]; then
+    magic_link_previous_file_mode=true
+    MAGIC_LINK_PREVIOUS_SECRETS_DIR="$(dirname "$MAGIC_LINK_PREVIOUS_SECRET_FILE")"
+  fi
+
   # In CONFIG_ENCRYPTION_KEY env mode, the config key file path is not touched at all:
   # no file tests, chmod, or chown. Still chown the shared secrets dir when the
   # file-backed SESSION_SECRET lives there, because the default session-secret path is
@@ -112,7 +137,9 @@ entrypoint_apply_root_ownership() {
       { [ "$unsubscribe_file_mode" = true ] && [ "$NOTIFICATION_UNSUBSCRIBE_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
       { [ "$suppression_file_mode" = true ] && [ "$NOTIFICATION_SUPPRESSION_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
       { [ "$unsubscribe_previous_file_mode" = true ] && [ "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
-      { [ "$suppression_previous_file_mode" = true ] && [ "$NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR" = "$SECRETS_DIR" ]; }
+      { [ "$suppression_previous_file_mode" = true ] && [ "$NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
+      { [ "$magic_link_file_mode" = true ] && [ "$MAGIC_LINK_SECRETS_DIR" = "$SECRETS_DIR" ]; } || \
+      { [ "$magic_link_previous_file_mode" = true ] && [ "$MAGIC_LINK_PREVIOUS_SECRETS_DIR" = "$SECRETS_DIR" ]; }
     }
   }; then
     chown nextjs:nodejs "$SECRETS_DIR"
@@ -123,7 +150,9 @@ entrypoint_apply_root_ownership() {
     "$NOTIFICATION_UNSUBSCRIBE_SECRETS_DIR" \
     "$NOTIFICATION_SUPPRESSION_SECRETS_DIR" \
     "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_SECRETS_DIR" \
-    "$NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR"
+    "$NOTIFICATION_SUPPRESSION_PREVIOUS_SECRETS_DIR" \
+    "$MAGIC_LINK_SECRETS_DIR" \
+    "$MAGIC_LINK_PREVIOUS_SECRETS_DIR"
   do
     if [ "$notification_secret_dir" != "$SECRETS_DIR" ] && [ -d "$notification_secret_dir" ]; then
       chown nextjs:nodejs "$notification_secret_dir"
@@ -166,6 +195,20 @@ entrypoint_apply_root_ownership() {
     entrypoint_chown_regular_file_or_fail \
       "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" \
       "NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_SECRET_FILE" \
+      || return 1
+  fi
+
+  if [ "$magic_link_file_mode" = true ]; then
+    entrypoint_chown_regular_file_or_fail \
+      "$MAGIC_LINK_SECRET_FILE" "MAGIC_LINK_SECRET_FILE" \
+      || return 1
+  fi
+
+  if [ "$magic_link_previous_file_mode" = true ] && \
+    [ -e "$MAGIC_LINK_PREVIOUS_SECRET_FILE" ]; then
+    entrypoint_chown_regular_file_or_fail \
+      "$MAGIC_LINK_PREVIOUS_SECRET_FILE" \
+      "MAGIC_LINK_PREVIOUS_SECRET_FILE" \
       || return 1
   fi
 }

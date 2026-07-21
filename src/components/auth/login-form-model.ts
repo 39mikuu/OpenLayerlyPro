@@ -9,6 +9,7 @@ export type FanLoginFlowState = {
   requestedEmail: string | null;
   code: string;
   codeSent: boolean;
+  linkSent: boolean;
 };
 
 export const INITIAL_FAN_LOGIN_FLOW: FanLoginFlowState = {
@@ -16,6 +17,7 @@ export const INITIAL_FAN_LOGIN_FLOW: FanLoginFlowState = {
   requestedEmail: null,
   code: "",
   codeSent: false,
+  linkSent: false,
 };
 
 export function changeFanLoginEmail(state: FanLoginFlowState, email: string): FanLoginFlowState {
@@ -24,6 +26,7 @@ export function changeFanLoginEmail(state: FanLoginFlowState, email: string): Fa
     email,
     requestedEmail: null,
     codeSent: false,
+    linkSent: false,
     code: "",
   };
 }
@@ -42,11 +45,25 @@ export function acceptFanLoginCodeRequest(
   };
 }
 
+export function acceptFanLoginLinkRequest(
+  state: FanLoginFlowState,
+  targetEmail = state.email,
+): FanLoginFlowState {
+  const requestedEmail = normalizeEmail(targetEmail);
+  return {
+    ...state,
+    email: requestedEmail,
+    requestedEmail,
+    linkSent: true,
+  };
+}
+
 export function resetFanLoginRequestedEmail(state: FanLoginFlowState): FanLoginFlowState {
   return {
     ...state,
     requestedEmail: null,
     codeSent: false,
+    linkSent: false,
     code: "",
   };
 }

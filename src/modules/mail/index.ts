@@ -106,6 +106,31 @@ export async function sendLoginCodeEmail(to: string, code: string, locale?: Loca
   await sendMail({ to, subject: message.subject, text: message.text });
 }
 
+export function renderMagicLinkEmail(confirmUrl: string, locale?: Locale) {
+  const t = mailT(locale);
+  return {
+    subject: t("mail.magicLinkSubject"),
+    text: [
+      t("mail.magicLinkIntro"),
+      "",
+      confirmUrl,
+      "",
+      t("mail.magicLinkExpiry"),
+      t("mail.magicLinkConfirmNote"),
+      t("mail.ignore"),
+    ].join("\n"),
+  };
+}
+
+export async function sendMagicLinkEmail(
+  to: string,
+  confirmUrl: string,
+  locale?: Locale,
+): Promise<void> {
+  const message = renderMagicLinkEmail(confirmUrl, locale);
+  await sendMail({ to, subject: message.subject, text: message.text });
+}
+
 export function renderMembershipActivatedEmail(tierName: string, endsAt: Date, locale?: Locale) {
   const t = mailT(locale);
   return {
