@@ -1093,6 +1093,7 @@ export const ja: Messages = {
     submit: "初期設定を完了",
   },
   errors: {
+    oauthConfigIncomplete: "この OAuth プロバイダーの設定が不完全です。",
     slugTaken: "このスラッグは既に使用されています",
     taxonomyNameRequired: "名前を入力してください",
     taxonomySlugRequired: "有効なスラッグを生成できませんでした",

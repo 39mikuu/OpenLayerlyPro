@@ -1105,6 +1105,7 @@ export const en: Messages = {
     submit: "Finish setup",
   },
   errors: {
+    oauthConfigIncomplete: "The configuration for this OAuth provider is incomplete.",
     slugTaken: "This slug is already in use",
     taxonomyNameRequired: "Name is required",
     taxonomySlugRequired: "A valid slug could not be generated",

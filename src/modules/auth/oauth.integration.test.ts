@@ -12,6 +12,7 @@ import { oauthIdentities, oauthStates, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { decryptSecret } from "@/lib/crypto";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
+import crypto from "crypto";
 
 import {
   __test,
@@ -95,7 +96,15 @@ describeWithDatabase("WP2 OAuth login integration", () => {
     expect(row.provider).toBe("google");
     expect(row.redirectPath).toBe("/posts/deep");
     expect(row.consumedAt).toBeNull();
-    expect(decryptSecret(row.codeVerifierEncrypted)).toBeTruthy();
+    
+    const verifier = decryptSecret(row.codeVerifierEncrypted);
+    expect(verifier).toBeTruthy();
+    
+    const calculatedChallenge = crypto
+      .createHash("sha256")
+      .update(verifier)
+      .digest("base64url");
+    expect(url.searchParams.get("code_challenge")).toBe(calculatedChallenge);
   });
 
   it("GitHub starting flow works too", async () => {
@@ -279,6 +288,25 @@ describeWithDatabase("WP2 OAuth login integration", () => {
     // 2. Replay fails (already consumed state)
     await expect(
       completeOAuthLogin("google", { code: "mock-code", state, browserBinding }),
+    ).rejects.toThrow(ApiError);
+
+    // 3. Expired state fails
+    const startExpired = await beginOAuthLogin("google");
+    const urlExpired = new URL(startExpired.authorizationUrl);
+    const stateExpired = urlExpired.searchParams.get("state")!;
+    
+    // update expiresAt to epoch 0 (definitely expired) for the newest state row in DB
+    await db
+      .update(oauthStates)
+      .set({ expiresAt: new Date(0) })
+      .where(sql`id = (select id from oauth_states order by id desc limit 1)`);
+
+    await expect(
+      completeOAuthLogin("google", {
+        code: "mock-code",
+        state: stateExpired,
+        browserBinding: startExpired.browserBinding,
+      }),
     ).rejects.toThrow(ApiError);
   });
 

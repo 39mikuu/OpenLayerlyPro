@@ -1048,6 +1048,7 @@ export const zh = {
     submit: "完成初始化",
   },
   errors: {
+    oauthConfigIncomplete: "此 OAuth 提供商的配置不完整。",
     slugTaken: "此 Slug 已被占用",
     taxonomyNameRequired: "名称不能为空",
     taxonomySlugRequired: "无法生成有效的 Slug",
