@@ -216,10 +216,10 @@ describeWithDatabase("WP2 OAuth login integration", () => {
     await expect(__test.resolveUserFromProfile("github", emptyGithub)).rejects.toThrow(ApiError);
   });
 
-  it("concurrent first-links to the same provider account fail closed and leave no orphan user", async () => {
+  it("concurrent first-links to the same provider account converge without orphan users", async () => {
     // Fire several concurrent logins for the SAME new provider account, each with a
-    // distinct verified email. Exactly one may bind the identity; every loser must
-    // fail closed AND clean up the user row it created, so no orphan is left behind.
+    // distinct verified email. Exactly one identity may be created. Racing callers
+    // may resolve idempotently to the winner or fail closed, but no orphan user may remain.
     const emails = ["a@example.com", "b@example.com", "c@example.com", "d@example.com"];
     const results = await Promise.allSettled(
       emails.map((email) =>
@@ -232,7 +232,7 @@ describeWithDatabase("WP2 OAuth login integration", () => {
       ),
     );
 
-    // At least one binds; at least one is rejected with a fail-closed ApiError.
+    // At least one binds. Any rejected racing caller must fail closed with ApiError.
     const fulfilled = results.filter((r) => r.status === "fulfilled");
     const rejected = results.filter((r) => r.status === "rejected");
     expect(fulfilled.length).toBeGreaterThanOrEqual(1);
