@@ -422,13 +422,21 @@ export async function completeOAuthLogin(
   provider: OAuthProviderId,
   input: { code: string; state: string; browserBinding: string | null },
 ): Promise<OAuthCallbackSuccess> {
-  if (!input.code?.trim() || !input.state?.trim()) {
-    await recordEvent("oauth_login_rejected", { provider, reason: "missing_code_or_state" });
+  if (!input.state?.trim()) {
+    await recordEvent("oauth_login_rejected", { provider, reason: "missing_state" });
+    throw new ApiError(400, "oauthInvalidCallback");
+  }
+
+  // Once a callback presents a state, validate and atomically burn it before
+  // classifying the callback. This keeps success, denial, and malformed
+  // callbacks single-use and prevents a valid state from remaining replayable.
+  const consumed = await consumeOAuthState(provider, input.state, input.browserBinding);
+  if (!input.code?.trim()) {
+    await recordEvent("oauth_login_rejected", { provider, reason: "missing_code" });
     throw new ApiError(400, "oauthInvalidCallback");
   }
 
   const config = await requireActiveConfig(provider);
-  const consumed = await consumeOAuthState(provider, input.state, input.browserBinding);
   const accessToken = await exchangeCode({
     provider,
     code: input.code,

@@ -18,6 +18,7 @@ import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import {
   __test,
   beginOAuthLogin,
+  cancelOAuthLogin,
   completeOAuthLogin,
   fetchOAuthProfile,
   getOAuthProviderAdminView,
@@ -305,6 +306,43 @@ describeWithDatabase("WP2 OAuth login integration", () => {
         code: "mock-code",
         state: stateExpired,
         browserBinding: startExpired.browserBinding,
+      }),
+    ).rejects.toThrow(ApiError);
+  });
+
+  it("burns valid state on denied and missing-code callbacks", async () => {
+    await saveOAuthProviderConfig("google", {
+      enabled: true,
+      clientId: "g-id",
+      clientSecret: "g-sec",
+    });
+
+    const denied = await beginOAuthLogin("google");
+    const deniedState = new URL(denied.authorizationUrl).searchParams.get("state")!;
+    await cancelOAuthLogin("google", {
+      state: deniedState,
+      browserBinding: denied.browserBinding,
+    });
+    await expect(
+      cancelOAuthLogin("google", {
+        state: deniedState,
+        browserBinding: denied.browserBinding,
+      }),
+    ).rejects.toThrow(ApiError);
+
+    const malformed = await beginOAuthLogin("google");
+    const malformedState = new URL(malformed.authorizationUrl).searchParams.get("state")!;
+    await expect(
+      completeOAuthLogin("google", {
+        code: "",
+        state: malformedState,
+        browserBinding: malformed.browserBinding,
+      }),
+    ).rejects.toThrow(ApiError);
+    await expect(
+      cancelOAuthLogin("google", {
+        state: malformedState,
+        browserBinding: malformed.browserBinding,
       }),
     ).rejects.toThrow(ApiError);
   });
