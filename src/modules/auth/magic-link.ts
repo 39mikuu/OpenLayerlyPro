@@ -213,6 +213,21 @@ export async function requestMagicLink(
 
     const generated = generateMagicLinkToken(keys.current);
 
+    // Invalidate every still-active token for this mailbox before minting the
+    // replacement. Delivery already skips superseded rows; consume/verify must
+    // not keep accepting an older link after a newer one has been issued
+    // (Codex P2 / WP1 single-live-link invariant).
+    await tx
+      .update(magicLinkTokens)
+      .set({ expiresAt: sql`now()` })
+      .where(
+        and(
+          eq(magicLinkTokens.email, normalized),
+          isNull(magicLinkTokens.consumedAt),
+          gt(magicLinkTokens.expiresAt, sql<Date>`now()`),
+        ),
+      );
+
     const [inserted] = await tx
       .insert(magicLinkTokens)
       .values({

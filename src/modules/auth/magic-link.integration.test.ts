@@ -137,6 +137,61 @@ describeWithDatabase("WP1 magic link integration", () => {
     await expect(db.select().from(magicLinkTokens)).resolves.toHaveLength(1);
   });
 
+  it("expires older unconsumed tokens when a replacement link is minted after the dedupe window", async () => {
+    // Deliver the first link so the delivery fence no longer suppresses replacements.
+    await requestMagicLink("replace@example.com", { identity, ip: identity.value });
+    const [firstRow] = await db.select().from(magicLinkTokens);
+    const [firstTask] = await db.select().from(tasks);
+    const [claimed] = await claimDueTasks(1, { lockToken: "magic-supersede-worker" });
+    await expect(runTaskHandler(claimed!)).resolves.toEqual({});
+    expect(mocks.sendMagicLinkEmail).toHaveBeenCalledTimes(1);
+    const firstConfirmUrl = mocks.sendMagicLinkEmail.mock.calls[0][1] as string;
+    const firstToken = firstConfirmUrl.slice(
+      firstConfirmUrl.lastIndexOf("/login/magic/") + "/login/magic/".length,
+    );
+
+    // Age the first token past the send-dedupe window and mark delivery done so a
+    // second request is allowed to mint a replacement (same path as a real user
+    // requesting another link after the first mail already went out).
+    await db
+      .update(magicLinkTokens)
+      .set({ createdAt: new Date(Date.now() - 61_000) })
+      .where(eq(magicLinkTokens.id, firstRow.id));
+    await db.update(tasks).set({ status: "succeeded" }).where(eq(tasks.id, firstTask.id));
+
+    const second = await requestMagicLink("replace@example.com", {
+      identity,
+      ip: identity.value,
+    });
+    expect(second.suppressed).toBe(false);
+    expect(second.tokenId).toBeTruthy();
+
+    const rows = await db.select().from(magicLinkTokens);
+    expect(rows).toHaveLength(2);
+    const older = rows.find((row) => row.id === firstRow.id)!;
+    const newer = rows.find((row) => row.id === second.tokenId)!;
+    expect(older.consumedAt).toBeNull();
+    expect(older.expiresAt.getTime()).toBeLessThanOrEqual(Date.now() + 1_000);
+    expect(newer.expiresAt.getTime()).toBeGreaterThan(Date.now() + 60_000);
+
+    // Older already-delivered link must not verify or log in after supersession.
+    await expect(verifyMagicLinkToken(firstToken)).resolves.toEqual({ status: "expired" });
+    await expect(consumeMagicLinkToken(firstToken)).resolves.toEqual({ status: "expired" });
+    await expect(db.select().from(users)).resolves.toHaveLength(0);
+
+    // Deliver and consume the replacement link.
+    const [claimedSecond] = await claimDueTasks(1, { lockToken: "magic-supersede-worker-2" });
+    await expect(runTaskHandler(claimedSecond!)).resolves.toEqual({});
+    const secondConfirmUrl = mocks.sendMagicLinkEmail.mock.calls[1][1] as string;
+    const secondToken = secondConfirmUrl.slice(
+      secondConfirmUrl.lastIndexOf("/login/magic/") + "/login/magic/".length,
+    );
+    await expect(consumeMagicLinkToken(secondToken)).resolves.toMatchObject({
+      status: "consumed",
+      user: expect.objectContaining({ email: "replace@example.com" }),
+    });
+  });
+
   it("delivers a confirm URL whose token verifies without being consumed, then single-use consumes", async () => {
     await requestMagicLink("fan@example.com", { identity, ip: identity.value, locale: "ja" });
 
