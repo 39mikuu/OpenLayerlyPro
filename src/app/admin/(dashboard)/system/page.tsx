@@ -14,6 +14,8 @@ const INTEGRATION_KEYS: Record<IntegrationId, string> = {
   turnstile: "Cloudflare Turnstile",
   translation: "admin.system.translation",
   umami: "admin.system.umami",
+  oauth_google: "admin.system.oauthGoogle",
+  oauth_github: "admin.system.oauthGithub",
   tunnel: "Cloudflare Tunnel",
 };
 

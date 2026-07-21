@@ -1,3 +1,4 @@
+import { OAuthProviderConfigForm } from "@/components/admin/oauth-config-form";
 import { PageHeader } from "@/components/admin/primitives";
 import { SmtpConfigForm } from "@/components/admin/smtp-config-form";
 import { StorageConfigForm } from "@/components/admin/storage-config-form";
@@ -7,6 +8,7 @@ import { TurnstileConfigForm } from "@/components/admin/turnstile-config-form";
 import { UploadConfigForm } from "@/components/admin/upload-config-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  getOAuthProviderAdminView,
   getSmtpAdminView,
   getStorageAdminView,
   getStripeAdminView,
@@ -19,18 +21,39 @@ import { getT } from "@/modules/i18n/server";
 export const dynamic = "force-dynamic";
 
 export default async function AdminSettingsPage() {
-  const [smtp, turnstile, storage, stripe, upload, translation] = await Promise.all([
-    getSmtpAdminView(),
-    getTurnstileAdminView(),
-    getStorageAdminView(),
-    getStripeAdminView(),
-    getUploadAdminView(),
-    getTranslationAdminView(),
-  ]);
+  const [smtp, turnstile, storage, stripe, upload, translation, oauthGoogle, oauthGithub] =
+    await Promise.all([
+      getSmtpAdminView(),
+      getTurnstileAdminView(),
+      getStorageAdminView(),
+      getStripeAdminView(),
+      getUploadAdminView(),
+      getTranslationAdminView(),
+      getOAuthProviderAdminView("google"),
+      getOAuthProviderAdminView("github"),
+    ]);
   const t = await getT();
   return (
     <div className="max-w-2xl space-y-6">
       <PageHeader description={t("admin.settings.description")} title={t("admin.settings.title")} />
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t("admin.settings.oauthGoogle")}</CardTitle>
+          <CardDescription>{t("admin.settings.oauthGoogleDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <OAuthProviderConfigForm provider="google" initial={oauthGoogle} />
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t("admin.settings.oauthGithub")}</CardTitle>
+          <CardDescription>{t("admin.settings.oauthGithubDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <OAuthProviderConfigForm provider="github" initial={oauthGithub} />
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader>
           <CardTitle className="text-base">{t("admin.settings.stripe")}</CardTitle>

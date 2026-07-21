@@ -94,6 +94,49 @@ export const magicLinkTokens = pgTable(
   ],
 );
 
+export const oauthIdentities = pgTable(
+  "oauth_identities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider: text("provider", { enum: ["google", "github"] }).notNull(),
+    providerAccountId: text("provider_account_id").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    emailAtLink: text("email_at_link"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("oauth_identities_provider_account_uidx").on(
+      table.provider,
+      table.providerAccountId,
+    ),
+    index("oauth_identities_user_id_idx").on(table.userId),
+  ],
+);
+
+export const oauthStates = pgTable(
+  "oauth_states",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider: text("provider", { enum: ["google", "github"] }).notNull(),
+    stateHash: text("state_hash").notNull(),
+    browserBindingHash: text("browser_binding_hash"),
+    codeVerifierEncrypted: text("code_verifier_encrypted").notNull(),
+    redirectPath: text("redirect_path"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+  },
+  (table) => [
+    uniqueIndex("oauth_states_state_hash_uidx").on(table.stateHash),
+    index("oauth_states_expires_at_idx").on(table.expiresAt),
+  ],
+);
+
 export const siteSettings = pgTable("site_settings", {
   id: uuid("id").primaryKey().defaultRandom(),
   key: text("key").unique().notNull(),

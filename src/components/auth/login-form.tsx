@@ -10,6 +10,7 @@ import {
   changeFanLoginCode,
   changeFanLoginEmail,
   INITIAL_FAN_LOGIN_FLOW,
+  normalizeOAuthErrorCode,
   resetFanLoginRequestedEmail,
 } from "@/components/auth/login-form-model";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/auth/turnstile-widget";
@@ -27,6 +28,11 @@ export function LoginForm({
   loginCodePattern,
   magicLinkEnabled,
   magicLinkNext,
+  googleOAuthEnabled,
+  githubOAuthEnabled,
+  oauthNext,
+  oauthError,
+  oauthBasePath,
 }: {
   mode: "fan" | "admin";
   turnstileSiteKey?: string;
@@ -34,6 +40,11 @@ export function LoginForm({
   loginCodePattern: string;
   magicLinkEnabled?: boolean;
   magicLinkNext?: string;
+  googleOAuthEnabled?: boolean;
+  githubOAuthEnabled?: boolean;
+  oauthNext?: string;
+  oauthError?: string | null;
+  oauthBasePath?: string;
 }) {
   const t = useT();
 
@@ -47,6 +58,7 @@ export function LoginForm({
   const [message, setMessage] = useState<string | null>(null);
   const codeRegex = useMemo(() => new RegExp(loginCodePattern), [loginCodePattern]);
   const codeComplete = canSubmitFanLoginCode(fanFlow, loginCodeLength, codeRegex);
+  const normalizedOAuthError = normalizeOAuthErrorCode(oauthError);
 
   async function run(fn: () => Promise<void>) {
     setLoading(true);
@@ -113,6 +125,46 @@ export function LoginForm({
         <Mail className="mt-0.5 size-4 shrink-0" />
         <span>{magicLinkEnabled ? t("login.magicLinkHint") : t("login.passwordlessHint")}</span>
       </div>
+
+      {normalizedOAuthError && (
+        <p className="text-sm text-destructive">
+          {t(`login.oauthError.${normalizedOAuthError}` as "login.oauthError.failed")}
+        </p>
+      )}
+
+      {(googleOAuthEnabled || githubOAuthEnabled) && (
+        <div className="space-y-2">
+          {googleOAuthEnabled && (
+            <Button className="w-full" variant="outline" asChild>
+              <a
+                href={
+                  oauthNext
+                    ? `${oauthBasePath ?? ""}/api/auth/oauth/google/start?next=${encodeURIComponent(oauthNext)}`
+                    : `${oauthBasePath ?? ""}/api/auth/oauth/google/start`
+                }
+              >
+                {t("login.continueWithGoogle")}
+              </a>
+            </Button>
+          )}
+          {githubOAuthEnabled && (
+            <Button className="w-full" variant="outline" asChild>
+              <a
+                href={
+                  oauthNext
+                    ? `${oauthBasePath ?? ""}/api/auth/oauth/github/start?next=${encodeURIComponent(oauthNext)}`
+                    : `${oauthBasePath ?? ""}/api/auth/oauth/github/start`
+                }
+              >
+                {t("login.continueWithGithub")}
+              </a>
+            </Button>
+          )}
+          <div className="relative py-1 text-center text-xs text-muted-foreground">
+            <span>{t("login.orEmail")}</span>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-2">
         <Label htmlFor="email">{t("login.email")}</Label>

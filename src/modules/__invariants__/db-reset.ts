@@ -38,6 +38,8 @@ export async function resetDatabase(db: DbClient = getDb()): Promise<void> {
       sessions,
       login_codes,
       magic_link_tokens,
+      oauth_identities,
+      oauth_states,
       users,
       site_settings,
       app_settings

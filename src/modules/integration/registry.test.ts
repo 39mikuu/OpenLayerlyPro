@@ -181,7 +181,7 @@ describe("integration registry", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns seven integrations in stable order", async () => {
+  it("returns nine integrations in stable order", async () => {
     const { getIntegrationStatuses } = await import("./registry");
     const statuses = await getIntegrationStatuses();
 
@@ -192,6 +192,8 @@ describe("integration registry", () => {
       "turnstile",
       "translation",
       "umami",
+      "oauth_google",
+      "oauth_github",
       "tunnel",
     ]);
   });
@@ -291,7 +293,7 @@ describe("integration registry", () => {
   it("reports Tunnel token presence as environment deployment status", async () => {
     mockEnv(" tunnel-token ");
     const { getIntegrationStatuses } = await import("./registry");
-    let tunnel = (await getIntegrationStatuses())[6];
+    let tunnel = (await getIntegrationStatuses())[8];
     expect(tunnel).toEqual({
       id: "tunnel",
       kind: "deployment",
@@ -301,7 +303,7 @@ describe("integration registry", () => {
     });
 
     mockEnv(" ");
-    tunnel = (await getIntegrationStatuses())[6];
+    tunnel = (await getIntegrationStatuses())[8];
     expect(tunnel).toEqual({
       id: "tunnel",
       kind: "deployment",
@@ -408,7 +410,7 @@ describe("integration registry", () => {
     const { getIntegrationStatuses } = await import("./registry");
     const statuses = await getIntegrationStatuses();
 
-    expect(statuses).toHaveLength(7);
+    expect(statuses).toHaveLength(9);
     expect(statuses[0].error).toBeUndefined();
     expect(statuses[3]).toEqual({
       id: "turnstile",
@@ -418,7 +420,7 @@ describe("integration registry", () => {
       source: "none",
       error: true,
     });
-    expect(statuses[6].id).toBe("tunnel");
+    expect(statuses[8].id).toBe("tunnel");
   });
 
   it("reports Stripe configuration separately from its enabled state and tests connectivity", async () => {

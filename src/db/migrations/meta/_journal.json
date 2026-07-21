@@ -204,6 +204,13 @@
       "when": 1784574204058,
       "tag": "0028_wp1_magic_link",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1784610000000,
+      "tag": "0029_wp2_oauth",
+      "breakpoints": true
     }
   ]
 }

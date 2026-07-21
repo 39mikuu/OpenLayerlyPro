@@ -22,6 +22,11 @@ export function Login({ view, t }: { view: LoginView; t: Translate }) {
           loginCodePattern={view.loginCodePattern}
           magicLinkEnabled={view.magicLinkEnabled}
           magicLinkNext={view.magicLinkNext}
+          googleOAuthEnabled={view.googleOAuthEnabled}
+          githubOAuthEnabled={view.githubOAuthEnabled}
+          oauthNext={view.oauthNext}
+          oauthError={view.oauthError}
+          oauthBasePath={view.oauthBasePath}
         />
       </div>
 

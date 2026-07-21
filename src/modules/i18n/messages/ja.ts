@@ -284,6 +284,21 @@ export const ja: Messages = {
     adminEmail: "管理者メールアドレス",
     password: "パスワード",
     adminSignin: "管理画面にログイン",
+    continueWithGoogle: "Google で続行",
+    continueWithGithub: "GitHub で続行",
+    orEmail: "またはメール",
+    oauthError: {
+      failed: "外部ログインに失敗しました。再試行するかメールでログインしてください。",
+      denied: "外部認証がキャンセルされました。",
+      state: "ログインセッションが無効です。最初からやり直してください。",
+      email: "確認済みメールが必要です。",
+      bind: "アカウント連携が衝突しています。管理者に連絡してください。",
+      config: "外部ログインは利用できません。",
+      provider: "外部サービスが一時的に利用できません。メールでログインしてください。",
+      callback: "ログインコールバックが無効です。",
+      start: "外部ログインを開始できませんでした。",
+      rate_limited: "リクエストが多すぎます。しばらくしてから再試行してください。",
+    },
   },
   admin: {
     title: "管理画面",
@@ -879,6 +894,12 @@ export const ja: Messages = {
       stripe: "Stripe オンライン決済",
       stripeDescription:
         "一回払いのホスト型チェックアウトを設定します。秘密鍵は暗号化され、ブラウザには返されません。",
+      oauthGoogle: "Google ログイン",
+      oauthGoogleDescription:
+        "ファンが Google でログインできます。Client Secret は暗号化保存され、ブラウザには返りません。",
+      oauthGithub: "GitHub ログイン",
+      oauthGithubDescription:
+        "ファンが GitHub でログインできます。Client Secret は暗号化保存され、ブラウザには返りません。",
       upload: "アップロード制限",
       uploadDescription:
         "コンテンツと支払い画像のファイルごとの上限です。変更は新しいアップロードにすぐ適用されます。",
@@ -949,6 +970,8 @@ export const ja: Messages = {
       stripe: "Stripe 決済",
       translation: "AI 翻訳",
       umami: "Umami アナリティクス",
+      oauthGoogle: "Google OAuth",
+      oauthGithub: "GitHub OAuth",
       sourceDatabase: "管理画面の設定",
       sourceEnvironment: "環境変数",
       sourceNone: "未設定",
@@ -975,6 +998,15 @@ export const ja: Messages = {
       pending: "テスト中…",
       success: "接続テストに成功しました",
       failed: "テストに失敗しました",
+    },
+    oauth: {
+      enable: "有効化",
+      clientId: "Client ID",
+      clientSecret: "Client Secret",
+      secretSet: "設定済み（空のままなら維持）",
+      secretPlaceholder: "Client Secret を入力",
+      securityHint:
+        "Secret は暗号化保存され、管理画面の応答には平文で返りません。コールバック URL は /api/auth/oauth/{provider}/callback です。",
     },
     stripe: {
       enable: "Stripe オンライン決済を有効にする",
@@ -1062,6 +1094,7 @@ export const ja: Messages = {
     submit: "初期設定を完了",
   },
   errors: {
+    oauthConfigIncomplete: "この OAuth プロバイダーの設定が不完全です。",
     slugTaken: "このスラッグは既に使用されています",
     taxonomyNameRequired: "名前を入力してください",
     taxonomySlugRequired: "有効なスラッグを生成できませんでした",

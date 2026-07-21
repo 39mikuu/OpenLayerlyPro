@@ -287,6 +287,21 @@ export const en: Messages = {
     adminEmail: "Admin email",
     password: "Password",
     adminSignin: "Sign in to admin",
+    continueWithGoogle: "Continue with Google",
+    continueWithGithub: "Continue with GitHub",
+    orEmail: "Or use email",
+    oauthError: {
+      failed: "Social login failed. Try again or use email.",
+      denied: "Authorization was cancelled.",
+      state: "Login session expired. Please start again.",
+      email: "A verified email is required to sign in.",
+      bind: "Account binding conflict. Contact the site admin.",
+      config: "Social login is unavailable.",
+      provider: "The provider is temporarily unavailable. Use email instead.",
+      callback: "Invalid login callback.",
+      start: "Could not start social login.",
+      rate_limited: "Too many attempts. Please try again later.",
+    },
   },
   admin: {
     title: "Admin",
@@ -889,6 +904,12 @@ export const en: Messages = {
       stripe: "Stripe online payments",
       stripeDescription:
         "Configure one-time hosted checkout. Secret keys are encrypted and never returned to the browser.",
+      oauthGoogle: "Google sign-in",
+      oauthGoogleDescription:
+        "Fans can sign in with Google. Client secrets are encrypted and never returned to the browser.",
+      oauthGithub: "GitHub sign-in",
+      oauthGithubDescription:
+        "Fans can sign in with GitHub. Client secrets are encrypted and never returned to the browser.",
       upload: "Upload limits",
       uploadDescription:
         "Per-file limits for content and payment images. Changes apply immediately to new uploads.",
@@ -961,6 +982,8 @@ export const en: Messages = {
       stripe: "Stripe payments",
       translation: "AI translation",
       umami: "Umami analytics",
+      oauthGoogle: "Google OAuth",
+      oauthGithub: "GitHub OAuth",
       sourceDatabase: "Admin settings",
       sourceEnvironment: "Environment variables",
       sourceNone: "Not set",
@@ -987,6 +1010,15 @@ export const en: Messages = {
       pending: "Testing...",
       success: "Connection test succeeded",
       failed: "Test failed",
+    },
+    oauth: {
+      enable: "Enable",
+      clientId: "Client ID",
+      clientSecret: "Client Secret",
+      secretSet: "Configured (leave blank to keep)",
+      secretPlaceholder: "Enter client secret",
+      securityHint:
+        "Secrets are stored encrypted and never returned in admin views. Callback URL is /api/auth/oauth/{provider}/callback on this site.",
     },
     stripe: {
       enable: "Enable Stripe online payments",
@@ -1074,6 +1106,7 @@ export const en: Messages = {
     submit: "Finish setup",
   },
   errors: {
+    oauthConfigIncomplete: "The configuration for this OAuth provider is incomplete.",
     slugTaken: "This slug is already in use",
     taxonomyNameRequired: "Name is required",
     taxonomySlugRequired: "A valid slug could not be generated",
