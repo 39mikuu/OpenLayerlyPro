@@ -20,7 +20,7 @@ import {
 } from "@/modules/config/oauth";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
 import { recordEvent } from "@/modules/system/events";
-import { findOrCreateUserByEmail, findUserByEmail, touchLastLogin } from "@/modules/user";
+import { findUserByEmail, touchLastLogin } from "@/modules/user";
 
 export const OAUTH_STATE_TTL_MINUTES = 10;
 const STATE_PURPOSE = "auth.oauth_state:v1";
@@ -308,7 +308,25 @@ async function resolveUserFromProfile(
   }
 
   const existing = await findUserByEmail(profile.email);
-  const user = existing ?? (await findOrCreateUserByEmail(profile.email));
+  let user: User;
+  let createdNewUser = false;
+  if (existing) {
+    user = existing;
+  } else {
+    const [created] = await db
+      .insert(users)
+      .values({ email: profile.email.trim().toLowerCase(), role: "member" })
+      .onConflictDoNothing({ target: users.email })
+      .returning();
+    if (created) {
+      user = created;
+      createdNewUser = true;
+    } else {
+      const after = await findUserByEmail(profile.email);
+      if (!after) throw new ApiError(500, "userCreateFailed");
+      user = after;
+    }
+  }
 
   try {
     await db.insert(oauthIdentities).values({
@@ -318,7 +336,9 @@ async function resolveUserFromProfile(
       emailAtLink: profile.email,
     });
   } catch {
-    // Concurrent first-link: re-read identity winner.
+    // Identity insert failed (concurrent first-link on the same provider account).
+    // Fail closed and, if we just created this user, remove the orphan so a failed
+    // bind never leaves a live user row without a backing identity.
     const [again] = await db
       .select()
       .from(oauthIdentities)
@@ -330,10 +350,12 @@ async function resolveUserFromProfile(
       )
       .limit(1);
     if (!again) {
+      if (createdNewUser) await db.delete(users).where(eq(users.id, user.id));
       await recordEvent("oauth_login_rejected", { provider, reason: "identity_insert_race" });
       throw new ApiError(409, "oauthBindFailed");
     }
     if (again.userId !== user.id) {
+      if (createdNewUser) await db.delete(users).where(eq(users.id, user.id));
       await recordEvent("oauth_login_rejected", {
         provider,
         reason: "identity_conflict",
@@ -346,7 +368,7 @@ async function resolveUserFromProfile(
     return winner;
   }
 
-  if (!existing && profile.displayName) {
+  if (createdNewUser && profile.displayName) {
     await db
       .update(users)
       .set({ displayName: profile.displayName, updatedAt: new Date() })

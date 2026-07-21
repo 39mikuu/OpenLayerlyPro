@@ -216,6 +216,42 @@ describeWithDatabase("WP2 OAuth login integration", () => {
     await expect(__test.resolveUserFromProfile("github", emptyGithub)).rejects.toThrow(ApiError);
   });
 
+  it("concurrent first-links to the same provider account fail closed and leave no orphan user", async () => {
+    // Fire several concurrent logins for the SAME new provider account, each with a
+    // distinct verified email. Exactly one may bind the identity; every loser must
+    // fail closed AND clean up the user row it created, so no orphan is left behind.
+    const emails = ["a@example.com", "b@example.com", "c@example.com", "d@example.com"];
+    const results = await Promise.allSettled(
+      emails.map((email) =>
+        __test.resolveUserFromProfile("google", {
+          providerAccountId: "sub-shared",
+          email,
+          emailVerified: true,
+          displayName: "Racer",
+        }),
+      ),
+    );
+
+    // At least one binds; at least one is rejected with a fail-closed ApiError.
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled.length).toBeGreaterThanOrEqual(1);
+    for (const r of rejected) {
+      expect((r as PromiseRejectedResult).reason).toBeInstanceOf(ApiError);
+    }
+
+    // Invariant (holds under both serial and racing interleavings):
+    // exactly one identity for the account, and exactly one surviving user with no orphans.
+    const ids = await db.select().from(oauthIdentities);
+    expect(ids).toHaveLength(1);
+    expect(ids[0].providerAccountId).toBe("sub-shared");
+
+    const remaining = await db.select().from(users);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].id).toBe(ids[0].userId);
+    expect(emails).toContain(remaining[0].email);
+  });
+
   it("PKCE state verification single-use and expiry protection", async () => {
     await saveOAuthProviderConfig("google", {
       enabled: true,
