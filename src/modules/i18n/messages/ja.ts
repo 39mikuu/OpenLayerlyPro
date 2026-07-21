@@ -95,6 +95,20 @@ export const ja: Messages = {
     subscribing: "リダイレクト中…",
     subscribeFailed: "サブスクリプションを開始できません",
   },
+  entitlements: {
+    early_access: {
+      label: "先行公開",
+      description: "一般公開前に、クリエイターが選んだ更新を閲覧できます。",
+    },
+    behind_the_scenes: {
+      label: "制作の舞台裏",
+      description: "制作途中の記録やクリエイターの制作過程を楽しめます。",
+    },
+    supporter_recognition: {
+      label: "サポーター表彰",
+      description: "対象のコミュニティ機能でサポーターとして紹介されます。",
+    },
+  },
   supporters: {
     eyebrow: "支援者ウォール",
     title: "支援者ウォール",
@@ -109,6 +123,7 @@ export const ja: Messages = {
   me: {
     title: "マイアカウント",
     subtitle: "メンバーシップ状況と支払い申請を確認できます。",
+    entitlements: "含まれる特典",
     accountInfo: "アカウント情報",
     email: "メール：{email}",
     roleLabel: "ロール：",
@@ -748,6 +763,10 @@ export const ja: Messages = {
       duration: "有効日数",
       description: "説明",
       purchasable: "購入可能",
+      entitlements: "メンバー特典",
+      entitlementsHint: "Core が定義した安定した特典のみ選択できます。",
+      auditReason: "監査理由",
+      auditReasonHint: "必須。このプラン設定を変更する理由を入力してください。",
       cardTitle: "{name}（レベル {level}）",
       confirmDelete: "メンバーシッププラン「{name}」を削除しますか？",
       deleteDialogTitle: "メンバーシッププランを削除",
@@ -1146,6 +1165,8 @@ export const ja: Messages = {
     inlineFileManagedByBody: "インライン画像の関連付けは本文を保存する場合にのみ解除できます",
     userNotFound: "ユーザーが見つかりません",
     tierNotFound: "メンバーシッププランが見つかりません",
+    tierReasonRequired: "プラン変更には理由が必要です",
+    unknownEntitlement: "メンバーシッププランに不明な特典が含まれています",
     membershipNotFound: "メンバーシップ記録が見つかりません",
     membershipStale: "メンバーシップが更新されています。再読み込みしてお試しください。",
     alreadyInState: "メンバーシップはすでに指定された状態です",

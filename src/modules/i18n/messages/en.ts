@@ -95,6 +95,20 @@ export const en: Messages = {
     subscribing: "Redirecting…",
     subscribeFailed: "Unable to start subscription",
   },
+  entitlements: {
+    early_access: {
+      label: "Early access",
+      description: "See selected creator updates before their general release.",
+    },
+    behind_the_scenes: {
+      label: "Behind the scenes",
+      description: "Follow work-in-progress notes and the creator's process.",
+    },
+    supporter_recognition: {
+      label: "Supporter recognition",
+      description: "Be recognized as a supporter in eligible community features.",
+    },
+  },
   supporters: {
     eyebrow: "Supporter wall",
     title: "Supporter Wall",
@@ -109,6 +123,7 @@ export const en: Messages = {
   me: {
     title: "My account",
     subtitle: "View your membership status and payment requests.",
+    entitlements: "Included benefits",
     accountInfo: "Account info",
     email: "Email: {email}",
     roleLabel: "Role: ",
@@ -755,6 +770,10 @@ export const en: Messages = {
       duration: "Duration in days",
       description: "Description",
       purchasable: "Purchasable",
+      entitlements: "Benefits",
+      entitlementsHint: "Only stable Core benefits can be selected.",
+      auditReason: "Audit reason",
+      auditReasonHint: "Required. Explain why this tier configuration is changing.",
       cardTitle: "{name} (level {level})",
       confirmDelete: "Delete membership tier “{name}”?",
       deleteDialogTitle: "Delete membership tier",
@@ -1159,6 +1178,8 @@ export const en: Messages = {
     inlineFileManagedByBody: "Inline image links can only be removed by saving the body",
     userNotFound: "User not found",
     tierNotFound: "Membership tier not found",
+    tierReasonRequired: "A reason is required for tier changes",
+    unknownEntitlement: "The membership tier includes an unknown benefit",
     membershipNotFound: "Membership record not found",
     membershipStale: "This membership was changed. Refresh and try again.",
     alreadyInState: "This membership is already in the requested state",

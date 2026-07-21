@@ -1,13 +1,11 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 
-import { getDb } from "@/db";
-import { membershipTiers } from "@/db/schema";
 import { handleApiError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
-import { listTiers } from "@/modules/membership";
+import { createTier, listTiers } from "@/modules/membership";
 
 export const runtime = "nodejs";
 
@@ -51,13 +49,19 @@ const bodySchema = z.object({
   purchaseEnabled: z.boolean().default(true),
   isActive: z.boolean().default(true),
   sortOrder: z.number().int().default(0),
+  entitlements: z.array(z.string()).default([]),
+  reason: z.string().trim().min(1).max(500),
 });
 
 export async function POST(req: NextRequest) {
   try {
-    await requireAdmin();
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
-    const [tier] = await getDb().insert(membershipTiers).values(input).returning();
+    const admin = await requireAdmin();
+    const { reason, ...input } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      bodySchema,
+    );
+    const tier = await createTier(input, { actor: { type: "admin", id: admin.id }, reason });
     return jsonOk(tier);
   } catch (err) {
     return handleApiError(err);

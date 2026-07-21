@@ -167,6 +167,7 @@ export const membershipTiers = pgTable("membership_tiers", {
   purchaseEnabled: boolean("purchase_enabled").notNull().default(true),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
+  entitlements: jsonb("entitlements").$type<string[]>().notNull().default([]),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

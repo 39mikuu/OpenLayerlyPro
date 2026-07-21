@@ -116,6 +116,23 @@ extendMembership(id,  { days,   actor, expectedVersion }): Promise<Membership>
 
 > 注意：续费叠加时新行 `startsAt = 现有 endsAt`（未来时刻），即该 grant 一开始即为派生态 `scheduled`。这是 scheduled 态的真实来源，#4 实现与测试需覆盖「叠加产生的未来 grant」。
 
+## 7.1 v1.2 Membership Bundle
+
+`membership_tiers.entitlements` 是非空 JSON 数组，迁移默认值为 `[]`。Core
+只接受 `early_access`、`behind_the_scenes`、`supporter_recognition` 三个稳定
+key；API 提交未知 key 时拒绝保存，读取到包含未知 key 的异常存量值时整组按空权益
+处理。它不是独立授权事实源，也不创建用户级 grant。
+
+`resolveMembershipAccess()` 先按本稿的状态和时间窗规则找当前有效 membership，再读取
+该 membership 所关联的**当前 tier 行**。因此修改 tier 权益会立即作用于现有有效会员，
+而 suspended、revoked、expired 或 scheduled membership 不会获得权益。内容与文件授权仍
+只按 tier level / `requiredTierId` 判定；v1.2 第一组权益只用于 Core 展示，不改变
+`canAccessPost()` 或 `canAccessFile()` 的允许条件。
+
+tier create/update 与 `entity_type='membership_tier'` 的 audit event 在同一事务内提交。
+before/after 只包含显式 tier 展示/状态字段和校验后的 entitlement key，不复制请求体、
+Stripe Price ID、结构化金额、时间戳或未来新增字段。
+
 ## 8. 测试清单（#4 验收）
 
 - 合法转移：active→suspended→active；active→revoked；active extend 后仍 active；suspended extend 后**仍 suspended**（不被恢复）。

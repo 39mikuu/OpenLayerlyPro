@@ -89,7 +89,13 @@ export type PostDetailView = {
   tags: TaxonomyLinkView[];
 };
 
-export type MembershipSummary = { tierName: string; endsAt: Date };
+export type EntitlementView = { key: string; label: string; description: string };
+
+export type MembershipSummary = {
+  tierName: string;
+  endsAt: Date;
+  entitlements?: EntitlementView[];
+};
 
 export type TierCardView = {
   id: string;
@@ -99,6 +105,7 @@ export type TierCardView = {
   durationDays: number;
   purchaseEnabled: boolean;
   subscriptionEnabled: boolean;
+  entitlements?: EntitlementView[];
 };
 
 export type TiersView = {

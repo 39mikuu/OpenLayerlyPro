@@ -50,6 +50,13 @@ the feature by providing `MAGIC_LINK_KEY_ID` plus `MAGIC_LINK_SECRET` or
 Magic link tokens live for 15 minutes, so rotation only needs the previous key
 retained briefly, and restores never require magic link key continuity.
 
+Migration `0030_wp3_membership_entitlements` adds the non-null
+`membership_tiers.entitlements` JSONB column with an empty-array default.
+Existing tiers therefore keep their current sales and access behavior until an
+administrator selects Core benefits. No data remediation or new secret is
+required; unknown entitlement keys are rejected by writes and fail closed on
+reads.
+
 Backups created by `v1.1.0` use manifest `FORMAT_VERSION=4` and record
 notification key sources, key IDs, file paths when file-backed, and SHA-256
 fingerprints. Restore validates notification key continuity before replacing the

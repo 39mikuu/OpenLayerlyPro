@@ -122,6 +122,19 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
                 <CalendarDays className="size-4" />
                 {t("me.validUntil", { date: formatDate(view.membership.endsAt) })}
               </p>
+              {view.membership.entitlements && view.membership.entitlements.length > 0 && (
+                <div className="mt-4">
+                  <p className="text-sm font-medium">{t("me.entitlements")}</p>
+                  <ul className="mt-2 space-y-2 text-sm text-muted-foreground">
+                    {view.membership.entitlements.map((entitlement) => (
+                      <li key={entitlement.key}>
+                        <span className="font-medium text-foreground">{entitlement.label}</span>
+                        <span className="block text-xs">{entitlement.description}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button asChild>
