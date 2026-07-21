@@ -27,6 +27,10 @@ export function LoginForm({
   loginCodePattern,
   magicLinkEnabled,
   magicLinkNext,
+  googleOAuthEnabled,
+  githubOAuthEnabled,
+  oauthNext,
+  oauthError,
 }: {
   mode: "fan" | "admin";
   turnstileSiteKey?: string;
@@ -34,6 +38,10 @@ export function LoginForm({
   loginCodePattern: string;
   magicLinkEnabled?: boolean;
   magicLinkNext?: string;
+  googleOAuthEnabled?: boolean;
+  githubOAuthEnabled?: boolean;
+  oauthNext?: string;
+  oauthError?: string | null;
 }) {
   const t = useT();
 
@@ -113,6 +121,46 @@ export function LoginForm({
         <Mail className="mt-0.5 size-4 shrink-0" />
         <span>{magicLinkEnabled ? t("login.magicLinkHint") : t("login.passwordlessHint")}</span>
       </div>
+
+      {oauthError && (
+        <p className="text-sm text-destructive">
+          {t(`login.oauthError.${oauthError}` as "login.oauthError.failed")}
+        </p>
+      )}
+
+      {(googleOAuthEnabled || githubOAuthEnabled) && (
+        <div className="space-y-2">
+          {googleOAuthEnabled && (
+            <Button className="w-full" variant="outline" asChild>
+              <a
+                href={
+                  oauthNext
+                    ? `/api/auth/oauth/google/start?next=${encodeURIComponent(oauthNext)}`
+                    : "/api/auth/oauth/google/start"
+                }
+              >
+                {t("login.continueWithGoogle")}
+              </a>
+            </Button>
+          )}
+          {githubOAuthEnabled && (
+            <Button className="w-full" variant="outline" asChild>
+              <a
+                href={
+                  oauthNext
+                    ? `/api/auth/oauth/github/start?next=${encodeURIComponent(oauthNext)}`
+                    : "/api/auth/oauth/github/start"
+                }
+              >
+                {t("login.continueWithGithub")}
+              </a>
+            </Button>
+          )}
+          <div className="relative py-1 text-center text-xs text-muted-foreground">
+            <span>{t("login.orEmail")}</span>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-2">
         <Label htmlFor="email">{t("login.email")}</Label>

@@ -1,4 +1,16 @@
 export {
+  clearOAuthProviderConfig,
+  getOAuthProviderAdminView,
+  getOAuthProviderConfig,
+  isOAuthProviderLoginEnabled,
+  type OAuthProviderAdminView,
+  type OAuthProviderConfigInput,
+  oauthProviderConfigSchema,
+  type OAuthProviderId,
+  type ResolvedOAuthProviderConfig,
+  saveOAuthProviderConfig,
+} from "./oauth";
+export {
   getSmtpConfig,
   type ResolvedSmtpConfig,
   SMTP_GROUP,

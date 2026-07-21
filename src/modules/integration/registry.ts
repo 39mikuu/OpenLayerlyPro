@@ -3,6 +3,7 @@ import path from "path";
 
 import { getEnv } from "@/lib/env";
 import {
+  getOAuthProviderAdminView,
   getSmtpAdminView,
   getStorageAdminView,
   getStripeAdminView,
@@ -178,6 +179,36 @@ const umamiIntegration: Integration = {
   },
 };
 
+const oauthGoogleIntegration: Integration = {
+  id: "oauth_google",
+  kind: "service",
+  async getStatus() {
+    const view = await getOAuthProviderAdminView("google");
+    return {
+      id: "oauth_google",
+      kind: "service",
+      configured: view.configured,
+      enabled: view.enabled,
+      source: view.hasDbOverride ? "database" : "none",
+    };
+  },
+};
+
+const oauthGithubIntegration: Integration = {
+  id: "oauth_github",
+  kind: "service",
+  async getStatus() {
+    const view = await getOAuthProviderAdminView("github");
+    return {
+      id: "oauth_github",
+      kind: "service",
+      configured: view.configured,
+      enabled: view.enabled,
+      source: view.hasDbOverride ? "database" : "none",
+    };
+  },
+};
+
 const tunnelIntegration: Integration = {
   id: "tunnel",
   kind: "deployment",
@@ -200,6 +231,8 @@ export const integrations: Integration[] = [
   turnstileIntegration,
   translationIntegration,
   umamiIntegration,
+  oauthGoogleIntegration,
+  oauthGithubIntegration,
   tunnelIntegration,
 ];
 

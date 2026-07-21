@@ -5,7 +5,7 @@ import { getEnv } from "@/lib/env";
 import { isMagicLinkConfigured, normalizeMagicLinkRedirectPath } from "@/modules/auth/magic-link";
 import { getLoginCodePolicy } from "@/modules/auth/rate-limit-policy";
 import { getCurrentUser } from "@/modules/auth/session";
-import { getTurnstileConfig } from "@/modules/config";
+import { getTurnstileConfig, isOAuthProviderLoginEnabled } from "@/modules/config";
 import { getT } from "@/modules/i18n/server";
 import { getActiveTheme } from "@/modules/theme";
 
@@ -17,14 +17,20 @@ export const metadata: Metadata = {
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ admin?: string; next?: string }>;
+  searchParams: Promise<{ admin?: string; next?: string; oauth_error?: string }>;
 }) {
   const user = await getCurrentUser();
   if (user) redirect("/me");
-  const { admin, next } = await searchParams;
+  const { admin, next, oauth_error: oauthError } = await searchParams;
   const loginCodePolicy = getLoginCodePolicy(getEnv());
-  // site key 在服务端运行时读取后下发，避免依赖构建期内联（Docker 镜像构建时无 .env）
-  const [turnstile, theme, t] = await Promise.all([getTurnstileConfig(), getActiveTheme(), getT()]);
+  const redirectPath = normalizeMagicLinkRedirectPath(next) ?? undefined;
+  const [turnstile, theme, t, googleOAuthEnabled, githubOAuthEnabled] = await Promise.all([
+    getTurnstileConfig(),
+    getActiveTheme(),
+    getT(),
+    isOAuthProviderLoginEnabled("google"),
+    isOAuthProviderLoginEnabled("github"),
+  ]);
   const Login = theme.components.Login;
   return (
     <Login
@@ -35,7 +41,11 @@ export default async function LoginPage({
         loginCodeLength: loginCodePolicy.length,
         loginCodePattern: loginCodePolicy.pattern.source,
         magicLinkEnabled: isMagicLinkConfigured(),
-        magicLinkNext: normalizeMagicLinkRedirectPath(next) ?? undefined,
+        magicLinkNext: redirectPath,
+        googleOAuthEnabled,
+        githubOAuthEnabled,
+        oauthNext: redirectPath,
+        oauthError: oauthError ?? null,
       }}
     />
   );

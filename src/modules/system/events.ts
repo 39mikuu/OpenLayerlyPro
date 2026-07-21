@@ -10,6 +10,8 @@ export type AppEventType =
   | "magic_link_sent"
   | "magic_link_consumed"
   | "magic_link_rejected"
+  | "oauth_login_succeeded"
+  | "oauth_login_rejected"
   | "membership_created"
   | "payment_request_created"
   | "payment_request_approved"

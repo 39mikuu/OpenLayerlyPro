@@ -7,6 +7,8 @@ export type IntegrationId =
   | "turnstile"
   | "translation"
   | "umami"
+  | "oauth_google"
+  | "oauth_github"
   | "tunnel";
 
 export type IntegrationKind = "service" | "deployment";
