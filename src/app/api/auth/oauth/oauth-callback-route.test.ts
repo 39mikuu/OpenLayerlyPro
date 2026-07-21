@@ -7,9 +7,13 @@ const mocks = vi.hoisted(() => ({
   setSessionCookie: vi.fn(),
 }));
 
-vi.mock("@/modules/auth/oauth", () => ({
-  completeOAuthLogin: mocks.completeOAuthLogin,
-}));
+vi.mock("@/modules/auth/oauth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/auth/oauth")>();
+  return {
+    ...actual,
+    completeOAuthLogin: mocks.completeOAuthLogin,
+  };
+});
 vi.mock("@/modules/auth/session", () => ({
   createSession: mocks.createSession,
   setSessionCookie: mocks.setSessionCookie,
@@ -41,7 +45,11 @@ describe("OAuth callback API routes", () => {
 
     expect(res.status).toBe(303);
     expect(res.headers.get("Location")).toBe("http://localhost:3000/posts/123");
-    expect(mocks.completeOAuthLogin).toHaveBeenCalledWith("google", { code: "c", state: "s" });
+    expect(mocks.completeOAuthLogin).toHaveBeenCalledWith("google", {
+      code: "c",
+      state: "s",
+      browserBinding: null,
+    });
     expect(mocks.createSession).toHaveBeenCalledWith("user-google-1", expect.any(Object));
     expect(mocks.setSessionCookie).toHaveBeenCalledWith("session-tok-1", expect.any(Date));
   });

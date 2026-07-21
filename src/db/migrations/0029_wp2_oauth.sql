@@ -12,6 +12,7 @@ CREATE TABLE "oauth_states" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"provider" text NOT NULL,
 	"state_hash" text NOT NULL,
+	"browser_binding_hash" text,
 	"code_verifier_encrypted" text NOT NULL,
 	"redirect_path" text,
 	"expires_at" timestamp with time zone NOT NULL,

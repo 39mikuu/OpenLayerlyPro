@@ -20,12 +20,13 @@ import {
 } from "@/modules/config/oauth";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
 import { recordEvent } from "@/modules/system/events";
-import { findUserByEmail, touchLastLogin } from "@/modules/user";
+import { touchLastLogin } from "@/modules/user";
 
 export const OAUTH_STATE_TTL_MINUTES = 10;
 const STATE_PURPOSE = "auth.oauth_state:v1";
 
-export type OAuthStartResult = { authorizationUrl: string };
+export const OAUTH_BROWSER_BINDING_COOKIE = "olp_oauth_bind";
+export type OAuthStartResult = { authorizationUrl: string; browserBinding: string };
 export type OAuthCallbackSuccess = {
   user: User;
   redirectPath: string | null;
@@ -79,6 +80,10 @@ export async function beginOAuthLogin(
   const config = await requireActiveConfig(provider);
   const state = randomBytes(32).toString("base64url");
   const codeVerifier = randomBytes(32).toString("base64url");
+  // Browser-binding nonce: returned to the caller to set as an httpOnly cookie, stored
+  // here only as an HMAC. The callback must present the matching cookie, tying the flow
+  // to the browser that started it (defeats login CSRF / session swapping).
+  const browserBinding = randomBytes(32).toString("base64url");
   const redirectPath = normalizeMagicLinkRedirectPath(meta?.redirectPath);
 
   await getDb()
@@ -86,6 +91,7 @@ export async function beginOAuthLogin(
     .values({
       provider,
       stateHash: hashState(state),
+      browserBindingHash: hashState(browserBinding),
       codeVerifierEncrypted: encryptSecret(codeVerifier),
       redirectPath,
       expiresAt: addMinutes(new Date(), OAUTH_STATE_TTL_MINUTES),
@@ -113,12 +119,13 @@ export async function beginOAuthLogin(
     url.searchParams.set("scope", "read:user user:email");
   }
 
-  return { authorizationUrl: url.toString() };
+  return { authorizationUrl: url.toString(), browserBinding };
 }
 
 async function consumeOAuthState(
   provider: OAuthProviderId,
   state: string,
+  browserBinding: string | null,
 ): Promise<{ codeVerifier: string; redirectPath: string | null }> {
   const stateHash = hashState(state);
   const db = getDb();
@@ -136,11 +143,24 @@ async function consumeOAuthState(
     .returning({
       codeVerifierEncrypted: oauthStates.codeVerifierEncrypted,
       redirectPath: oauthStates.redirectPath,
+      browserBindingHash: oauthStates.browserBindingHash,
     });
 
   if (!consumed) {
     await recordEvent("oauth_login_rejected", { provider, reason: "invalid_state" });
     throw new ApiError(400, "oauthInvalidState");
+  }
+
+  // Bind the flow to the initiating browser: the callback must present the cookie nonce
+  // whose HMAC matches the one stored at start. A mismatch/missing cookie means this
+  // callback was replayed in a different browser (login CSRF / session swapping).
+  // Compared after the atomic consume so a failed attempt still burns the single-use row.
+  if (consumed.browserBindingHash) {
+    const presentedHash = browserBinding ? hashState(browserBinding) : "";
+    if (!safeEqualHex(presentedHash, consumed.browserBindingHash)) {
+      await recordEvent("oauth_login_rejected", { provider, reason: "browser_binding_mismatch" });
+      throw new ApiError(400, "oauthInvalidState");
+    }
   }
 
   let codeVerifier: string;
@@ -307,38 +327,60 @@ async function resolveUserFromProfile(
     throw new ApiError(400, "oauthEmailUnverified");
   }
 
-  const existing = await findUserByEmail(profile.email);
-  let user: User;
-  let createdNewUser = false;
-  if (existing) {
-    user = existing;
-  } else {
-    const [created] = await db
-      .insert(users)
-      .values({ email: profile.email.trim().toLowerCase(), role: "member" })
-      .onConflictDoNothing({ target: users.email })
-      .returning();
-    if (created) {
-      user = created;
-      createdNewUser = true;
-    } else {
-      const after = await findUserByEmail(profile.email);
-      if (!after) throw new ApiError(500, "userCreateFailed");
-      user = after;
-    }
-  }
+  const emailNorm = profile.email.trim().toLowerCase();
 
+  // Fence user creation + identity bind in a single transaction. If the identity
+  // insert loses a concurrent first-link race (unique violation on
+  // (provider, provider_account_id)), the whole transaction rolls back — a user row
+  // created in this tx is never committed, so no other request can observe or act on
+  // an orphan, and there is no compensating delete that could cascade-remove a
+  // legitimately-in-use user.
   try {
-    await db.insert(oauthIdentities).values({
-      provider,
-      providerAccountId: profile.providerAccountId,
-      userId: user.id,
-      emailAtLink: profile.email,
+    return await db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(users).where(eq(users.email, emailNorm)).limit(1);
+
+      let user: User;
+      let createdNewUser = false;
+      if (existing) {
+        user = existing;
+      } else {
+        const [created] = await tx
+          .insert(users)
+          .values({ email: emailNorm, role: "member" })
+          .onConflictDoNothing({ target: users.email })
+          .returning();
+        if (created) {
+          user = created;
+          createdNewUser = true;
+        } else {
+          const [after] = await tx.select().from(users).where(eq(users.email, emailNorm)).limit(1);
+          if (!after) throw new ApiError(500, "userCreateFailed");
+          user = after;
+        }
+      }
+
+      // Throws on unique violation → aborts and rolls back this transaction.
+      await tx.insert(oauthIdentities).values({
+        provider,
+        providerAccountId: profile.providerAccountId,
+        userId: user.id,
+        emailAtLink: profile.email,
+      });
+
+      if (createdNewUser && profile.displayName) {
+        await tx
+          .update(users)
+          .set({ displayName: profile.displayName, updatedAt: new Date() })
+          .where(and(eq(users.id, user.id), isNull(users.displayName)));
+      }
+
+      return user;
     });
-  } catch {
-    // Identity insert failed (concurrent first-link on the same provider account).
-    // Fail closed and, if we just created this user, remove the orphan so a failed
-    // bind never leaves a live user row without a backing identity.
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    // The identity insert failed inside the transaction (concurrent first-link).
+    // Identity-first precedence: whoever now owns this provider account is the user;
+    // resolve to that winner idempotently rather than failing the login.
     const [again] = await db
       .select()
       .from(oauthIdentities)
@@ -350,37 +392,21 @@ async function resolveUserFromProfile(
       )
       .limit(1);
     if (!again) {
-      if (createdNewUser) await db.delete(users).where(eq(users.id, user.id));
       await recordEvent("oauth_login_rejected", { provider, reason: "identity_insert_race" });
       throw new ApiError(409, "oauthBindFailed");
     }
-    if (again.userId !== user.id) {
-      if (createdNewUser) await db.delete(users).where(eq(users.id, user.id));
-      await recordEvent("oauth_login_rejected", {
-        provider,
-        reason: "identity_conflict",
-        identityUserId: again.userId,
-      });
-      throw new ApiError(409, "oauthBindFailed");
-    }
     const [winner] = await db.select().from(users).where(eq(users.id, again.userId)).limit(1);
-    if (!winner) throw new ApiError(400, "oauthBindFailed");
+    if (!winner) {
+      await recordEvent("oauth_login_rejected", { provider, reason: "identity_user_missing" });
+      throw new ApiError(400, "oauthBindFailed");
+    }
     return winner;
   }
-
-  if (createdNewUser && profile.displayName) {
-    await db
-      .update(users)
-      .set({ displayName: profile.displayName, updatedAt: new Date() })
-      .where(and(eq(users.id, user.id), isNull(users.displayName)));
-  }
-
-  return user;
 }
 
 export async function completeOAuthLogin(
   provider: OAuthProviderId,
-  input: { code: string; state: string },
+  input: { code: string; state: string; browserBinding: string | null },
 ): Promise<OAuthCallbackSuccess> {
   if (!input.code?.trim() || !input.state?.trim()) {
     await recordEvent("oauth_login_rejected", { provider, reason: "missing_code_or_state" });
@@ -388,7 +414,7 @@ export async function completeOAuthLogin(
   }
 
   const config = await requireActiveConfig(provider);
-  const consumed = await consumeOAuthState(provider, input.state);
+  const consumed = await consumeOAuthState(provider, input.state, input.browserBinding);
   const accessToken = await exchangeCode({
     provider,
     code: input.code,

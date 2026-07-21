@@ -259,10 +259,6 @@ describeWithDatabase("WP2 OAuth login integration", () => {
       clientSecret: "g-sec",
     });
 
-    const { authorizationUrl } = await beginOAuthLogin("google");
-    const url = new URL(authorizationUrl);
-    const state = url.searchParams.get("state")!;
-
     // 1. Successful verification
     mocks.fetch.mockResolvedValueOnce({
       ok: true,
@@ -273,12 +269,44 @@ describeWithDatabase("WP2 OAuth login integration", () => {
       json: async () => ({ sub: "google-sub", email: "fan@example.com", email_verified: true }),
     });
 
-    const result = await completeOAuthLogin("google", { code: "mock-code", state });
+    const { authorizationUrl, browserBinding } = await beginOAuthLogin("google");
+    const url = new URL(authorizationUrl);
+    const state = url.searchParams.get("state")!;
+
+    const result = await completeOAuthLogin("google", { code: "mock-code", state, browserBinding });
     expect(result.user.email).toBe("fan@example.com");
 
     // 2. Replay fails (already consumed state)
-    await expect(completeOAuthLogin("google", { code: "mock-code", state })).rejects.toThrow(
-      ApiError,
-    );
+    await expect(
+      completeOAuthLogin("google", { code: "mock-code", state, browserBinding }),
+    ).rejects.toThrow(ApiError);
+  });
+
+  it("fails closed when browserBinding cookie nonce is missing or mismatched", async () => {
+    await saveOAuthProviderConfig("google", {
+      enabled: true,
+      clientId: "g-id",
+      clientSecret: "g-sec",
+    });
+
+    // 1. Missing browserBinding cookie nonce
+    const start1 = await beginOAuthLogin("google");
+    const state1 = new URL(start1.authorizationUrl).searchParams.get("state")!;
+
+    await expect(
+      completeOAuthLogin("google", { code: "mock-code", state: state1, browserBinding: null }),
+    ).rejects.toThrow(ApiError);
+
+    // 2. Mismatched browserBinding cookie nonce
+    const start2 = await beginOAuthLogin("google");
+    const state2 = new URL(start2.authorizationUrl).searchParams.get("state")!;
+
+    await expect(
+      completeOAuthLogin("google", {
+        code: "mock-code",
+        state: state2,
+        browserBinding: "mismatched-nonce",
+      }),
+    ).rejects.toThrow(ApiError);
   });
 });

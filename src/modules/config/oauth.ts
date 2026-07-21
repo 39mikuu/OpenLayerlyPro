@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { ApiError } from "@/lib/api";
+import { logger } from "@/lib/logger";
 
 import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
 
@@ -89,6 +90,17 @@ export async function clearOAuthProviderConfig(provider: OAuthProviderId): Promi
 }
 
 export async function isOAuthProviderLoginEnabled(provider: OAuthProviderId): Promise<boolean> {
-  const config = await getOAuthProviderConfig(provider);
-  return config.enabled && config.configured;
+  // Fail closed: a decrypt/parse failure (e.g. bad CONFIG_ENCRYPTION_KEY rotation or a
+  // corrupted app_settings row) must only hide this provider's button — it must never
+  // break /login and lock users out of the email-code / Magic Link / admin fallbacks.
+  try {
+    const config = await getOAuthProviderConfig(provider);
+    return config.enabled && config.configured;
+  } catch (error) {
+    logger.warn("oauth provider login-enabled check failed; hiding button", {
+      provider,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
 }

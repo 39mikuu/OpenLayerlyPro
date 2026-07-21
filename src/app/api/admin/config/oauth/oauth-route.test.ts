@@ -10,15 +10,23 @@ const mocks = vi.hoisted(() => ({
   clearOAuthProviderConfig: vi.fn(),
 }));
 
-vi.mock("@/modules/auth/oauth", () => ({
-  beginOAuthLogin: mocks.beginOAuthLogin,
-}));
+vi.mock("@/modules/auth/oauth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/auth/oauth")>();
+  return {
+    ...actual,
+    beginOAuthLogin: mocks.beginOAuthLogin,
+  };
+});
 vi.mock("@/modules/auth/session", () => ({
   requireAdmin: mocks.requireAdmin,
 }));
-vi.mock("@/lib/request-body", () => ({
-  readJsonWithLimit: mocks.readJsonWithLimit,
-}));
+vi.mock("@/lib/request-body", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/request-body")>();
+  return {
+    ...actual,
+    readJsonWithLimit: mocks.readJsonWithLimit,
+  };
+});
 vi.mock("@/modules/config/oauth", () => ({
   saveOAuthProviderConfig: mocks.saveOAuthProviderConfig,
   getOAuthProviderAdminView: mocks.getOAuthProviderAdminView,
@@ -42,6 +50,7 @@ describe("OAuth routing & config endpoints", () => {
   it("handles Google start authorization redirect", async () => {
     mocks.beginOAuthLogin.mockResolvedValueOnce({
       authorizationUrl: "https://google.auth/url?state=s",
+      browserBinding: "mock-binding",
     });
     const req = new NextRequest("http://localhost:3000/api/auth/oauth/google/start?next=/posts");
     const res = await startGoogleGET(req);
@@ -58,6 +67,7 @@ describe("OAuth routing & config endpoints", () => {
   it("handles GitHub start authorization redirect", async () => {
     mocks.beginOAuthLogin.mockResolvedValueOnce({
       authorizationUrl: "https://github.auth/url",
+      browserBinding: "mock-binding",
     });
     const req = new NextRequest("http://localhost:3000/api/auth/oauth/github/start");
     const res = await startGithubGET(req);

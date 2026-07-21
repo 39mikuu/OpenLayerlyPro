@@ -122,6 +122,7 @@ export const oauthStates = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     provider: text("provider", { enum: ["google", "github"] }).notNull(),
     stateHash: text("state_hash").notNull(),
+    browserBindingHash: text("browser_binding_hash"),
     codeVerifierEncrypted: text("code_verifier_encrypted").notNull(),
     redirectPath: text("redirect_path"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
