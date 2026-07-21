@@ -7,11 +7,19 @@ import {
   changeFanLoginCode,
   changeFanLoginEmail,
   INITIAL_FAN_LOGIN_FLOW,
+  normalizeOAuthErrorCode,
   resetFanLoginRequestedEmail,
 } from "./login-form-model";
 
 describe("fan login form flow", () => {
   const codePattern = /^[0-9A-HJKMNP-TV-Z]{16}$/;
+
+  it("allowlists OAuth error codes and falls unknown values back to failed", () => {
+    expect(normalizeOAuthErrorCode("denied")).toBe("denied");
+    expect(normalizeOAuthErrorCode("state")).toBe("state");
+    expect(normalizeOAuthErrorCode("unknown-provider-value")).toBe("failed");
+    expect(normalizeOAuthErrorCode(null)).toBeNull();
+  });
 
   it("normalizes lowercase and whitespace-padded pasted codes before completeness checks", () => {
     const accepted = acceptFanLoginCodeRequest(INITIAL_FAN_LOGIN_FLOW, " Fan@Example.com ");

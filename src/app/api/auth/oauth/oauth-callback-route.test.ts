@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   completeOAuthLogin: vi.fn(),
+  cancelOAuthLogin: vi.fn(),
   createSession: vi.fn(),
   setSessionCookie: vi.fn(),
 }));
@@ -12,6 +13,7 @@ vi.mock("@/modules/auth/oauth", async (importOriginal) => {
   return {
     ...actual,
     completeOAuthLogin: mocks.completeOAuthLogin,
+    cancelOAuthLogin: mocks.cancelOAuthLogin,
   };
 });
 vi.mock("@/modules/auth/session", () => ({
@@ -73,13 +75,31 @@ describe("OAuth callback API routes", () => {
     expect(res.headers.get("Location")).toBe("http://localhost:3000/me");
   });
 
-  it("handles cancelled auth errors from provider by redirecting to login page", async () => {
+  it("validates and consumes state before accepting a provider denial", async () => {
+    mocks.cancelOAuthLogin.mockResolvedValueOnce(undefined);
+    const req = new NextRequest(
+      "http://localhost:3000/api/auth/oauth/google/callback?error=access_denied&state=s",
+      { headers: { cookie: "olp_oauth_bind_google=binding" } },
+    );
+    const res = await googleCallbackGET(req);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("Location")).toBe("http://localhost:3000/login?oauth_error=denied");
+    expect(mocks.cancelOAuthLogin).toHaveBeenCalledWith("google", {
+      state: "s",
+      browserBinding: "binding",
+    });
+    expect(res.headers.get("set-cookie")).toContain("olp_oauth_bind_google=");
+  });
+
+  it("does not let an unvalidated provider denial cancel the active flow", async () => {
+    mocks.cancelOAuthLogin.mockRejectedValueOnce(new ApiError(400, "oauthInvalidState"));
     const req = new NextRequest(
       "http://localhost:3000/api/auth/oauth/google/callback?error=access_denied",
     );
     const res = await googleCallbackGET(req);
     expect(res.status).toBe(303);
-    expect(res.headers.get("Location")).toBe("http://localhost:3000/login?oauth_error=denied");
+    expect(res.headers.get("Location")).toBe("http://localhost:3000/login?oauth_error=state");
+    expect(res.headers.get("set-cookie")).toBeNull();
   });
 
   it("handles specific ApiErrors by mapping to failure codes", async () => {

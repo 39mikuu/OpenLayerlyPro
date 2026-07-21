@@ -3,7 +3,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getClientIp, getUserAgent, handleApiError } from "@/lib/api";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
-import { completeOAuthLogin, OAUTH_BROWSER_BINDING_COOKIE } from "@/modules/auth/oauth";
+import {
+  cancelOAuthLogin,
+  completeOAuthLogin,
+  getOAuthBrowserBindingCookie,
+} from "@/modules/auth/oauth";
 import { createSession, setSessionCookie } from "@/modules/auth/session";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
 
@@ -14,7 +18,7 @@ function absoluteUrl(path: string): URL {
 }
 
 function clearBindingCookie(response: NextResponse): NextResponse {
-  response.cookies.set(OAUTH_BROWSER_BINDING_COOKIE, "", {
+  response.cookies.set(getOAuthBrowserBindingCookie("google"), "", {
     httpOnly: true,
     secure: getEnv().APP_URL.startsWith("https://"),
     sameSite: "lax",
@@ -24,28 +28,28 @@ function clearBindingCookie(response: NextResponse): NextResponse {
   return response;
 }
 
-function failureRedirect(code: string): NextResponse {
+function failureRedirect(code: string, clearCookie = true): NextResponse {
   const url = absoluteUrl("/login");
   url.searchParams.set("oauth_error", code);
-  return clearBindingCookie(
-    NextResponse.redirect(url, {
-      status: 303,
-      headers: {
-        "Cache-Control": "no-store",
-        "Referrer-Policy": "no-referrer",
-      },
-    }),
-  );
+  const response = NextResponse.redirect(url, {
+    status: 303,
+    headers: {
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+    },
+  });
+  return clearCookie ? clearBindingCookie(response) : response;
 }
 
 export async function GET(req: NextRequest) {
   try {
+    const state = req.nextUrl.searchParams.get("state") ?? "";
+    const browserBinding = req.cookies.get(getOAuthBrowserBindingCookie("google"))?.value ?? null;
     if (req.nextUrl.searchParams.get("error")) {
+      await cancelOAuthLogin("google", { state, browserBinding });
       return failureRedirect("denied");
     }
     const code = req.nextUrl.searchParams.get("code") ?? "";
-    const state = req.nextUrl.searchParams.get("state") ?? "";
-    const browserBinding = req.cookies.get(OAUTH_BROWSER_BINDING_COOKIE)?.value ?? null;
     const result = await completeOAuthLogin("google", { code, state, browserBinding });
     const { token, expiresAt } = await createSession(result.user.id, {
       ip: getClientIp(req),
@@ -71,7 +75,7 @@ export async function GET(req: NextRequest) {
         oauthProviderError: "provider",
         oauthInvalidCallback: "callback",
       };
-      return failureRedirect(map[error.code] ?? "failed");
+      return failureRedirect(map[error.code] ?? "failed", error.code !== "oauthInvalidState");
     }
     handleApiError(error);
     return failureRedirect("failed");

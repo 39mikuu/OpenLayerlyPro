@@ -25,7 +25,10 @@ import { touchLastLogin } from "@/modules/user";
 export const OAUTH_STATE_TTL_MINUTES = 10;
 const STATE_PURPOSE = "auth.oauth_state:v1";
 
-export const OAUTH_BROWSER_BINDING_COOKIE = "olp_oauth_bind";
+export const OAUTH_BROWSER_BINDING_COOKIE_PREFIX = "olp_oauth_bind";
+export function getOAuthBrowserBindingCookie(provider: OAuthProviderId): string {
+  return `${OAUTH_BROWSER_BINDING_COOKIE_PREFIX}_${provider}`;
+}
 export type OAuthStartResult = { authorizationUrl: string; browserBinding: string };
 export type OAuthCallbackSuccess = {
   user: User;
@@ -402,6 +405,17 @@ async function resolveUserFromProfile(
     }
     return winner;
   }
+}
+
+export async function cancelOAuthLogin(
+  provider: OAuthProviderId,
+  input: { state: string; browserBinding: string | null },
+): Promise<void> {
+  if (!input.state?.trim()) {
+    await recordEvent("oauth_login_rejected", { provider, reason: "missing_state" });
+    throw new ApiError(400, "oauthInvalidState");
+  }
+  await consumeOAuthState(provider, input.state, input.browserBinding);
 }
 
 export async function completeOAuthLogin(

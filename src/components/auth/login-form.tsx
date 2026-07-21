@@ -10,6 +10,7 @@ import {
   changeFanLoginCode,
   changeFanLoginEmail,
   INITIAL_FAN_LOGIN_FLOW,
+  normalizeOAuthErrorCode,
   resetFanLoginRequestedEmail,
 } from "@/components/auth/login-form-model";
 import { TurnstileWidget, type TurnstileWidgetHandle } from "@/components/auth/turnstile-widget";
@@ -55,6 +56,7 @@ export function LoginForm({
   const [message, setMessage] = useState<string | null>(null);
   const codeRegex = useMemo(() => new RegExp(loginCodePattern), [loginCodePattern]);
   const codeComplete = canSubmitFanLoginCode(fanFlow, loginCodeLength, codeRegex);
+  const normalizedOAuthError = normalizeOAuthErrorCode(oauthError);
 
   async function run(fn: () => Promise<void>) {
     setLoading(true);
@@ -122,9 +124,9 @@ export function LoginForm({
         <span>{magicLinkEnabled ? t("login.magicLinkHint") : t("login.passwordlessHint")}</span>
       </div>
 
-      {oauthError && (
+      {normalizedOAuthError && (
         <p className="text-sm text-destructive">
-          {t(`login.oauthError.${oauthError}` as "login.oauthError.failed")}
+          {t(`login.oauthError.${normalizedOAuthError}` as "login.oauthError.failed")}
         </p>
       )}
 

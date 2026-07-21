@@ -7,12 +7,13 @@ const mocks = vi.hoisted(() => ({
 
 vi.stubGlobal("fetch", mocks.fetch);
 
+import crypto from "crypto";
+
 import { getDb } from "@/db";
 import { oauthIdentities, oauthStates, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { decryptSecret } from "@/lib/crypto";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
-import crypto from "crypto";
 
 import {
   __test,
@@ -96,14 +97,11 @@ describeWithDatabase("WP2 OAuth login integration", () => {
     expect(row.provider).toBe("google");
     expect(row.redirectPath).toBe("/posts/deep");
     expect(row.consumedAt).toBeNull();
-    
+
     const verifier = decryptSecret(row.codeVerifierEncrypted);
     expect(verifier).toBeTruthy();
-    
-    const calculatedChallenge = crypto
-      .createHash("sha256")
-      .update(verifier)
-      .digest("base64url");
+
+    const calculatedChallenge = crypto.createHash("sha256").update(verifier).digest("base64url");
     expect(url.searchParams.get("code_challenge")).toBe(calculatedChallenge);
   });
 
@@ -294,12 +292,13 @@ describeWithDatabase("WP2 OAuth login integration", () => {
     const startExpired = await beginOAuthLogin("google");
     const urlExpired = new URL(startExpired.authorizationUrl);
     const stateExpired = urlExpired.searchParams.get("state")!;
-    
-    // update expiresAt to epoch 0 (definitely expired) for the newest state row in DB
+
+    // Expire this exact flow; other test files may insert OAuth states concurrently.
+    const stateHashExpired = __test.hashState(stateExpired);
     await db
       .update(oauthStates)
       .set({ expiresAt: new Date(0) })
-      .where(sql`id = (select id from oauth_states order by id desc limit 1)`);
+      .where(sql`${oauthStates.stateHash} = ${stateHashExpired}`);
 
     await expect(
       completeOAuthLogin("google", {

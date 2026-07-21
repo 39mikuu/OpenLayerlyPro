@@ -5,7 +5,7 @@ import { getEnv } from "@/lib/env";
 import { normalizeMagicLinkRedirectPath } from "@/modules/auth/magic-link";
 import {
   beginOAuthLogin,
-  OAUTH_BROWSER_BINDING_COOKIE,
+  getOAuthBrowserBindingCookie,
   OAUTH_STATE_TTL_MINUTES,
 } from "@/modules/auth/oauth";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
       userAgent: getUserAgent(req),
     });
     const response = NextResponse.redirect(authorizationUrl, { status: 302 });
-    response.cookies.set(OAUTH_BROWSER_BINDING_COOKIE, browserBinding, {
+    response.cookies.set(getOAuthBrowserBindingCookie("google"), browserBinding, {
       httpOnly: true,
       secure: getEnv().APP_URL.startsWith("https://"),
       sameSite: "lax",

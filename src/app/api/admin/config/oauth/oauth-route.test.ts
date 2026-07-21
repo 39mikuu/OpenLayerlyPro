@@ -56,6 +56,7 @@ describe("OAuth routing & config endpoints", () => {
     const res = await startGoogleGET(req);
     expect(res.status).toBe(302);
     expect(res.headers.get("Location")).toBe("https://google.auth/url?state=s");
+    expect(res.headers.get("set-cookie")).toContain("olp_oauth_bind_google=mock-binding");
     expect(mocks.beginOAuthLogin).toHaveBeenCalledWith(
       "google",
       expect.objectContaining({
@@ -73,6 +74,7 @@ describe("OAuth routing & config endpoints", () => {
     const res = await startGithubGET(req);
     expect(res.status).toBe(302);
     expect(res.headers.get("Location")).toBe("https://github.auth/url");
+    expect(res.headers.get("set-cookie")).toContain("olp_oauth_bind_github=mock-binding");
   });
 
   it("admin config endpoints require authentication and call config actions", async () => {

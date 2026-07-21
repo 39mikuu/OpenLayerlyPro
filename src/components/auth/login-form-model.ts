@@ -4,6 +4,26 @@ import {
   sanitizeLoginCodeInput,
 } from "@/modules/auth/input-policy";
 
+export const OAUTH_ERROR_CODES = [
+  "failed",
+  "denied",
+  "state",
+  "email",
+  "bind",
+  "config",
+  "provider",
+  "callback",
+  "start",
+] as const;
+export type OAuthErrorCode = (typeof OAUTH_ERROR_CODES)[number];
+
+export function normalizeOAuthErrorCode(value: string | null | undefined): OAuthErrorCode | null {
+  if (!value) return null;
+  return (OAUTH_ERROR_CODES as readonly string[]).includes(value)
+    ? (value as OAuthErrorCode)
+    : "failed";
+}
+
 export type FanLoginFlowState = {
   email: string;
   requestedEmail: string | null;
