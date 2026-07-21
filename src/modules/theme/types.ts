@@ -120,6 +120,8 @@ export type LoginView = {
   githubOAuthEnabled?: boolean;
   oauthNext?: string;
   oauthError?: string | null;
+  /** APP_URL 的路径前缀（无前缀部署为 ""），OAuth start 链接需要据此拼出正确路径。 */
+  oauthBasePath?: string;
 };
 
 export type MeView = {

@@ -32,6 +32,7 @@ export function LoginForm({
   githubOAuthEnabled,
   oauthNext,
   oauthError,
+  oauthBasePath,
 }: {
   mode: "fan" | "admin";
   turnstileSiteKey?: string;
@@ -43,6 +44,7 @@ export function LoginForm({
   githubOAuthEnabled?: boolean;
   oauthNext?: string;
   oauthError?: string | null;
+  oauthBasePath?: string;
 }) {
   const t = useT();
 
@@ -137,8 +139,8 @@ export function LoginForm({
               <a
                 href={
                   oauthNext
-                    ? `/api/auth/oauth/google/start?next=${encodeURIComponent(oauthNext)}`
-                    : "/api/auth/oauth/google/start"
+                    ? `${oauthBasePath ?? ""}/api/auth/oauth/google/start?next=${encodeURIComponent(oauthNext)}`
+                    : `${oauthBasePath ?? ""}/api/auth/oauth/google/start`
                 }
               >
                 {t("login.continueWithGoogle")}
@@ -150,8 +152,8 @@ export function LoginForm({
               <a
                 href={
                   oauthNext
-                    ? `/api/auth/oauth/github/start?next=${encodeURIComponent(oauthNext)}`
-                    : "/api/auth/oauth/github/start"
+                    ? `${oauthBasePath ?? ""}/api/auth/oauth/github/start?next=${encodeURIComponent(oauthNext)}`
+                    : `${oauthBasePath ?? ""}/api/auth/oauth/github/start`
                 }
               >
                 {t("login.continueWithGithub")}

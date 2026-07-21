@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import { getEnv } from "@/lib/env";
 import { isMagicLinkConfigured, normalizeMagicLinkRedirectPath } from "@/modules/auth/magic-link";
+import { getOAuthApiBasePath } from "@/modules/auth/oauth";
 import { getLoginCodePolicy } from "@/modules/auth/rate-limit-policy";
 import { getCurrentUser } from "@/modules/auth/session";
 import { getTurnstileConfig, isOAuthProviderLoginEnabled } from "@/modules/config";
@@ -46,6 +47,7 @@ export default async function LoginPage({
         githubOAuthEnabled,
         oauthNext: redirectPath,
         oauthError: oauthError ?? null,
+        oauthBasePath: getOAuthApiBasePath(),
       }}
     />
   );

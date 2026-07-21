@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { getOAuthCookiePath } from "./oauth";
+import { getOAuthApiBasePath, getOAuthCookiePath } from "./oauth";
+
+describe("getOAuthApiBasePath", () => {
+  it("is empty for a root APP_URL", () => {
+    expect(getOAuthApiBasePath("https://site.example")).toBe("");
+    expect(getOAuthApiBasePath("https://site.example/")).toBe("");
+  });
+
+  it("preserves a configured base path", () => {
+    expect(getOAuthApiBasePath("https://site.example/base")).toBe("/base");
+    expect(getOAuthApiBasePath("https://site.example/base///")).toBe("/base");
+  });
+});
 
 describe("getOAuthCookiePath", () => {
   it("scopes the cookie to /api/auth/oauth when APP_URL has no base path", () => {
