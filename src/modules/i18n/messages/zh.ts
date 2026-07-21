@@ -284,6 +284,7 @@ export const zh = {
       provider: "第三方服务暂时不可用，请改用邮箱登录。",
       callback: "登录回调无效。",
       start: "无法启动第三方登录。",
+      rate_limited: "请求过于频繁，请稍后再试。",
     },
     adminSignin: "登录后台",
   },

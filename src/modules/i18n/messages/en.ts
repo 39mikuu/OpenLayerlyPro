@@ -300,6 +300,7 @@ export const en: Messages = {
       provider: "The provider is temporarily unavailable. Use email instead.",
       callback: "Invalid login callback.",
       start: "Could not start social login.",
+      rate_limited: "Too many attempts. Please try again later.",
     },
   },
   admin: {

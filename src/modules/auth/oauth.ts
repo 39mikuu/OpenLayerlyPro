@@ -64,6 +64,14 @@ export function buildOAuthCallbackUrl(provider: OAuthProviderId): string {
   return buildPublicUrl(getPublicBaseUrl(getEnv().APP_URL), callbackPath(provider));
 }
 
+// Browser-binding cookies must be scoped under whatever base path APP_URL deploys
+// behind (e.g. https://host/prefix), or the browser will never send the cookie back
+// to a prefixed callback URL and every callback will look like a state mismatch.
+export function getOAuthCookiePath(appUrl = getEnv().APP_URL): string {
+  const basePath = new URL(`${getPublicBaseUrl(appUrl)}/`).pathname.replace(/\/+$/, "");
+  return `${basePath}/api/auth/oauth`;
+}
+
 function hashState(state: string): string {
   return hmacSha256WithPurpose(STATE_PURPOSE, state);
 }

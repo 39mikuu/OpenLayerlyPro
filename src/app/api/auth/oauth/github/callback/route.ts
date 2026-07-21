@@ -6,6 +6,7 @@ import {
   cancelOAuthLogin,
   completeOAuthLogin,
   getOAuthBrowserBindingCookie,
+  getOAuthCookiePath,
 } from "@/modules/auth/oauth";
 import { createSession, setSessionCookie } from "@/modules/auth/session";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
@@ -21,7 +22,7 @@ function clearBindingCookie(response: NextResponse): NextResponse {
     httpOnly: true,
     secure: getEnv().APP_URL.startsWith("https://"),
     sameSite: "lax",
-    path: "/api/auth/oauth",
+    path: getOAuthCookiePath(),
     maxAge: 0,
   });
   return response;

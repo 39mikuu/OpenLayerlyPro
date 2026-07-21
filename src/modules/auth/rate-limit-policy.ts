@@ -49,6 +49,25 @@ export function getAdminLoginRateLimit(
   };
 }
 
+export function getOAuthStartRateLimit(
+  provider: string,
+  identity: ClientRateLimitIdentity,
+  env: Env,
+): RateLimitPolicy {
+  if (identity.kind === "ip") {
+    return {
+      key: `oauth-start:${provider}:${identity.value}`,
+      max: env.OAUTH_START_IP_RATE_MAX,
+      windowMs: env.OAUTH_START_RATE_WINDOW_MS,
+    };
+  }
+  return {
+    key: `oauth-start-unresolved:${provider}`,
+    max: env.OAUTH_START_UNRESOLVED_RATE_MAX,
+    windowMs: env.OAUTH_START_RATE_WINDOW_MS,
+  };
+}
+
 export function getRequestCodePrimaryRateLimit(
   identity: ClientRateLimitIdentity,
   env: Env,

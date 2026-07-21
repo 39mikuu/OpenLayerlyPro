@@ -201,6 +201,9 @@ const envSchema = z.object({
     .max(86_400_000)
     .default(3_600_000),
   REQUEST_CODE_SEND_DEDUPE_SECONDS: z.coerce.number().int().min(1).max(3_600).default(60),
+  OAUTH_START_IP_RATE_MAX: z.coerce.number().int().min(1).max(10_000).default(20),
+  OAUTH_START_UNRESOLVED_RATE_MAX: z.coerce.number().int().min(20).max(1_000_000).default(100),
+  OAUTH_START_RATE_WINDOW_MS: z.coerce.number().int().min(10_000).max(86_400_000).default(600_000),
   LOGIN_CODE_LENGTH: z.coerce.number().int().min(16).max(64).default(16),
   LOGIN_CODE_ALPHABET: z.enum(["crockford-base32"]).default("crockford-base32"),
 

@@ -14,6 +14,7 @@ export const OAUTH_ERROR_CODES = [
   "provider",
   "callback",
   "start",
+  "rate_limited",
 ] as const;
 export type OAuthErrorCode = (typeof OAUTH_ERROR_CODES)[number];
 
