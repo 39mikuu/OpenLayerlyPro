@@ -266,6 +266,10 @@ describeWithDatabase("private file download authorization integration", () => {
     const lowerTier = await seedTier(5);
     const requiredTier = await seedTier(10, false);
     const higherTier = await seedTier(20);
+    await db
+      .update(membershipTiers)
+      .set({ entitlements: ["early_access"] })
+      .where(eq(membershipTiers.id, requiredTier.id));
     await seedMembership(lower!, lowerTier.id);
     await seedMembership(exact!, requiredTier.id);
     await seedMembership(higher!, higherTier.id);

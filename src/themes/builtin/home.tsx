@@ -89,6 +89,16 @@ export function Home({ view, t }: { view: HomeView; t: Translate }) {
                   ) : (
                     <p>{t("home.planFallback")}</p>
                   )}
+                  {tier.entitlements && tier.entitlements.length > 0 && (
+                    <ul className="mt-3 space-y-1 text-xs">
+                      {tier.entitlements.map((entitlement) => (
+                        <li key={entitlement.key}>
+                          <span className="font-medium text-foreground">{entitlement.label}</span>
+                          <span className="block">{entitlement.description}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
                 {tier.purchaseEnabled ? (
                   <div className="mt-5 space-y-2">

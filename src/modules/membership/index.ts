@@ -20,6 +20,11 @@ import {
   normalizeAdminPageSize,
 } from "@/modules/admin/pagination";
 import { pickMembershipAudit, recordAudit } from "@/modules/audit";
+import {
+  type EntitlementKey,
+  resolveStoredEntitlements,
+  validateEntitlements,
+} from "@/modules/membership/entitlements";
 import { advanceManualReminderAfterGrant } from "@/modules/membership/renewal-reminders";
 
 export type ActiveMembership = {
@@ -33,7 +38,12 @@ export async function listTiers(opts?: { activeOnly?: boolean }): Promise<Member
   const rows = opts?.activeOnly
     ? await query.where(eq(membershipTiers.isActive, true))
     : await query;
-  return rows.sort((a, b) => a.sortOrder - b.sortOrder || a.level - b.level);
+  return rows
+    .map((tier) => ({
+      ...tier,
+      entitlements: resolveStoredEntitlements(tier.entitlements),
+    }))
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.level - b.level);
 }
 
 export async function getTierById(
@@ -70,9 +80,120 @@ export async function getActiveMembership(
   return rows[0] ?? null;
 }
 
-export async function getActiveLevel(userId: string): Promise<number> {
-  const active = await getActiveMembership(userId);
-  return active?.tier.level ?? 0;
+export type MembershipAccess = {
+  active: ActiveMembership | null;
+  level: number;
+  entitlements: readonly EntitlementKey[];
+};
+
+/** One live-tier membership boundary shared by content and file authorization. */
+export async function resolveMembershipAccess(
+  userId: string,
+  dbc: DbClient = getDb(),
+): Promise<MembershipAccess> {
+  const active = await getActiveMembership(userId, dbc);
+  return {
+    active,
+    level: active?.tier.level ?? 0,
+    entitlements: active ? resolveStoredEntitlements(active.tier.entitlements) : [],
+  };
+}
+
+export type TierMutationInput = Pick<
+  MembershipTier,
+  | "name"
+  | "slug"
+  | "priceLabel"
+  | "level"
+  | "durationDays"
+  | "purchaseEnabled"
+  | "isActive"
+  | "sortOrder"
+> & {
+  description?: string | null;
+  priceAmountMinor?: number | null;
+  stripePriceId?: string | null;
+  currency?: string | null;
+  entitlements: string[];
+};
+
+export type TierMutationActor = { type: "admin"; id: string };
+export type TierMutationContext = { actor: TierMutationActor; reason: string };
+
+function requireTierMutationReason(reason: string): string {
+  const normalized = reason.trim();
+  if (!normalized) throw new ApiError(400, "tierReasonRequired");
+  return normalized;
+}
+
+function pickTierAudit(tier: MembershipTier): Record<string, unknown> {
+  return {
+    name: tier.name,
+    description: tier.description,
+    priceLabel: tier.priceLabel,
+    purchaseEnabled: tier.purchaseEnabled,
+    isActive: tier.isActive,
+    entitlements: resolveStoredEntitlements(tier.entitlements),
+  };
+}
+
+export async function createTier(
+  input: TierMutationInput,
+  context: TierMutationContext,
+): Promise<MembershipTier> {
+  const entitlements = validateEntitlements(input.entitlements);
+  const reason = requireTierMutationReason(context.reason);
+  return getDb().transaction(async (tx) => {
+    const [tier] = await tx
+      .insert(membershipTiers)
+      .values({ ...input, entitlements })
+      .returning();
+    await recordAudit(tx, {
+      entityType: "membership_tier",
+      entityId: tier.id,
+      action: "create",
+      actor: context.actor,
+      reason,
+      after: pickTierAudit(tier),
+      correlationId: randomUUID(),
+    });
+    return tier;
+  });
+}
+
+export async function updateTier(
+  id: string,
+  input: Partial<TierMutationInput>,
+  context: TierMutationContext,
+): Promise<MembershipTier> {
+  const entitlements =
+    input.entitlements === undefined ? undefined : validateEntitlements(input.entitlements);
+  const reason = requireTierMutationReason(context.reason);
+  return getDb().transaction(async (tx) => {
+    const [before] = await tx
+      .select()
+      .from(membershipTiers)
+      .where(eq(membershipTiers.id, id))
+      .limit(1)
+      .for("update");
+    if (!before) throw new ApiError(404, "tierNotFound");
+    const [tier] = await tx
+      .update(membershipTiers)
+      .set({ ...input, ...(entitlements ? { entitlements } : {}), updatedAt: new Date() })
+      .where(eq(membershipTiers.id, id))
+      .returning();
+    await recordAudit(tx, {
+      entityType: "membership_tier",
+      entityId: id,
+      action: "update",
+      actor: context.actor,
+      reason,
+      before: pickTierAudit(before),
+      after: pickTierAudit(tier),
+      correlationId: randomUUID(),
+    });
+    return tier;
+  });
 }
 
 export type LifecycleActor = { type: "admin"; id: string } | { type: "system"; id: null };

@@ -96,6 +96,20 @@ export const zh = {
     subscribing: "正在跳转…",
     subscribeFailed: "无法发起订阅",
   },
+  entitlements: {
+    early_access: {
+      label: "抢先看",
+      description: "在公开发布前查看创作者选定的更新。",
+    },
+    behind_the_scenes: {
+      label: "幕后创作",
+      description: "查看创作过程、进度记录与幕后内容。",
+    },
+    supporter_recognition: {
+      label: "支持者鸣谢",
+      description: "在符合条件的社区功能中获得支持者鸣谢。",
+    },
+  },
   supporters: {
     eyebrow: "赞助者鸣谢",
     title: "赞助者鸣谢墙",
@@ -110,6 +124,7 @@ export const zh = {
   me: {
     title: "我的账号",
     subtitle: "查看会员状态和付款申请。",
+    entitlements: "包含权益",
     accountInfo: "账号信息",
     email: "邮箱：{email}",
     roleLabel: "角色：",
@@ -726,6 +741,10 @@ export const zh = {
       duration: "有效天数",
       description: "描述",
       purchasable: "允许购买",
+      entitlements: "会员权益",
+      entitlementsHint: "只能选择 Core 定义的稳定权益。",
+      auditReason: "审计原因",
+      auditReasonHint: "必填。请说明修改此会员等级配置的原因。",
       cardTitle: "{name}（level {level}）",
       confirmDelete: "确定删除会员等级「{name}」？",
       deleteDialogTitle: "确认删除会员等级",
@@ -1099,6 +1118,8 @@ export const zh = {
     inlineFileManagedByBody: "正文内联图片只能通过保存正文来解除关联",
     userNotFound: "用户不存在",
     tierNotFound: "会员等级不存在",
+    tierReasonRequired: "修改会员等级必须填写原因",
+    unknownEntitlement: "会员等级包含未知权益",
     membershipNotFound: "会员记录不存在",
     membershipStale: "会员记录已被修改，请刷新后重试",
     alreadyInState: "会员记录已经处于目标状态",

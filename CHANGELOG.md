@@ -25,6 +25,21 @@
   enumeration, and magic link request/send/consume/reject security events are
   recorded with safe summaries only.
 
+### WP3 Membership Bundle
+
+- Added a Core-owned entitlement whitelist to membership tiers with an empty,
+  non-null migration default. Tier create/update validates unknown keys
+  fail-closed and records whitelisted before/after audit snapshots in the same
+  transaction as the tier mutation.
+- Public tier cards and the member account show localized benefit descriptions
+  in Chinese, English, and Japanese. Entitlements resolve from the live current
+  tier row only for active, in-window memberships.
+- Content and file access continue to use tier level and `requiredTierId` through
+  their shared Core membership boundary; the first entitlement bundle is
+  informational and introduces no parallel grant source.
+- `POST /api/admin/tiers` and `PUT /api/admin/tiers/{id}` now require a non-empty
+  audit `reason` of at most 500 characters.
+
 ## v1.1.0 — 2026-07-17
 
 OpenLayerlyPro v1.1.0 was released from merge commit `3a80b34`. Its acceptance

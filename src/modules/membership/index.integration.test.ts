@@ -7,14 +7,18 @@ import { auditEvents, memberships, membershipTiers, paymentRequests, users } fro
 
 import {
   acquireUserGrantLock,
+  createTier,
   extendMembership,
   getActiveMembership,
   getMembershipDetail,
   grantMembership,
   listMembershipHistory,
+  listTiers,
+  resolveMembershipAccess,
   resumeMembership,
   revokeMembership,
   suspendMembership,
+  updateTier,
 } from "./index";
 
 const describeWithDatabase =
@@ -70,6 +74,169 @@ describeWithDatabase("membership lifecycle integration", () => {
       });
     }
   }
+
+  it("has a non-null empty entitlement migration default", async () => {
+    const [column] = await db.execute<{
+      is_nullable: string;
+      column_default: string;
+    }>(sql`
+      select is_nullable, column_default
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'membership_tiers'
+        and column_name = 'entitlements'
+    `);
+    const { tier } = await seed();
+
+    expect(column).toMatchObject({ is_nullable: "NO" });
+    expect(column?.column_default).toContain("[]");
+    expect(tier.entitlements).toEqual([]);
+  });
+
+  it("validates tier entitlements and writes whitelisted audit snapshots", async () => {
+    const { admin } = await seed();
+    await expect(
+      createTier(
+        {
+          name: "Invalid",
+          slug: `invalid-${randomUUID()}`,
+          priceLabel: "100",
+          level: 1,
+          durationDays: 31,
+          purchaseEnabled: true,
+          isActive: true,
+          sortOrder: 0,
+          entitlements: ["arbitrary_grant"],
+        },
+        { actor: { type: "admin", id: admin.id }, reason: "Create bundle" },
+      ),
+    ).rejects.toMatchObject({ status: 400, code: "unknownEntitlement" });
+
+    const tier = await createTier(
+      {
+        name: "Bundle",
+        slug: `bundle-${randomUUID()}`,
+        description: "Approved summary",
+        priceLabel: "900",
+        level: 20,
+        durationDays: 31,
+        purchaseEnabled: true,
+        isActive: true,
+        sortOrder: 2,
+        entitlements: ["supporter_recognition", "early_access", "early_access"],
+      },
+      { actor: { type: "admin", id: admin.id }, reason: "Create bundle" },
+    );
+    await updateTier(
+      tier.id,
+      { entitlements: ["behind_the_scenes"] },
+      { actor: { type: "admin", id: admin.id }, reason: "Change included benefits" },
+    );
+    const events = await db.select().from(auditEvents).where(eq(auditEvents.entityId, tier.id));
+
+    expect(tier.entitlements).toEqual(["early_access", "supporter_recognition"]);
+    expect(events.map((event) => event.action)).toEqual(["create", "update"]);
+    expect(events.map((event) => event.reason)).toEqual([
+      "Create bundle",
+      "Change included benefits",
+    ]);
+    expect(events[0]?.afterJson).toEqual({
+      name: "Bundle",
+      description: "Approved summary",
+      priceLabel: "900",
+      purchaseEnabled: true,
+      isActive: true,
+      entitlements: ["early_access", "supporter_recognition"],
+    });
+    expect(events[1]?.beforeJson).toMatchObject({
+      entitlements: ["early_access", "supporter_recognition"],
+    });
+    expect(events[1]?.afterJson).toMatchObject({ entitlements: ["behind_the_scenes"] });
+  });
+
+  it("rolls back a tier update when its audit insert fails", async () => {
+    const { admin, tier } = await seed();
+    await db.execute(
+      sql.raw(`
+      create function fail_tier_audit() returns trigger as $$
+      begin
+        if new.entity_type = 'membership_tier' then raise exception 'forced tier audit failure'; end if;
+        return new;
+      end;
+      $$ language plpgsql;
+      create trigger fail_tier_audit_trigger before insert on audit_events
+      for each row execute function fail_tier_audit();
+    `),
+    );
+    try {
+      await expect(
+        updateTier(
+          tier.id,
+          { name: "Must roll back", entitlements: ["early_access"] },
+          { actor: { type: "admin", id: admin.id }, reason: "Rollback test" },
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await db.execute(
+        sql.raw(`
+        drop trigger if exists fail_tier_audit_trigger on audit_events;
+        drop function if exists fail_tier_audit();
+      `),
+      );
+    }
+    const [stored] = await db.select().from(membershipTiers).where(eq(membershipTiers.id, tier.id));
+    expect(stored).toMatchObject({ name: "Supporter", entitlements: [] });
+  });
+
+  it("resolves live tier entitlements only for a currently active membership", async () => {
+    const { user, tier } = await seed();
+    const { membership } = await grantMembership({
+      userId: user.id,
+      tierId: tier.id,
+      source: "manual",
+      actor: { type: "system", id: null },
+    });
+    await db
+      .update(membershipTiers)
+      .set({ entitlements: ["early_access"] })
+      .where(eq(membershipTiers.id, tier.id));
+    await expect(resolveMembershipAccess(user.id)).resolves.toMatchObject({
+      entitlements: ["early_access"],
+      level: 10,
+    });
+    await db
+      .update(membershipTiers)
+      .set({ entitlements: ["behind_the_scenes"] })
+      .where(eq(membershipTiers.id, tier.id));
+    await expect(resolveMembershipAccess(user.id)).resolves.toMatchObject({
+      entitlements: ["behind_the_scenes"],
+    });
+    await db
+      .update(membershipTiers)
+      .set({ entitlements: ["unknown_stored_key"] })
+      .where(eq(membershipTiers.id, tier.id));
+    await expect(resolveMembershipAccess(user.id)).resolves.toMatchObject({
+      entitlements: [],
+      level: 10,
+    });
+    expect((await listTiers()).find((row) => row.id === tier.id)?.entitlements).toEqual([]);
+
+    for (const status of ["suspended", "revoked"] as const) {
+      await db.update(memberships).set({ status }).where(eq(memberships.id, membership.id));
+      await expect(resolveMembershipAccess(user.id)).resolves.toMatchObject({
+        entitlements: [],
+        level: 0,
+      });
+    }
+    await db
+      .update(memberships)
+      .set({ status: "active", endsAt: new Date(Date.now() - 1_000) })
+      .where(eq(memberships.id, membership.id));
+    await expect(resolveMembershipAccess(user.id)).resolves.toMatchObject({
+      entitlements: [],
+      level: 0,
+    });
+  });
 
   it("grants and audits a membership while an inactive tier remains valid for access", async () => {
     const { user, tier } = await seed({ tierActive: false });

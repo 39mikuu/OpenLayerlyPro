@@ -5,6 +5,7 @@ import { listPublishedPostsPage, localizePostCards, POSTS_PAGE_SIZE } from "@/mo
 import { buildSiteMetadata } from "@/modules/content/seo";
 import { getT, resolveLocale } from "@/modules/i18n/server";
 import { listTiers } from "@/modules/membership";
+import { describeEntitlements } from "@/modules/membership/entitlements";
 import { getPublicSiteInfo } from "@/modules/site";
 import { getActiveTheme, type HomePostView, type TierCardView } from "@/modules/theme";
 
@@ -42,6 +43,7 @@ export default async function HomePage() {
     durationDays: tier.durationDays,
     purchaseEnabled: tier.purchaseEnabled,
     subscriptionEnabled: tier.purchaseEnabled && Boolean(tier.stripePriceId),
+    entitlements: describeEntitlements(tier.entitlements, t),
   }));
 
   const Home = theme.components.Home;

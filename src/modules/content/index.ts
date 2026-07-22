@@ -21,7 +21,7 @@ import {
 import { ApiError } from "@/lib/api";
 import { lockFileReferences } from "@/modules/file/references";
 import { isLocale, type Locale } from "@/modules/i18n";
-import { getActiveLevel } from "@/modules/membership";
+import { resolveMembershipAccess } from "@/modules/membership";
 import { setPostCategories, setPostTags } from "@/modules/taxonomy";
 
 import {
@@ -708,8 +708,8 @@ export async function canAccessPost(user: User | null, post: Post): Promise<bool
     .where(eq(membershipTiers.id, post.requiredTierId))
     .limit(1);
   if (!requiredTier) return false;
-  const activeLevel = await getActiveLevel(user.id);
-  return activeLevel >= requiredTier.level;
+  const access = await resolveMembershipAccess(user.id);
+  return access.level >= requiredTier.level;
 }
 
 export async function getRequiredTier(post: Post): Promise<MembershipTier | null> {

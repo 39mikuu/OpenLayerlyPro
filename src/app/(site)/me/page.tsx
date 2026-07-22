@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/modules/auth/session";
 import { getT } from "@/modules/i18n/server";
 import { getActiveMembership } from "@/modules/membership";
+import { describeEntitlements } from "@/modules/membership/entitlements";
 import { getManualReminderTiers } from "@/modules/membership/renewal-reminders";
 import { getNotificationPreference } from "@/modules/notifications";
 import { getCurrentStripeSubscription } from "@/modules/payment/subscriptions";
@@ -63,6 +64,7 @@ export default async function MePage() {
               tierName: active.tier.name,
               endsAt: active.membership.endsAt,
               renewalReminderEnabled: reminderTiers.has(active.tier.id),
+              entitlements: describeEntitlements(active.tier.entitlements, t),
             }
           : null,
         subscription: subscription

@@ -1,0 +1,1 @@
+ALTER TABLE "membership_tiers" ADD COLUMN "entitlements" jsonb DEFAULT '[]'::jsonb NOT NULL;

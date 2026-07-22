@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/modules/auth/session";
 import { buildListPageSeoCopy, buildSiteMetadata } from "@/modules/content/seo";
 import { getT } from "@/modules/i18n/server";
 import { getActiveMembership, listTiers } from "@/modules/membership";
+import { describeEntitlements } from "@/modules/membership/entitlements";
 import { getActiveTheme, type TierCardView } from "@/modules/theme";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +30,7 @@ export default async function TiersPage() {
     durationDays: tier.durationDays,
     purchaseEnabled: tier.purchaseEnabled,
     subscriptionEnabled: tier.purchaseEnabled && Boolean(tier.stripePriceId),
+    entitlements: describeEntitlements(tier.entitlements, t),
   }));
 
   const Tiers = theme.components.Tiers;
@@ -38,7 +40,11 @@ export default async function TiersPage() {
       view={{
         isLoggedIn: !!user,
         activeMembership: active
-          ? { tierName: active.tier.name, endsAt: active.membership.endsAt }
+          ? {
+              tierName: active.tier.name,
+              endsAt: active.membership.endsAt,
+              entitlements: describeEntitlements(active.tier.entitlements, t),
+            }
           : null,
         tiers: tierCards,
       }}

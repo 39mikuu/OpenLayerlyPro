@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/client";
+import { ENTITLEMENT_KEYS, type EntitlementKey } from "@/modules/membership/entitlement-keys";
 
 export type TierData = {
   id: string;
@@ -25,6 +26,7 @@ export type TierData = {
   purchaseEnabled: boolean;
   isActive: boolean;
   sortOrder: number;
+  entitlements: EntitlementKey[];
 };
 
 function TierEditor({
@@ -51,6 +53,8 @@ function TierEditor({
     purchaseEnabled: tier.purchaseEnabled ?? true,
     isActive: tier.isActive ?? true,
     sortOrder: tier.sortOrder ?? 0,
+    entitlements: tier.entitlements ?? [],
+    reason: "",
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +65,7 @@ function TierEditor({
     setError(null);
     try {
       await fn();
+      setForm((current) => ({ ...current, reason: "" }));
     } catch (err) {
       setError(err instanceof Error ? err.message : t("admin.common.operationFailed"));
     } finally {
@@ -166,11 +171,48 @@ function TierEditor({
           {t("admin.common.enabled")}
         </label>
       </div>
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium">{t("admin.tiers.entitlements")}</legend>
+        <p className="text-xs text-muted-foreground">{t("admin.tiers.entitlementsHint")}</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {ENTITLEMENT_KEYS.map((key) => (
+            <label key={key} className="rounded-md border p-3 text-sm">
+              <span className="flex items-center gap-2 font-medium">
+                <input
+                  type="checkbox"
+                  checked={form.entitlements.includes(key)}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      entitlements: event.target.checked
+                        ? [...form.entitlements, key]
+                        : form.entitlements.filter((value) => value !== key),
+                    })
+                  }
+                />
+                {t(`entitlements.${key}.label`)}
+              </span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                {t(`entitlements.${key}.description`)}
+              </span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      <div className="space-y-1">
+        <Label>{t("admin.tiers.auditReason")}</Label>
+        <Input
+          maxLength={500}
+          value={form.reason}
+          onChange={(event) => setForm({ ...form, reason: event.target.value })}
+        />
+        <p className="text-xs text-muted-foreground">{t("admin.tiers.auditReasonHint")}</p>
+      </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex gap-2">
         <Button
           size="sm"
-          disabled={loading || !form.name || !form.slug || !form.priceLabel}
+          disabled={loading || !form.name || !form.slug || !form.priceLabel || !form.reason.trim()}
           onClick={() =>
             run(() =>
               onSubmit({

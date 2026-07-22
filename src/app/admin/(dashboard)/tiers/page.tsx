@@ -2,6 +2,7 @@ import { TierManager } from "@/components/admin/tier-manager";
 import { getStripeConfig } from "@/modules/config";
 import { getT } from "@/modules/i18n/server";
 import { listTiers } from "@/modules/membership";
+import { resolveStoredEntitlements } from "@/modules/membership/entitlements";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,7 @@ export default async function AdminTiersPage() {
           purchaseEnabled: t.purchaseEnabled,
           isActive: t.isActive,
           sortOrder: t.sortOrder,
+          entitlements: resolveStoredEntitlements(t.entitlements),
         }))}
       />
     </div>

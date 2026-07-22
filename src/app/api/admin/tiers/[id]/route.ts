@@ -8,6 +8,8 @@ import { handleApiError, jsonError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
+import { updateTier } from "@/modules/membership";
+import { ENTITLEMENT_KEYS } from "@/modules/membership/entitlement-keys";
 
 export const runtime = "nodejs";
 
@@ -43,19 +45,23 @@ const patchSchema = z.object({
   purchaseEnabled: z.boolean().optional(),
   isActive: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
+  entitlements: z.array(z.string()).max(ENTITLEMENT_KEYS.length).optional(),
+  reason: z.string().trim().min(1).max(500),
 });
 
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    await requireAdmin();
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, patchSchema);
+    const admin = await requireAdmin();
+    const { reason, ...input } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      patchSchema,
+    );
     const { id } = await ctx.params;
-    const [tier] = await getDb()
-      .update(membershipTiers)
-      .set({ ...input, updatedAt: new Date() })
-      .where(eq(membershipTiers.id, id))
-      .returning();
-    if (!tier) return jsonError(404, "tierNotFound");
+    const tier = await updateTier(id, input, {
+      actor: { type: "admin", id: admin.id },
+      reason,
+    });
     return jsonOk(tier);
   } catch (err) {
     return handleApiError(err);

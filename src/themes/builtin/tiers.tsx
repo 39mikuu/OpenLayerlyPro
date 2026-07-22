@@ -47,6 +47,16 @@ export function Tiers({ view, t }: { view: TiersView; t: Translate }) {
                 <p className="whitespace-pre-wrap">
                   {tier.description || t("tiers.descriptionFallback")}
                 </p>
+                {tier.entitlements && tier.entitlements.length > 0 && (
+                  <ul className="mt-4 space-y-2">
+                    {tier.entitlements.map((entitlement) => (
+                      <li key={entitlement.key}>
+                        <span className="font-medium text-foreground">{entitlement.label}</span>
+                        <span className="block text-xs">{entitlement.description}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
               {tier.purchaseEnabled ? (
                 <div className="mt-5 space-y-2">
