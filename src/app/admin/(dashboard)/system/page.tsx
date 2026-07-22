@@ -13,6 +13,7 @@ const INTEGRATION_KEYS: Record<IntegrationId, string> = {
   stripe: "admin.system.stripe",
   turnstile: "Cloudflare Turnstile",
   translation: "admin.system.translation",
+  plausible: "admin.system.plausible",
   umami: "admin.system.umami",
   oauth_google: "admin.system.oauthGoogle",
   oauth_github: "admin.system.oauthGithub",

@@ -1000,6 +1000,7 @@ export const en: Messages = {
       storage: "File storage",
       stripe: "Stripe payments",
       translation: "AI translation",
+      plausible: "Plausible analytics",
       umami: "Umami analytics",
       oauthGoogle: "Google OAuth",
       oauthGithub: "GitHub OAuth",

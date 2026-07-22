@@ -40,6 +40,18 @@
 - `POST /api/admin/tiers` and `PUT /api/admin/tiers/{id}` now require a non-empty
   audit `reason` of at most 500 characters.
 
+### WP4 G5/G7 Debt Bundle
+
+- Upgraded GitHub Actions to their current Node 24-based supported majors and
+  pinned every workflow action, including the Pages deployment, to a full
+  immutable commit SHA.
+- Plausible now disables its default automatic pageview capture and uses a
+  nonce-authorized manual tracker for initial load and SPA history navigation.
+  It emits only for the shared public route boundary, deduplicates by
+  pathname plus query, and never queues private URLs.
+- Added Plausible to the admin Integration status registry with Umami-equivalent
+  absent, stored-disabled, stored-enabled, and invalid-stored states.
+
 ## v1.1.0 — 2026-07-17
 
 OpenLayerlyPro v1.1.0 was released from merge commit `3a80b34`. Its acceptance

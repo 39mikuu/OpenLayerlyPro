@@ -18,10 +18,10 @@
 
 ## 已排期
 
-- **G5（v1.2 M4 债务包）**：处理 CI actions 的 Node 20 deprecation 警告，升级相关 action 到当前主版本；仍须保持第三方 action 使用不可变 commit SHA，`pages.yml` 不再使用浮动 tag。体量：微。
-- **G7（v1.2 M4 债务包）**：补齐 Plausible SPA tracking parity，复用共享公开页路径谓词，关闭默认自动 pageview 并增加同等 nonce inline 手动追踪器；后台 Integration status registry 补齐 Plausible 同等状态语义。体量：小。
-
 ## 已完成
+
+- **G5（v1.2 M4 债务包）**：CI、restore drills 与 Pages workflows 的第三方 actions 已升级到当前 Node 24-based supported major，并全部使用带准确版本注释的完整 immutable commit SHA。
+- **G7（v1.2 M4 债务包）**：Plausible 已关闭默认自动 pageview，改由 nonce inline tracker 按共享公开路径边界处理 initial load 与 SPA history 导航；后台 Integration status registry 已补齐与 Umami 相同的三态及 invalid stored error 语义。
 
 - **G2（label-only 关闭）**：Translation `monthlyCharLimit` 已在后台三语文案和 `docs/architecture/config-center.md` 中明确标为「仅记录，不限制」。本地用量账本与强制预算不进入 v1.2；运维使用 provider 侧 hard limit/alert。
 

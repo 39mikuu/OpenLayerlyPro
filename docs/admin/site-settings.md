@@ -24,7 +24,8 @@ Legacy `custom_footer_html` remains read-only and is classified for migration.
 The original can be copied or downloaded and is not silently deleted. Complete
 the migration and browser observation before enforcing CSP. See
 [Branding and Custom Footer Code](./branding-and-custom-code.md). Use
-[Umami Analytics](../deployment/umami-analytics.md) for Umami-specific examples.
+[Plausible Analytics](../deployment/plausible-analytics.md) or
+[Umami Analytics](../deployment/umami-analytics.md) for provider-specific examples.
 
 ## Theme Configuration
 

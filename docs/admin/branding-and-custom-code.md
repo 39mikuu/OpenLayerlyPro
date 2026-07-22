@@ -69,8 +69,9 @@ again.
 For executable legacy code, copy/download the original, recreate supported
 verification and analytics behavior as structured records, validate it in
 Report-Only, then clear the legacy value and switch to enforce (or let `auto`
-enforce). See [Umami Analytics](../deployment/umami-analytics.md) for the
-supported Umami record shape and CSP derivation. Production CSP never adds
+enforce). See [Plausible Analytics](../deployment/plausible-analytics.md) and
+[Umami Analytics](../deployment/umami-analytics.md) for the supported record
+shapes, public-only SPA behavior, and CSP derivation. Production CSP never adds
 `script-src 'unsafe-inline'`,
 `'unsafe-eval'`, wildcard hosts, or a bare `https:` compatibility escape.
 
