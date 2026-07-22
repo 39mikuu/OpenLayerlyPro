@@ -34,6 +34,11 @@ fail() {
   exit 1
 }
 
+# Only wait_for_postgres_database is used here. Other shared helpers assume
+# restore.sh's single-project compose() signature, not this test wrapper's.
+# shellcheck source=scripts/restore-common.sh disable=SC1091
+. "$ROOT_DIR/scripts/restore-common.sh"
+
 v1_compose() {
   project=$1
   shift
@@ -42,6 +47,13 @@ v1_compose() {
     docker compose -p "$project" --env-file "$DRILL_ENV" \
     -f docker-compose.yml -f docker-compose.s7-e2e.yml -f "$OVERRIDE" \
     "$@"
+}
+
+restore_postgres_shell() {
+  script=$1
+  shift
+  S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" exec -T postgres \
+    sh -c "$script" restore-postgres "$@"
 }
 
 wait_ready() {
@@ -223,13 +235,7 @@ start_restore_stack() {
   fi
   S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" down -v >/dev/null 2>&1 || true
   S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" up -d postgres
-  attempt=0
-  until S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" exec -T postgres sh -c \
-    'exec pg_isready -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" >/dev/null'; do
-    attempt=$((attempt + 1))
-    [ "$attempt" -lt 60 ] || fail "restore postgres did not become ready"
-    sleep 2
-  done
+  wait_for_postgres_database restore_postgres_shell "restore postgres"
   if [ -n "$srs_extra" ]; then
     S7_E2E_APP_PORT=$RST_PORT v1_compose "$RST_PROJECT" -f "$srs_extra" create app >/dev/null
   else

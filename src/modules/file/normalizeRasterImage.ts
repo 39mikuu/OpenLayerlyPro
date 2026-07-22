@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import sharp from "sharp";
+import sharp, { type Metadata } from "sharp";
 
 import { getEnv } from "@/lib/env";
 
@@ -65,7 +65,7 @@ export async function normalizeRasterImage(
     throw new UnsupportedRasterImageError(prefix.includes("svg") ? "svg" : "html");
   }
 
-  let metadata: sharp.Metadata;
+  let metadata: Metadata;
   try {
     metadata = await sharp(input, {
       failOn: "error",
@@ -116,7 +116,7 @@ export async function normalizeRasterImage(
     throw new UnsafeRasterImageError("invalid");
   }
 
-  let outputMetadata: sharp.Metadata;
+  let outputMetadata: Metadata;
   try {
     outputMetadata = await sharp(outputBuffer, {
       failOn: "error",

@@ -26,6 +26,11 @@ fail() {
   exit 1
 }
 
+# Only wait_for_postgres_database is used here. Other shared helpers assume
+# restore.sh's single-project compose() signature, not this test wrapper's.
+# shellcheck source=scripts/restore-common.sh disable=SC1091
+. "$ROOT_DIR/scripts/restore-common.sh"
+
 compose() {
   project=$1
   shift
@@ -40,6 +45,13 @@ compose() {
     -f docker-compose.s7-e2e.yml \
     -f "$SECRET_OVERRIDE" \
     "$@"
+}
+
+restore_postgres_shell() {
+  script=$1
+  shift
+  S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T postgres \
+    sh -c "$script" restore-postgres "$@"
 }
 
 wait_ready() {
@@ -347,13 +359,7 @@ S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" up -d postgres
 S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" create app >/dev/null
 
 echo "Verifying malformed storage contracts cannot alter the official DB or key..."
-POSTGRES_ATTEMPT=0
-until S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T postgres sh -c \
-  'exec pg_isready -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" >/dev/null'; do
-  POSTGRES_ATTEMPT=$((POSTGRES_ATTEMPT + 1))
-  [ "$POSTGRES_ATTEMPT" -lt 60 ] || fail "restore PostgreSQL did not become ready"
-  sleep 2
-done
+wait_for_postgres_database restore_postgres_shell "restore PostgreSQL"
 S7_E2E_APP_PORT=$RESTORE_PORT compose "$RESTORE_PROJECT" exec -T postgres sh -c '
   exec psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" \
     -c "create table restore_contract_sentinel (value text not null); insert into restore_contract_sentinel values (chr(117)||chr(110)||chr(116)||chr(111)||chr(117)||chr(99)||chr(104)||chr(101)||chr(100));"
