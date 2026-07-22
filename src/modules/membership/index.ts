@@ -80,10 +80,6 @@ export async function getActiveMembership(
   return rows[0] ?? null;
 }
 
-export async function getActiveLevel(userId: string): Promise<number> {
-  return (await resolveMembershipAccess(userId)).level;
-}
-
 export type MembershipAccess = {
   active: ActiveMembership | null;
   level: number;

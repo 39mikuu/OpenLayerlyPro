@@ -65,6 +65,7 @@ function TierEditor({
     setError(null);
     try {
       await fn();
+      setForm((current) => ({ ...current, reason: "" }));
     } catch (err) {
       setError(err instanceof Error ? err.message : t("admin.common.operationFailed"));
     } finally {

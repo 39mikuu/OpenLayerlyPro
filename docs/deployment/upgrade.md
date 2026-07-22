@@ -57,6 +57,10 @@ administrator selects Core benefits. No data remediation or new secret is
 required; unknown entitlement keys are rejected by writes and fail closed on
 reads.
 
+Administrative tier create and update API calls must now include a non-empty
+`reason` field of at most 500 characters so the mutation and its audit record
+can commit atomically.
+
 Backups created by `v1.1.0` use manifest `FORMAT_VERSION=4` and record
 notification key sources, key IDs, file paths when file-backed, and SHA-256
 fingerprints. Restore validates notification key continuity before replacing the

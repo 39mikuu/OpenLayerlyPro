@@ -6,6 +6,7 @@ import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import { createTier, listTiers } from "@/modules/membership";
+import { ENTITLEMENT_KEYS } from "@/modules/membership/entitlement-keys";
 
 export const runtime = "nodejs";
 
@@ -49,7 +50,7 @@ const bodySchema = z.object({
   purchaseEnabled: z.boolean().default(true),
   isActive: z.boolean().default(true),
   sortOrder: z.number().int().default(0),
-  entitlements: z.array(z.string()).default([]),
+  entitlements: z.array(z.string()).max(ENTITLEMENT_KEYS.length).default([]),
   reason: z.string().trim().min(1).max(500),
 });
 

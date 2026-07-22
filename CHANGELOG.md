@@ -37,6 +37,8 @@
 - Content and file access continue to use tier level and `requiredTierId` through
   their shared Core membership boundary; the first entitlement bundle is
   informational and introduces no parallel grant source.
+- `POST /api/admin/tiers` and `PUT /api/admin/tiers/{id}` now require a non-empty
+  audit `reason` of at most 500 characters.
 
 ## v1.1.0 — 2026-07-17
 

@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
+import { ENTITLEMENT_KEYS } from "@/modules/membership/entitlement-keys";
+
+import { SUPPORTED_LOCALES } from "./config";
 import { en } from "./messages/en";
 import { ja } from "./messages/ja";
 import { zh } from "./messages/zh";
+import { translate } from "./translate";
 
 /**
  * en.ts/ja.ts already declare `: Messages` (the type derived from zh.ts's own
@@ -37,5 +41,16 @@ describe("i18n message key completeness (G4)", () => {
   ] as const)("%s has exactly the same message key set as zh", (locale, messages) => {
     const { missing, extra } = keyDiff(zhKeyPaths, collectKeyPaths(messages));
     expect({ locale, missing, extra }).toEqual({ locale, missing: [], extra: [] });
+  });
+
+  it("has label and description copy for every entitlement in every locale", () => {
+    for (const locale of SUPPORTED_LOCALES) {
+      for (const entitlement of ENTITLEMENT_KEYS) {
+        for (const field of ["label", "description"] as const) {
+          const key = `entitlements.${entitlement}.${field}`;
+          expect(translate(locale, key), `${locale} is missing ${key}`).not.toBe(key);
+        }
+      }
+    }
   });
 });
