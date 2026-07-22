@@ -6,6 +6,7 @@ export type IntegrationId =
   | "stripe"
   | "turnstile"
   | "translation"
+  | "plausible"
   | "umami"
   | "oauth_google"
   | "oauth_github"

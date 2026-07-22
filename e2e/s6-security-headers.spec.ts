@@ -97,6 +97,7 @@ test("nonce CSP protects public, admin, login, integration, media, and download 
   let integrationScriptRequested = false;
   let integrationConnectRequested = false;
   let integrationPixelRequested = false;
+  const plausiblePageviews: string[] = [];
   let turnstileScriptRequested = false;
   let s3ImageRequested = false;
   let s3VideoRequested = false;
@@ -124,6 +125,37 @@ test("nonce CSP protects public, admin, login, integration, media, and download 
     integrationConnectRequested = true;
     await route.fulfill({
       status: 204,
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: "",
+    });
+  });
+  await page.route("https://plausible-script.example/**", async (route) => {
+    await route.fulfill({
+      contentType: "application/javascript",
+      body: `
+        (function () {
+          var queued = (window.plausible && window.plausible.q) || [];
+          var endpoint = document.currentScript.dataset.api;
+          function plausible(name, payload) {
+            if (name === "pageview") {
+              fetch(endpoint, {
+                method: "POST",
+                body: JSON.stringify({ name: name, url: payload.url })
+              });
+            }
+          }
+          window.plausible = plausible;
+          queued.forEach(function (args) { plausible.apply(null, args); });
+        })();
+      `,
+    });
+  });
+  await page.route("https://plausible-events.example/api/event", async (route) => {
+    const payload = route.request().postDataJSON() as { name: string; url: string };
+    expect(payload.name).toBe("pageview");
+    plausiblePageviews.push(payload.url);
+    await route.fulfill({
+      status: 202,
       headers: { "Access-Control-Allow-Origin": "*" },
       body: "",
     });
@@ -270,6 +302,13 @@ test("nonce CSP protects public, admin, login, integration, media, and download 
           frame: [],
         },
       },
+      {
+        id: "plausible-browser-smoke",
+        provider: "plausible",
+        domain: "artist.example",
+        scriptUrl: "https://plausible-script.example/script.manual.js",
+        apiOrigin: "https://plausible-events.example",
+      },
     ],
   });
 
@@ -301,6 +340,24 @@ test("nonce CSP protects public, admin, login, integration, media, and download 
   await expect.poll(() => integrationConnectRequested).toBe(true);
   await expect.poll(() => integrationPixelRequested).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__olpIntegrationLoaded)).toBe(true);
+  await expect
+    .poll(() => plausiblePageviews)
+    .toEqual([`${process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001"}/`]);
+  await page.evaluate(() => history.pushState({}, "", "/me?private=secret"));
+  await page.evaluate(() => history.replaceState({}, "", "/checkout/order?token=private"));
+  await page.evaluate(() => history.pushState({}, "", "/posts?cursor=next"));
+  await page.evaluate(() => history.replaceState({}, "", "/posts?cursor=next"));
+  await page.evaluate(() => history.pushState({}, "", "/admin"));
+  await page.evaluate(() => history.back());
+  await expect
+    .poll(() => plausiblePageviews)
+    .toEqual([
+      `${process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001"}/`,
+      `${process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001"}/posts?cursor=next`,
+      `${process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001"}/posts?cursor=next`,
+    ]);
+  expect(plausiblePageviews.join("\n")).not.toMatch(/private|checkout|admin|token/);
+  await page.evaluate(() => history.replaceState({}, "", "/"));
   const memberBoundaryResponsePromise = page.waitForResponse(
     (response) =>
       response.request().resourceType() === "document" &&

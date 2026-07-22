@@ -136,48 +136,56 @@ const translationIntegration: Integration = {
   },
 };
 
-const umamiIntegration: Integration = {
-  id: "umami",
-  kind: "service",
-  async getStatus() {
-    const storedPublicIntegrations = await getSetting<unknown>(PUBLIC_INTEGRATIONS_KEY);
-    const hasStoredUmami = hasStoredPublicIntegrationProvider(storedPublicIntegrations, "umami");
-    if (!hasStoredUmami) {
+function publicAnalyticsIntegration(provider: "plausible" | "umami"): Integration {
+  return {
+    id: provider,
+    kind: "service",
+    async getStatus() {
+      const storedPublicIntegrations = await getSetting<unknown>(PUBLIC_INTEGRATIONS_KEY);
+      const hasStoredProvider = hasStoredPublicIntegrationProvider(
+        storedPublicIntegrations,
+        provider,
+      );
+      if (!hasStoredProvider) {
+        return {
+          id: provider,
+          kind: "service",
+          configured: false,
+          enabled: false,
+          source: "none",
+        };
+      }
+
+      const state = parsePublicSecuritySettings({
+        [PUBLIC_INTEGRATIONS_KEY]: storedPublicIntegrations ?? [],
+      });
+      const providerEntries = state.publicIntegrations.filter(
+        (integration) => integration.provider === provider,
+      );
+      if (providerEntries.length > 0) {
+        return {
+          id: provider,
+          kind: "service",
+          configured: true,
+          enabled: providerEntries.some((integration) => integration.enabled !== false),
+          source: "database",
+        };
+      }
+
       return {
-        id: "umami",
+        id: provider,
         kind: "service",
         configured: false,
         enabled: false,
-        source: "none",
-      };
-    }
-
-    const state = parsePublicSecuritySettings({
-      [PUBLIC_INTEGRATIONS_KEY]: storedPublicIntegrations ?? [],
-    });
-    const umamiEntries = state.publicIntegrations.filter(
-      (integration) => integration.provider === "umami",
-    );
-    if (umamiEntries.length > 0) {
-      return {
-        id: "umami",
-        kind: "service",
-        configured: true,
-        enabled: umamiEntries.some((integration) => integration.enabled !== false),
         source: "database",
+        error: true,
       };
-    }
+    },
+  };
+}
 
-    return {
-      id: "umami",
-      kind: "service",
-      configured: false,
-      enabled: false,
-      source: "database",
-      error: true,
-    };
-  },
-};
+const plausibleIntegration = publicAnalyticsIntegration("plausible");
+const umamiIntegration = publicAnalyticsIntegration("umami");
 
 const oauthGoogleIntegration: Integration = {
   id: "oauth_google",
@@ -230,6 +238,7 @@ export const integrations: Integration[] = [
   stripeIntegration,
   turnstileIntegration,
   translationIntegration,
+  plausibleIntegration,
   umamiIntegration,
   oauthGoogleIntegration,
   oauthGithubIntegration,

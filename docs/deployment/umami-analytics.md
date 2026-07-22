@@ -74,8 +74,15 @@ The render plan emits `data-host-url="https://analytics.example.com"`. The deriv
 
 ## Validation and Rollout
 
+- OpenLayerlyPro sets `data-auto-track="false"` and emits nonce-authorized
+  manual pageviews on initial load and History API navigation. The shared route
+  boundary permits only public documents, and deduplication uses
+  `pathname + search`; private account, checkout, admin, and login URLs are not
+  queued or sent.
 - `websiteId` must be a UUID.
 - `scriptUrl` must be an exact HTTPS URL; credentials, HTTP, protocol-relative URLs, wildcards, and bare schemes are rejected.
 - `apiOrigin`, when present, must be an exact HTTPS origin.
+- Configure at most one enabled Umami record. Disabled records may be retained,
+  but multiple enabled records are rejected to avoid duplicate SPA pageviews.
 - Set `enabled` to `false` to keep the configuration saved while rendering no script and adding no CSP source.
 - Validate in `SECURITY_CSP_MODE=report-only` or `auto` before enforcing CSP, then confirm the browser reports no blocked Umami script or event requests.

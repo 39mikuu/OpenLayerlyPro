@@ -61,6 +61,20 @@ Administrative tier create and update API calls must now include a non-empty
 `reason` field of at most 500 characters so the mutation and its audit record
 can commit atomically.
 
+Plausible pageviews are manual and public-route-only in v1.2. Existing v1.1
+records using the former official `https://plausible.io/js/script.js` default
+are compatibility-normalized to `https://plausible.io/js/script.manual.js` on
+read and persisted on the next admin save. For custom/self-hosted Plausible
+records, choose the allow-listed `script.manual.js` or `script.hash.manual.js`
+build before upgrading. Other extension combinations—including
+`outbound-links`, `file-downloads`, `tagged-events`, and `form-submissions`—are
+rejected because they can report the current URL outside the public route
+boundary. New upstream variants remain rejected until explicitly reviewed.
+If any stored integration is invalid, the admin editor preserves the original
+JSON and blocks saves until it is corrected; unrelated site edits cannot replace
+the stored array with an empty fallback. Export the integration JSON before an
+upgrade whenever a self-hosted Plausible build needs manual remediation.
+
 Backups created by `v1.1.0` use manifest `FORMAT_VERSION=4` and record
 notification key sources, key IDs, file paths when file-backed, and SHA-256
 fingerprints. Restore validates notification key continuity before replacing the

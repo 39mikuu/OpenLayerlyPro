@@ -1,3 +1,5 @@
+import vm from "node:vm";
+
 import { describe, expect, it } from "vitest";
 
 import { isPublicIntegrationDocument } from "./public-integration-paths";
@@ -152,7 +154,7 @@ describe("public integration registry", () => {
         id: "analytics",
         provider: "plausible",
         domain: "artist.example",
-        scriptUrl: "https://stats.example/js/script.js",
+        scriptUrl: "https://stats.example/js/script.manual.js",
         apiOrigin: "https://stats.example",
       },
     ]);
@@ -162,13 +164,199 @@ describe("public integration registry", () => {
       {
         id: "analytics",
         placement: "head",
-        src: "https://stats.example/js/script.js",
+        src: "https://stats.example/js/script.manual.js",
         defer: true,
         data: { domain: "artist.example", api: "https://stats.example/api/event" },
+      },
+      {
+        id: "analytics-manual-pageview",
+        placement: "head",
+        inlineCode: expect.any(String),
+        data: {},
       },
     ]);
     expect(runtime.sources.script).toEqual(["https://stats.example"]);
     expect(runtime.sources.connect).toEqual(["https://stats.example"]);
+  });
+
+  it("validates the omitted Plausible script URL through the manual default", () => {
+    const integrations = publicIntegrationsSchema.parse([
+      { id: "default-plausible", provider: "plausible", domain: "artist.example" },
+    ]);
+
+    expect(integrations[0]).toMatchObject({
+      provider: "plausible",
+      scriptUrl: "https://plausible.io/js/script.manual.js",
+    });
+  });
+
+  it("disables Plausible automatic pageviews and executes public-only SPA tracking", () => {
+    const integrations = publicIntegrationsSchema.parse([
+      {
+        id: "analytics",
+        provider: "plausible",
+        domain: "artist.example",
+        scriptUrl: "https://stats.example/js/script.manual.js",
+        apiOrigin: "https://events.example",
+      },
+    ]);
+    const runtime = buildIntegrationRuntime(integrations);
+    const inline = runtime.plans[1]?.inlineCode ?? "";
+    const listeners = new Map<string, () => void>();
+    const location = { origin: "https://artist.example", pathname: "/posts", search: "" };
+    const history = {
+      pushState() {},
+      replaceState() {},
+    };
+    const window = {
+      addEventListener(type: string, listener: () => void) {
+        listeners.set(type, listener);
+      },
+    } as {
+      addEventListener(type: string, listener: () => void): void;
+      plausible?: ((...args: unknown[]) => void) & { q?: IArguments[] };
+    };
+
+    vm.runInNewContext(inline, { window, location, history });
+    const events: unknown[][] = [];
+    window.plausible = (...args: unknown[]) => events.push(args);
+
+    listeners.get("load")?.();
+    expect(events[0]).toEqual(["pageview", { url: "https://artist.example/posts" }]);
+
+    location.search = "?cursor=next";
+    history.pushState();
+    history.replaceState();
+    expect(events[1]).toEqual(["pageview", { url: "https://artist.example/posts?cursor=next" }]);
+    expect(events).toHaveLength(2);
+
+    location.pathname = "/me";
+    location.search = "?returnTo=%2Fcheckout%2Fsecret";
+    history.pushState();
+    listeners.get("popstate")?.();
+    expect(events).toHaveLength(2);
+
+    location.pathname = "/posts/article";
+    location.search = "";
+    listeners.get("popstate")?.();
+    expect(events[2]).toEqual(["pageview", { url: "https://artist.example/posts/article" }]);
+    expect(JSON.stringify(events)).not.toContain("checkout");
+    expect(runtime.sources.connect).toEqual(["https://events.example"]);
+  });
+
+  it("rejects Plausible scripts that can install automatic or private-URL tracking", () => {
+    for (const scriptUrl of [
+      "https://stats.example/js/script.js",
+      "https://plausible.io/js/script.manual.outbound-links.js",
+      "https://plausible.io/js/script.file-downloads.hash.manual.js",
+      "https://plausible.io/js/script.tagged-events.manual.js",
+      "https://plausible.io/js/script.manual.form-submissions.js",
+      "https://plausible.io/js/script.manual.revenue.js",
+      "https://plausible.io/js/script.manual.pageview-props.js",
+      "not a URL",
+    ]) {
+      expect(
+        publicIntegrationsSchema.safeParse([
+          {
+            id: "unsafe-tracker",
+            provider: "plausible",
+            domain: "artist.example",
+            scriptUrl,
+          },
+        ]).success,
+      ).toBe(false);
+    }
+  });
+
+  it("upgrades the v1.1 Plausible default without invalidating sibling integrations", () => {
+    const state = parsePublicSecuritySettings({
+      public_integrations: [
+        {
+          id: "legacy-plausible",
+          provider: "plausible",
+          domain: "artist.example",
+          scriptUrl: "https://plausible.io/js/script.js",
+          apiOrigin: "https://plausible.io",
+        },
+        {
+          id: "umami",
+          provider: "umami",
+          websiteId: "11111111-1111-4111-8111-111111111111",
+        },
+      ],
+    });
+
+    expect(state.configurationErrors).toEqual([]);
+    expect(state.publicIntegrations).toHaveLength(2);
+    expect(state.publicIntegrations[0]).toMatchObject({
+      provider: "plausible",
+      scriptUrl: "https://plausible.io/js/script.manual.js",
+    });
+    expect(buildIntegrationRuntime(state.publicIntegrations).plans).toHaveLength(4);
+  });
+
+  it("accepts safe Plausible builds with a manual filename segment", () => {
+    for (const scriptUrl of [
+      "https://plausible.io/js/script.manual.js",
+      "https://plausible.io/js/script.hash.manual.js",
+      "https://plausible.io/js/SCRIPT.MANUAL.JS",
+    ]) {
+      expect(
+        publicIntegrationsSchema.safeParse([
+          { id: "manual-extensions", provider: "plausible", domain: "artist.example", scriptUrl },
+        ]).success,
+      ).toBe(true);
+    }
+  });
+
+  it("reserves generated manual pageview plan ids", () => {
+    expect(
+      publicIntegrationsSchema.safeParse([
+        {
+          id: "analytics-manual-pageview",
+          provider: "custom",
+          src: "https://scripts.example/custom.js",
+        },
+      ]).success,
+    ).toBe(false);
+  });
+
+  it("rejects duplicate analytics providers to avoid duplicate SPA pageviews", () => {
+    expect(
+      publicIntegrationsSchema.safeParse([
+        { id: "plausible-one", provider: "plausible", domain: "one.example" },
+        { id: "plausible-two", provider: "plausible", domain: "two.example" },
+      ]).success,
+    ).toBe(false);
+    expect(
+      publicIntegrationsSchema.safeParse([
+        {
+          id: "umami-one",
+          provider: "umami",
+          websiteId: "11111111-1111-4111-8111-111111111111",
+        },
+        {
+          id: "umami-two",
+          provider: "umami",
+          websiteId: "22222222-2222-4222-8222-222222222222",
+        },
+      ]).success,
+    ).toBe(false);
+    expect(
+      publicIntegrationsSchema.safeParse([
+        {
+          id: "disabled-umami",
+          provider: "umami",
+          enabled: false,
+          websiteId: "11111111-1111-4111-8111-111111111111",
+        },
+        {
+          id: "enabled-umami",
+          provider: "umami",
+          websiteId: "22222222-2222-4222-8222-222222222222",
+        },
+      ]).success,
+    ).toBe(true);
   });
 
   it("derives Umami cloud rendering and CSP origins from one parsed record", () => {

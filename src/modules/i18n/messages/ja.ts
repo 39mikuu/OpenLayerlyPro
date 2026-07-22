@@ -988,6 +988,7 @@ export const ja: Messages = {
       storage: "ファイルストレージ",
       stripe: "Stripe 決済",
       translation: "AI 翻訳",
+      plausible: "Plausible アナリティクス",
       umami: "Umami アナリティクス",
       oauthGoogle: "Google OAuth",
       oauthGithub: "GitHub OAuth",

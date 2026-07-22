@@ -181,7 +181,7 @@ describe("integration registry", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns nine integrations in stable order", async () => {
+  it("returns ten integrations in stable order", async () => {
     const { getIntegrationStatuses } = await import("./registry");
     const statuses = await getIntegrationStatuses();
 
@@ -191,6 +191,7 @@ describe("integration registry", () => {
       "stripe",
       "turnstile",
       "translation",
+      "plausible",
       "umami",
       "oauth_google",
       "oauth_github",
@@ -293,7 +294,7 @@ describe("integration registry", () => {
   it("reports Tunnel token presence as environment deployment status", async () => {
     mockEnv(" tunnel-token ");
     const { getIntegrationStatuses } = await import("./registry");
-    let tunnel = (await getIntegrationStatuses())[8];
+    let tunnel = (await getIntegrationStatuses()).find((status) => status.id === "tunnel")!;
     expect(tunnel).toEqual({
       id: "tunnel",
       kind: "deployment",
@@ -303,7 +304,7 @@ describe("integration registry", () => {
     });
 
     mockEnv(" ");
-    tunnel = (await getIntegrationStatuses())[8];
+    tunnel = (await getIntegrationStatuses()).find((status) => status.id === "tunnel")!;
     expect(tunnel).toEqual({
       id: "tunnel",
       kind: "deployment",
@@ -337,7 +338,7 @@ describe("integration registry", () => {
   it("reports missing Umami public integrations as unconfigured", async () => {
     mockPublicIntegrations([]);
     const { getIntegrationStatuses } = await import("./registry");
-    const umami = (await getIntegrationStatuses())[5];
+    const umami = (await getIntegrationStatuses()).find((status) => status.id === "umami");
 
     expect(umami).toEqual({
       id: "umami",
@@ -363,7 +364,7 @@ describe("integration registry", () => {
       },
     ]);
     const { getIntegrationStatuses } = await import("./registry");
-    let umami = (await getIntegrationStatuses())[5];
+    let umami = (await getIntegrationStatuses()).find((status) => status.id === "umami")!;
     expect(umami).toEqual({
       id: "umami",
       kind: "service",
@@ -380,7 +381,7 @@ describe("integration registry", () => {
         websiteId: "11111111-1111-4111-8111-111111111111",
       },
     ]);
-    umami = (await getIntegrationStatuses())[5];
+    umami = (await getIntegrationStatuses()).find((status) => status.id === "umami")!;
     expect(umami).toEqual({
       id: "umami",
       kind: "service",
@@ -393,10 +394,53 @@ describe("integration registry", () => {
   it("reports invalid stored Umami public integrations as a database read error", async () => {
     mockPublicIntegrations([{ id: "analytics", provider: "umami" }]);
     const { getIntegrationStatuses } = await import("./registry");
-    const umami = (await getIntegrationStatuses())[5];
+    const umami = (await getIntegrationStatuses()).find((status) => status.id === "umami");
 
     expect(umami).toEqual({
       id: "umami",
+      kind: "service",
+      configured: false,
+      enabled: false,
+      source: "database",
+      error: true,
+    });
+  });
+
+  it("reports Plausible with the same stored three-state and invalid-record semantics", async () => {
+    const { getIntegrationStatuses } = await import("./registry");
+
+    mockPublicIntegrations([]);
+    expect((await getIntegrationStatuses()).find((status) => status.id === "plausible")).toEqual({
+      id: "plausible",
+      kind: "service",
+      configured: false,
+      enabled: false,
+      source: "none",
+    });
+
+    mockPublicIntegrations([
+      { id: "analytics", provider: "plausible", enabled: false, domain: "artist.example" },
+    ]);
+    expect((await getIntegrationStatuses()).find((status) => status.id === "plausible")).toEqual({
+      id: "plausible",
+      kind: "service",
+      configured: true,
+      enabled: false,
+      source: "database",
+    });
+
+    mockPublicIntegrations([{ id: "analytics", provider: "plausible", domain: "artist.example" }]);
+    expect((await getIntegrationStatuses()).find((status) => status.id === "plausible")).toEqual({
+      id: "plausible",
+      kind: "service",
+      configured: true,
+      enabled: true,
+      source: "database",
+    });
+
+    mockPublicIntegrations([{ id: "analytics", provider: "plausible", domain: "private value" }]);
+    expect((await getIntegrationStatuses()).find((status) => status.id === "plausible")).toEqual({
+      id: "plausible",
       kind: "service",
       configured: false,
       enabled: false,
@@ -410,7 +454,7 @@ describe("integration registry", () => {
     const { getIntegrationStatuses } = await import("./registry");
     const statuses = await getIntegrationStatuses();
 
-    expect(statuses).toHaveLength(9);
+    expect(statuses).toHaveLength(10);
     expect(statuses[0].error).toBeUndefined();
     expect(statuses[3]).toEqual({
       id: "turnstile",
@@ -420,7 +464,7 @@ describe("integration registry", () => {
       source: "none",
       error: true,
     });
-    expect(statuses[8].id).toBe("tunnel");
+    expect(statuses[9].id).toBe("tunnel");
   });
 
   it("reports Stripe configuration separately from its enabled state and tests connectivity", async () => {

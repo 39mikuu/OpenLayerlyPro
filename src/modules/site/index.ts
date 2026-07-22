@@ -9,8 +9,8 @@ import { isSiteFileSettingKey, lockSiteFileSettingReferences } from "@/modules/f
 import {
   type LegacyFooterStatus,
   parsePublicSecuritySettings,
+  PUBLIC_INTEGRATIONS_KEY,
   PUBLIC_SECURITY_SETTING_KEYS,
-  type PublicIntegration,
   type SiteVerification,
 } from "@/modules/site/public-security";
 import { recordEvent } from "@/modules/system/events";
@@ -42,7 +42,7 @@ export type AdminSiteInfo = PublicSiteInfo & {
   legacyFooterHtml: string;
   legacyFooterStatus: LegacyFooterStatus;
   siteVerification: SiteVerification;
-  publicIntegrations: PublicIntegration[];
+  publicIntegrations: unknown;
   cspRevision: string;
   cspMode: "auto" | "report-only" | "enforce";
   effectiveCspMode: "report-only" | "enforce";
@@ -183,7 +183,15 @@ export async function readAdminSiteInfo(): Promise<AdminSiteInfo> {
     legacyFooterHtml: publicSecurity.legacyFooterHtml,
     legacyFooterStatus: publicSecurity.legacyFooterStatus,
     siteVerification: publicSecurity.siteVerification,
-    publicIntegrations: publicSecurity.publicIntegrations,
+    // Preserve invalid stored JSON in the editor. Showing the parsed fallback
+    // (`[]`) would make an unrelated site save silently erase every record.
+    // Valid values use the parsed form so compatibility normalization (for
+    // example the v1.1 Plausible default) is persisted by the next save.
+    publicIntegrations: publicSecurity.configurationErrors.some((error) =>
+      error.startsWith(`${PUBLIC_INTEGRATIONS_KEY}:`),
+    )
+      ? (settings[PUBLIC_INTEGRATIONS_KEY] ?? [])
+      : publicSecurity.publicIntegrations,
     cspRevision: publicSecurity.revision,
     cspMode: publicSecurity.configuredMode,
     effectiveCspMode: publicSecurity.effectiveMode,

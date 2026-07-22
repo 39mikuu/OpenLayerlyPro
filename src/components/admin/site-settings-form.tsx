@@ -10,11 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { api, uploadFile } from "@/lib/client";
-import type {
-  LegacyFooterStatus,
-  PublicIntegration,
-  SiteVerification,
-} from "@/modules/site/public-security";
+import type { LegacyFooterStatus, SiteVerification } from "@/modules/site/public-security";
 
 type SocialLink = { name: string; url: string; enabled?: boolean };
 
@@ -32,7 +28,7 @@ export function SiteSettingsForm({
     legacyFooterHtml: string;
     legacyFooterStatus: LegacyFooterStatus;
     siteVerification: SiteVerification;
-    publicIntegrations: PublicIntegration[];
+    publicIntegrations: unknown;
     cspRevision: string;
     cspMode: "auto" | "report-only" | "enforce";
     effectiveCspMode: "report-only" | "enforce";

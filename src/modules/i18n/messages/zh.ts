@@ -947,6 +947,7 @@ export const zh = {
       storage: "文件存储",
       stripe: "Stripe 支付",
       translation: "AI 翻译",
+      plausible: "Plausible 统计",
       umami: "Umami 统计",
       oauthGoogle: "Google OAuth",
       oauthGithub: "GitHub OAuth",

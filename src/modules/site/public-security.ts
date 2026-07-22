@@ -51,6 +51,29 @@ const exactHttpsUrlSchema = z
   .min(1)
   .max(2048)
   .refine((value) => exactHttpsOriginFromUrl(value) !== null, "HTTPS URL required");
+const LEGACY_PLAUSIBLE_DEFAULT_SCRIPT_URL = "https://plausible.io/js/script.js";
+const PLAUSIBLE_DEFAULT_MANUAL_SCRIPT_URL = "https://plausible.io/js/script.manual.js";
+const PLAUSIBLE_SAFE_MANUAL_SCRIPT_FILENAMES = new Set([
+  "script.manual.js",
+  "script.hash.manual.js",
+]);
+
+function normalizePlausibleScriptUrl(value: unknown): unknown {
+  return value === LEGACY_PLAUSIBLE_DEFAULT_SCRIPT_URL
+    ? PLAUSIBLE_DEFAULT_MANUAL_SCRIPT_URL
+    : value;
+}
+
+const plausibleManualScriptUrlSchema = z
+  .preprocess(normalizePlausibleScriptUrl, exactHttpsUrlSchema)
+  .refine((value) => {
+    try {
+      const filename = new URL(value).pathname.split("/").pop() ?? "";
+      return PLAUSIBLE_SAFE_MANUAL_SCRIPT_FILENAMES.has(filename.toLowerCase());
+    } catch {
+      return false;
+    }
+  }, "Plausible manual tracker URL required");
 const exactOriginSchema = z
   .string()
   .min(1)
@@ -109,7 +132,7 @@ const plausibleIntegrationSchema = z
       .regex(
         /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/,
       ),
-    scriptUrl: exactHttpsUrlSchema.default("https://plausible.io/js/script.js"),
+    scriptUrl: plausibleManualScriptUrlSchema.default(PLAUSIBLE_DEFAULT_MANUAL_SCRIPT_URL),
     apiOrigin: exactOriginSchema.default("https://plausible.io"),
   })
   .strict();
@@ -191,6 +214,14 @@ function buildUmamiPublicPageTrackerInlineCode(): string {
   return `(function(){var e=${exact};var r=${prefixes};var l="";function m(p){if(e[p])return true;for(var i=0;i<r.length;i++){if(p.indexOf(r[i])===0)return true;}return false;}function t(){var p=location.pathname;var u=p+location.search;if(!m(p)){l="";return;}if(u===l)return;if(!window.umami||typeof window.umami.track!=="function")return;l=u;window.umami.track(function(d){return Object.assign({},d,{url:location.pathname+location.search,title:document.title,referrer:document.referrer});});}var h=history;var p=h.pushState;var q=h.replaceState;if(p)h.pushState=function(){var v=p.apply(this,arguments);t();return v;};if(q)h.replaceState=function(){var v=q.apply(this,arguments);t();return v;};window.addEventListener("popstate",t);window.addEventListener("load",t);})();`;
 }
 
+function buildPlausiblePublicPageTrackerInlineCode(): string {
+  const exact = jsonForInlineScript(
+    Object.fromEntries(PUBLIC_INTEGRATION_EXACT_PATHS.map((path) => [path, 1])),
+  );
+  const prefixes = jsonForInlineScript([...PUBLIC_INTEGRATION_PATH_PREFIXES]);
+  return `(function(){var e=${exact};var r=${prefixes};var l="";var p=window.plausible=window.plausible||function(){(p.q=p.q||[]).push(arguments);};function m(v){if(e[v])return true;for(var i=0;i<r.length;i++){if(v.indexOf(r[i])===0)return true;}return false;}function t(){var v=location.pathname;var u=v+location.search;if(!m(v)){l="";return;}if(u===l)return;l=u;window.plausible("pageview",{url:location.origin+u});}var h=history;var a=h.pushState;var b=h.replaceState;if(a)h.pushState=function(){var v=a.apply(this,arguments);t();return v;};if(b)h.replaceState=function(){var v=b.apply(this,arguments);t();return v;};window.addEventListener("popstate",t);window.addEventListener("load",t);})();`;
+}
+
 const PUBLIC_INTEGRATION_ADAPTERS = {
   plausible: {
     schema: plausibleIntegrationSchema,
@@ -198,14 +229,23 @@ const PUBLIC_INTEGRATION_ADAPTERS = {
       const scriptOrigin = exactHttpsOriginFromUrl(integration.scriptUrl);
       const apiOrigin = parseExactHttpsOrigin(integration.apiOrigin);
       if (!scriptOrigin || !apiOrigin) return null;
+      const apiEndpoint = `${apiOrigin}/api/event`;
       return {
-        plan: {
-          id: integration.id,
-          placement: "head",
-          src: integration.scriptUrl,
-          defer: true,
-          data: { domain: integration.domain, api: `${apiOrigin}/api/event` },
-        },
+        plans: [
+          {
+            id: integration.id,
+            placement: "head",
+            src: integration.scriptUrl,
+            defer: true,
+            data: { domain: integration.domain, api: apiEndpoint },
+          },
+          {
+            id: `${integration.id}-manual-pageview`,
+            placement: "head",
+            inlineCode: buildPlausiblePublicPageTrackerInlineCode(),
+            data: {},
+          },
+        ],
         sources: {
           script: [scriptOrigin],
           image: [],
@@ -314,7 +354,15 @@ export const publicIntegrationsSchema = z
   .max(20)
   .superRefine((items, ctx) => {
     const ids = new Set<string>();
+    const enabledAnalyticsProviders = new Set<"plausible" | "umami">();
     for (const [index, item] of items.entries()) {
+      if (item.id.endsWith("-manual-pageview")) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Integration ids must not end with -manual-pageview",
+          path: [index, "id"],
+        });
+      }
       if (ids.has(item.id)) {
         ctx.addIssue({
           code: "custom",
@@ -323,6 +371,16 @@ export const publicIntegrationsSchema = z
         });
       }
       ids.add(item.id);
+      if (item.enabled !== false && (item.provider === "plausible" || item.provider === "umami")) {
+        if (enabledAnalyticsProviders.has(item.provider)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `Only one enabled ${item.provider} integration is supported`,
+            path: [index, "provider"],
+          });
+        }
+        enabledAnalyticsProviders.add(item.provider);
+      }
     }
   });
 
