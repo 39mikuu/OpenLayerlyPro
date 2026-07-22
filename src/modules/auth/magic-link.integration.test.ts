@@ -1,5 +1,6 @@
-import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { eq, sql } from "drizzle-orm";
+import postgres from "postgres";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getSmtpConfig: vi.fn(),
@@ -25,7 +26,8 @@ vi.mock("@/modules/security/magic-link-key", () => {
 });
 
 import { getDb } from "@/db";
-import { magicLinkTokens, tasks, users } from "@/db/schema";
+import { magicLinkTokens, sessions, tasks, users } from "@/db/schema";
+import { getEnv } from "@/lib/env";
 import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { getMagicLinkKeys } from "@/modules/security/magic-link-key";
@@ -66,8 +68,60 @@ async function insertToken(input: {
   return { token: generated.token, id: row.id };
 }
 
+async function removeSessionInsertFailure(): Promise<void> {
+  await getDb().execute(
+    sql`drop trigger if exists olp_test_fail_magic_link_session_insert on sessions`,
+  );
+  await getDb().execute(sql`drop function if exists olp_test_fail_magic_link_session_insert()`);
+}
+
+async function installSessionInsertFailure(): Promise<void> {
+  await removeSessionInsertFailure();
+  await getDb().execute(sql`
+    create function olp_test_fail_magic_link_session_insert()
+    returns trigger
+    language plpgsql
+    as $$
+    begin
+      raise exception 'test magic link session insert failure';
+    end
+    $$
+  `);
+  await getDb().execute(sql`
+    create trigger olp_test_fail_magic_link_session_insert
+    before insert on sessions
+    for each row execute function olp_test_fail_magic_link_session_insert()
+  `);
+}
+
+async function removeSessionHandoffConstraint(): Promise<void> {
+  await getDb().execute(
+    sql`alter table sessions drop constraint if exists olp_test_reject_handoff_holder`,
+  );
+}
+
 describeWithDatabase("WP1 magic link integration", () => {
   const db = getDb();
+  const raw = postgres(getEnv().DATABASE_URL, { max: 4, onnotice: () => {} });
+
+  async function waitForBlockedQuery(queryPattern: string, blockerPid: number): Promise<number> {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const [activity] = await raw<{ pid: number }[]>`
+        select pid::integer as pid
+          from pg_stat_activity
+         where datname = current_database()
+           and wait_event_type = 'Lock'
+           and query ilike ${queryPattern}
+           and ${blockerPid} = any(pg_blocking_pids(pid))
+         order by query_start desc
+         limit 1
+      `;
+      if (activity) return activity.pid;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`no backend waited for blocker ${blockerPid}: ${queryPattern}`);
+  }
 
   beforeEach(async () => {
     __resetRateLimitForTests();
@@ -80,7 +134,15 @@ describeWithDatabase("WP1 magic link integration", () => {
       from: "noreply@example.test",
     });
     mocks.sendMagicLinkEmail.mockResolvedValue(undefined);
+    await removeSessionInsertFailure();
+    await removeSessionHandoffConstraint();
     await resetDatabase(db);
+  });
+
+  afterAll(async () => {
+    await removeSessionInsertFailure();
+    await removeSessionHandoffConstraint();
+    await raw.end({ timeout: 5 });
   });
 
   it("stores only a keyed hash and an encrypted task payload, never the raw token", async () => {
@@ -212,14 +274,24 @@ describeWithDatabase("WP1 magic link integration", () => {
     const [beforeConsume] = await db.select().from(magicLinkTokens);
     expect(beforeConsume.consumedAt).toBeNull();
 
-    const consumption = await consumeMagicLinkToken(token, { locale: "ja" });
+    const consumption = await consumeMagicLinkToken(token, {
+      locale: "ja",
+      ip: "198.51.100.25",
+      userAgent: "magic-link-integration-test",
+    });
     expect(consumption.status).toBe("consumed");
     if (consumption.status !== "consumed") throw new Error("unreachable");
     expect(consumption.user.email).toBe("fan@example.com");
     expect(consumption.redirectPath).toBeNull();
+    expect(consumption.session.token).toBeTruthy();
 
     const [member] = await db.select().from(users).where(eq(users.email, "fan@example.com"));
     expect(member.role).toBe("member");
+    const [session] = await db.select().from(sessions).where(eq(sessions.userId, member.id));
+    expect(session).toMatchObject({
+      ip: "198.51.100.25",
+      userAgent: "magic-link-integration-test",
+    });
 
     // Replay after consumption fails closed, and the row stays consumed once.
     await expect(consumeMagicLinkToken(token)).resolves.toEqual({ status: "replayed" });
@@ -239,10 +311,201 @@ describeWithDatabase("WP1 magic link integration", () => {
 
     expect(outcomes.filter((outcome) => outcome.status === "consumed")).toHaveLength(1);
     expect(outcomes.filter((outcome) => outcome.status === "replayed")).toHaveLength(1);
+    const raceUsers = await db.select().from(users).where(eq(users.email, "race@example.com"));
+    expect(raceUsers).toHaveLength(1);
     await expect(
-      db.select().from(users).where(eq(users.email, "race@example.com")),
+      db.select().from(sessions).where(eq(sessions.userId, raceUsers[0].id)),
     ).resolves.toHaveLength(1);
   });
+
+  it("rolls back token consumption and new-user creation when session insertion fails", async () => {
+    const { token, id } = await insertToken({
+      key: getMagicLinkKeys().current,
+      email: "session-failure-new@example.com",
+    });
+
+    await installSessionInsertFailure();
+    try {
+      await expect(consumeMagicLinkToken(token, { locale: "ja" })).rejects.toMatchObject({
+        cause: {
+          code: "P0001",
+          message: "test magic link session insert failure",
+        },
+      });
+    } finally {
+      await removeSessionInsertFailure();
+    }
+
+    const [afterFailure] = await db
+      .select()
+      .from(magicLinkTokens)
+      .where(eq(magicLinkTokens.id, id));
+    expect(afterFailure.consumedAt).toBeNull();
+    await expect(
+      db.select().from(users).where(eq(users.email, "session-failure-new@example.com")),
+    ).resolves.toHaveLength(0);
+    await expect(db.select().from(sessions)).resolves.toHaveLength(0);
+
+    await expect(consumeMagicLinkToken(token, { locale: "ja" })).resolves.toMatchObject({
+      status: "consumed",
+    });
+    const createdUsers = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, "session-failure-new@example.com"));
+    expect(createdUsers).toHaveLength(1);
+    expect(createdUsers[0].locale).toBe("ja");
+    expect(createdUsers[0].lastLoginAt).not.toBeNull();
+    await expect(
+      db.select().from(sessions).where(eq(sessions.userId, createdUsers[0].id)),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("rolls back existing-user login metadata when session insertion fails", async () => {
+    const originalLastLoginAt = new Date("2025-01-02T03:04:05.000Z");
+    const [member] = await db
+      .insert(users)
+      .values({
+        email: "session-failure-existing@example.com",
+        role: "member",
+        locale: "en",
+        lastLoginAt: originalLastLoginAt,
+      })
+      .returning();
+    const { token, id } = await insertToken({
+      key: getMagicLinkKeys().current,
+      email: member.email,
+    });
+
+    await installSessionInsertFailure();
+    try {
+      await expect(consumeMagicLinkToken(token, { locale: "ja" })).rejects.toMatchObject({
+        cause: {
+          code: "P0001",
+          message: "test magic link session insert failure",
+        },
+      });
+    } finally {
+      await removeSessionInsertFailure();
+    }
+
+    const [afterFailure] = await db.select().from(users).where(eq(users.id, member.id));
+    expect(afterFailure.locale).toBe("en");
+    expect(afterFailure.lastLoginAt).toEqual(originalLastLoginAt);
+    const [tokenAfterFailure] = await db
+      .select()
+      .from(magicLinkTokens)
+      .where(eq(magicLinkTokens.id, id));
+    expect(tokenAfterFailure.consumedAt).toBeNull();
+    await expect(
+      db.select().from(sessions).where(eq(sessions.userId, member.id)),
+    ).resolves.toHaveLength(0);
+
+    await expect(consumeMagicLinkToken(token, { locale: "ja" })).resolves.toMatchObject({
+      status: "consumed",
+    });
+    const [afterRetry] = await db.select().from(users).where(eq(users.id, member.id));
+    expect(afterRetry.locale).toBe("ja");
+    expect(afterRetry.lastLoginAt!.getTime()).toBeGreaterThan(originalLastLoginAt.getTime());
+    await expect(
+      db.select().from(sessions).where(eq(sessions.userId, member.id)),
+    ).resolves.toHaveLength(1);
+  });
+
+  it(
+    "lets a waiting confirmation take over after the lock holder rolls back",
+    { timeout: 15_000 },
+    async () => {
+      const holderUserAgent = "magic-link-session-handoff-holder";
+      const winnerUserAgent = "magic-link-session-handoff-winner";
+      const { token, id } = await insertToken({
+        key: getMagicLinkKeys().current,
+        email: "handoff@example.com",
+      });
+      await db.execute(sql`
+        alter table sessions
+        add constraint olp_test_reject_handoff_holder
+        check (user_agent is distinct from 'magic-link-session-handoff-holder') not valid
+      `);
+
+      const controller = await raw.reserve();
+      let holderAttempt:
+        | Promise<
+            | { kind: "resolved"; value: Awaited<ReturnType<typeof consumeMagicLinkToken>> }
+            | { kind: "rejected"; error: unknown }
+          >
+        | undefined;
+      let waitingAttempt: ReturnType<typeof consumeMagicLinkToken> | undefined;
+      try {
+        await controller`begin`;
+        const [controllerBackend] = await controller<
+          { pid: number }[]
+        >`select pg_backend_pid()::integer as pid`;
+        await controller`lock table sessions in share mode`;
+
+        holderAttempt = consumeMagicLinkToken(token, {
+          locale: "en",
+          ip: "198.51.100.31",
+          userAgent: holderUserAgent,
+        }).then(
+          (value) => ({ kind: "resolved" as const, value }),
+          (error: unknown) => ({ kind: "rejected" as const, error }),
+        );
+        const holderPid = await waitForBlockedQuery(
+          '%insert into "sessions"%',
+          controllerBackend.pid,
+        );
+
+        waitingAttempt = consumeMagicLinkToken(token, {
+          locale: "ja",
+          ip: "198.51.100.32",
+          userAgent: winnerUserAgent,
+        });
+        await waitForBlockedQuery('%update "magic_link_tokens"%', holderPid);
+
+        await controller`commit`;
+        const [holderOutcome, waitingOutcome] = await Promise.all([holderAttempt, waitingAttempt]);
+
+        expect(holderOutcome.kind).toBe("rejected");
+        if (holderOutcome.kind !== "rejected") throw new Error("holder unexpectedly committed");
+        expect(holderOutcome.error).toMatchObject({
+          cause: {
+            code: "23514",
+            constraint_name: "olp_test_reject_handoff_holder",
+          },
+        });
+        expect(waitingOutcome.status).toBe("consumed");
+
+        const [storedToken] = await db
+          .select()
+          .from(magicLinkTokens)
+          .where(eq(magicLinkTokens.id, id));
+        expect(storedToken.consumedAt).not.toBeNull();
+        const handoffUsers = await db
+          .select()
+          .from(users)
+          .where(eq(users.email, "handoff@example.com"));
+        expect(handoffUsers).toHaveLength(1);
+        expect(handoffUsers[0]).toMatchObject({ locale: "ja" });
+        expect(handoffUsers[0].lastLoginAt).not.toBeNull();
+        const handoffSessions = await db
+          .select()
+          .from(sessions)
+          .where(eq(sessions.userId, handoffUsers[0].id));
+        expect(handoffSessions).toHaveLength(1);
+        expect(handoffSessions[0]).toMatchObject({
+          ip: "198.51.100.32",
+          userAgent: winnerUserAgent,
+        });
+        await expect(consumeMagicLinkToken(token)).resolves.toEqual({ status: "replayed" });
+      } finally {
+        await controller`rollback`.catch(() => {});
+        await Promise.allSettled([holderAttempt, waitingAttempt].filter(Boolean));
+        await controller.release();
+        await removeSessionHandoffConstraint();
+      }
+    },
+  );
 
   it("rejects expired tokens on both the verify and consume paths", async () => {
     const { token } = await insertToken({

@@ -1,12 +1,15 @@
 import { desc, eq } from "drizzle-orm";
 
-import { getDb } from "@/db";
+import { type DbClient, getDb } from "@/db";
 import { type User, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import type { Locale } from "@/modules/i18n";
 
-export async function findUserByEmail(email: string): Promise<User | null> {
-  const [user] = await getDb()
+export async function findUserByEmail(
+  email: string,
+  client: DbClient = getDb(),
+): Promise<User | null> {
+  const [user] = await client
     .select()
     .from(users)
     .where(eq(users.email, email.trim().toLowerCase()))
@@ -19,23 +22,30 @@ export async function findUserById(id: string): Promise<User | null> {
   return user ?? null;
 }
 
-export async function findOrCreateUserByEmail(email: string): Promise<User> {
+export async function findOrCreateUserByEmail(
+  email: string,
+  client: DbClient = getDb(),
+): Promise<User> {
   const normalized = email.trim().toLowerCase();
-  const existing = await findUserByEmail(normalized);
+  const existing = await findUserByEmail(normalized, client);
   if (existing) return existing;
-  const [created] = await getDb()
+  const [created] = await client
     .insert(users)
     .values({ email: normalized, role: "member" })
     .onConflictDoNothing({ target: users.email })
     .returning();
   if (created) return created;
-  const after = await findUserByEmail(normalized);
+  const after = await findUserByEmail(normalized, client);
   if (!after) throw new ApiError(500, "userCreateFailed");
   return after;
 }
 
-export async function touchLastLogin(userId: string, locale?: Locale): Promise<void> {
-  await getDb()
+export async function touchLastLogin(
+  userId: string,
+  locale?: Locale,
+  client: DbClient = getDb(),
+): Promise<void> {
+  await client
     .update(users)
     .set({ lastLoginAt: new Date(), updatedAt: new Date(), ...(locale ? { locale } : {}) })
     .where(eq(users.id, userId));

@@ -16,6 +16,7 @@ import { getEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { rateLimit } from "@/lib/rate-limit";
 import { getRequestCodeEmailIpRateLimit, normalizeEmail } from "@/modules/auth/rate-limit-policy";
+import { createSession } from "@/modules/auth/session";
 import { getSmtpConfig } from "@/modules/config";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
 import type { Locale } from "@/modules/i18n";
@@ -57,7 +58,12 @@ export type MagicLinkVerification =
   | { status: MagicLinkRejectionReason };
 
 export type MagicLinkConsumption =
-  | { status: "consumed"; user: User; redirectPath: string | null }
+  | {
+      status: "consumed";
+      user: User;
+      redirectPath: string | null;
+      session: { token: string; expiresAt: Date };
+    }
   | { status: MagicLinkRejectionReason };
 
 export function isMagicLinkConfigured(): boolean {
@@ -423,7 +429,7 @@ export async function verifyMagicLinkToken(token: string): Promise<MagicLinkVeri
  */
 export async function consumeMagicLinkToken(
   token: string,
-  meta?: { locale?: Locale },
+  meta?: { locale?: Locale; ip?: string | null; userAgent?: string | null },
 ): Promise<MagicLinkConsumption> {
   const resolved = resolveTokenHash(token);
   if (!resolved) {
@@ -431,64 +437,79 @@ export async function consumeMagicLinkToken(
     return { status: "invalid" };
   }
 
-  const db = getDb();
-  const [consumed] = await db
-    .update(magicLinkTokens)
-    .set({ consumedAt: sql`now()` })
-    .where(
-      and(
-        eq(magicLinkTokens.tokenHash, resolved.tokenHash),
-        eq(magicLinkTokens.keyId, resolved.keyId),
-        isNull(magicLinkTokens.consumedAt),
-        gt(magicLinkTokens.expiresAt, sql<Date>`now()`),
-      ),
-    )
-    .returning({
-      id: magicLinkTokens.id,
-      email: magicLinkTokens.email,
-      redirectPath: magicLinkTokens.redirectPath,
-    });
-
-  if (!consumed) {
-    const [existing] = await db
-      .select({
-        id: magicLinkTokens.id,
-        consumedAt: magicLinkTokens.consumedAt,
-        expiresAt: magicLinkTokens.expiresAt,
-      })
-      .from(magicLinkTokens)
+  const outcome = await getDb().transaction(async (tx) => {
+    const [consumed] = await tx
+      .update(magicLinkTokens)
+      .set({ consumedAt: sql`now()` })
       .where(
         and(
           eq(magicLinkTokens.tokenHash, resolved.tokenHash),
           eq(magicLinkTokens.keyId, resolved.keyId),
+          isNull(magicLinkTokens.consumedAt),
+          gt(magicLinkTokens.expiresAt, sql<Date>`now()`),
         ),
       )
-      .limit(1);
-    const reason: MagicLinkRejectionReason = !existing
-      ? "invalid"
-      : existing.consumedAt
-        ? "replayed"
-        : "expired";
-    await recordEvent("magic_link_rejected", {
-      reason,
-      ...(existing ? { tokenId: existing.id, keyId: resolved.keyId } : {}),
-    });
-    return { status: reason };
+      .returning({
+        id: magicLinkTokens.id,
+        email: magicLinkTokens.email,
+        redirectPath: magicLinkTokens.redirectPath,
+      });
+
+    if (!consumed) {
+      const [existing] = await tx
+        .select({
+          id: magicLinkTokens.id,
+          consumedAt: magicLinkTokens.consumedAt,
+          expiresAt: magicLinkTokens.expiresAt,
+        })
+        .from(magicLinkTokens)
+        .where(
+          and(
+            eq(magicLinkTokens.tokenHash, resolved.tokenHash),
+            eq(magicLinkTokens.keyId, resolved.keyId),
+          ),
+        )
+        .limit(1);
+      const reason: MagicLinkRejectionReason = !existing
+        ? "invalid"
+        : existing.consumedAt
+          ? "replayed"
+          : "expired";
+      return {
+        result: { status: reason } satisfies MagicLinkConsumption,
+        rejectionEvent: {
+          reason,
+          ...(existing ? { tokenId: existing.id, keyId: resolved.keyId } : {}),
+        },
+      };
+    }
+
+    const user = await findOrCreateUserByEmail(consumed.email, tx);
+    await touchLastLogin(user.id, meta?.locale, tx);
+    const session = await createSession(user.id, { ip: meta?.ip, userAgent: meta?.userAgent }, tx);
+    return {
+      result: {
+        status: "consumed",
+        user,
+        redirectPath: normalizeMagicLinkRedirectPath(consumed.redirectPath),
+        session,
+      } satisfies MagicLinkConsumption,
+      consumedEvent: {
+        tokenId: consumed.id,
+        keyId: resolved.keyId,
+        userId: user.id,
+      },
+    };
+  });
+
+  if (outcome.result.status !== "consumed") {
+    await recordEvent("magic_link_rejected", outcome.rejectionEvent);
+    return outcome.result;
   }
 
-  const user = await findOrCreateUserByEmail(consumed.email);
-  await touchLastLogin(user.id, meta?.locale);
-  await recordEvent("user_login", { userId: user.id });
-  await recordEvent("magic_link_consumed", {
-    tokenId: consumed.id,
-    keyId: resolved.keyId,
-    userId: user.id,
-  });
-  return {
-    status: "consumed",
-    user,
-    redirectPath: normalizeMagicLinkRedirectPath(consumed.redirectPath),
-  };
+  await recordEvent("user_login", { userId: outcome.result.user.id });
+  await recordEvent("magic_link_consumed", outcome.consumedEvent);
+  return outcome.result;
 }
 
 async function executeRows<T>(
