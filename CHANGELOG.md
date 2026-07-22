@@ -9,6 +9,10 @@
   only an explicit POST confirmation atomically consumes the token and creates
   the session. The email-code flow stays available as the fallback and the
   admin entry keeps email + password.
+- Fixed that atomicity guarantee so token consumption, user creation/login
+  metadata, and session insertion now share one PostgreSQL transaction. A
+  failed session insert rolls everything back, leaving the one-time link safe
+  to retry; the session cookie is still written only after commit.
 - Tokens are stored only as keyed HMAC hashes in the new `magic_link_tokens`
   table (migration 0028) with a recorded key id, 15-minute TTL, single-use
   compare-and-swap consumption, and delivery through a durable

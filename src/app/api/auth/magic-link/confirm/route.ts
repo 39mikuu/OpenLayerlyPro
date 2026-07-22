@@ -11,7 +11,7 @@ import { rateLimit } from "@/lib/rate-limit";
 import { readFormDataWithLimit } from "@/lib/request-body";
 import { consumeMagicLinkToken, RAW_MAGIC_LINK_TOKEN_MAX_LENGTH } from "@/modules/auth/magic-link";
 import { getVerifyCodeCompareRateLimit } from "@/modules/auth/rate-limit-policy";
-import { createSession, setSessionCookie } from "@/modules/auth/session";
+import { setSessionCookie } from "@/modules/auth/session";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
 import { resolveLocale } from "@/modules/i18n/server";
 
@@ -63,7 +63,11 @@ export async function POST(req: NextRequest) {
     const form = await readFormDataWithLimit(req, env.REQUEST_JSON_MAX_BYTES);
     const { token } = bodySchema.parse({ token: form.get("token") });
 
-    const result = await consumeMagicLinkToken(token, { locale: await resolveLocale() });
+    const result = await consumeMagicLinkToken(token, {
+      locale: await resolveLocale(),
+      ip: clientIp,
+      userAgent: getUserAgent(req),
+    });
     if (result.status !== "consumed") {
       return NextResponse.redirect(resultUrl(result.status), {
         status: 303,
@@ -71,11 +75,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const { token: sessionToken, expiresAt } = await createSession(result.user.id, {
-      ip: clientIp,
-      userAgent: getUserAgent(req),
-    });
-    await setSessionCookie(sessionToken, expiresAt);
+    await setSessionCookie(result.session.token, result.session.expiresAt);
     // Tokenless result redirect: the browser lands on the stored, validated
     // in-site path with neither the token nor the original query attached.
     return NextResponse.redirect(absoluteUrl(result.redirectPath ?? "/me"), {
