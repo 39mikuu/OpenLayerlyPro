@@ -389,14 +389,7 @@ fi
 echo "Starting PostgreSQL for the target Compose project..."
 compose up -d postgres
 
-attempt=0
-until compose exec -T postgres sh -c '
-  exec pg_isready -U "${POSTGRES_USER:-artist}" -d "${POSTGRES_DB:-artist_member}" >/dev/null
-'; do
-  attempt=$((attempt + 1))
-  [ "$attempt" -lt 60 ] || fail "PostgreSQL did not become ready"
-  sleep 2
-done
+wait_for_postgres_database run_postgres_shell PostgreSQL
 
 APP_CONTAINER_IDS=$(compose ps -aq app)
 if [ -n "$APP_CONTAINER_IDS" ]; then

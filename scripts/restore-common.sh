@@ -14,6 +14,23 @@ run_postgres_shell() {
   compose exec -T postgres sh -c "$script" restore-postgres "$@"
 }
 
+wait_for_postgres_database() {
+  postgres_shell=$1
+  label=${2:-PostgreSQL}
+  max_attempts=${3:-60}
+  retry_delay=${4:-2}
+  attempt=0
+
+  until "$postgres_shell" '
+    exec psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-artist}" \
+      -d "${POSTGRES_DB:-artist_member}" -c "select 1" >/dev/null 2>&1
+  '; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt "$max_attempts" ] || fail "$label did not become ready"
+    [ "$retry_delay" -eq 0 ] || sleep "$retry_delay"
+  done
+}
+
 verify_container_nonempty_file() {
   target_file=$1
   run_app_shell '
