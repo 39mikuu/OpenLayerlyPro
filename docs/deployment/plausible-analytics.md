@@ -33,17 +33,17 @@ set `scriptUrl` to an exact HTTPS URL and `apiOrigin` to an exact HTTPS origin:
 
 The server derives `script-src` from `scriptUrl` and `connect-src` from
 `apiOrigin`; credentials, HTTP, protocol-relative URLs, wildcards, and bare
-schemes fail validation. `scriptUrl` must select a Plausible build whose final
-filename ends in `.js` and contains `manual` as a dot-delimited segment (for
-example `script.manual.js` or `script.hash.manual.js`). The generic
-`script.js` is rejected because it installs automatic initial and History API
-tracking. The event target is always the exact validated
+schemes fail validation. `scriptUrl` uses a fail-closed filename allow-list:
+`script.manual.js` or `script.hash.manual.js`. The generic `script.js` and all
+other extension combinations are rejected because they may install automatic
+pageview or document-level event tracking. The event target is always the exact validated
 `apiOrigin` plus `/api/event`.
 
-Extension builds containing `outbound-links`, `file-downloads`, or
-`tagged-events` are rejected even when combined with `manual`. Those extensions
-install document-level listeners whose event payloads default to the current
-browser URL; after client navigation that could expose a private route URL.
+Extension builds such as `outbound-links`, `file-downloads`, `tagged-events`,
+and `form-submissions` are rejected even when combined with `manual`. Such
+extensions may install document-level listeners whose event payloads default to
+the current browser URL; after client navigation that could expose a private
+route URL. New upstream extensions remain rejected until explicitly reviewed.
 
 OpenLayerlyPro loads Plausible's automatic-pageview-disabled manual build and
 adds a nonce-authorized route tracker. Initial load and `pushState`, `replaceState`,

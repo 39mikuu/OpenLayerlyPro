@@ -53,10 +53,9 @@ const exactHttpsUrlSchema = z
   .refine((value) => exactHttpsOriginFromUrl(value) !== null, "HTTPS URL required");
 const LEGACY_PLAUSIBLE_DEFAULT_SCRIPT_URL = "https://plausible.io/js/script.js";
 const PLAUSIBLE_DEFAULT_MANUAL_SCRIPT_URL = "https://plausible.io/js/script.manual.js";
-const PLAUSIBLE_PRIVATE_URL_EXTENSION_SEGMENTS = new Set([
-  "outbound-links",
-  "file-downloads",
-  "tagged-events",
+const PLAUSIBLE_SAFE_MANUAL_SCRIPT_FILENAMES = new Set([
+  "script.manual.js",
+  "script.hash.manual.js",
 ]);
 
 function normalizePlausibleScriptUrl(value: unknown): unknown {
@@ -70,12 +69,7 @@ const plausibleManualScriptUrlSchema = z
   .refine((value) => {
     try {
       const filename = new URL(value).pathname.split("/").pop() ?? "";
-      const segments = filename.split(".");
-      return (
-        filename.endsWith(".js") &&
-        segments.includes("manual") &&
-        !segments.some((segment) => PLAUSIBLE_PRIVATE_URL_EXTENSION_SEGMENTS.has(segment))
-      );
+      return PLAUSIBLE_SAFE_MANUAL_SCRIPT_FILENAMES.has(filename.toLowerCase());
     } catch {
       return false;
     }

@@ -65,11 +65,11 @@ Plausible pageviews are manual and public-route-only in v1.2. Existing v1.1
 records using the former official `https://plausible.io/js/script.js` default
 are compatibility-normalized to `https://plausible.io/js/script.manual.js` on
 read and persisted on the next admin save. For custom/self-hosted Plausible
-records, choose a script filename containing a `manual` segment (for example
-`script.manual.js` or `script.hash.manual.js`) before upgrading. Do not combine
-the manual build with `outbound-links`, `file-downloads`, or `tagged-events`;
-those extensions can report the current URL outside the public route boundary.
-Automatic builds are rejected fail-closed and must not be used in production.
+records, choose the allow-listed `script.manual.js` or `script.hash.manual.js`
+build before upgrading. Other extension combinations—including
+`outbound-links`, `file-downloads`, `tagged-events`, and `form-submissions`—are
+rejected because they can report the current URL outside the public route
+boundary. New upstream variants remain rejected until explicitly reviewed.
 If any stored integration is invalid, the admin editor preserves the original
 JSON and blocks saves until it is corrected; unrelated site edits cannot replace
 the stored array with an empty fallback. Export the integration JSON before an

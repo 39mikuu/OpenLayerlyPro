@@ -250,6 +250,9 @@ describe("public integration registry", () => {
       "https://plausible.io/js/script.manual.outbound-links.js",
       "https://plausible.io/js/script.file-downloads.hash.manual.js",
       "https://plausible.io/js/script.tagged-events.manual.js",
+      "https://plausible.io/js/script.manual.form-submissions.js",
+      "https://plausible.io/js/script.manual.revenue.js",
+      "https://plausible.io/js/script.manual.pageview-props.js",
       "not a URL",
     ]) {
       expect(
@@ -296,6 +299,7 @@ describe("public integration registry", () => {
     for (const scriptUrl of [
       "https://plausible.io/js/script.manual.js",
       "https://plausible.io/js/script.hash.manual.js",
+      "https://plausible.io/js/SCRIPT.MANUAL.JS",
     ]) {
       expect(
         publicIntegrationsSchema.safeParse([
