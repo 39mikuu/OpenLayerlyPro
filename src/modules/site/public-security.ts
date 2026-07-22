@@ -51,13 +51,35 @@ const exactHttpsUrlSchema = z
   .min(1)
   .max(2048)
   .refine((value) => exactHttpsOriginFromUrl(value) !== null, "HTTPS URL required");
-const plausibleManualScriptUrlSchema = exactHttpsUrlSchema.refine((value) => {
-  try {
-    return new URL(value).pathname.endsWith(".manual.js");
-  } catch {
-    return false;
-  }
-}, "Plausible manual tracker URL required");
+const LEGACY_PLAUSIBLE_DEFAULT_SCRIPT_URL = "https://plausible.io/js/script.js";
+const PLAUSIBLE_DEFAULT_MANUAL_SCRIPT_URL = "https://plausible.io/js/script.manual.js";
+const PLAUSIBLE_PRIVATE_URL_EXTENSION_SEGMENTS = new Set([
+  "outbound-links",
+  "file-downloads",
+  "tagged-events",
+]);
+
+function normalizePlausibleScriptUrl(value: unknown): unknown {
+  return value === LEGACY_PLAUSIBLE_DEFAULT_SCRIPT_URL
+    ? PLAUSIBLE_DEFAULT_MANUAL_SCRIPT_URL
+    : value;
+}
+
+const plausibleManualScriptUrlSchema = z
+  .preprocess(normalizePlausibleScriptUrl, exactHttpsUrlSchema)
+  .refine((value) => {
+    try {
+      const filename = new URL(value).pathname.split("/").pop() ?? "";
+      const segments = filename.split(".");
+      return (
+        filename.endsWith(".js") &&
+        segments.includes("manual") &&
+        !segments.some((segment) => PLAUSIBLE_PRIVATE_URL_EXTENSION_SEGMENTS.has(segment))
+      );
+    } catch {
+      return false;
+    }
+  }, "Plausible manual tracker URL required");
 const exactOriginSchema = z
   .string()
   .min(1)
@@ -116,7 +138,7 @@ const plausibleIntegrationSchema = z
       .regex(
         /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/,
       ),
-    scriptUrl: plausibleManualScriptUrlSchema.default("https://plausible.io/js/script.manual.js"),
+    scriptUrl: plausibleManualScriptUrlSchema.default(PLAUSIBLE_DEFAULT_MANUAL_SCRIPT_URL),
     apiOrigin: exactOriginSchema.default("https://plausible.io"),
   })
   .strict();
@@ -338,7 +360,15 @@ export const publicIntegrationsSchema = z
   .max(20)
   .superRefine((items, ctx) => {
     const ids = new Set<string>();
+    const enabledAnalyticsProviders = new Set<"plausible" | "umami">();
     for (const [index, item] of items.entries()) {
+      if (item.id.endsWith("-manual-pageview")) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Integration ids must not end with -manual-pageview",
+          path: [index, "id"],
+        });
+      }
       if (ids.has(item.id)) {
         ctx.addIssue({
           code: "custom",
@@ -347,6 +377,16 @@ export const publicIntegrationsSchema = z
         });
       }
       ids.add(item.id);
+      if (item.enabled !== false && (item.provider === "plausible" || item.provider === "umami")) {
+        if (enabledAnalyticsProviders.has(item.provider)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `Only one enabled ${item.provider} integration is supported`,
+            path: [index, "provider"],
+          });
+        }
+        enabledAnalyticsProviders.add(item.provider);
+      }
     }
   });
 

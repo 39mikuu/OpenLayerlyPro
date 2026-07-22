@@ -179,6 +179,17 @@ describe("public integration registry", () => {
     expect(runtime.sources.connect).toEqual(["https://stats.example"]);
   });
 
+  it("validates the omitted Plausible script URL through the manual default", () => {
+    const integrations = publicIntegrationsSchema.parse([
+      { id: "default-plausible", provider: "plausible", domain: "artist.example" },
+    ]);
+
+    expect(integrations[0]).toMatchObject({
+      provider: "plausible",
+      scriptUrl: "https://plausible.io/js/script.manual.js",
+    });
+  });
+
   it("disables Plausible automatic pageviews and executes public-only SPA tracking", () => {
     const integrations = publicIntegrationsSchema.parse([
       {
@@ -233,12 +244,18 @@ describe("public integration registry", () => {
     expect(runtime.sources.connect).toEqual(["https://events.example"]);
   });
 
-  it("rejects Plausible scripts that can install automatic pageview tracking", () => {
-    for (const scriptUrl of ["https://stats.example/js/script.js", "not a URL"]) {
+  it("rejects Plausible scripts that can install automatic or private-URL tracking", () => {
+    for (const scriptUrl of [
+      "https://stats.example/js/script.js",
+      "https://plausible.io/js/script.manual.outbound-links.js",
+      "https://plausible.io/js/script.file-downloads.hash.manual.js",
+      "https://plausible.io/js/script.tagged-events.manual.js",
+      "not a URL",
+    ]) {
       expect(
         publicIntegrationsSchema.safeParse([
           {
-            id: "unsafe-auto-tracker",
+            id: "unsafe-tracker",
             provider: "plausible",
             domain: "artist.example",
             scriptUrl,
@@ -246,6 +263,96 @@ describe("public integration registry", () => {
         ]).success,
       ).toBe(false);
     }
+  });
+
+  it("upgrades the v1.1 Plausible default without invalidating sibling integrations", () => {
+    const state = parsePublicSecuritySettings({
+      public_integrations: [
+        {
+          id: "legacy-plausible",
+          provider: "plausible",
+          domain: "artist.example",
+          scriptUrl: "https://plausible.io/js/script.js",
+          apiOrigin: "https://plausible.io",
+        },
+        {
+          id: "umami",
+          provider: "umami",
+          websiteId: "11111111-1111-4111-8111-111111111111",
+        },
+      ],
+    });
+
+    expect(state.configurationErrors).toEqual([]);
+    expect(state.publicIntegrations).toHaveLength(2);
+    expect(state.publicIntegrations[0]).toMatchObject({
+      provider: "plausible",
+      scriptUrl: "https://plausible.io/js/script.manual.js",
+    });
+    expect(buildIntegrationRuntime(state.publicIntegrations).plans).toHaveLength(4);
+  });
+
+  it("accepts safe Plausible builds with a manual filename segment", () => {
+    for (const scriptUrl of [
+      "https://plausible.io/js/script.manual.js",
+      "https://plausible.io/js/script.hash.manual.js",
+    ]) {
+      expect(
+        publicIntegrationsSchema.safeParse([
+          { id: "manual-extensions", provider: "plausible", domain: "artist.example", scriptUrl },
+        ]).success,
+      ).toBe(true);
+    }
+  });
+
+  it("reserves generated manual pageview plan ids", () => {
+    expect(
+      publicIntegrationsSchema.safeParse([
+        {
+          id: "analytics-manual-pageview",
+          provider: "custom",
+          src: "https://scripts.example/custom.js",
+        },
+      ]).success,
+    ).toBe(false);
+  });
+
+  it("rejects duplicate analytics providers to avoid duplicate SPA pageviews", () => {
+    expect(
+      publicIntegrationsSchema.safeParse([
+        { id: "plausible-one", provider: "plausible", domain: "one.example" },
+        { id: "plausible-two", provider: "plausible", domain: "two.example" },
+      ]).success,
+    ).toBe(false);
+    expect(
+      publicIntegrationsSchema.safeParse([
+        {
+          id: "umami-one",
+          provider: "umami",
+          websiteId: "11111111-1111-4111-8111-111111111111",
+        },
+        {
+          id: "umami-two",
+          provider: "umami",
+          websiteId: "22222222-2222-4222-8222-222222222222",
+        },
+      ]).success,
+    ).toBe(false);
+    expect(
+      publicIntegrationsSchema.safeParse([
+        {
+          id: "disabled-umami",
+          provider: "umami",
+          enabled: false,
+          websiteId: "11111111-1111-4111-8111-111111111111",
+        },
+        {
+          id: "enabled-umami",
+          provider: "umami",
+          websiteId: "22222222-2222-4222-8222-222222222222",
+        },
+      ]).success,
+    ).toBe(true);
   });
 
   it("derives Umami cloud rendering and CSP origins from one parsed record", () => {

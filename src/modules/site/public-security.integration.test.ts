@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
 import { auditEvents, siteSettings } from "@/db/schema";
+import { readAdminSiteInfo } from "@/modules/site";
 
 import {
   CUSTOM_FOOTER_MARKUP_KEY,
@@ -41,6 +42,49 @@ describeWithDatabase("public security settings integration", () => {
       .limit(1);
     return row?.valueJson;
   }
+
+  it("preserves invalid stored integration JSON in the admin editor", async () => {
+    const stored = [
+      {
+        id: "legacy-self-hosted",
+        provider: "plausible",
+        domain: "artist.example",
+        scriptUrl: "https://stats.example/js/script.js",
+        apiOrigin: "https://stats.example",
+      },
+      {
+        id: "umami",
+        provider: "umami",
+        websiteId: "11111111-1111-4111-8111-111111111111",
+      },
+    ];
+    await insertSetting(PUBLIC_INTEGRATIONS_KEY, stored);
+
+    const admin = await readAdminSiteInfo();
+
+    expect(admin.publicSecurityConfigurationErrors).not.toEqual([]);
+    expect(admin.publicIntegrations).toEqual(stored);
+    expect(await readSetting(PUBLIC_INTEGRATIONS_KEY)).toEqual(stored);
+  });
+
+  it("returns normalized valid integrations so the next save persists the safe default", async () => {
+    await insertSetting(PUBLIC_INTEGRATIONS_KEY, [
+      {
+        id: "legacy-official",
+        provider: "plausible",
+        domain: "artist.example",
+        scriptUrl: "https://plausible.io/js/script.js",
+        apiOrigin: "https://plausible.io",
+      },
+    ]);
+
+    const admin = await readAdminSiteInfo();
+
+    expect(admin.publicSecurityConfigurationErrors).toEqual([]);
+    expect(admin.publicIntegrations).toEqual([
+      expect.objectContaining({ scriptUrl: "https://plausible.io/js/script.manual.js" }),
+    ]);
+  });
 
   it("atomically migrates safe legacy markup and advances the CSP revision", async () => {
     const legacyMarkup = '<p class="filing"><a href="https://example.com">ICP</a></p>';

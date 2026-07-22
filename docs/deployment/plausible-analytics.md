@@ -33,10 +33,17 @@ set `scriptUrl` to an exact HTTPS URL and `apiOrigin` to an exact HTTPS origin:
 
 The server derives `script-src` from `scriptUrl` and `connect-src` from
 `apiOrigin`; credentials, HTTP, protocol-relative URLs, wildcards, and bare
-schemes fail validation. `scriptUrl` must select a `.manual.js` Plausible build;
-the generic `script.js` is rejected because it installs automatic initial and
-History API tracking. The event target is always the exact validated
+schemes fail validation. `scriptUrl` must select a Plausible build whose final
+filename ends in `.js` and contains `manual` as a dot-delimited segment (for
+example `script.manual.js` or `script.hash.manual.js`). The generic
+`script.js` is rejected because it installs automatic initial and History API
+tracking. The event target is always the exact validated
 `apiOrigin` plus `/api/event`.
+
+Extension builds containing `outbound-links`, `file-downloads`, or
+`tagged-events` are rejected even when combined with `manual`. Those extensions
+install document-level listeners whose event payloads default to the current
+browser URL; after client navigation that could expose a private route URL.
 
 OpenLayerlyPro loads Plausible's automatic-pageview-disabled manual build and
 adds a nonce-authorized route tracker. Initial load and `pushState`, `replaceState`,
@@ -49,3 +56,8 @@ Set `enabled` to `false` to retain a valid stored configuration while rendering
 no script and adding no CSP origins. Validate the deployment in
 `SECURITY_CSP_MODE=report-only` or `auto`, including public-to-private SPA
 navigation, before enforcing CSP.
+
+Configure at most one enabled Plausible record. Disabled records may be kept for
+staged configuration, but multiple enabled records would install multiple
+History API hooks and double-count the same public navigation, so validation
+rejects that state.

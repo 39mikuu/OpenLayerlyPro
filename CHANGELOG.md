@@ -49,6 +49,11 @@
   nonce-authorized manual tracker for initial load and SPA history navigation.
   It emits only for the shared public route boundary, deduplicates by
   pathname plus query, and never queues private URLs.
+- Existing v1.1 records that stored the former official
+  `https://plausible.io/js/script.js` default are upgraded in memory to
+  `script.manual.js`, so sibling integrations remain valid and the next admin
+  save persists the safe manual URL. Other automatic Plausible builds remain
+  rejected fail-closed.
 - Added Plausible to the admin Integration status registry with Umami-equivalent
   absent, stored-disabled, stored-enabled, and invalid-stored states.
 
