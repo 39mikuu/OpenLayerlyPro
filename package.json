@@ -46,7 +46,7 @@
     "htmlparser2": "^10.0.0",
     "lucide-react": "^1.18.0",
     "markdown-it": "^14.3.0",
-    "next": "15.5.19",
+    "next": "15.5.21",
     "nodemailer": "^9.0.1",
     "postcss": "8.5.15",
     "postgres": "^3.4.9",
