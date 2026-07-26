@@ -2,7 +2,7 @@ import { and, eq, gt } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { cache } from "react";
 
-import { getDb } from "@/db";
+import { type DbClient, getDb } from "@/db";
 import { sessions, type User, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { generateSessionToken, hmacSha256 } from "@/lib/crypto";
@@ -15,18 +15,17 @@ const SESSION_DAYS = 30;
 export async function createSession(
   userId: string,
   meta?: { ip?: string | null; userAgent?: string | null },
+  client: DbClient = getDb(),
 ): Promise<{ token: string; expiresAt: Date }> {
   const token = generateSessionToken();
   const expiresAt = addDays(new Date(), SESSION_DAYS);
-  await getDb()
-    .insert(sessions)
-    .values({
-      userId,
-      tokenHash: hmacSha256(token),
-      expiresAt,
-      ip: meta?.ip ?? null,
-      userAgent: meta?.userAgent ?? null,
-    });
+  await client.insert(sessions).values({
+    userId,
+    tokenHash: hmacSha256(token),
+    expiresAt,
+    ip: meta?.ip ?? null,
+    userAgent: meta?.userAgent ?? null,
+  });
   return { token, expiresAt };
 }
 

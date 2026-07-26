@@ -5,7 +5,6 @@ const mocks = vi.hoisted(() => ({
   getEnv: vi.fn(),
   rateLimit: vi.fn(),
   consumeMagicLinkToken: vi.fn(),
-  createSession: vi.fn(),
   setSessionCookie: vi.fn(),
   resolveLocale: vi.fn(),
 }));
@@ -20,7 +19,6 @@ vi.mock("@/modules/auth/magic-link", async (importOriginal) => {
   };
 });
 vi.mock("@/modules/auth/session", () => ({
-  createSession: mocks.createSession,
   setSessionCookie: mocks.setSessionCookie,
 }));
 vi.mock("@/modules/i18n/server", () => ({ resolveLocale: mocks.resolveLocale }));
@@ -70,15 +68,15 @@ describe("magic-link confirm route", () => {
       status: "consumed",
       user: { id: "user-1", email: "fan@example.com", role: "member" },
       redirectPath: null,
-    });
-    mocks.createSession.mockResolvedValue({
-      token: "session-token",
-      expiresAt: new Date("2026-08-20T00:00:00Z"),
+      session: {
+        token: "session-token",
+        expiresAt: new Date("2026-08-20T00:00:00Z"),
+      },
     });
     mocks.setSessionCookie.mockResolvedValue(undefined);
   });
 
-  it("creates a session and redirects tokenlessly to the default target", async () => {
+  it("uses the atomically committed session and redirects tokenlessly", async () => {
     const response = await POST(request(TOKEN));
 
     expect(response.status).toBe(303);
@@ -86,8 +84,8 @@ describe("magic-link confirm route", () => {
     expect(location).toBe("https://site.example/base/me");
     expect(location).not.toContain(TOKEN);
     expectTokenHeaders(response);
-    expect(mocks.consumeMagicLinkToken).toHaveBeenCalledWith(TOKEN, { locale: "zh" });
-    expect(mocks.createSession).toHaveBeenCalledWith("user-1", {
+    expect(mocks.consumeMagicLinkToken).toHaveBeenCalledWith(TOKEN, {
+      locale: "zh",
       ip: "198.51.100.10",
       userAgent: null,
     });
@@ -97,11 +95,25 @@ describe("magic-link confirm route", () => {
     );
   });
 
+  it("does not set a session cookie when the atomic consumption transaction fails", async () => {
+    mocks.consumeMagicLinkToken.mockRejectedValue(new Error("transaction rolled back"));
+
+    const response = await POST(request(TOKEN));
+
+    expect(response.status).toBe(500);
+    expectTokenHeaders(response);
+    expect(mocks.setSessionCookie).not.toHaveBeenCalled();
+  });
+
   it("honors the stored allowlisted redirect path", async () => {
     mocks.consumeMagicLinkToken.mockResolvedValue({
       status: "consumed",
       user: { id: "user-1", email: "fan@example.com", role: "member" },
       redirectPath: "/posts/deep-dive",
+      session: {
+        token: "session-token",
+        expiresAt: new Date("2026-08-20T00:00:00Z"),
+      },
     });
 
     const response = await POST(request(TOKEN));
@@ -121,7 +133,6 @@ describe("magic-link confirm route", () => {
         `https://site.example/base/login/magic/result?status=${status}`,
       );
       expectTokenHeaders(response);
-      expect(mocks.createSession).not.toHaveBeenCalled();
       expect(mocks.setSessionCookie).not.toHaveBeenCalled();
     },
   );
