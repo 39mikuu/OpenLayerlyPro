@@ -134,6 +134,10 @@ session: { token: string; expiresAt: Date }
 - 第一个并发事务失败并回滚：第二个事务重新评估 UPDATE 条件后可以成功。
 - `recordEvent()` 失败：保持当前 best-effort 行为，不撤销已提交的登录事务。
 
+以上等待者接管与 replay 分类依赖 PostgreSQL 默认的 `READ COMMITTED` 隔离级别。部署不得把
+该流程隐式提升到 `REPEATABLE READ` 或 `SERIALIZABLE`；后两者在同类并发更新中可能返回
+`40001`，需要额外的事务级重试协议，本 Issue 不引入该协议。
+
 ## 5. 文件范围
 
 预计只修改：
@@ -170,9 +174,10 @@ session: { token: string; expiresAt: Date }
 
 另加一个确定性的“回滚后等待者接管”用例，不依赖固定 sleep：
 
-1. 用 test-only PostgreSQL sequence + session INSERT trigger + advisory-lock barrier，让事务 A 在
-   已完成 Magic Link CAS、尚未插入 session 时阻塞；sequence 保证该 trigger 只让第一次插入
-   失败，第二次插入正常执行。
+1. 增加只拒绝特定测试 user-agent 的 `NOT VALID` session CHECK constraint；再用 test-only
+   保留连接取得 `sessions` 表的 `SHARE` 锁，让事务 A 在已完成 Magic Link CAS、准备插入
+   session 时确定性阻塞。释放表锁后，A 的 INSERT 由约束拒绝并整体回滚，而事务 B 使用不同
+   user-agent，随后可正常插入。
 2. A 持有 token 行锁期间启动事务 B，并通过 PostgreSQL lock/activity 状态的有界轮询确认 B
    已进入等待，而不是靠时序猜测。
 3. 释放 barrier，使 A 的 session INSERT 抛错并整体回滚。

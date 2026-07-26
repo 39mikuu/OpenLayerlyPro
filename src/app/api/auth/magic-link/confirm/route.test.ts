@@ -5,7 +5,6 @@ const mocks = vi.hoisted(() => ({
   getEnv: vi.fn(),
   rateLimit: vi.fn(),
   consumeMagicLinkToken: vi.fn(),
-  createSession: vi.fn(),
   setSessionCookie: vi.fn(),
   resolveLocale: vi.fn(),
 }));
@@ -20,7 +19,6 @@ vi.mock("@/modules/auth/magic-link", async (importOriginal) => {
   };
 });
 vi.mock("@/modules/auth/session", () => ({
-  createSession: mocks.createSession,
   setSessionCookie: mocks.setSessionCookie,
 }));
 vi.mock("@/modules/i18n/server", () => ({ resolveLocale: mocks.resolveLocale }));
@@ -91,11 +89,20 @@ describe("magic-link confirm route", () => {
       ip: "198.51.100.10",
       userAgent: null,
     });
-    expect(mocks.createSession).not.toHaveBeenCalled();
     expect(mocks.setSessionCookie).toHaveBeenCalledWith(
       "session-token",
       new Date("2026-08-20T00:00:00Z"),
     );
+  });
+
+  it("does not set a session cookie when the atomic consumption transaction fails", async () => {
+    mocks.consumeMagicLinkToken.mockRejectedValue(new Error("transaction rolled back"));
+
+    const response = await POST(request(TOKEN));
+
+    expect(response.status).toBe(500);
+    expectTokenHeaders(response);
+    expect(mocks.setSessionCookie).not.toHaveBeenCalled();
   });
 
   it("honors the stored allowlisted redirect path", async () => {

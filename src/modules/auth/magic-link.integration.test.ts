@@ -26,7 +26,7 @@ vi.mock("@/modules/security/magic-link-key", () => {
 });
 
 import { getDb } from "@/db";
-import { magicLinkTokens, sessions, tasks, users } from "@/db/schema";
+import { appEvents, magicLinkTokens, sessions, tasks, users } from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
@@ -69,10 +69,13 @@ async function insertToken(input: {
 }
 
 async function removeSessionInsertFailure(): Promise<void> {
-  await getDb().execute(
-    sql`drop trigger if exists olp_test_fail_magic_link_session_insert on sessions`,
-  );
-  await getDb().execute(sql`drop function if exists olp_test_fail_magic_link_session_insert()`);
+  await getDb().transaction(async (tx) => {
+    await tx.execute(sql`set local lock_timeout = '5s'`);
+    await tx.execute(
+      sql`drop trigger if exists olp_test_fail_magic_link_session_insert on sessions`,
+    );
+    await tx.execute(sql`drop function if exists olp_test_fail_magic_link_session_insert()`);
+  });
 }
 
 async function installSessionInsertFailure(): Promise<void> {
@@ -95,9 +98,12 @@ async function installSessionInsertFailure(): Promise<void> {
 }
 
 async function removeSessionHandoffConstraint(): Promise<void> {
-  await getDb().execute(
-    sql`alter table sessions drop constraint if exists olp_test_reject_handoff_holder`,
-  );
+  await getDb().transaction(async (tx) => {
+    await tx.execute(sql`set local lock_timeout = '5s'`);
+    await tx.execute(
+      sql`alter table sessions drop constraint if exists olp_test_reject_handoff_holder`,
+    );
+  });
 }
 
 describeWithDatabase("WP1 magic link integration", () => {
@@ -140,9 +146,12 @@ describeWithDatabase("WP1 magic link integration", () => {
   });
 
   afterAll(async () => {
-    await removeSessionInsertFailure();
-    await removeSessionHandoffConstraint();
-    await raw.end({ timeout: 5 });
+    try {
+      await removeSessionInsertFailure();
+      await removeSessionHandoffConstraint();
+    } finally {
+      await raw.end({ timeout: 5 });
+    }
   });
 
   it("stores only a keyed hash and an encrypted task payload, never the raw token", async () => {
@@ -345,6 +354,7 @@ describeWithDatabase("WP1 magic link integration", () => {
       db.select().from(users).where(eq(users.email, "session-failure-new@example.com")),
     ).resolves.toHaveLength(0);
     await expect(db.select().from(sessions)).resolves.toHaveLength(0);
+    await expect(db.select().from(appEvents)).resolves.toHaveLength(0);
 
     await expect(consumeMagicLinkToken(token, { locale: "ja" })).resolves.toMatchObject({
       status: "consumed",
@@ -359,6 +369,11 @@ describeWithDatabase("WP1 magic link integration", () => {
     await expect(
       db.select().from(sessions).where(eq(sessions.userId, createdUsers[0].id)),
     ).resolves.toHaveLength(1);
+    const newUserEvents = await db.select().from(appEvents);
+    expect(newUserEvents.map((event) => event.type).sort()).toEqual([
+      "magic_link_consumed",
+      "user_login",
+    ]);
   });
 
   it("rolls back existing-user login metadata when session insertion fails", async () => {
@@ -400,6 +415,7 @@ describeWithDatabase("WP1 magic link integration", () => {
     await expect(
       db.select().from(sessions).where(eq(sessions.userId, member.id)),
     ).resolves.toHaveLength(0);
+    await expect(db.select().from(appEvents)).resolves.toHaveLength(0);
 
     await expect(consumeMagicLinkToken(token, { locale: "ja" })).resolves.toMatchObject({
       status: "consumed",
@@ -410,6 +426,11 @@ describeWithDatabase("WP1 magic link integration", () => {
     await expect(
       db.select().from(sessions).where(eq(sessions.userId, member.id)),
     ).resolves.toHaveLength(1);
+    const existingUserEvents = await db.select().from(appEvents);
+    expect(existingUserEvents.map((event) => event.type).sort()).toEqual([
+      "magic_link_consumed",
+      "user_login",
+    ]);
   });
 
   it(
