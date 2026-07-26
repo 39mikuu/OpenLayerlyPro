@@ -56,18 +56,19 @@
 
 ### 4.1 请求期守卫
 
-请求流程保留现有 keyring 与 SMTP 配置检查。进入现有按规范化邮箱取得 advisory transaction lock 后，在读取活跃 token、消耗 email+IP 预算或生成 token 之前查询用户角色：
+请求流程保留现有 keyring 与 SMTP 配置检查。进入现有按规范化邮箱取得 advisory transaction lock 后，必须先按现有逻辑读取并锁定活跃 token，再以 `FOR UPDATE` 锁定用户行；角色检查仍须发生在消耗 email+IP 预算或生成 token 之前：
 
 ```text
 normalize email / read env / validate keyring and SMTP
 └─ transaction(tx)
    ├─ pg_advisory_xact_lock(hashtext(normalizedEmail))
-   ├─ findUserByEmail(normalizedEmail, tx)
+   ├─ active magic_link_tokens row SELECT ... FOR UPDATE（若存在）
+   ├─ users row SELECT ... FOR UPDATE（若存在）
    ├─ role == admin → return { suppressed: true }
    └─ existing dedupe / rate limit / mint / enqueue path unchanged
 ```
 
-守卫必须在 email+IP rate limiter 之前，避免通过“管理员邮箱更快耗尽专用桶并返回 429”形成角色枚举 oracle。Route 级 source/IP 限流仍保持现状，所有请求都受它约束。
+这一顺序与消费路径的 `token → user → session` 一致，避免请求事务采用 `user → token` 而与消费事务形成死锁。守卫必须在 email+IP rate limiter 之前，避免通过“管理员邮箱更快耗尽专用桶并返回 429”形成角色枚举 oracle。Route 级 source/IP 限流仍保持现状，所有请求都受它约束。
 
 请求期检查是降低无效 token/邮件产生的 best-effort 优化，不是最终授权边界。角色可能在检查后被提升，因此消费期守卫是强制安全边界。
 
