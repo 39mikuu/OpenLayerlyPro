@@ -43,7 +43,7 @@
 
 实现必须同时满足：
 
-1. 管理员邮箱请求对外保持 accepted-shaped 响应，不暴露账号存在性或角色。
+1. 管理员邮箱的**单次请求**对外保持 accepted-shaped 响应，不直接暴露账号存在性或角色。跨多次请求仍存在已接受的残余区分信号：非管理员邮箱会消耗共享 email+IP 发送预算并最终可能返回 429，而管理员邮箱在该预算前被抑制。
 2. 请求时已是管理员的邮箱不生成 `magic_link_tokens`、不生成 `tasks`、不消耗共享 email+IP 发送预算。
 3. 消费期角色检查必须位于 #175 的同一个 `getDb().transaction(tx)` 内，并使用该 `tx`，不得回退到全局 `getDb()`。
 4. 若消费期当前角色为 admin，则不创建 session、不更新用户字段、不创建用户；token 进入终态。
@@ -68,7 +68,7 @@ normalize email / read env / validate keyring and SMTP
    └─ existing dedupe / rate limit / mint / enqueue path unchanged
 ```
 
-这一顺序与消费路径的 `token → user → session` 一致，避免请求事务采用 `user → token` 而与消费事务形成死锁。守卫必须在 email+IP rate limiter 之前，避免通过“管理员邮箱更快耗尽专用桶并返回 429”形成角色枚举 oracle。Route 级 source/IP 限流仍保持现状，所有请求都受它约束。
+这一顺序与消费路径的 `token → user → session` 一致，避免请求事务采用 `user → token` 而与消费事务形成死锁。守卫必须在 email+IP rate limiter 之前，避免管理员邮箱因每次请求都消耗专用桶而形成更快、更直接的 429 oracle。该选择不提供跨多次请求的绝对不可区分性：普通 member/unknown 邮箱在真实签发并消耗预算后最终可能返回 429，而管理员邮箱不会消耗该桶。Route 级 source/IP 限流仍保持现状，所有请求都受它约束。该残余风险必须在 CHANGELOG、PR 和后续安全 Issue 中明确记录。
 
 请求期检查是降低无效 token/邮件产生的 best-effort 优化，不是最终授权边界。角色可能在检查后被提升，因此消费期守卫是强制安全边界。
 
@@ -140,6 +140,7 @@ for no key update;
 | 场景 | 要求行为 |
 |---|---|
 | 请求时已是 admin | `{ suppressed:true }`；0 token；0 task；不消耗 email+IP 预算 |
+| 同一邮箱跨多次请求观察限流结果 | 单次响应保持 accepted-shaped；非管理员目标最终可能 429、管理员目标不会消耗该桶，此残余区分风险被明确接受并单独跟踪 |
 | member 签发后被提升，再消费 | `invalid`；token 终态；0 session；用户零变更 |
 | 提升事务先持有用户行锁，消费随后开始 | 消费在角色锁读取处等待；提升提交后读取 admin 并拒绝 |
 | 消费先锁定 member 并提交，提升随后发生 | 本次 member 登录成功，提升在事务后生效；既有 session 吊销不属于本 Issue |
@@ -235,6 +236,6 @@ for no key update;
 
 - 角色锁读取误用全局数据库 client：由确定性并发测试和独立审阅约束；
 - 漏掉无用户行并发创建后的第二次角色检查：由专用真实 PostgreSQL 测试约束；
-- 守卫被移动到 email+IP 限流后产生角色枚举 oracle：由预算测试约束；
+- 守卫被移动到 email+IP 限流后会产生更快的角色枚举 oracle：由预算测试约束；当前守卫顺序仍保留跨多次请求的慢速限流区分信号，该风险不是本 Issue 的绝对消除目标，必须由后续安全 Issue 跟踪；
 - 遥测字段泄漏：由精确 payload 白名单测试约束；
 - 过度声称全局管理员认证边界：文档和 PR 必须明确邮箱验证码/OAuth/既有 session 均不在范围内。
