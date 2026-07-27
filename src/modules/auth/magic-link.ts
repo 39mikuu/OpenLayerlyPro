@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from "crypto";
 import { and, desc, eq, gt, isNull, sql, type SQLWrapper } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
-import { magicLinkTokens, tasks, type User } from "@/db/schema";
+import { magicLinkTokens, tasks, type User, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import type { ClientRateLimitIdentity } from "@/lib/client-rate-limit";
 import {
@@ -178,6 +178,25 @@ export async function requestMagicLink(
         for update
       `,
     );
+
+    // Preserve token-before-user lock ordering with consumeMagicLinkToken so a
+    // request cannot deadlock with a confirmation for the same mailbox.
+    const [existingUser] = await executeRows<{ role: User["role"] }>(
+      tx,
+      sql`
+        select ${users.role} as role
+        from ${users}
+        where ${users.email} = ${normalized}
+        limit 1
+        for update
+      `,
+    );
+    if (existingUser?.role === "admin") {
+      logger.info("Magic Link 请求已抑制", {
+        emailDigest: hmacSha256WithPurpose("auth-log-email", normalized),
+      });
+      return { suppressed: true };
+    }
 
     if (active) {
       const [deliveryTask] = await tx
@@ -484,7 +503,55 @@ export async function consumeMagicLinkToken(
       };
     }
 
+    const [lockedUser] = await executeRows<{ id: string; role: User["role"] }>(
+      tx,
+      sql`
+        select ${users.id} as id, ${users.role} as role
+        from ${users}
+        where ${users.email} = ${consumed.email}
+        limit 1
+        for no key update
+      `,
+    );
+    if (lockedUser?.role === "admin") {
+      return {
+        result: { status: "invalid" } satisfies MagicLinkConsumption,
+        rejectionEvent: {
+          reason: "invalid" as const,
+          boundary: "admin",
+          tokenId: consumed.id,
+          keyId: resolved.keyId,
+          userId: lockedUser.id,
+        },
+      };
+    }
+
     const user = await findOrCreateUserByEmail(consumed.email, tx);
+    // The conflict path in findOrCreateUserByEmail re-selects without a row
+    // lock. Lock the final row before deciding whether login metadata/session
+    // creation may proceed so a concurrent promotion cannot cross this point.
+    const [finalUser] = await executeRows<{ role: User["role"] }>(
+      tx,
+      sql`
+        select ${users.role} as role
+        from ${users}
+        where ${users.id} = ${user.id}
+        limit 1
+        for no key update
+      `,
+    );
+    if (finalUser?.role === "admin") {
+      return {
+        result: { status: "invalid" } satisfies MagicLinkConsumption,
+        rejectionEvent: {
+          reason: "invalid" as const,
+          boundary: "admin",
+          tokenId: consumed.id,
+          keyId: resolved.keyId,
+          userId: user.id,
+        },
+      };
+    }
     await touchLastLogin(user.id, meta?.locale, tx);
     const session = await createSession(user.id, { ip: meta?.ip, userAgent: meta?.userAgent }, tx);
     return {

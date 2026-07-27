@@ -192,6 +192,91 @@ describeWithDatabase("WP1 magic link integration", () => {
     await expect(db.select().from(tasks)).resolves.toHaveLength(1);
   });
 
+  it("does not mint a token or a delivery task for an admin mailbox", async () => {
+    const originalLastLoginAt = new Date("2025-01-02T03:04:05.000Z");
+    const originalUpdatedAt = new Date("2025-01-02T03:04:05.000Z");
+    const [admin] = await db
+      .insert(users)
+      .values({
+        email: "boss@example.com",
+        role: "admin",
+        passwordHash: "test-password-hash",
+        locale: "en",
+        lastLoginAt: originalLastLoginAt,
+        updatedAt: originalUpdatedAt,
+      })
+      .returning();
+
+    await expect(
+      requestMagicLink(" Boss@Example.com ", {
+        identity,
+        ip: identity.value,
+        locale: "zh",
+      }),
+    ).resolves.toEqual({ suppressed: true });
+    await expect(db.select().from(magicLinkTokens)).resolves.toHaveLength(0);
+    await expect(db.select().from(tasks)).resolves.toHaveLength(0);
+    await expect(db.select().from(appEvents)).resolves.toHaveLength(0);
+
+    const [after] = await db.select().from(users).where(eq(users.id, admin.id));
+    expect(after).toMatchObject({ role: "admin", locale: "en" });
+    expect(after.lastLoginAt).toEqual(originalLastLoginAt);
+    expect(after.updatedAt).toEqual(originalUpdatedAt);
+  });
+
+  it("serializes concurrent admin requests without minting a token or task", async () => {
+    await db.insert(users).values({
+      email: "concurrent-admin-request@example.com",
+      role: "admin",
+      passwordHash: "test-password-hash",
+    });
+
+    const results = await Promise.all([
+      requestMagicLink("concurrent-admin-request@example.com", {
+        identity,
+        ip: identity.value,
+      }),
+      requestMagicLink(" Concurrent-Admin-Request@Example.com ", {
+        identity,
+        ip: identity.value,
+      }),
+    ]);
+
+    expect(results).toEqual([{ suppressed: true }, { suppressed: true }]);
+    await expect(db.select().from(magicLinkTokens)).resolves.toHaveLength(0);
+    await expect(db.select().from(tasks)).resolves.toHaveLength(0);
+  });
+
+  it("does not spend the email and IP send budget for an admin mailbox", async () => {
+    const [admin] = await db
+      .insert(users)
+      .values({
+        email: "budget-admin@example.com",
+        role: "admin",
+        passwordHash: "test-password-hash",
+      })
+      .returning();
+
+    const attempts = getEnv().REQUEST_CODE_EMAIL_IP_RATE_MAX + 1;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      await expect(
+        requestMagicLink(" Budget-Admin@Example.com ", {
+          identity,
+          ip: identity.value,
+        }),
+      ).resolves.toEqual({ suppressed: true });
+    }
+    await expect(db.select().from(magicLinkTokens)).resolves.toHaveLength(0);
+    await expect(db.select().from(tasks)).resolves.toHaveLength(0);
+
+    await db.update(users).set({ role: "member" }).where(eq(users.id, admin.id));
+    await expect(
+      requestMagicLink(admin.email, { identity, ip: identity.value }),
+    ).resolves.toMatchObject({ suppressed: false });
+    await expect(db.select().from(magicLinkTokens)).resolves.toHaveLength(1);
+    await expect(db.select().from(tasks)).resolves.toHaveLength(1);
+  });
+
   it("keeps suppressing replacement links while the delivery task is retryable", async () => {
     await requestMagicLink("retry@example.com", { identity, ip: identity.value });
     const [row] = await db.select().from(magicLinkTokens);
@@ -305,6 +390,189 @@ describeWithDatabase("WP1 magic link integration", () => {
     // Replay after consumption fails closed, and the row stays consumed once.
     await expect(consumeMagicLinkToken(token)).resolves.toEqual({ status: "replayed" });
     await expect(verifyMagicLinkToken(token)).resolves.toEqual({ status: "replayed" });
+  });
+
+  it("burns the link without creating a session when the member was promoted after issuance", async () => {
+    const originalLastLoginAt = new Date("2025-01-02T03:04:05.000Z");
+    const originalUpdatedAt = new Date("2025-01-02T03:04:05.000Z");
+    const [user] = await db
+      .insert(users)
+      .values({
+        email: "promoted@example.com",
+        role: "member",
+        locale: "en",
+        lastLoginAt: originalLastLoginAt,
+        updatedAt: originalUpdatedAt,
+      })
+      .returning();
+    const { token, id } = await insertToken({
+      key: getMagicLinkKeys().current,
+      email: user.email,
+      redirectPath: "/posts/admin-boundary",
+    });
+    await db
+      .update(users)
+      .set({ role: "admin", updatedAt: originalUpdatedAt })
+      .where(eq(users.id, user.id));
+
+    await expect(
+      consumeMagicLinkToken(token, {
+        locale: "ja",
+        ip: "198.51.100.41",
+        userAgent: "admin-boundary-test",
+      }),
+    ).resolves.toEqual({ status: "invalid" });
+
+    const [storedToken] = await db.select().from(magicLinkTokens).where(eq(magicLinkTokens.id, id));
+    expect(storedToken.consumedAt).not.toBeNull();
+    await expect(db.select().from(sessions)).resolves.toHaveLength(0);
+    const [after] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(after).toMatchObject({ role: "admin", locale: "en" });
+    expect(after.lastLoginAt).toEqual(originalLastLoginAt);
+    expect(after.updatedAt).toEqual(originalUpdatedAt);
+
+    const events = await db.select().from(appEvents);
+    expect(events).toHaveLength(1);
+    const [event] = events;
+    expect(event.type).toBe("magic_link_rejected");
+    expect(event.payloadJson).toEqual({
+      reason: "invalid",
+      boundary: "admin",
+      tokenId: id,
+      keyId: "k2",
+      userId: user.id,
+    });
+    const eventText = JSON.stringify(event.payloadJson);
+    expect(eventText).not.toContain(token);
+    expect(eventText).not.toContain(storedToken.tokenHash);
+    expect(eventText).not.toContain(user.email);
+    expect(eventText).not.toContain("198.51.100.41");
+    expect(eventText).not.toContain("admin-boundary-test");
+    expect(eventText).not.toContain("/posts/admin-boundary");
+
+    await expect(consumeMagicLinkToken(token)).resolves.toEqual({ status: "replayed" });
+    await expect(db.select().from(sessions)).resolves.toHaveLength(0);
+  });
+
+  it(
+    "waits for an in-flight promotion before rejecting the promoted admin",
+    { timeout: 15_000 },
+    async () => {
+      const [member] = await db
+        .insert(users)
+        .values({ email: "promotion-lock@example.com", role: "member" })
+        .returning();
+      const { token, id } = await insertToken({
+        key: getMagicLinkKeys().current,
+        email: member.email,
+      });
+      const controller = await raw.reserve();
+      let consumption: ReturnType<typeof consumeMagicLinkToken> | undefined;
+      try {
+        await controller`begin`;
+        const [controllerBackend] = await controller<
+          { pid: number }[]
+        >`select pg_backend_pid()::integer as pid`;
+        await controller`update users set role = 'admin' where id = ${member.id}`;
+
+        consumption = consumeMagicLinkToken(token);
+        await waitForBlockedQuery("%for no key update%", controllerBackend.pid);
+
+        await controller`commit`;
+        await expect(consumption).resolves.toEqual({ status: "invalid" });
+        const [storedToken] = await db
+          .select()
+          .from(magicLinkTokens)
+          .where(eq(magicLinkTokens.id, id));
+        expect(storedToken.consumedAt).not.toBeNull();
+        await expect(db.select().from(sessions)).resolves.toHaveLength(0);
+      } finally {
+        await controller`rollback`.catch(() => {});
+        await Promise.allSettled([consumption].filter(Boolean));
+        await controller.release();
+      }
+    },
+  );
+
+  it(
+    "rechecks the role after a concurrent admin insert wins user creation",
+    { timeout: 15_000 },
+    async () => {
+      const email = "concurrent-admin-insert@example.com";
+      const { token, id } = await insertToken({
+        key: getMagicLinkKeys().current,
+        email,
+      });
+      const controller = await raw.reserve();
+      let consumption: ReturnType<typeof consumeMagicLinkToken> | undefined;
+      try {
+        await controller`begin`;
+        const [controllerBackend] = await controller<
+          { pid: number }[]
+        >`select pg_backend_pid()::integer as pid`;
+        await controller`
+          insert into users (email, role, password_hash)
+          values (${email}, 'admin', 'test-password-hash')
+        `;
+
+        consumption = consumeMagicLinkToken(token);
+        await waitForBlockedQuery('insert into "users"%', controllerBackend.pid);
+
+        await controller`commit`;
+        await expect(consumption).resolves.toEqual({ status: "invalid" });
+        const matchingUsers = await db.select().from(users).where(eq(users.email, email));
+        expect(matchingUsers).toHaveLength(1);
+        expect(matchingUsers[0].role).toBe("admin");
+        const [storedToken] = await db
+          .select()
+          .from(magicLinkTokens)
+          .where(eq(magicLinkTokens.id, id));
+        expect(storedToken.consumedAt).not.toBeNull();
+        await expect(db.select().from(sessions)).resolves.toHaveLength(0);
+      } finally {
+        await controller`rollback`.catch(() => {});
+        await Promise.allSettled([consumption].filter(Boolean));
+        await controller.release();
+      }
+    },
+  );
+
+  it("lets exactly one of two concurrent admin confirmations burn the token", async () => {
+    const [admin] = await db
+      .insert(users)
+      .values({
+        email: "admin-race@example.com",
+        role: "admin",
+        passwordHash: "test-password-hash",
+      })
+      .returning();
+    const { token, id } = await insertToken({
+      key: getMagicLinkKeys().current,
+      email: admin.email,
+    });
+
+    const outcomes = await Promise.all([
+      consumeMagicLinkToken(token),
+      consumeMagicLinkToken(token),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === "invalid")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "replayed")).toHaveLength(1);
+    await expect(db.select().from(sessions)).resolves.toHaveLength(0);
+    const events = await db.select().from(appEvents);
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => event.payloadJson)).toEqual(
+      expect.arrayContaining([
+        {
+          reason: "invalid",
+          boundary: "admin",
+          tokenId: id,
+          keyId: "k2",
+          userId: admin.id,
+        },
+        { reason: "replayed", tokenId: id, keyId: "k2" },
+      ]),
+    );
   });
 
   it("lets exactly one of two concurrent confirmations win", async () => {
