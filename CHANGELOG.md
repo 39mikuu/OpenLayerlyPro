@@ -13,6 +13,14 @@
   metadata, and session insertion now share one PostgreSQL transaction. A
   failed session insert rolls everything back, leaving the one-time link safe
   to retry; the session cookie is still written only after commit.
+- Enforced the fan/member-only Magic Link boundary for administrator accounts:
+  requests for an existing admin mailbox are silently suppressed without a
+  token or delivery task, and links issued before a role promotion are burned
+  without creating a session. Public request responses remain uniform, though
+  repeated requests may still eventually distinguish non-admin mailboxes via
+  the shared email/IP rate limit. Admin email-code and OAuth behavior, existing
+  session revocation, and delivery of links queued before promotion remain out
+  of scope for this boundary.
 - Tokens are stored only as keyed HMAC hashes in the new `magic_link_tokens`
   table (migration 0028) with a recorded key id, 15-minute TTL, single-use
   compare-and-swap consumption, and delivery through a durable
