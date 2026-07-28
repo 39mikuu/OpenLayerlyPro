@@ -275,7 +275,7 @@ transaction(tx)   ← 主事务
 │        ∧ status = 'processing' ∧ locked_by = fence.lockToken ∧ lease_until > now()
 │        未命中 → note「claim stale」（成功 no-op）
 ├─ 2. SELECT magic_link_requests WHERE id = payload.requestId
-│        不存在 → note「request row missing」（成功 no-op）
+│        不存在 → logger.warn({ requestId }) + note「request row missing」（成功 no-op；持久状态不变量破坏）
 │        resolved_at 非空 → note「already resolved」（成功 no-op，幂等重试出口）
 ├─ 3. pg_advisory_xact_lock(hashtext(request.email))
 ├─ 4. 重新校验 claim（等锁期间租约可能被抢占）—— 与 deliverMagicLinkEmailTask 同一模式
@@ -293,7 +293,7 @@ transaction(tx)   ← 主事务
 ├─ 9. 否则 mint（列传播见下）
 ├─ 10. UPDATE magic_link_requests SET resolved_at = now()
 └─ 提交
-清理（§5.6）在主事务**提交之后**、以**独立事务**执行，失败只记日志
+清理（§5.7）在主事务**提交之后**、以**独立事务**执行，失败只记日志
 ```
 
 **第 9 步的列传播（F184-10，规范性）**：基线从活的 HTTP 请求读取这些字段（`magic-link.ts:262-277`）；v3 中请求早已结束，全部字段**必须**取自 intake 行：
@@ -361,7 +361,8 @@ create table "magic_link_requests" (
   "minted_token_id" uuid references "magic_link_tokens"("id") on delete set null
 );
 create index "magic_link_requests_cleanup_idx"
-  on "magic_link_requests" (greatest("created_at", coalesce("minted_at", "created_at")), "id");
+  on "magic_link_requests" (greatest("created_at", coalesce("minted_at", "created_at")), "id")
+  where "resolved_at" is not null;
 create index "magic_link_requests_mint_budget_idx"
   on "magic_link_requests" ("email", "ip", "minted_at" desc)
   where "minted_at" is not null;
@@ -372,7 +373,7 @@ create index "magic_link_requests_mint_budget_idx"
 - `ip` / `user_agent` 与 `magic_link_tokens` 同列同语义。
 - **无角色列、无原因列**：`resolved_at` 只表示「已处理」，`minted_at` 只表示「本次是否签发」。admin、dedupe、fence、预算耗尽、超龄五种不签发成因在表中**彼此不可区分**——这是防止未来有人加一列就重新引入持久角色标记的唯一结构性屏障，由 §10 切片 2 测试 8 逐列固定（F184-15）。
 - 预算计数用 `minted_at`（而非 `minted_token_id`）作判据，使 `on delete set null` 不会放松预算。
-- 清理索引直接建在 `greatest(created_at, coalesce(minted_at, created_at))` 上，与 §5.6 的删除谓词一致（表达式索引，`greatest`/`coalesce` 对 `timestamptz` 是 immutable）。
+- 清理索引是 `resolved_at is not null` 的部分表达式索引，并直接建在 `greatest(created_at, coalesce(minted_at, created_at))` 上，与 §5.7 的删除谓词一致（表达式索引，`greatest`/`coalesce` 对 `timestamptz` 是 immutable）。未解析行不进入清理索引，也不得被常规保留期清理删除。
 
 ### 5.6 mint 预算：持久、精确、不可跨来源锁死
 
@@ -408,7 +409,8 @@ delete from magic_link_requests
 where id in (
   select id
   from magic_link_requests
-  where greatest(created_at, coalesce(minted_at, created_at))
+  where resolved_at is not null
+    and greatest(created_at, coalesce(minted_at, created_at))
         < now() - ($retentionHours * interval '1 hour')
   order by greatest(created_at, coalesce(minted_at, created_at)), id
   limit 200
@@ -416,9 +418,10 @@ where id in (
 );
 ```
 
-- `for update skip locked` + 确定性排序键 `(greatest(...), id)` 消除并发删除之间的死锁与互等。
+- **只删除已解析行**：`resolved_at is not null` 是强制谓词。`pending` / `processing` / 可重试 `failed` 的 intake 仍需要这行作为 durable payload state；即使它早于保留期也不得删除。否则任务会把 `request row missing` 当成成功 no-op，或与已读行但尚未写回 `resolved_at` / `minted_at` 的 handler 竞态，造成用户无超龄告警地收不到链接，甚至让已 mint 结果退出持久预算计数。
+- `for update skip locked` + 确定性排序键 `(greatest(...), id)` 消除并发删除之间的死锁与互等。因为 worker 直到主事务提交才把行变为 resolved，清理无法选中正在处理的未解析行；已解析但任务尚未标记成功的行可安全删除，后续重试按既有 `request row missing` 幂等 no-op 退出，因为业务结果已经提交。
 - 删除谓词用 `greatest(created_at, coalesce(minted_at, created_at))` 而不是 `created_at`（F184-05）：预算按 `minted_at` 计数，而 `minted_at` 可能比 `created_at` 晚至多 `MAGIC_LINK_REQUEST_MAX_AGE_MINUTES`；只按 `created_at` 删除会在行仍应计入预算时把它删掉，静默放松 §5.6 的上限。
-- 每次任务最多删 200 行；每个公开请求恰好产生一个 intake 任务，故稳态下删除速率不低于写入速率，表容量收敛。不引入新的调度器依赖，也不新增任务种类。
+- 每次任务最多删 200 行；正常完成（包括 admin / dedupe / fence / budget / over-age 抑制）的请求都会置 `resolved_at`，因此稳态下已解析行的删除速率不低于正常完成写入速率。**dead-letter 后仍未解析的行不由常规清理删除**：它们必须与 dead intake task 一起保留，供告警调查或明确的人工重试/处置，避免静默丢失 durable state；运营监控必须同时覆盖 `resolved_at is null` 的陈旧行数。不得为了表容量收敛而删除仍被非终态或 dead task 引用的行。
 
 **保留期跨字段校验（fail closed，位于 `assertRuntimeSecurity()`）**：
 
@@ -498,6 +501,7 @@ v3 的 Magic Link 路径**只使用前者**，且**完全不构造任何新的 l
 | worker 崩溃（提交前） | 回滚 + 租约到期 + 重试 |
 | worker 崩溃（提交后、标记任务成功前） | 重试时第 2 步读到 `resolved_at` 非空 → 成功 no-op；**不会重复 mint** |
 | 陈旧 claim / 租约被抢占 | 第 1 步或第 4 步返回成功 no-op，不 mint |
+| intake 引用的 request 行缺失 | 视为 durable-state 不变量破坏：记录只含 `requestId` 的告警并成功 no-op；正常保留期清理不得制造该状态（§5.7） |
 | 未升级实例领到 intake 任务 | `runTaskHandler` 默认分支抛 `PermanentTaskError("Unsupported task kind")`（`tasks/handlers.ts:409-411`），`dispatchClaimedTask` 在**首次**尝试即 `markTaskDead`（`tasks/dispatcher.ts:83-86`）。这就是 §9.2 必须用发布门避免的场景 |
 | 清理事务失败 | 只记日志；不回滚已提交的 mint，不使任务失败（§5.7） |
 | `recordEvent()` 失败 | best-effort，只记日志，不回滚（ADR 0002 / #175） |
@@ -576,7 +580,8 @@ v3 的 Magic Link 路径**只使用前者**，且**完全不构造任何新的 l
 | worker 崩溃 / 租约过期后重试 | 第 2 步 `resolved_at` 非空 → 成功 no-op；不重复 mint、不重复入队投递 |
 | 同一 intake 被两个 worker 同时 claim | claim 校验 + 等锁后复检，只有持有效租约者继续；另一个成功 no-op |
 | mint 预算并发计数 | 计数与 mint 在同一持锁事务内，**精确**，无超发、无多计 |
-| 两个清理事务并发 | `for update skip locked` + 确定性排序键 `(greatest(...), id)`：互不阻塞、无死锁；被跳过的行留给下一次任务 |
+| 两个清理事务并发 | 两者只选择 `resolved_at is not null` 的行；`for update skip locked` + 确定性排序键 `(greatest(...), id)`：互不阻塞、无死锁；被跳过的行留给下一次任务 |
+| 清理与 pending / processing / retryable handler 并发 | 未解析行不满足清理谓词，即使超过 retention 也不会被删除；handler 引用的 durable state 一直保留到主事务提交 `resolved_at`。真实 PostgreSQL 竞态测试固定该边界 |
 | 清理与预算窗口交互 | 删除谓词覆盖 `minted_at` 滞后，并由 §5.7 的保留期不等式保证严格覆盖预算窗口 + 超龄界 |
 | 投递任务侧全部并发场景 | `deliverMagicLinkEmailTask()` 零改动，既有语义与测试保持 |
 | 多实例 | 公开路径无共享内存状态；mint 预算是数据库计数，跨实例**精确**（相对基线的内存预算是改进） |
@@ -714,7 +719,7 @@ v3 的 Magic Link 路径**只使用前者**，且**完全不构造任何新的 l
 16. **`保留期跨字段校验 fail closed`**：断言 `assertRuntimeSecurity` 抛出的**具体错误信息**（不只是「抛错」），覆盖 §5.7 不等式的边界：`RETENTION_HOURS=1` + `REQUEST_CODE_RATE_WINDOW_MS=3_600_000` + `MAX_AGE=30` 必须**失败**（3 600 000 < 3 600 000 + 1 800 000），`RETENTION_HOURS=2` 必须通过。
 17. **`超龄只在首次 claim 生效`（F184-01，load-bearing）**：同一陈旧 intake 在 `attempts = 1` 时必须 resolved + 告警且不 mint；构造它已在 age policy 内完成首次 claim、随后失败，并在 `attempts > 1` 时把 `created_at` 回拨到超龄，重试仍必须进入正常判定而不是 age rejection。该测试不得以固定 `RETRY_HORIZON_MS` 代替 attempts 语义。
 18. **`dedupe 越界只告警不失败`**：`REQUEST_CODE_SEND_DEDUPE_SECONDS=1800` 时 `getEnv()` 成功但输出 G10 前提告警。
-19. **`清理在主事务之外且不阻塞无关邮箱`**：控制事务锁住一批旧行；断言 mint 主事务照常提交（`for update skip locked` 跳过被锁行），清理只删未被锁的行且每次不超过 200 行；断言删除谓词覆盖 `minted_at` 滞后的行（`created_at` 已过保留期但 `minted_at` 未过的行**不**被删除）。
+19. **`清理只删除已解析行，且在主事务之外`**：控制事务锁住一批旧的已解析行；断言 mint 主事务照常提交（`for update skip locked` 跳过被锁行），清理只删未被锁的已解析行且每次不超过 200 行；断言删除谓词覆盖 `minted_at` 滞后的行（`created_at` 已过保留期但 `minted_at` 未过的行**不**被删除）。另构造超过 retention 的 `pending`、`processing` 与可重试 `failed` intake，分别与清理并发，断言其 `magic_link_requests` 行始终存在、handler 可继续读取并最终写入 `resolved_at` / `minted_at`，不会走 `request row missing` no-op；该测试必须使用真实 PostgreSQL 的锁/阻塞观测，不用固定 sleep。
 
 ### 切片 4：重试时限、崩溃、并发（真实 PostgreSQL）
 
@@ -898,7 +903,7 @@ MAGIC_LINK_REQUEST_RETENTION_HOURS=1     # 3600000 ≥ 60000 + 1200000，满足 
   5. `request-code-email-ip:*` 已在 Magic Link 全路径解除引用；
   6. admin 的 `magic_link_tokens` 与**投递任务** `auth.magic_link_email` 计数恒为 0；intake 任务对所有角色一致存在（§2.2 / §2.3）；
   7. 代码、注释、PR、CHANGELOG 中从未把 `auth.magic_link_request` 称为 delivery task；
-  8. worker 锁顺序为 `advisory → token → user`，claim 双重校验完整；清理**不在**主事务内；
+  8. worker 锁顺序为 `advisory → token → user`，claim 双重校验完整；清理**不在**主事务内且只删除 `resolved_at is not null` 的行，pending / processing / retryable state 不会被保留期清理；
   9. 超龄只在首次 claim 应用；第 2–5 次自动重试不因 age 被拒绝，首次超龄终态可观测；
   10. intake dead-letter 已纳入告警面；
   11. 事件/日志 payload 不超出 §5.10 白名单，且不含角色或抑制原因；
