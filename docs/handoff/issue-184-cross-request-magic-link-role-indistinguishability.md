@@ -793,9 +793,14 @@ v3 的 Magic Link 路径**只使用前者**，且**完全不构造任何新的 l
 `getEnv()` 会在进程内缓存解析后的环境变量，因此**只修改部署平台中的环境变量不会让正在运行的实例立刻切换路径**。回滚必须把「关闭开关」视为一次需要重启/滚动的配置发布：
 
 1. **将 `MAGIC_LINK_INTAKE_ENABLED=false` 写入部署配置，并完成所有新镜像实例的重启/滚动**。逐实例确认新进程已读取到 `false`；在所有实例完成前，仍可能有旧进程继续创建 intake 行，**不得开始以“已停止写入”为前提的排空判断**。
-2. **确认停止新增后再排空**：观察 `magic_link_requests`、`auth.magic_link_request` 与引用 `delivery_state='pending'` candidate 的 `auth.magic_link_email` 任务，确认没有新的 intake 行持续产生；已有任务仍由当前新镜像 handler 正常处理。等待 `magic_link_requests where resolved_at is null` 清零，并确认 intake 与 delivery-aware 投递任务没有 `pending` / `processing` / 可重试 `failed` 残留；所有 candidate 均已 active 或 terminal。
-3. 若要回滚**镜像**：必须在第 2 步完成之后再滚动到旧镜像。否则残留的 intake 任务会被旧镜像在**首次尝试**就 `markTaskDead`（机制同 §9.2），对应用户永远收不到链接——v2 §9.3 声称它们「会持续失败直至 dead」、运营者可「直接标记为 dead」，两句都与代码不符：它们**已经**是 dead，且只经历了一次尝试。受影响用户需重新发起请求。
-4. 可选：`drop table magic_link_requests;`（保留该表不影响旧代码）。
+2. **确认停止新增后再排空可重试工作**：观察 `magic_link_requests`、`auth.magic_link_request` 与引用 `delivery_state='pending'` candidate 的 `auth.magic_link_email` 任务，确认没有新的 intake 行持续产生；已有任务仍由当前新镜像 handler 正常处理。先等待 intake 与 delivery-aware 投递任务不存在 `pending` / `processing` / 可重试 `failed`，并确认所有 candidate 均已 active 或 terminal。此时**不得直接要求全部 `resolved_at is null` 清零**：§5.7 有意保留 dead intake 对应的未解析行，单纯等待会让紧急回滚永久卡住。
+3. **显式处置 dead intake（回滚门，必须逐项留证）**：对每个 `kind='auth.magic_link_request' and status='dead'` 的任务，从其 versioned payload 解析 `requestId`，并把任务 ID、request ID、`last_error` 与处置选择写入运营记录。只有两种允许的选择：
+   - **重试**：在新镜像仍运行时使用既有受鉴权的任务管理重试操作 `retryTask(taskId)`（它把 `dead`/`failed` 原子恢复为 `pending`、`attempts=0`），然后回到第 2 步等待正常解析；不得直接用 SQL 改 task 状态或伪造 lock token。
+   - **明确放弃本次已接受请求**：仅当同一事务锁住 dead task 与 request 行，并验证 `resolved_at is null`、`minted_at is null`、`minted_token_id is null`，且不存在由该 request 引用的 token/candidate 或 `auth.magic_link_email` 任务时，才可把 request 行置 `resolved_at=now()`，并保留 dead task 和运营记录作为审计证据。该操作表示此请求不会投递，受影响用户必须在回滚后重新请求；不得删除 request/task，不得把它伪装成成功发送。任一安全谓词不满足都属于 durable-state invariant violation，**阻断镜像回滚**并要求人工调查，而不是强制 disposition。
+
+   回滚 drain 的规范谓词因此是：**无可重试 intake/delivery-aware 任务；无未处置 dead intake；无仍由 live/retryable delivery task 引用的 pending candidate**。它不是裸的 `count(*) from magic_link_requests where resolved_at is null = 0`。处置事务与 task→token/request 锁顺序必须复用 §5.3a/cleanup 的同向顺序，避免与仍在结束中的 handler 形成反向等待。
+4. 若要回滚**镜像**：必须在第 2–3 步完成之后再滚动到旧镜像。否则残留的 intake 任务会被旧镜像在**首次尝试**就 `markTaskDead`（机制同 §9.2），对应用户永远收不到链接——v2 §9.3 声称它们「会持续失败直至 dead」、运营者可「直接标记为 dead」，两句都与代码不符：它们**已经**是 dead，且只经历了一次尝试。受影响用户需重新发起请求。
+5. 可选：`drop table magic_link_requests;`（保留该表不影响旧代码）。
 
 回滚会**恢复** #176 记录的跨请求区分信号与按邮箱 429，必须在回滚说明中写明。
 
@@ -805,6 +810,7 @@ v3 的 Magic Link 路径**只使用前者**，且**完全不构造任何新的 l
 - **行为变化（须在 CHANGELOG 声明）**：(a) 开关打开后 Magic Link 邮件比基线晚一个 dispatcher 周期；(b) 按邮箱预算耗尽不再返回 429，只返回 accepted；(c) Magic Link 不再消费验证码流程的共享桶；(d) `magic_link_requested` 事件 payload 由 `{tokenId, keyId, emailDigest}` 变为 `{requestId, emailDigest}` 且每请求一条；(e) 新增一张按请求增长、保留期默认 24 小时的表。
 - **监控（F184-03，已修正）**：`MailTaskFailureCounts`（`src/modules/tasks/index.ts:45-49`，统计逻辑在 `:629-634`）只覆盖邮件类任务，**不含** intake。因此本 Issue **要求实现**把 `auth.magic_link_request` 纳入 dead-letter 告警面（§5.10），并把 §5.10 的超龄告警接入同一日志通道。**在这两项落地之前，「用户看到 accepted 却收不到链接」没有任何自动检测**——运营者只能人工查看 `/admin/tasks`。v2 声称「由通用 dead-letter 告警覆盖」是错误的：`warnMailTaskDeadLettered()` 对非邮件类 kind 直接返回（`src/modules/tasks/index.ts:53-55`）。
 - **恢复告警说明（F-J）**：恢复流程会让备份中的在途 intake 以旧 `created_at` 重新执行，因而预期产生一次与在途数量相当的超龄告警突发。部署/恢复文档必须提示运营者按恢复时间窗口整体识别并忽略该突发；`src/modules/restore/neutralize.ts` 保持不修改。
+- **回滚 dead-intake 处置**：部署 runbook 必须提供 §9.3 第 3 步的清单查询、受鉴权 `retryTask(taskId)` 路径与经安全谓词保护的明确放弃事务；每次处置都记录 task/request ID、错误和选择。不得把 dead intake 从 drain 中静默排除，也不得要求一个因 dead 行有意保留而不可达的裸 `resolved_at is null = 0`。
 - 建议运营者为 `magic_link_requests` 行数、`auth_intake` 队列深度与 intake 超龄告警建立面板；饱和阈值见 §8.2。
 - **`app_events` 保留**：见 §11.2。
 
@@ -1058,6 +1064,7 @@ MAGIC_LINK_REQUEST_RETENTION_HOURS=1     # 3600000 ≥ 60000 + 1200000，满足 
   20. 切片 4a 的真实 PostgreSQL 并发、回滚、stale lease、consume race、migration 与 cleanup 测试均实际通过。
   21. delivery payload 以显式 `deliveryProtocol: 2` 区分 delivery-aware candidate；无 marker 的 migration 前/Phase 1 legacy task 始终走基线 SMTP，绝不走 active recovery；
   22. cleanup 锁顺序固定 task → token，与 handler 同向；legacy task 不被 v2 pending cleanup 处理。
+23. 回滚 drain 会先排空可重试任务，再逐项重试或安全处置 dead intake；不会因有意保留的 unresolved dead 行永久等待，也不会静默忽略、删除或伪装成功。
 
 所有证据必须绑定 implementation exact head。未执行或因基础设施跳过的检查必须明确报告。
 
