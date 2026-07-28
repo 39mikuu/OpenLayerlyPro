@@ -429,6 +429,14 @@ v6 只在事务 B 做「发信后再查角色」。这不满足不变量 3：事
 
 **预留（写入方）**：事务 A 在同一事务内完成「锁定读到 non-admin」与「写 `candidate.delivery_reservation_until = now() + MAGIC_LINK_DELIVERY_RESERVATION_SECONDS`」，两者原子。事务 B 激活或取消时清空该列。SMTP 失败时**不**清空，让它自然到期——提前清空等于给晋升开一个本次投递仍可能在途的窗口。
 
+**`users ... FOR UPDATE` 对 unknown 邮箱锁不到任何东西（F-V，规范性）**
+
+本节反复出现「锁定读到 non-admin」的说法，必须澄清它在**哪一种邮箱上根本不成立**，否则实现者会以为行锁本身就是围栏、进而认为预留是冗余的。
+
+`changeAdminEmail()` 在目标邮箱已存在其它用户行时抛 `emailTaken`（`admin-account.ts:173`），因此它能把邮箱变成 admin 的**唯一**情形，是该邮箱此前**没有任何 `users` 行**——它对 §5.3a 而言是 unknown 邮箱。而 `SELECT ... FROM users WHERE email = $1 FOR UPDATE` 在命中 0 行时**不获取任何锁**：PostgreSQL 的行锁只能加在已存在的行上。于是在最需要围栏的那条晋升路径上，事务 A 与事务 B 的角色读取是**空锁**，它既不阻塞 `changeAdminEmail()`，也不被它阻塞。
+
+结论：对 unknown 邮箱，排序不变量**完全**由 email advisory lock 与持久投递预留承担，`users` 行锁不提供任何串行化。这不是缺陷（预留正是为此设计的），但它是本围栏不可删减的理由：任何「既然已经 `FOR UPDATE` 了 users，就不需要预留」的简化都会让 `changeAdminEmail()` 竞态原样复活。§10 测试 26o 必须**同时**覆盖已有 member 行与完全没有 user 行两种目标邮箱，后者正是 `changeAdminEmail()` 的真实形态。
+
 **观察（晋升方，规范性）**：仓库中会使某个邮箱成为 admin 的写路径只有两条，二者都必须实施本围栏：
 
 | 路径 | 位置 | 性质 |
@@ -475,6 +483,8 @@ SMTP 调用开始前启动续期定时器，间隔 = MAGIC_LINK_DELIVERY_RESERVA
 调用结束（成功、抛错或超出硬期限）后必须在 finally 中清除定时器
 ```
 
+**定时器必须在事务 B 打开之前停止（规范性）**：续期只取 candidate 的行锁、不取 advisory lock，而事务 B 会以 `FOR UPDATE` 锁定该邮箱**全部** token 行（含同一 candidate）。若定时器在 B 打开后仍存活，一次续期就会去争抢 B 已持有的行锁；由于两者共用同一连接池，在池容量紧张时这会退化为自死锁——B 需要跑完才放锁，而续期占着一条连接等这把锁。因此 `finally` 清除定时器必须发生在事务 B 之前，而不是「handler 返回前的某处」。
+
 续期本身是被围栏的：它要求任务仍由本 worker 持有有效租约，且 candidate 仍是 `pending`。因此租约被抢占、candidate 被晋升事务取消、或 candidate 已被别的执行推进时，续期立刻失败而不会延长一个已经无效的预留。**围栏丢失后事务 B 必须失败关闭**：不激活、不 supersede、不记 `magic_link_sent`，按 terminal no-op 收敛。
 
 续期与晋升路径通过 candidate 的行锁串行（晋升在 §5.3b 第 2 步以 `FOR UPDATE` 锁定该邮箱全部 token 行）：要么晋升先提交并把 candidate 置 `cancelled`，随后续期影响 0 行、worker 得知围栏丢失；要么续期先提交，晋升读到未到期预留并 fail closed。两种串行结果都不产生「已是 admin 却仍激活」的状态。
@@ -483,7 +493,7 @@ SMTP 调用开始前启动续期定时器，间隔 = MAGIC_LINK_DELIVERY_RESERVA
 
 **硬期限：限制晋升被阻塞的时长（可用性，不是排序）**
 
-续期解决了排序，却带来一个新的可用性问题：一个恶意或故障的对端可以靠持续 trickle 让 `sendMail()` 永不返回，于是预留被无限续期，管理员晋升被**无限期**阻塞。因此实现必须给这次投递一个**真正可中止的墙钟期限** `MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS`（默认 `300`，范围 60–900，且必须 ≥ `MAGIC_LINK_DELIVERY_RESERVATION_SECONDS`）：到期后停止续期、把本次发送判定为**结果不确定**、绝不激活，并让任务按瞬时故障重试。
+续期解决了排序，却带来一个新的可用性问题：一个恶意或故障的对端可以靠持续 trickle 让 `sendMail()` 永不返回，于是预留被无限续期，管理员晋升被**无限期**阻塞。因此实现必须给这次投递一个**真正可中止的墙钟期限** `MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS`（默认 `120`，范围 60–900，且必须 ≥ `MAGIC_LINK_DELIVERY_RESERVATION_SECONDS`；默认值取与预留窗口相等，即不等式的下界，理由见 §8.2 的队头阻塞分析）：到期后停止续期、把本次发送判定为**结果不确定**、绝不激活，并让任务按瞬时故障重试。
 
 该中止**必须真正拆掉底层 socket**。一个只在外层 `Promise.race` 上超时、却把连接留着的实现不构成期限——邮件仍可能在之后离开进程，排序漏洞原样存在。这对 `src/modules/mail/index.ts` 有实际要求：`getTransporter()` 目前按配置键缓存并共享 transporter（`:32-47`），因此不能用 `transporter.close()` 来中止单次发送（会波及其它在途邮件）。实现必须为 Magic Link 投递提供一条可中止的发送路径——独立的非共享 transporter，或把 `AbortSignal` 接到 socket destroy 上——并保持既有 SMTP 错误分类不变。这使 `mail/index.ts` 从「只导出常量」上升为「提供可中止发送」，§12 已相应更新。
 
@@ -494,7 +504,7 @@ MAGIC_LINK_DELIVERY_RESERVATION_SECONDS × 1000 ≥ SMTP_HANDSHAKE_IDLE_BUDGET_M
 MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS ≥ MAGIC_LINK_DELIVERY_RESERVATION_SECONDS
 ```
 
-默认 `120_000 ≥ 75_000 + 30_000 = 105_000` ✅、`300 ≥ 120` ✅。常量更名为 `SMTP_HANDSHAKE_IDLE_BUDGET_MS = 75_000`，因为它描述的是**握手阶段的空闲预算之和**，不是调用上界；沿用旧名会把已经撤回的错误推导重新读回来。它仍按仓库既有做法在 `src/lib/env.ts` 顶部**镜像**声明（与 `TASK_BATCH_SIZE`（`env.ts:8`）镜像 `tasks/index.ts:31` 同形），避免 `env.ts` 为解析环境变量而 import `nodemailer`，并由漂移守卫测试固定。
+默认 `120_000 ≥ 75_000 + 30_000 = 105_000` ✅、`120 ≥ 120` ✅。常量更名为 `SMTP_HANDSHAKE_IDLE_BUDGET_MS = 75_000`，因为它描述的是**握手阶段的空闲预算之和**，不是调用上界；沿用旧名会把已经撤回的错误推导重新读回来。它仍按仓库既有做法在 `src/lib/env.ts` 顶部**镜像**声明（与 `TASK_BATCH_SIZE`（`env.ts:8`）镜像 `tasks/index.ts:31` 同形），避免 `env.ts` 为解析环境变量而 import `nodemailer`，并由漂移守卫测试固定。
 
 预留续期间隔也必须落在租约续期能力之内：`TASK_LEASE_MS = 60_000`，dispatcher 每 `TASK_LEASE_MS / 3` 续租（`dispatcher.ts:55-71`），因此一个仍在运行的 handler 在整个硬期限内都能同时保住租约与预留。这不改变 §5.4 的结论——那里说明的是不存在有限的**最坏重试** horizon，与单次执行内的续期能力是两件事。
 
@@ -732,7 +742,7 @@ where id in (
 | `MAGIC_LINK_REQUEST_RETENTION_HOURS` | `z.coerce.number().int().min(1).max(720).default(24)` | `24` | `magic_link_requests` 保留期（§5.7） |
 | `TASK_AUTH_INTAKE_MAX_PER_BATCH` | `z.coerce.number().finite().int().min(0).max(20).default(4)` | `4` | `auth_intake` 队列每批上限（§5.3），与既有 `TASK_MAINTENANCE_MAX_PER_BATCH`（`env.ts:59`）同形状；`0` 仅在发布门关闭时合法，见下 |
 | `MAGIC_LINK_DELIVERY_RESERVATION_SECONDS` | `z.coerce.number().int().min(30).max(600).default(120)` | `120` | §5.3b 投递预留窗口；由 worker 每 1/3 窗口续期以覆盖整段 SMTP 调用 |
-| `MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS` | `z.coerce.number().int().min(60).max(900).default(300)` | `300` | §5.3b 可中止墙钟期限；限制晋升被在途投递阻塞的最长时间 |
+| `MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS` | `z.coerce.number().int().min(60).max(900).default(120)` | `120` | §5.3b 可中止墙钟期限；同时限制晋升被阻塞时长与 dispatcher 队头阻塞时长（§8.2）。调大前必须读 §8.2 |
 | `MAGIC_LINK_INTAKE_ENABLED` | `z.string().default("false").transform((v) => v === "true")` | `false`（引入该特性的版本） | 发布门（§9.2）。`false` 时公开路径沿用基线同步路径；`true` 时启用 v3 intake 路径 |
 
 **布尔解析约定（F-M，规范性）**：`MAGIC_LINK_INTAKE_ENABLED` **必须**沿用仓库中每一个布尔变量的既有形状 `z.string().default("false").transform((v) => v === "true")`（例：`SECURITY_HSTS_ENABLED`，`src/lib/env.ts:16-19`）。这意味着**只有精确的字符串 `"true"` 才为真**；`"1"`、`"TRUE"`、`"yes"`、`"on"` 全部解析为 `false`。鉴于这是决定 #184 在某个部署里到底修没修的开关（§11.7），该约定必须写进 `.env.example` 注释，并由 §10 测试 32 对 `"1"` 与 `"TRUE"` 显式断言为 `false`，避免运营者「以为打开了其实没打开」。
@@ -961,6 +971,22 @@ v3 的 Magic Link 路径**只使用前者**，且**完全不构造任何新的 l
 
 **对不变量 3 的结论**：专用类别把攻击者制造的 FIFO backlog 隔离在 Magic Link intake 内，并以 4/批限制它对共享 dispatcher 的占用；它不把 intake 处理成本消除，也不提供 72-IP 的硬安全边界。强攻击者或较高既有负载仍可造成 intake 延迟或超龄，并使其它类别损失保证名额以外的机会吞吐；这是明确接受的容量型 DoS 残余，而不是按目标邮箱耗尽某一受害者有用登录容量的机制。降级对 admin / member / unknown 一致，不产生角色信号（§8.3）。运营上必须监控 `auth_intake` 队列深度、实际 claim/service rate、batch 执行时长与超龄告警，并只能在容量测量后调整 `TASK_AUTH_INTAKE_MAX_PER_BATCH`。
 
+### 8.2a 投递硬期限与 dispatcher 队头阻塞（F-W）
+
+§5.3b 的墙钟期限不只是「晋升被阻塞多久」，它同时是**整个任务队列被一次慢投递堵住多久**。理由在 dispatcher 的既有形态里：`tick()` 以 `if (running) return;` 保证同一时刻只有一个批次在跑（`dispatcher.ts:183-184`），而批内任务是逐个 `await` 的串行执行（§8.2）。因此一次占满硬期限的 `auth.magic_link_email` 投递会把**所有类别**——支付回调派发、定时发布、验证码 fallback、intake——一起挡在后面，直到它结束。
+
+这不是本 Issue 新造的问题：基线同样串行、同样在 SMTP 上阻塞，而且基线的阻塞时长**没有上界**（§5.3b F-S：三个超时都是空闲超时，可被持续 trickle 无限重置）。引入可中止硬期限实际上是把一个无界的队头阻塞收敛为有界。但正因为它现在是一个**由本规格选定的数值**，就必须按队列影响而不是只按邮件成功率来选：
+
+| 默认值 | 晋升最坏等待 | 全队列最坏停摆 | 评价 |
+|---|---|---|---|
+| 300 s | 300 s | **300 s** | 对慢 provider 最宽容，但一次卡住的投递让支付与发布停 5 分钟；v9 初稿的取值，已否决 |
+| **120 s** | 120 s | 120 s | 等于预留窗口，取 §5.8 不等式的下界；正常 SMTP 远低于此，被判「结果不确定」的概率极低 |
+| 60 s | 60 s | 60 s | 停摆最小，但低于握手空闲预算 75 s + 30 s 的下界，必须同步调小预留窗口，改动面更大 |
+
+**因此默认值定为 120 s**，并要求运营者在调大之前先读本节：把它调到 300 s 意味着接受同等时长的全队列停摆。真正的结构性解法是让 dispatcher 并发执行不同类别的任务，那是 ADR 0003 的范围，明确不在本 Issue 内——本节只保证选值是在知情下做出的，并把该耦合登记为已知约束。
+
+监控上必须同时观察投递任务时长分布与 dispatcher tick 时长：后者接近硬期限即说明发生过队头阻塞。
+
 ### 8.3 降级不产生角色信号
 
 超龄、队列积压、intake dead-letter 全部发生在公开请求路径**之后**，且判定输入（`created_at`、队列深度）与目标邮箱的角色无函数依赖。公开响应在所有这些状态下都是同一个 `200 accepted`（§6.1 第 9–11 行）。因此可用性降级不构成 §3 威胁模型下的区分信号。
@@ -1179,7 +1205,7 @@ v3 在**结构上**消除了角色对语句序列、往返次数、事务类别�
 
 - **管理员操作可能被短暂拒绝**：当目标邮箱恰有一次在途 Magic Link 投递时，`setupSite()` 与 `changeAdminEmail()` 会以可重试错误失败，最长重试等待为 `MAGIC_LINK_DELIVERY_RESERVATION_SECONDS`（默认 120 s）。这是**故意**的 fail closed：另一种选择是让运营事务持锁等待一个由外部 SMTP 服务器决定时长的窗口。两条路径都是低频操作，但错误文案必须明确「稍后重试」，不能让运营者以为是配置错误。
 - **worker 崩溃会延长该窗口到预留上限**：事务 A 提交后进程消失时，没有任何人清空预留，晋升要等到它自然到期。加大 `MAGIC_LINK_DELIVERY_RESERVATION_SECONDS` 会同步加长这个最坏阻塞时间，因此它不能被「为了保险起见」随意调大。
-- **在途投递会持续续期，晋升的最坏等待由硬期限决定**：由于预留随 SMTP 调用续期（§5.3b F-S），一次缓慢或被恶意 trickle 拖住的投递会把晋升阻塞到 `MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS`（默认 300 s）为止，而不是 120 s。这是排序正确性的直接代价：要么允许晋升插到在途发送中间（v8 的错误），要么让运营操作等待一个有界窗口。调大硬期限会同步加长该等待，调小则会更早把慢投递判为结果不确定（§5.3b 残余 2）。
+- **在途投递会持续续期，晋升的最坏等待由硬期限决定**：由于预留随 SMTP 调用续期（§5.3b F-S），一次缓慢或被恶意 trickle 拖住的投递会把晋升阻塞到 `MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS`（默认 120 s）为止。该值同时决定 dispatcher 的最坏队头阻塞时长，选值理由见 §8.2a。这是排序正确性的直接代价：要么允许晋升插到在途发送中间（v8 的错误），要么让运营操作等待一个有界窗口。调大硬期限会同步加长该等待，调小则会更早把慢投递判为结果不确定（§5.3b 残余 2）。
 - **围栏只覆盖数据库内的角色写入**：见 §5.3b 残余 3。同时它不改变 §11.5 —— 成功投递本身仍在服务端遥测里隐含「该邮箱当时不是 admin」。
 
 围栏**不**声称「admin 邮箱在任何情况下都绝不会收到任何邮件」：受理时非 admin、直到投递完成都非 admin、随后才晋升的邮箱会收到一封当时完全合法的链接邮件，该链接此后由消费期 admin guard 拒绝。可声称的是 §5.3a 末尾的排序不变量。
