@@ -268,6 +268,7 @@ pnpm build
 ### 项目与开发
 
 - [产品需求文档](docs/PRD.md)
+- [软件需求规格说明书（SRS，完整需求基线）](docs/requirements-spec.md)
 - [路线图](docs/roadmap.md)
 - [架构文档](docs/architecture/core-system.md)
 - [架构决策记录（ADR）](docs/adr/README.md)
