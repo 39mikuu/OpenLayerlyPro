@@ -1,12 +1,12 @@
 # Issue #184：跨请求 Magic Link 角色不可区分性规格
 
-- **状态**：Proposed（v12，按三轮独立复核 F1–F12、F184-01–F184-15、F-A–F-AE 及 Codex 十轮复核修订）
+- **状态**：Proposed（v13，按三轮独立复核 F1–F12、F184-01–F184-15、F-A–F-AE 及 Codex 十轮复核修订；v13 为结构性收敛整理，**不改变任何设计决定**）
 - **Issue**：[#184](https://github.com/39mikuu/OpenLayerlyPro/issues/184)
 - **设计基线**：`origin/main` `af24c6fd8fae8a07750f1ac648cdbae46f0e4c85`
 - **变更类型**：Auth / anti-enumeration security fix（**含 schema 变更与 migration**）
 - **前置**：[#175](./issue-175-magic-link-session-atomicity.md)、[#176](./issue-176-admin-magic-link-boundary.md)、[S4 认证限流硬化](./harden-s4-auth-rate-limiting.md)、[ADR 0003](../adr/0003-durable-task-and-outbox-boundary.md)
 
-本文件是 Issue #184 的自包含权威规格。**v1 设计（三层内存预算）已被完全废弃**：独立复核 F1 指出它在「admin = 只读事务 / member = 写事务」上无法满足 Issue #184 不变量 1 的 latency-class 要求，而该不变量**不接受削弱、重新解释、豁免或修订**。v2 改为「角色无关的持久 intake + 通用处理任务」；v3–v5 修复重试时限、滚动发布安全、告警缺口、清理事务位置与队列吞吐等发现；v6 修复「mint 即作废已投递链接、但 SMTP 尚未成功」的可用性缺陷：替代 token 先以 pending/inactive 状态持久化，SMTP 成功后才在围栏事务中激活，并同时 supersede 旧的已投递 token；v7 固定跨 pending/active 的单调激活围栏、管理员角色判定的权威时点，以及 task 终态提交后的 pending-candidate 可重试清理；v8 补齐三处只靠事后检查而缺少串行化的边界——用可线性化的投递预留把管理员晋升与在途 SMTP 互斥（§5.3b）、让激活事务持 task 行锁并锁定该邮箱全部 token 行（消除租约抢占与「消费后仍激活」造成的第二个 session）、以及为 intake 行与 intake 门/cap 组合补上行锁与 fail-closed 校验；v9 撤回「三个 SMTP 超时之和 = 调用墙钟上界」这一错误推导（`socketTimeout` 是空闲超时），改用受围栏的预留续期 + 可中止硬期限，并修复终态 candidate reconciler 会被大量成功投递饿死、以及 intake task 行无保留期而无界增长两处问题；v10 要求围栏丢失时**立即**中止 SMTP 而不是等到硬期限、在确认拆除连接后清除自己写的预留以使晋升等待上界真正成立、把「租约过期但无人接手」的陈旧 claim 从成功 no-op 改为可重试失败（`markTaskSucceeded()` 不校验 `lease_until`，否则静默丢失），并给 reconciler 驱动查询补上终态引用过滤以消除第二种饥饿；v11 消除两处自相矛盾（失败后是否清预留、陈旧 claim 的终态），把激活事务的锁集合从「该邮箱全部行」收窄为可证明有界的最小集并撤回「已有 token 清理作业」这一不实前提，且新增回滚门：滚回旧镜像前必须显式过期全部非 active v2 token，否则被取消/被 supersede 的链接会复活并制造第二个 session；v12 把 F-X/F-Y/F-Z/F-AC 四条规范同步到此前遗漏的流程块、失败语义表、竞态表与复核清单，并新增 F-AE 区分「已证实围栏丢失」与「结果不确定」的任务终态。
+本文件是 Issue #184 的自包含权威规格。**v1 设计（三层内存预算）已被完全废弃**：独立复核 F1 指出它在「admin = 只读事务 / member = 写事务」上无法满足 Issue #184 不变量 1 的 latency-class 要求，而该不变量**不接受削弱、重新解释、豁免或修订**。v2 改为「角色无关的持久 intake + 通用处理任务」；v3–v5 修复重试时限、滚动发布安全、告警缺口、清理事务位置与队列吞吐等发现；v6 修复「mint 即作废已投递链接、但 SMTP 尚未成功」的可用性缺陷：替代 token 先以 pending/inactive 状态持久化，SMTP 成功后才在围栏事务中激活，并同时 supersede 旧的已投递 token；v7 固定跨 pending/active 的单调激活围栏、管理员角色判定的权威时点，以及 task 终态提交后的 pending-candidate 可重试清理；v8 补齐三处只靠事后检查而缺少串行化的边界——用可线性化的投递预留把管理员晋升与在途 SMTP 互斥（§5.3b）、让激活事务持 task 行锁并锁定该邮箱全部 token 行（消除租约抢占与「消费后仍激活」造成的第二个 session）、以及为 intake 行与 intake 门/cap 组合补上行锁与 fail-closed 校验；v9 撤回「三个 SMTP 超时之和 = 调用墙钟上界」这一错误推导（`socketTimeout` 是空闲超时），改用受围栏的预留续期 + 可中止硬期限，并修复终态 candidate reconciler 会被大量成功投递饿死、以及 intake task 行无保留期而无界增长两处问题；v10 要求围栏丢失时**立即**中止 SMTP 而不是等到硬期限、在确认拆除连接后清除自己写的预留以使晋升等待上界真正成立、把「租约过期但无人接手」的陈旧 claim 从成功 no-op 改为可重试失败（`markTaskSucceeded()` 不校验 `lease_until`，否则静默丢失），并给 reconciler 驱动查询补上终态引用过滤以消除第二种饥饿；v11 消除两处自相矛盾（失败后是否清预留、陈旧 claim 的终态），把激活事务的锁集合从「该邮箱全部行」收窄为可证明有界的最小集并撤回「已有 token 清理作业」这一不实前提，且新增回滚门：滚回旧镜像前必须显式过期全部非 active v2 token，否则被取消/被 supersede 的链接会复活并制造第二个 session；v12 把 F-X/F-Y/F-Z/F-AC 四条规范同步到此前遗漏的流程块、失败语义表、竞态表与复核清单，并新增 F-AE 区分「已证实围栏丢失」与「结果不确定」的任务终态；v13 不改任何设计决定，只做结构性收敛：新增 §4.3 规范性优先级、固定结果词汇与条款登记表，并把 §5.11、§7、§13 从**复述**规范内容改为只给「情形 → 结果词汇 → 权威条款」的索引，消除「一条规则散落四五处、改一处漏其余处」这一反复产生矛盾的根源。
 
 ---
 
@@ -95,7 +95,9 @@ Issue #184 的 required invariants（逐字引用，作为本规格的判定基�
 
 GET 确认页、confirm Route、#175 的消费事务与 session/cookie 边界、`requestLoginCode()` 与 `/api/auth/request-code`、`verify-code`、OAuth、管理员密码登录、`src/lib/rate-limit.ts`、`src/modules/restore/neutralize.ts`、`AppEventType`、公开错误类型：全部零改动。
 
-**zh/en/ja 文案不再是零改动（F-AA）**：§5.3b 新增了 `ApiError(409, "magicLinkDeliveryInFlight")`，而 `jsonError()` / `translate()` 在目录缺键时回落为字面 key，运营者会看到 `errors.magicLinkDeliveryInFlight` 而不是可读提示——这与 §5.3b「错误必须是明确可重试的文案」直接冲突。因此必须在 `src/modules/i18n/messages/{zh,en,ja}.ts` 三个目录**同时**新增该键（`key-completeness.test.ts` 已经会强制三者一致）。文案须按 §5.3b 残余 2 的真实边界措辞：提示「该邮箱正有一封登录邮件在投递中，请稍后重试」，**不得**承诺具体等待秒数。这是本 Issue 唯一的文案变更；其余公开错误文案仍零改动。`verifyMagicLinkToken()` / `consumeMagicLinkToken()` 必须增加 active-delivered 谓词，`deliverMagicLinkEmailTask()` 必须按 §5.3a 改成 delivery-aware 激活协议；除这些明确变化外，其授权、事务、session/cookie、SMTP 错误分类与任务退避语义保持不变。
+**zh/en/ja 文案不再是零改动（F-AA）**：§5.3b 新增了 `ApiError(409, "magicLinkDeliveryInFlight")`，而 `jsonError()` / `translate()` 在目录缺键时回落为字面 key，运营者会看到 `errors.magicLinkDeliveryInFlight` 而不是可读提示——这与 §5.3b「错误必须是明确可重试的文案」直接冲突。因此必须在 `src/modules/i18n/messages/{zh,en,ja}.ts` 三个目录**同时**新增该键（`key-completeness.test.ts` 已经会强制三者一致）。文案须按 §5.3b 残余 2 的真实边界措辞：提示「该邮箱正有一封登录邮件在投递中，请稍后重试」，**不得**承诺具体等待秒数。这是本 Issue 唯一的文案变更；其余公开错误文案仍零改动。
+
+`verifyMagicLinkToken()` / `consumeMagicLinkToken()` 必须增加 active-delivered 谓词，`deliverMagicLinkEmailTask()` 必须按 §5.3a 改成 delivery-aware 激活协议；除这些明确变化外，其授权、事务、session/cookie、SMTP 错误分类与任务退避语义保持不变。
 
 （`src/modules/auth/rate-limit-policy.ts` **不在**本列表内：§5.8 要求在其中新增一个纯函数助手。它仍不新增任何 limiter key。）
 
@@ -140,6 +142,65 @@ GET 确认页、confirm Route、#175 的消费事务与 session/cookie 边界、
 - **NG5 不把 `app_events` 事务化**。
 - **NG6 不重做 #175 / #176**。
 - ~~**NG7 不引入新的任务队列类别**~~ —— **v3 修订后撤销**。第三轮复核（F-B）证明既有 `default` 类已承载 `publish_post`、`payment_provider_event.dispatch` 与 `subscription.reconcile`，且 `claimOneTaskForClassBranch` 的排序是 `run_after ASC, priority ASC, id ASC`（`src/modules/tasks/index.ts:408`）——`run_after` 支配排序，`priority` 只在时间戳相同时才起作用。因此把 intake 放进 `default` 会让未认证攻击者制造的 intake 积压**先进先出地排在后创建的支付回调派发与定时发布之前**。v3 改为给 intake **专用队列类别 + 每批上限**（§5.3），这是唯一能同时保护 `transactional`（投递、验证码）与 `default`（支付、发布）两侧租户的方案。
+
+### 4.3 规范性优先级、结果词汇与条款登记表
+
+前十轮复核里，**反复出现的缺陷类型不是设计错误，而是同一条规则被写在多处、改一处漏其余处**。§5.11 失败语义表、§7 竞态表、§13 复核清单原本都在**复述** §5 的规范内容，于是每新增一条规则就有四五个副本要同步，漏掉的那个必然被下一轮评审当成矛盾报出来。本节消除该结构。
+
+**优先级（规范性）**
+
+1. §5 各节中带 **F-编号** 的段落是每条规则的**唯一权威处**。
+2. §5.11、§7、§13 以及本文件其它表格是**索引**，不是规则来源：它们只给出「情形 → 结果词汇 → 权威条款编号」，不复述条款内容。
+3. 若索引与权威条款出现任何不一致，**以权威条款为准**，并把该索引行视为待修缺陷（而不是设计冲突）。
+4. §10 的测试是断言，允许携带具体判据；每条测试必须标注它固定的条款编号。
+
+**结果词汇（固定集合，索引表只能用这些词）**
+
+| 词汇 | 含义 |
+|---|---|
+| `成功 no-op` | 任务提交为 `succeeded`，不产生任何业务副作用 |
+| `terminal no-op` | 已**证实**所有权易主或 candidate 已非 pending 后的成功收敛；重试归新持有者 |
+| `可重试失败` | 抛瞬时错误，任务回到 `failed` 并按 `taskBackoffMs` 重试 |
+| `永久失败` | `PermanentTaskError` / 首次尝试即 dead-letter |
+| `整体回滚` | 事务全部回滚，持久状态不变 |
+| `fail closed 回滚` | 运营操作被拒绝并回滚，抛可重试 `ApiError` |
+| `不激活` | candidate 不转 `active`，不 supersede，不记 `magic_link_sent` |
+| `旧链接保持原状` | 既有 active token 的有效期与可消费性不受影响 |
+| `中止发送` | 立即拆除底层 socket，停止续期 |
+| `告警` | 发出 §5.10 指定的可观测告警 |
+| `只记日志` | best-effort，不回滚、不使任务失败 |
+| `串行化` | 由所述锁排序，不并发交错 |
+| `不可能` | 由所述锁结构排除，不需要额外补偿 |
+
+**条款登记表**
+
+| 编号 | 一句话规范内容 | 唯一权威处 |
+|---|---|---|
+| F-B | intake 不得放入既有 `default` 类，需专用 `auth_intake` 类 + 每批上限 | §4.2 NG7 |
+| F-E | mint 上限回落是值推导，属 `rate-limit-policy.ts`，不得放进 `assertRuntimeSecurity()` | §5.8 |
+| F-J | 备份恢复会产生一次与在途 intake 等量的超龄告警突发，属预期假阳性 | §7 恢复行 |
+| F-K | `locale` 校验失败必须整键省略，不得写显式默认值 | §5.3 |
+| F-M | `MAGIC_LINK_INTAKE_ENABLED` 只有精确字符串 `"true"` 为真 | §5.8 |
+| F-N | intake 行必须 `FOR UPDATE` 锁定并持有到提交 | §5.3 |
+| F-O | task 行必须 `FOR UPDATE` 锁定并持有到提交（事务 A 与 B 同样适用） | §5.3 |
+| F-P | 只锁未终态行不足以与并发消费串行化 | §5.3a |
+| F-Q | 晋升与在途 SMTP 由持久投递预留可线性化互斥 | §5.3b |
+| F-R | 发布门开启时 intake cap `< 1` 必须 fail closed | §5.8 |
+| F-S | 三个 SMTP 超时之和**不是**墙钟上界；覆盖由受围栏的预留续期提供 | §5.3b |
+| F-T | reconciler 必须由 pending candidate 驱动，不得由 terminal task 驱动 | §5.5a |
+| F-U | `succeeded` intake task 需有界清理；`dead` 保留待查 | §5.7 |
+| F-V | `users ... FOR UPDATE` 对 unknown 邮箱不获取任何锁 | §5.3b |
+| F-W | 投递硬期限同时是 dispatcher 队头阻塞上界 | §8.2a |
+| F-X | 围栏丢失（含续期抛错）必须立即中止发送，不得等硬期限 | §5.3b |
+| F-Y | socket 确认拆除且围栏在己方手中时，必须按精确值清除自己写的预留 | §5.3b |
+| F-Z | 陈旧 claim 分流：他人接手 → `成功 no-op`；租约过期且无人接手 → `可重试失败` | §5.3 |
+| F-AA | `magicLinkDeliveryInFlight` 必须补齐 zh/en/ja 三个目录 | §2.4 |
+| F-AB | reconciler 驱动查询必须过滤为终态且过保留期的引用 | §5.5a |
+| F-AC | 激活事务的 token 锁集合是有界最小集，不是该邮箱全部行；基线无 token 清理 | §5.3a |
+| F-AD | 滚回旧镜像前必须显式过期全部非 active v2 token | §9.3 |
+| F-AE | 续期影响 0 行 → `terminal no-op`；续期抛错 → `可重试失败` | §5.3b |
+
+新增或修改规范时的要求：**只改权威处**，然后确认索引行的「结果词汇 + 条款编号」仍然正确。索引行不需要跟着改写措辞——这正是本节要消除的工作量。
 
 ---
 
@@ -408,7 +469,7 @@ v2 处理顺序固定为：
    └─ 提交；随后才 best-effort recordEvent("magic_link_sent")，最后任务 succeeded
 ```
 
-**事务 B 为什么锁该邮箱的全部 token 行，而不是只锁未终态行（F-P，规范性）**：`consumed_at` 是**终态**，因此「只锁未终态行」的旧写法既看不到、也不会与并发消费串行。于是下列交错成立：旧 active token 的消费事务先提交并插入 session，事务 B 随后照常激活 replacement，用户手里就同时有一个已用 session 与一个仍可消费的新链接——第二次消费会插入**第二个** session。这直接推翻 §7 的「最多一个 session」与测试 26i 的 `total session ≤ 1`。消费路径不取 email advisory lock（§7），所以唯一可用的串行化手段就是共同的 token 行锁。
+**事务 B 为什么不能只锁未终态行（F-P，规范性）**：`consumed_at` 是**终态**，因此「只锁未终态行」的旧写法既看不到、也不会与并发消费串行。于是下列交错成立：旧 active token 的消费事务先提交并插入 session，事务 B 随后照常激活 replacement，用户手里就同时有一个已用 session 与一个仍可消费的新链接——第二次消费会插入**第二个** session。这直接推翻 §7 的「最多一个 session」与测试 26i 的 `total session ≤ 1`。消费路径不取 email advisory lock（§7），所以唯一可用的串行化手段就是共同的 token 行锁。
 
 **但锁「该邮箱全部行」是错的（F-AC）**：v9 写成无状态过滤地锁定全部行，并声称规模「由 §5.7 的 token 清理与保留期约束」。**该约束不存在**——我核实过，基线仓库中没有任何 `magic_link_tokens` 的删除或保留期作业（除 schema 定义与测试 truncate 列表外无引用），§5.7 只删 `magic_link_requests` 与 succeeded intake task，§5.5a 的 reconciler 只删终态 task 引用的 pending candidate。因此「全部行」会随邮箱历史无限增长，每次激活都要锁住越来越多的 consumed / expired / superseded / cancelled 行，拖慢激活与并发消费。
 
@@ -885,44 +946,45 @@ v3 的 Magic Link 路径**只使用前者**，且**完全不构造任何新的 l
 - 消费期 `magic_link_rejected` 的 `{ reason, boundary, tokenId, keyId, userId }` 白名单（#176 §4.4）不变。
 - **禁止**在任何日志/事件/响应中出现：原始 token、token hash、明文邮箱、redirectPath、IP、user-agent、角色、limiter key 或桶状态。
 
-### 5.11 失败语义
+### 5.11 失败语义（索引，非规范来源）
 
-| 情形 | 行为 |
-|---|---|
-| keyring / SMTP 未配置 | 与基线相同抛 500；两者与目标无关，对所有角色一致 |
-| 公开事务失败 | 整体回滚：无 intake 行、无任务；路由返回既有 500；与角色无关 |
-| intake 任务事务失败 | 整体回滚，`resolved_at` 未设置，按 `taskBackoffMs` 退避重试（最多 5 次） |
-| 连续 4 次瞬时失败后的第 5 次 | 首次 claim 已在 age policy 内，此后 `attempts > 1` 不再做超龄拒绝，故**仍有正常 mint 机会**（切片 4 测试 20 固定该性质） |
-| intake 任务耗尽重试 | 由 dispatcher 标记 `failed` → `dead`，并触发 §5.10 新增的 dead-letter 告警 |
-| intake 首次执行时已超龄（队列长期饱和） | 标记 resolved、不 mint，并发出 §5.10 的超龄告警；任务本身成功 |
-| worker 崩溃（提交前） | 回滚 + 租约到期 + 重试 |
-| worker 崩溃（提交后、标记任务成功前） | 重试时第 2 步读到 `resolved_at` 非空 → 成功 no-op；**不会重复 mint** |
-| 陈旧 claim / 租约被抢占 | 第 1 步或第 4 步返回成功 no-op，不 mint |
-| intake 引用的 request 行缺失 | 视为 durable-state 不变量破坏：记录只含 `requestId` 的告警并成功 no-op；正常保留期清理不得制造该状态（§5.7） |
-| 未升级实例领到 intake 任务 | `runTaskHandler` 默认分支抛 `PermanentTaskError("Unsupported task kind")`（`tasks/handlers.ts:409-411`），`dispatchClaimedTask` 在**首次**尝试即 `markTaskDead`（`tasks/dispatcher.ts:83-86`）。这就是 §9.2 必须用发布门避免的场景 |
-| request-row 清理事务失败 | 只记日志；不回滚已提交的 mint，不使任务失败（§5.7） |
-| `recordEvent()` 失败 | best-effort，只记日志，不回滚（ADR 0002 / #175） |
-| SMTP 瞬时失败 | candidate 保持 pending；旧 active token 不变；task 进入可重试 `failed`，终态 reconciler 不得删除 candidate |
-| SMTP 永久失败 / final attempt 耗尽 | handler 返回后 dispatcher 先提交 task `dead`；提交后 hook 清理合格的过期 pending candidate。hook 失败不回滚 `dead`，周期 reconciler 最终重试；旧 active token始终不变 |
-| SMTP 成功、激活前崩溃 | 重试可能重复发送同一 token；激活前旧 active token保持可用 |
-| SMTP 成功后 claim stale | 激活事务 fence 失败并 no-op；新 claimant 重发同一 candidate 后才可激活 |
-| 激活事务失败 | 整体回滚；candidate 仍 pending，旧 active token 仍 active，任务重试 |
-| 激活提交后、任务 succeeded 前崩溃 | 重试识别已 active candidate，幂等完成；不重发、不重复事件 |
-| 用户在 SMTP 期间晋升 admin | 事务 A 前晋升则 0 SMTP；事务 A 提交后至事务 B 之间由 §5.3b 投递预留互斥，晋升事务 fail closed 回滚、不可提交；仅当 worker 崩溃使预留自然到期时晋升才可插入，此时事务 B 的预留到期检查拒绝激活并 `cancelled`，0 active replacement、0 session；此前 active token 仍由消费期 admin guard 拒绝 |
-| 晋升事务命中未到期投递预留 | `setupSite()` / `changeAdminEmail()` 整体回滚，抛可重试 `ApiError(409, "magicLinkDeliveryInFlight")`；`role`/`email` 不变，candidate 不被改写；由于预留会随 SMTP 调用续期，最长重试等待为 `MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS`（§5.3b / §11.11） |
-| 预留续期影响 0 行（已证实的围栏丢失） | 停止续期、**立即中止 SMTP 并拆除 socket**（F-X）；不触碰预留（可能已属新 owner）；事务 B 失败关闭，不激活、不 supersede、不记 event；任务 terminal no-op —— 仅当已**证实**任务被接手或 candidate 已非 pending 时才是终态 |
-| 预留续期抛错（结果不确定） | 同样立即中止并拆除 socket，但**不得**按终态成功收敛：本 worker 可能仍持有任务，`markTaskSucceeded()` 会把它永久标成功而 candidate 仍是 pending，用户既无链接也无重试（F-AE）。必须抛**可重试**错误 |
-| SMTP 超出墙钟硬期限 | 中止并拆除 socket、停止续期、判定结果不确定；绝不激活，任务按瞬时故障重试 |
-| 投递期间旧 token 被消费 | 事务 B 读到同邮箱 `consumed_at >= candidate.created_at` → candidate `cancelled`，不激活、不记 `magic_link_sent`，任务 `succeeded`；总 session 恒 ≤1（§5.3a F-P） |
-| 事务 B 复检通过后租约被抢占 | 不可能：事务 B 以 `FOR UPDATE` 持 task 行到提交，重新 claim 与 final-attempt sweep 均 `SKIP LOCKED` 跳过，`markTaskFailed`/`markTaskDead` 等待该锁（§5.3 F-O） |
-| SMTP 调用时长超出任何静态估计 | 由受围栏的预留续期覆盖：只要 worker 存活且仍持有效租约、candidate 仍 pending，预留就随调用一起延长，排序不变量不依赖对 SMTP 时长的估计（§5.3b F-S） |
-| 续期与晋升事务并发 | 两者由 candidate 行锁串行：晋升先提交则 candidate 已 `cancelled`，续期影响 0 行并触发围栏丢失；续期先提交则晋升读到未到期预留并 fail closed |
-| 已证实围栏丢失后仍 SMTP 成功 | 事务 B 必须失败关闭：不激活、不 supersede、不记 event，terminal no-op（所有权确已易主，重试由新 owner 负责） |
-| 续期因数据库错误失败（所有权未知） | 同样中止发送，但任务必须以**可重试**错误结束而不是 terminal no-op；否则一次数据库抖动就会静默丢弃一个已受理请求（F-AE） |
-| 墙钟期限中止在途投递 | 停止续期、拆除 socket、判定为结果不确定；绝不激活，任务按瞬时故障重试（§5.3b 残余 2） |
-| 受理时 admin、worker mint 前降级 | 公开路径没有角色快照；mint 边界读到 non-admin 后按正常 member/unknown 路径处理。此项明确 supersede #176 的 request-time 措辞 |
-| 任一边界读到 admin 后再降级 | 已 resolved request / cancelled candidate 保持终态，不复活、不自动 mint/SMTP；新请求才可按当前角色重新授权 |
-| post-finalization cleanup 失败或进程在 hook 前崩溃 | task 终态保持；周期 reconciler 下次 tick 重新选择，直到删除或发现 candidate 已非 pending。live/retryable 引用永不删除 |
+本表按 §4.3 的优先级规则是**索引**：只给「情形 → 结果词汇 → 权威条款」。任何细节都在权威处，本表与权威处不一致时以权威处为准。
+
+| 情形 | 结果 | 权威处 |
+|---|---|---|
+| keyring / SMTP 未配置 | 与基线相同抛 500（目标无关） | §5.2 |
+| 公开事务失败 | `整体回滚`（无 intake 行、无任务） | §5.2 |
+| intake 任务事务失败 | `可重试失败` | §5.3 |
+| 连续 4 次瞬时失败后的第 5 次 | 仍可正常 mint（超龄只判首次 claim） | §5.4 |
+| intake 任务耗尽重试 | `永久失败` + `告警` | §5.4 / §5.10 |
+| intake 首次执行时已超龄 | `成功 no-op` + `告警`（标记 resolved、不 mint） | §5.4 |
+| worker 崩溃（提交前） | `整体回滚` + `可重试失败` | §5.3 |
+| worker 崩溃（提交后、标记成功前） | `成功 no-op`（`resolved_at` 非空幂等出口） | §5.3 |
+| 陈旧 claim：他人已接手 | `成功 no-op` | **F-Z** |
+| 陈旧 claim：租约过期且无人接手 | `可重试失败` | **F-Z** |
+| intake 引用的 request 行缺失 | `成功 no-op` + `告警`（durable-state 不变量破坏） | §5.3 / §5.7 |
+| 未升级实例领到 intake 任务 | `永久失败`（首次尝试即 dead）——发布门要避免的场景 | §9.2 |
+| request-row 清理事务失败 | `只记日志` | §5.7 |
+| `recordEvent()` 失败 | `只记日志` | ADR 0002 / #175 |
+| SMTP 瞬时失败 | `可重试失败` + `旧链接保持原状`；candidate 保持 pending | §5.3a |
+| SMTP 永久失败 / final attempt 耗尽 | `永久失败` + `旧链接保持原状`；终态提交后才回收 candidate | §5.5a |
+| SMTP 成功、激活前崩溃 | `可重试失败` + `旧链接保持原状`；允许重发同一 candidate | §5.3a |
+| SMTP 成功后 claim stale | `不激活`（按 F-Z 分流终态） | §5.3a / **F-Z** |
+| 激活事务失败 | `整体回滚` + `旧链接保持原状` + `可重试失败` | §5.3a |
+| 激活提交后、任务成功前崩溃 | `成功 no-op`（active-delivered 幂等恢复） | §5.3a |
+| 用户在 SMTP 期间晋升 admin | 由预留互斥，晋升不可提交；崩溃致预留到期时 `不激活` | **F-Q** / **F-X** |
+| 晋升事务命中未到期投递预留 | `fail closed 回滚` | **F-Q** |
+| 预留续期影响 0 行 | `中止发送` + `terminal no-op` | **F-X** / **F-AE** |
+| 预留续期抛错 | `中止发送` + `可重试失败` | **F-X** / **F-AE** |
+| SMTP 超出墙钟硬期限 | `中止发送` + `不激活` + `可重试失败` | §5.3b / **F-W** |
+| socket 确认拆除且围栏在己方手中 | 按精确值清除自己写的预留 | **F-Y** |
+| 投递期间旧 token 被消费 | `不激活`（candidate `cancelled`）+ `成功 no-op` | **F-P** / **F-AC** |
+| 事务 B 复检通过后租约被抢占 | `不可能` | **F-O** |
+| SMTP 调用时长超出任何静态估计 | 由预留续期覆盖，不依赖时长估计 | **F-S** |
+| 续期与晋升事务并发 | `串行化`（candidate 行锁） | **F-Q** / **F-Y** |
+| 受理时 admin、worker mint 前降级 | 按 mint 边界当前角色正常处理 | §2.3 / §5.3a |
+| 任一边界读到 admin 后再降级 | 终态不可逆，不复活、不重发 | §5.3a |
+| post-finalization cleanup 失败或 hook 前崩溃 | `只记日志`；周期 reconciler 最终重试 | §5.5a |
 
 ### 5.12 被否决的替代方案
 
@@ -993,38 +1055,41 @@ v3 的 Magic Link 路径**只使用前者**，且**完全不构造任何新的 l
 
 ---
 
-## 7. 竞态与并发语义
+## 7. 竞态与并发语义（索引，非规范来源）
 
-| 场景 | 要求行为 |
-|---|---|
-| 公开路径并发（同邮箱） | 无共享锁、无唯一约束冲突，两请求互不阻塞，各自恒定 4 次事务内往返 |
-| 两个 worker 同时处理同邮箱的两个 intake | advisory lock 串行；先者 mint pending candidate，后者在第 8.b 步命中 pending fence → 不 mint。**恰好一个 pending token、一个投递任务**；旧 active token 不变 |
-| 激活事务与 `consumeMagicLinkToken()` 并发 | consume 不取邮箱 advisory lock；事务 B **无状态过滤地**锁定该邮箱全部 token 行，两者由共同的 token 行锁串行。旧 token 先消费提交 → 事务 B 读到 `consumed_at >= candidate.created_at`，candidate `cancelled`、**不激活**；事务 B 先提交 → 旧 token 已 superseded，消费返回 invalid。pending candidate 永不消费；两种串行结果都恰好 ≤1 个 session |
-| 晋升事务与在途 SMTP 并发 | §5.3b：事务 A 在同一事务内锁定读到 non-admin 并写下未到期预留；晋升路径必须先取同一 advisory lock 并观察预留，命中即 fail closed 回滚。晋升只能线性化在事务 A 之前或事务 B 之后，不存在「已是 admin 却仍发信」的交错 |
-| 晋升事务与 pending candidate（无在途投递） | 预留为空或已过期：晋升事务在同一事务内把该邮箱全部 pending candidate 置 `cancelled` 并清空预留，再写 `role`/`email`；不产生孤立 pending token |
-| 两个并发晋升事务（改管理员邮箱） | 按规范化邮箱字符串升序取 advisory lock，新旧邮箱各一把，无反向等待 |
-| 事务 B 与租约抢占 / final-attempt sweep 并发 | 事务 B 以 `FOR UPDATE` 持有 task 行直到提交：重新 claim 与 sweep 均为 `FOR UPDATE SKIP LOCKED` → 跳过；`markTaskFailed`/`markTaskDead` 取同一行锁 → 等待。不存在「复检通过后、激活写入前被抢占」的窗口，也不会出现 active token 对应 dead task |
-| 清理与未解析 intake 行并发 | 清理谓词已限定 `resolved_at is not null` 且 `for update skip locked`；handler 第 2 步另以 `FOR UPDATE` 锁定该 intake 行直到提交，因此即使未来清理谓词被放宽，也不能在 handler 等待 advisory lock 期间删除它 |
-| worker 与 `deliverMagicLinkEmailTask()` 并发 | 两者都取同一把按邮箱 advisory lock，串行执行；因清理已移出主事务（§5.7），worker 不会在持锁期间做无关删除而阻塞投递 |
-| intake 读到 member、SMTP 前后用户被提升 | 事务 A 前晋升：cancelled、0 SMTP；事务 A 提交后至事务 B 之间：由 §5.3b 预留排除，晋升无法提交；B 锁定 non-admin 并先提交：可激活，随后提升由 #176 消费守卫拒绝 session。仅当 worker 崩溃且预留自然到期时，晋升才可能落在两者之间，此时事务 B 的预留到期检查拒绝激活（§5.3b 残余 1） |
-| 用户在 worker mint 前被提升为 admin | worker 第 7 步读到 admin → resolved、0 token/投递/SMTP |
-| 公开受理时 admin、worker mint 前降级 | 公开路径不保存角色快照；worker 锁定读取 non-admin 并可 mint/投递，符合 §2.3 的权威边界 |
-| worker / 事务 A / 事务 B 任一处读到 admin 后再降级 | resolved/cancelled 状态不可逆，不复活旧 request/candidate；必须新请求 |
-| worker 崩溃 / 租约过期后重试 | 第 2 步 `resolved_at` 非空 → 成功 no-op；不重复 mint、不重复入队投递 |
-| 同一 intake 被两个 worker 同时 claim | claim 校验 + 等锁后复检，只有持有效租约者继续；另一个成功 no-op |
-| mint 预算并发计数 | 计数与 mint 在同一持锁事务内，**精确**，无超发、无多计 |
-| 两个清理事务并发 | 两者只选择 `resolved_at is not null` 的行；`for update skip locked` + 确定性排序键 `(greatest(...), id)`：互不阻塞、无死锁；被跳过的行留给下一次任务 |
-| 清理与 pending / processing / retryable handler 并发 | 未解析行不满足清理谓词，即使超过 retention 也不会被删除；handler 引用的 durable state 一直保留到主事务提交 `resolved_at`。真实 PostgreSQL 竞态测试固定该边界 |
-| 清理与预算窗口交互 | 删除谓词覆盖 `minted_at` 滞后，并由 §5.7 的保留期不等式保证严格覆盖预算窗口 + 超龄界 |
-| SMTP 后旧 claim 过期、重复 claim | 旧 claim 激活 no-op；新 claim 对同 candidate 至少一次重发并激活。任何 stale claim 均不能 supersede |
-| 激活后任务完成前崩溃 | 重试走 active-delivered 恢复分支并幂等完成，不重复 SMTP/supersede/event；best-effort event 可缺失，不参与 correctness |
-| 旧 candidate SMTP 阻塞，较新 candidate 先激活 | 旧事务 B 在 pending+active eligible 集合中看到更大 `(created_at,id)`，只把旧 candidate → superseded；较新 active 保持可用，旧任务 terminal success/no-op |
-| 多个 eligible replacement（异常/人工恢复） | 在 pending+active、未消费/未 supersede 集合中 `(created_at,id)` 最大者才可激活；旧 candidate → superseded，其任务成功 no-op；不得覆盖更新 active token |
-| pending token cleanup 与投递/人工 retry 并发 | cleanup 先锁 terminal task 再锁 token；processing/retryable/已被 `retryTask()` 恢复的 task candidate 不可选。与 claim/激活通过 task/token 行锁串行 |
-| task 终态提交与 cleanup hook/reconciler 并发 | `markTaskDead`/failed-to-dead/final sweep 先提交，再触发 hook；多个 cleanup 用 `SKIP LOCKED`/幂等谓词收敛。hook 失败或进程崩溃由后续周期 scan 重试 |
-| 多实例 | 公开路径无共享内存状态；mint 预算是数据库计数，跨实例**精确**（相对基线的内存预算是改进） |
-| 备份恢复（S7 / `restore/neutralize.ts:290-310`） | 该流程把未列入终态的任务重置为 `pending`（`attempts: 0`、`runAfter: now()`）。被重置的 intake 若已 `resolved_at`，重跑即成功 no-op；若未 resolved，则因 `magic_link_requests.created_at` 是**从备份还原的旧时间**而几乎必然已超龄，走 §5.3 第 5 步。**正确性上安全**（不重复签发、不泄露角色），但**告警上有副作用**：见下 |
-| **恢复后的超龄告警突发（F-J）** | 由于上一行的机制，**每次**备份恢复都会让所有在途 intake 同时触发 §5.10 的超龄 `logger.warn`，数量正比于备份时刻的在途 intake 数。而该告警正是 §9.4 / §11.4 指定的「用户看到 accepted 却收不到链接」的**唯一自动检测手段**，因此这是一次确定性的假阳性突发，恰好发生在运营者最关注告警的时刻。**要求**：告警文案中固定包含 `requestId` 与 `ageMs`，使运营者可按时间聚类识别突发；`docs/deployment/` 的恢复流程说明与 §9.4 必须写明「恢复后预期出现一次与在途 intake 数等量的超龄告警突发，可整体忽略」。实现**不得**为此在 `restore/neutralize.ts` 中特殊处理 intake（该文件保持零改动，§2.4），因为按 kind 特判会把恢复语义与认证模块耦合 |
+同 §5.11：本表是索引，只给「场景 → 结果词汇 → 权威条款」。
+
+| 场景 | 结果 | 权威处 |
+|---|---|---|
+| 公开路径并发（同邮箱） | 互不阻塞；无共享锁、无唯一约束冲突 | §5.2 |
+| 两个 worker 处理同邮箱的两个 intake | `串行化`；恰好 1 pending token + 1 投递任务 | §5.3 |
+| 激活事务与 `consumeMagicLinkToken()` 并发 | `串行化`；两种顺序都恰好 ≤1 session | **F-P** / **F-AC** |
+| 晋升事务与在途 SMTP 并发 | `fail closed 回滚`；晋升只能线性化在事务 A 前或事务 B 后 | **F-Q** / **F-X** |
+| 晋升事务与 pending candidate（无在途投递） | 同事务取消该邮箱 pending candidate 后才写 `role`/`email` | **F-Q** |
+| 两个并发晋升事务（改管理员邮箱） | 按规范化邮箱升序取双锁，无反向等待 | **F-Q** |
+| 晋升目标邮箱没有 `users` 行 | 角色行锁为空操作；围栏完全由 advisory lock + 预留承担 | **F-V** |
+| 事务 B 与租约抢占 / final-attempt sweep 并发 | `不可能`（`SKIP LOCKED` 跳过 / 行锁等待） | **F-O** |
+| 清理与未解析 intake 行并发 | `串行化`；未解析行不可删 | **F-N** / §5.7 |
+| worker 与 `deliverMagicLinkEmailTask()` 并发 | `串行化`（同一 email advisory lock） | §5.3 |
+| 用户在 worker mint 前被提升为 admin | `成功 no-op`；0 token / 0 投递 / 0 SMTP | §5.3 |
+| 公开受理时 admin、worker mint 前降级 | 按 mint 边界当前角色正常处理 | §2.3 |
+| 任一边界读到 admin 后再降级 | 终态不可逆，必须新请求 | §5.3a |
+| worker 崩溃 / 租约过期后重试 | `成功 no-op`（`resolved_at` 幂等出口） | §5.3 |
+| 同一 intake 被两个 worker 同时 claim | `串行化`；落败方按 F-Z 分流 | **F-Z** |
+| mint 预算并发计数 | 精确，无超发、无多计 | §5.6 |
+| 两个清理事务并发 | 互不阻塞、无死锁（`SKIP LOCKED` + 确定性排序） | §5.7 |
+| 清理与 pending / processing / retryable handler 并发 | 未解析行不满足清理谓词 | **F-N** / §5.7 |
+| 清理与预算窗口交互 | 删除谓词覆盖 `minted_at` 滞后 | §5.7 |
+| SMTP 后旧 claim 过期、重复 claim | `不激活`；新 claim 重发同 candidate | §5.3a / **F-Z** |
+| 激活后任务完成前崩溃 | `成功 no-op`（幂等恢复） | §5.3a |
+| 旧 candidate SMTP 阻塞、较新 candidate 先激活 | 旧 candidate 自身 `superseded`，不覆盖较新 active | §5.3a |
+| 多个 eligible replacement（异常/人工恢复） | 仅 `(created_at,id)` 最大者可激活 | §5.3a |
+| pending token cleanup 与投递 / 人工 retry 并发 | `串行化`（task → token 行锁）；live/retryable 不可选 | §5.5a |
+| task 终态提交与 cleanup hook / reconciler 并发 | 终态先提交再触发 hook；`SKIP LOCKED` 收敛 | §5.5a |
+| reconciler 与大量成功投递 / 活候选并存 | 驱动集合已过滤为可处理集合，不饥饿 | **F-T** / **F-AB** |
+| 多实例 | 公开路径无共享内存状态；mint 预算跨实例精确 | §5.6 |
+| 备份恢复（S7 / `restore/neutralize.ts:290-310`） | 正确性安全（不重复签发、不泄露角色）；见下一行的告警副作用 | §5.3 / §5.4 |
+| 恢复后的超龄告警突发 | 预期的确定性假阳性突发，可整体忽略 | **F-J** |
 
 ---
 
@@ -1424,39 +1489,54 @@ MAGIC_LINK_REQUEST_RETENTION_HOURS=1     # 3600000 ≥ 60000 + 1200000，满足 
 
 - 完整 diff 的 Claude Code Opus 5 只读复核（提供本规格、#175/#176/S4 handoff、base 与完整 diff）；处理 findings 后新鲜复核（AGENTS.md「独立审阅」）。
 - Draft PR 上请求 `@codex review`，处理所有 actionable findings。
-- 复核清单必须逐条确认：
-  1. 公开请求路径不存在任何 `users` / `magic_link_tokens` / `tasks` 查询与按邮箱锁；
-  2. 公开路径无角色或目标状态分支；事务内往返恒为 4 次，事务外恒为 2 次且均与目标无关（§5.2）；
-  3. 任何路径都不会因角色返回非 200；
-  4. 不存在目标相关的、请求者可观察的限流状态；
-  5. `request-code-email-ip:*` 已在 Magic Link 全路径解除引用；
-  6. mint 边界读到 admin 时 `magic_link_tokens` 与**投递任务** `auth.magic_link_email` 计数恒为 0；事务 A 读到 admin 时 0 SMTP；受理时 admin 但 mint 前已降级按 non-admin 处理，且公开路径无角色快照/抑制位（§2.2 / §2.3 / §5.3a）；
-  7. 代码、注释、PR、CHANGELOG 中从未把 `auth.magic_link_request` 称为 delivery task；
-  8. worker 锁顺序为 `task → magic_link_requests → advisory → token → user`，intake 行与 task 行都以 `FOR UPDATE` 锁定并持有到提交，claim 双重校验完整；清理**不在**主事务内且只删除 `resolved_at is not null` 的行，pending / processing / retryable state 不会被保留期清理；
-  9. 超龄只在首次 claim 应用；第 2–5 次自动重试不因 age 被拒绝，首次超龄终态可观测；
-  10. intake dead-letter 已纳入告警面；
-  11. 事件/日志 payload 不超出 §5.10 白名单，且不含角色或抑制原因；
-  12. `magic_link_requests` 列集合与 §5.5 完全一致（无原因列、无角色列）；
-  13. `db-reset.ts` 已包含新表；
-  14. 保留期跨字段 fail-closed 校验与 dedupe 告警实现在 `assertRuntimeSecurity()` 内；mint 上限回落只在 `rate-limit-policy.ts` 的纯函数助手中完成。
-  15. replacement mint 只创建 pending/inactive token，绝不修改旧 active token；verify/consume 均固定 active + delivered 谓词；
-  16. SMTP 在事务外；SMTP 成功后的激活事务重新检查 claim、candidate、admin role，以及 pending+active eligible replacement 的 `(created_at,id)` 单调围栏，并只 supersede 更旧 active；
-  17. SMTP 失败、激活回滚、激活前崩溃与 stale lease 均保留旧 active token；激活后崩溃幂等完成且不重发；
-  18. 文档与实现均未宣称 SMTP exactly-once 或旧 token 自然过期后仍保证可用；重复发送只复用同 candidate；
-  19. migration/backfill 保持历史及旧代码新插入 token 可用且不延长 expiry；pending cleanup 不删除 live/retryable/人工恢复 task 引用；
-  20. 切片 4a 的真实 PostgreSQL 并发、回滚、stale lease、consume race、admin promotion/demotion、migration 与 cleanup 测试均实际通过。
-  21. delivery payload 以显式 `deliveryProtocol: 2` 区分 delivery-aware candidate；无 marker 的 migration 前/Phase 1 legacy task 始终走基线 SMTP，绝不走 active recovery；
-  22. cleanup 锁顺序固定 task → token，与 handler 同向；legacy task 不被 v2 pending cleanup 处理。
-  23. `markTaskDead`、failed-to-dead、final-attempt sweep 均在终态提交后触发 hook；周期 reconciler 覆盖 hook 失败/崩溃并最终重试，且不改变 terminal task 或执行外部副作用。
-  24. 回滚 drain 会先排空可重试任务、完成 terminal-candidate reconcile，再逐项重试或安全处置 dead intake；不会因有意保留的 unresolved dead 行永久等待，也不会静默忽略、删除或伪装成功。
-  25. 事务 A 与事务 B 都以 `FOR UPDATE` 持有 task 行到提交；事务 B 的 token 锁集合是 §5.3a F-AC 的**有界最小集**（当前未消费未过期的 pending/active 行 + `consumed_at >= candidate.created_at` 的行），**不是**该邮箱全部行；并在激活前检查投递预留未过期、无投递期内消费（§5.3a F-O / F-P / F-AC）；
-  26. `setupSite()` 与 `changeAdminEmail()` 是仓库中仅有的两条 admin 晋升写路径，二者都在既有事务内取 advisory(email)、命中未到期投递预留时 fail closed 回滚、否则取消该邮箱 pending candidate 后才写 `role`/`email`；其它 `update(users)` 调用点均未写 `role`/`email`（§5.3b）；
-  27. `MAGIC_LINK_DELIVERY_RESERVATION_SECONDS` 的下界断言、硬期限断言与 `SMTP_HANDSHAKE_IDLE_BUDGET_MS` 镜像漂移守卫均已实现；`MAGIC_LINK_INTAKE_ENABLED=true` 且 intake cap 为 0 时 `getEnv()` fail closed（§5.8）；
-  28. 预留由受围栏的续期覆盖整段 SMTP 调用，续期影响 0 行即判定围栏丢失并使事务 B 失败关闭；墙钟期限真正拆除 socket，代码与文档均未再声称「三个超时之和 = 调用上界」（§5.3b F-S）；
-  27a. 续期失败按 F-AE 分流：影响 0 行 → terminal no-op；抛错 → 可重试错误；两者都立即拆除 socket。§5.3 step 1 的 claim 校验按 id 锁定后在应用层判定，未把谓词写进 WHERE（否则无法按 F-Z 分流）；
-  28a. 回滚在滚回旧镜像**之前**已把全部非 active v2 token 显式过期，并复查计数为 0；`active` 未消费行未被误伤（§9.3 F-AD）；
-  28b. 激活事务的 token 锁集合是 §5.3a F-AC 的最小集（当前有效行 + 投递期内消费行），不是「该邮箱全部行」；规格未再声称存在 `magic_link_tokens` 保留期作业；
-  29. 终态 candidate reconciler 以 pending candidate 为驱动集合，不会被大量成功 task 饿死；succeeded intake task 有有界保留清理，dead intake task 保留待查（§5.5a / §5.7）。
+- 复核清单必须逐条确认。按 §4.3 的优先级，本清单也是**索引**：每项只给「要确认的可观测事实 + 权威条款」，不复述条款内容。带 F-编号的项，判定标准以该条款为准。
+
+  **不可区分性（§4.1 G1–G10）**
+  1. 公开请求路径不存在任何 `users` / `magic_link_tokens` / `tasks` 查询与按邮箱锁（§5.2）；
+  2. 事务内往返恒为 4 次、事务外恒为 2 次，且均与目标无关（§5.2）；
+  3. 任何路径都不会因角色返回非 200（§5.2 / G1）；
+  4. 不存在目标相关的、请求者可观察的限流状态（G3）；
+  5. `request-code-email-ip:*` 已在 Magic Link 全路径解除引用（G4）；
+  6. `magic_link_requests` 列集合与 §5.5 完全一致（无原因列、无角色列）；
+  7. 事件 / 日志 payload 不超出 §5.10 白名单，且不含角色或抑制原因；
+  8. 代码、注释、PR、CHANGELOG 中从未把 `auth.magic_link_request` 称为 delivery task（§2.2）。
+
+  **admin 边界与晋升围栏**
+  9. mint 边界读到 admin 时 token 与投递任务计数恒为 0；SMTP 紧前读到 admin 时 0 发送（G5）；
+  10. 排序不变量成立：晋升提交后不再为该邮箱发起 SMTP，且在途发送不会被激活（**F-Q**）；
+  11. `setupSite()` 与 `changeAdminEmail()` 是仅有的两条 admin 晋升写路径，二者都实施围栏；其它 `update(users)` 均不写 `role`/`email`（**F-Q**）；
+  12. 实现与文档均未把 unknown 邮箱的角色行锁当作串行化手段（**F-V**）；
+  13. 围栏丢失时立即中止发送，未拖到硬期限（**F-X**）；
+  14. 预留清除带任务 claim 与精确值双重保护（**F-Y**）；
+  15. 续期失败按原因分流终态（**F-AE**）。
+
+  **锁与围栏**
+  16. intake 行与 task 行都以 `FOR UPDATE` 锁定并持有到提交（**F-N** / **F-O**）；
+  17. §5.3 step 1 的 claim 校验按 id 锁定后在应用层判定，谓词未写进 `WHERE`（**F-Z**）；
+  18. 陈旧 claim 按 F-Z 分流，未一律收敛为成功（**F-Z**）；
+  19. 激活事务的 token 锁集合是有界最小集，且 `consumed_at IS NULL` 谓词存在（**F-AC**）；
+  20. 锁顺序全局同向 `task → magic_link_requests → advisory(email) → token → user`，reconciler 的 `task → token` 与之同向（§5.3）；
+  21. 清理不在主事务内，且只删 `resolved_at is not null` 的行（§5.7）。
+
+  **delivery lifecycle**
+  22. replacement mint 只创建 pending token，绝不修改旧 active token；verify/consume 固定 active + delivered 谓词（§5.3a）；
+  23. SMTP 在事务外；激活事务重检 claim、candidate、role、预留、投递期消费与单调围栏（§5.3a）；
+  24. 失败、回滚、崩溃、stale lease 均保留旧 active token；激活后崩溃幂等完成（§5.11）；
+  25. delivery payload 以显式 `deliveryProtocol: 2` 分流；legacy task 始终走基线 SMTP（§5.3a）；
+  26. 文档与实现均未宣称 SMTP exactly-once，也未宣称旧 token 过期后仍保证可用（G10 / §8.1）。
+
+  **清理、迁移与发布**
+  27. reconciler 驱动集合已过滤为终态且过保留期的引用（**F-T** / **F-AB**）；
+  28. `succeeded` intake task 有界清理，`dead` 保留待查（**F-U**）；
+  29. `markTaskDead`、failed-to-dead、final sweep 均在终态提交后触发 hook；周期 reconciler 覆盖失败与崩溃（§5.5a）；
+  30. migration / backfill 保持历史与旧代码新插入 token 可用且不延长 expiry（§5.5a）；
+  31. `db-reset.ts` 已包含新表（§9.1）；
+  32. 回滚在滚回旧镜像前已过期全部非 active v2 token，复查计数为 0，且未误伤 `active` 未消费行（**F-AD**）；
+  33. 回滚 drain 按 §9.3 执行，dead intake 逐项留证处置；
+  34. env 校验四项 fail-closed 与 dedupe 告警均在 `assertRuntimeSecurity()` 内；mint 上限回落只在 `rate-limit-policy.ts`（**F-E** / **F-M** / **F-R**）；
+  35. 硬期限的队头阻塞代价已被知情接受（**F-W**）；
+  36. `magicLinkDeliveryInFlight` 三个目录齐备（**F-AA**）；
+  37. 切片 4a 的真实 PostgreSQL 并发、回滚、stale lease、consume race、promotion/demotion、migration 与 cleanup 测试均实际通过（§10）。
 
 所有证据必须绑定 implementation exact head。未执行或因基础设施跳过的检查必须明确报告。
 
