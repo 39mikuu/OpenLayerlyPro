@@ -1,6 +1,6 @@
 # Issue #184：跨请求 Magic Link 角色不可区分性规格
 
-- **状态**：Proposed（v15，按三轮独立复核 F1–F12、F184-01–F184-15、F-A–F-AE 及 Codex 十一轮复核修订；规则以 R-编号索引，见 §5 引用约定）
+- **状态**：Proposed（v16，按三轮独立复核 F1–F12、F184-01–F184-15、F-A–F-AE 及 Codex 十一轮复核修订；规则以 R-编号索引，见 §5 引用约定。v16 修正 R-FAC 的过期谓词范围与围栏丢失终态措辞，见 F-AF）
 - **Issue**：[#184](https://github.com/39mikuu/OpenLayerlyPro/issues/184)
 - **设计基线**：`origin/main` `af24c6fd8fae8a07750f1ac648cdbae46f0e4c85`
 - **变更类型**：Auth / anti-enumeration security fix（**含 schema 变更与 migration**）
@@ -154,7 +154,7 @@ GET 确认页、confirm Route、#175 的消费事务与 session/cookie 边界、
 | `R-FZ`（F-Z） | 陈旧 claim 分流：他人接手 → 成功 no-op；租约过期且无人接手 → 可重试失败 | §5.3 |
 | `R-FO`（F-O） | task 行必须 `FOR UPDATE` 锁定并持有到提交（事务 A 与 B 同样适用） | §5.3 |
 | `R-FP`（F-P） | 只锁未终态行不足以与并发消费串行化 | §5.3a |
-| `R-FAC`（F-AC） | 激活事务的 token 锁集合是有界最小集，不是该邮箱全部行；基线无 token 清理作业 | §5.3a（锁集合）/ §5.5a（无清理） |
+| `R-FAC`（F-AC） | 激活事务的 token 锁集合是有界最小集，不是该邮箱全部行；过期谓词只施加于 `active`，全部 pending 必须入集（单调围栏输入）；基线无 token 清理作业 | §5.3a（锁集合）/ §5.5a（无清理） |
 | `R-FS`（F-S） | 三个 SMTP 超时之和**不是**墙钟上界；覆盖由受围栏的预留续期提供 | §5.3b |
 | `R-FX`（F-X） | 围栏丢失（含续期抛错）必须立即中止发送，不得等硬期限 | §5.3b |
 | `R-FY`（F-Y） | socket 确认拆除且围栏在己方手中时，必须按精确值清除自己写的预留 | §5.3b |
@@ -452,14 +452,19 @@ v2 处理顺序固定为：
 SELECT * FROM magic_link_tokens
  WHERE email = $1
    AND (
-     (delivery_state IN ('pending','active')
-       AND consumed_at IS NULL AND expires_at > now())        -- 仍可被消费/需被 supersede
+     (delivery_state = 'pending' AND consumed_at IS NULL)      -- 全部 pending：单调围栏的输入集
+     OR (delivery_state = 'active'
+         AND consumed_at IS NULL AND expires_at > now())       -- 仍可被消费/需被 supersede
      OR consumed_at >= $candidateCreatedAt                     -- 投递期内发生的消费
    )
  FOR UPDATE;
 ```
 
-充分性：一次并发消费只能以**未消费、未过期的 active** token 为目标，该行必然落在第一个析取项里——所以消费要么已提交（则它满足第二项，B 读到 `consumed_at` 并取消 candidate），要么必须等 B 提交（届时旧 token 已 superseded，消费返回 invalid）。两种串行结果仍然恰好产生 ≤1 个 session。有界性：第一项是「当前仍有效」的行，按 §8.1 的 spacing/pending fence 只有个位数；第二项按 `candidate.created_at` 截断，与邮箱历史长度无关。
+**为什么 pending 项不能带 `expires_at > now()`（F-AF）**：v14 把过期条件同时施加在 pending 与 active 上。那会把**已过占位期的 pending replacement 排除出锁集合**，而 §5.3a 的单调 latest-candidate 围栏定义 eligible 集合时**本来就不含过期条件**（`delivery_state IN ('pending','active')` ∧ 未消费 ∧ 未 supersede），且激活本身会把 `expires_at` 重置为 `now + TTL`。于是出现这条交错：一个更新的 pending replacement 的占位 `expires_at` 已过 → 它不在锁集合里 → 一个 SMTP 长时间阻塞后恢复的**较旧**任务在事务 B 看不到这个更大的 `(created_at, id)` → 单调围栏失效 → 较旧那封邮件被激活并获得**全新 TTL**。pending 的 `expires_at` 只是占位上界（§5.3 第 10 步列传播），拿它当可用性判据本身就是错的。因此过期谓词**只施加于 `active` 行**——那里它才有意义：只有未过期的 active token 才可能被消费、才需要被 supersede。
+
+充分性：一次并发消费只能以**未消费、未过期的 active** token 为目标，该行必然落在第二个析取项里——所以消费要么已提交（则它满足第三项，B 读到 `consumed_at` 并取消 candidate），要么必须等 B 提交（届时旧 token 已 superseded，消费返回 invalid）。两种串行结果仍然恰好产生 ≤1 个 session。单调围栏的完整 eligible 集合也全部落在前两项内，不会漏看更新的 replacement。
+
+有界性不受影响：pending 行由 §8.1 的 pending fence 约束，同邮箱通常只有一个、异常时也是个位数（§5.3a 单调围栏一节已说明该集合为何小）；active 未消费未过期行同样是个位数；第三项按 `candidate.created_at` 截断，与邮箱历史长度无关。三项都与历史长度无关，这正是 R-FAC 要的性质。
 
 **注意 `consumed_at` 与 `delivery_state` 是正交的**（§5.5a：消费成功的 active token 不回写 delivery state）。因此不能只写 `delivery_state IN ('pending','active')` 就以为排除了历史——已消费的行仍然是 `active`，必须显式加 `consumed_at IS NULL`，否则又退回无界。
 
@@ -604,7 +609,7 @@ SELECT delivery_state FROM magic_link_tokens WHERE id = $candidateId
 
 **定时器必须在事务 B 打开之前停止（规范性）**：续期只取 candidate 的行锁、不取 advisory lock，而事务 B 会按 §5.3a F-AC 的最小锁集合（规则 R-FAC）以 `FOR UPDATE` 锁定该邮箱 token 行（含同一 candidate）。若定时器在 B 打开后仍存活，一次续期就会去争抢 B 已持有的行锁；由于两者共用同一连接池，在池容量紧张时这会退化为自死锁——B 需要跑完才放锁，而续期占着一条连接等这把锁。因此 `finally` 清除定时器必须发生在事务 B 之前，而不是「handler 返回前的某处」。
 
-续期本身是被围栏的：它要求任务仍由本 worker 持有有效租约，且 candidate 仍是 `pending`。因此租约被抢占、candidate 被晋升事务取消、或 candidate 已被别的执行推进时，续期立刻失败而不会延长一个已经无效的预留。**围栏丢失后事务 B 必须失败关闭**：不激活、不 supersede、不记 `magic_link_sent`，按 terminal no-op 收敛。
+续期本身是被围栏的：它要求任务仍由本 worker 持有有效租约，且 candidate 仍是 `pending`。因此租约被抢占、candidate 被晋升事务取消、或 candidate 已被别的执行推进时，续期立刻失败而不会延长一个已经无效的预留。**围栏丢失后事务 B 必须失败关闭**：不激活、不 supersede、不记 `magic_link_sent`。但**任务终态一律按规则 R-FAE 判定**，不得在此处一概写成 terminal no-op——只有复读证实所有权已易主或 candidate 已终结才是终态；仅本 worker 租约过期而无人接手、续期抛错、复读失败三种情形必须抛可重试错误。
 
 续期与晋升路径通过 candidate 的行锁串行（晋升方锁定该邮箱 token 行（§5.3b 第 2 步））：要么晋升先提交并把 candidate 置 `cancelled`，随后续期影响 0 行、worker 得知围栏丢失；要么续期先提交，晋升读到未到期预留并 fail closed。两种串行结果都不产生「已是 admin 却仍激活」的状态。
 
@@ -1281,7 +1286,7 @@ v3 的 Magic Link 路径**只使用前者**，且**完全不构造任何新的 l
 26p. **`事务 B 持 task 行锁`（F-O）**：在事务 B 完成全部复检、尚未提交时，令租约过期并让另一 worker 走真实 claim 路径、同时触发 `sweepExpiredFinalAttemptTasks()`；断言两者都**跳过**该 task（`SKIP LOCKED`），事务 B 提交后不存在「active token 对应 dead task」的状态。另以普通 `SELECT` 版本的实现做反向断言：该版本必须能重现被抢占后仍激活的坏状态，从而证明行锁是 load-bearing 而非装饰。
 26j. **`admin 晋升/降级时间矩阵`**：真实 PostgreSQL 确定性覆盖：(a) 受理时 admin、intake 锁定前降级 → 可 mint/投递；(b) 受理时 non-admin、intake 前晋升 → resolved 且 0 token/投递/SMTP；(c) mint 后、事务 A 前晋升 → cancelled、0 SMTP；(d) 事务 A 后、事务 B 前尝试晋升 → **晋升事务必须 fail closed 回滚**（未到期预留，`role`/`email` 不变、candidate 不被改写），投递照常完成；只有在把预留显式置为已过期后重跑该场景，才允许晋升提交且由事务 B 取消 candidate、0 active/event/session。该用例必须与测试 26o(a)/(b) 断言同一行为，不得保留 v7「先发信、事后取消」的旧语义；(e) B 锁定 non-admin 并提交后才晋升 → active 可存在但消费 invalid、0 session；(f) 任一 admin cancellation 后降级 → 不复活/不重发。测试名称与断言必须明确 §2.3 已 supersede #176 的 request-time temporal wording。
 26s. **`回滚前中和非 active v2 token`（F-AD，load-bearing）**：构造 `pending`、`superseded`、以及被消费竞态 `cancelled` 的 v2 token（后者对应的邮箱已用旧链接建过 session），执行 §9.3 第 4 步的过期语句，然后以**不认识 `delivery_state` 的基线查询**（只按未消费 ∧ 未过期取行）尝试验证/消费三者，断言全部 invalid、总 session 仍为 1。另断言未执行该语句时同一基线查询**能**消费到 cancelled candidate 并产生第二个 session——该反向用例固定这道回滚门的必要性。再断言 `active` 未消费未过期的 token 不被该语句影响，回滚后仍可正常消费。
-26t. **`激活锁集合有界`（F-AC）**：为同一邮箱构造大量历史行（已消费的 active、已过期、superseded、cancelled），断言事务 B 实际锁定的行数只与「当前有效行 + `consumed_at >= candidate.created_at` 的行」成正比，不随历史长度增长；同时保留 26i 的两种消费竞态顺序断言仍然通过——即缩小锁集合没有削弱 ≤1 session 的保证。断言已消费但仍为 `delivery_state='active'` 的历史行**不**进入锁集合（`consumed_at IS NULL` 谓词的作用）。
+26t. **`激活锁集合有界且不漏更新 replacement`（R-FAC / F-AF）**：为同一邮箱构造大量历史行（已消费的 active、已过期 active、superseded、cancelled），断言事务 B 实际锁定的行数只与「全部 pending + 未消费未过期 active + `consumed_at >= candidate.created_at`」成正比，不随历史长度增长；断言已消费但仍为 `delivery_state='active'` 的历史行**不**进入锁集合（`consumed_at IS NULL` 谓词的作用）。**另加一例固定 F-AF**：构造一个更新的 pending replacement 并把它的占位 `expires_at` 回拨到已过期，再让一个较旧的 SMTP 阻塞任务恢复；断言事务 B **仍然看到**该更新 tuple、单调围栏生效、较旧 candidate 只 superseded 自身且**不获得新 TTL**。若实现把 `expires_at > now()` 也施加到 pending 上，该用例必须 RED。同时保留 26i 的两种消费竞态顺序断言仍然通过。
 26k. **`迁移/backfill 与滚动兼容`**：在 pre-migration fixture 上升级，既有未过期 token仍可验证且 expiry 未延长；模拟旧代码省略新列 INSERT，默认得到 active + delivered_at；模拟新代码显式 pending + null。断言枚举 CHECK、state/timestamp CHECK 与索引存在，并分别尝试插入 `pending + delivered_at`、`active + null`，两者必须被 PostgreSQL 拒绝。
 26l. **`pending cleanup 引用安全与 post-finalization`**：processing/可重试 failed/刚由 `retryTask()` 恢复的 task 引用的 pending candidate 不删除；permanent SMTP handler 抛错时 task 仍 processing 且 candidate 保留，随后 `markTaskDead` 提交后 hook 才可删除合格过期 candidate；分别覆盖 `markTaskFailed` 的 failed-to-dead 与 `sweepExpiredFinalAttemptTasks`。cleanup 与 claim/retry/激活并发按 task → token 行锁串行，不留下 live task 指向已删除 candidate。
 26m. **`legacy/v2 协议分流与滚动安全`**：分别构造 migration 前 pending、processing、retryable failed 的无 marker legacy task，以及 Phase 1 baseline 新任务；即使 token 已由 backfill/default 成为 active + delivered，handler 仍必须实际调用 SMTP 并走 legacy completion，绝不命中 v2 recovery。另断言 v2 payload 必须精确含 `deliveryProtocol: 2`，v2 active recovery 不 SMTP，未知版本 permanent fail；使用真实 PostgreSQL task/token 状态。
