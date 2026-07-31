@@ -1,6 +1,6 @@
 # Issue #184：跨请求 Magic Link 角色不可区分性规格
 
-- **状态**：Proposed（v19，按三轮独立复核 F1–F12、F184-01–F184-15、F-A–F-AG 及 Codex 多轮复核修订；规则以 R-编号索引，见 §5 引用约定。v19 让 fresh terminal candidate 可达 F-AG，并要求旧 SMTP 围栏安全后才可审计式取消）
+- **状态**：Proposed（v20，按三轮独立复核 F1–F12、F184-01–F184-15、F-A–F-AG 及 Codex 多轮复核修订；规则以 R-编号索引，见 §5 引用约定。v20 让 fresh terminal candidate 可达 F-AG，并要求以持久 socket-teardown 证据或完整 worker quiescence 证明旧 SMTP 已停止后才可审计式取消）
 - **Issue**：[#184](https://github.com/39mikuu/OpenLayerlyPro/issues/184)
 - **设计基线**：`origin/main` `af24c6fd8fae8a07750f1ac648cdbae46f0e4c85`
 - **变更类型**：Auth / anti-enumeration security fix（**含 schema 变更与 migration**）
@@ -175,7 +175,7 @@ GET 确认页、confirm Route、#175 的消费事务与 session/cookie 边界、
 | F-J | 备份恢复会产生一次与在途 intake 等量的超龄告警突发，属预期假阳性 | §7 恢复行 / §9.4 |
 | F-W | 投递硬期限同时是 dispatcher 队头阻塞上界 | §8.2a |
 | F-AD | 滚回旧镜像前必须显式过期全部非 active v2 token | §9.3 |
-| F-AG | 回滚时 fresh terminal v2 delivery candidate 必须可达逐项处置；审计式取消只能在 socket 已确认拆除或预留已安全到期后进行 | §9.3 |
+| F-AG | 回滚时 fresh terminal v2 delivery candidate 必须可达逐项处置；时间戳到期不构成 socket-teardown 证据，审计式取消只能在持久清除证据或完整 worker quiescence 后进行 | §9.3 |
 
 新增或修改规范时：**只改权威处**，然后确认引用该规则的索引行仍然正确；索引行不需要跟着改写措辞。
 
@@ -1202,7 +1202,7 @@ migration 必须先于任何新镜像；除此以外，多实例与单进程 / �
    回滚 drain 的规范谓词因此按 §5.5a 规则 R-FT 与下述 F-AG 判定：无可重试 intake/delivery 任务、无未处置 dead intake、无 live/retryable 引用的 pending candidate；terminal candidate 要么已由常规 reconciler 回收，要么已按第 4 步逐项审计处置。开始镜像回滚前必须显式运行一轮 terminal-candidate reconciler，但**不得**因为 fresh terminal task 尚未超过调查窗口就被迫等待默认 24 小时；这些项进入第 4 步。它不是裸的 `count(*) from magic_link_requests where resolved_at is null = 0`。所有处置事务复用 task → token/request 的同向锁顺序。
 4. **处置 fresh terminal v2 delivery candidate（F-AG，回滚专用，逐项留证）**：常规 reconciler 为保留调查窗口，只选择 `succeeded` / `dead` 且 `updated_at` 已超过 `MAGIC_LINK_REQUEST_RETENTION_HOURS` 的引用；紧急回滚不能因一次刚发生的 delivery failure 等待默认 24 小时。查询所有仍为 `pending`、由显式 protocol v2 `auth.magic_link_email` terminal task 引用、但尚未达到常规 retention cutoff 的 candidate，并逐项选择：
    - **dead task 重试**：在新镜像仍运行时调用既有 `retryTask(taskId)`，然后回到第 2 步等待正常投递/终态；不得直接 SQL 改 task。
-   - **审计式放弃**：适用于明确不再重试的 `dead`，以及异常的 `succeeded + pending` 残留。一个事务内先 `SELECT task ... FOR UPDATE`、再 `SELECT token ... FOR UPDATE`，复验 kind、protocol v2、payload `tokenId`、task 仍 terminal、candidate 仍 pending、且不存在任何 live/retryable task 引用。**还必须证明 SMTP 围栏已安全**：`delivery_reservation_until IS NULL OR delivery_reservation_until <= now()`。`NULL` 只能来自 F-Y 在确认 socket teardown 后的精确值清理；到期则走协议既有的安全自然失效边界。仅凭 task 已 terminal 不够，因为 final-attempt sweep 可以在 stale worker 仍处于 SMTP 时先提交 `dead`。预留仍在未来时，本操作必须 no-op/fail closed，保持 candidate pending 与预留原值，晋升继续被围栏；运营者至多等待当前预留自然到期后重试，不得主动缩短/清空它。只有围栏安全后才把 candidate 置 `cancelled`、清空预留、并令 `expires_at = least(expires_at, now())`。task 状态保持原 terminal，不删除 task/token，不伪装成成功投递。运营记录必须包含 taskId、tokenId、status、last_error、围栏证据、选择与影响行数；用户需在回滚后重新请求。
+   - **审计式放弃**：适用于明确不再重试的 `dead`，以及异常的 `succeeded + pending` 残留。一个事务内先 `SELECT task ... FOR UPDATE`、再 `SELECT token ... FOR UPDATE`，复验 kind、protocol v2、payload `tokenId`、task 仍 terminal、candidate 仍 pending、且不存在任何 live/retryable task 引用。**还必须证明旧 SMTP 已经不可能继续发送；时钟到期本身永远不是该证明**。常规逐项路径只接受 `delivery_reservation_until IS NULL`：`NULL` 必须是初始从未建立 SMTP 围栏，或由 F-Y 在确认 socket teardown 后精确清除的持久状态。即使 `delivery_reservation_until <= now()`，暂停的 event loop 仍可能保有可恢复的 socket，因此不得据此取消 candidate、清预留或放行晋升。若 terminal candidate 仍有非 null 预留且无法由原 worker 写出 teardown 证据，唯一允许的紧急替代路径是先进入完整 quiescence：停止并禁止重启**全部能够执行 `auth.magic_link_email` 的新镜像 worker 实例**（不能只看 task lease/owner，因为 sweep 后 owner 信息不足以排除暂停 worker），由部署平台确认这些进程/容器均已终止，从而由 OS 拆除其 socket；然后仅从一个 dispatcher/SMTP 均禁用的受鉴权 maintenance job 执行本处置事务。该 job 必须在 worker 保持为零的窗口内锁 task → token、复验其余 F-AG 谓词，记录被终止实例集合、部署事件/时间、reservation 原值与影响行数，才可把 candidate 置 `cancelled`、清空预留、并令 `expires_at = least(expires_at, now())`；完成全部 F-AG 项前不得恢复任何新镜像 worker。仅凭 task terminal、lease 过期、reservation 到期、心跳消失或“等待了一段时间”均不够。task 状态保持原 terminal，不删除 task/token，不伪装成成功投递；用户需在回滚后重新请求。
 
    任一复验失败都阻断回滚并要求调查。F-AG 只缩短**回滚**等待，不改变 §5.5a 正常运行的 retention/reconciler 语义；实现必须提供受鉴权的专用 rollback disposition 原语或等价运维命令，不能要求运营者手写散落 SQL。
 
@@ -1312,7 +1312,7 @@ migration 必须先于任何新镜像；除此以外，多实例与单进程 / �
 26l. **`pending cleanup 引用安全与 post-finalization`**：processing/可重试 failed/刚由 `retryTask()` 恢复的 task 引用的 pending candidate 不删除；permanent SMTP handler 抛错时 task 仍 processing 且 candidate 保留，随后 `markTaskDead` 提交后 hook 只删除**已过调查窗口**的合格 candidate；fresh dead/succeeded + pending 必须保留给 F-AG 回滚处置或以后常规 reconcile。分别覆盖 `markTaskFailed` 的 failed-to-dead 与 `sweepExpiredFinalAttemptTasks`。cleanup 与 claim/retry/激活并发按 task → token 行锁串行，不留下 live task 指向已删除 candidate。
 26m. **`legacy/v2 协议分流与滚动安全`**：分别构造 migration 前 pending、processing、retryable failed 的无 marker legacy task，以及混部期间旧实例/显式回滚模式产生的 baseline 新任务；即使 token 已由 backfill/default 成为 active + delivered，handler 仍必须实际调用 SMTP 并走 legacy completion，绝不命中 v2 recovery。另断言 v2 payload 必须精确含 `deliveryProtocol: 2`，v2 active recovery 不 SMTP，未知版本 permanent fail；使用真实 PostgreSQL task/token 状态。
 26n. **`cleanup 锁顺序、失败重试与周期 reconcile`**：控制事务先锁 task 行，断言 cleanup 在 task 上等待且尚未持 token 锁；释放后按 task → token 完成。注入 hook 数据库失败及「terminal commit 后、hook 前崩溃」，断言 task 仍 terminal、candidate 暂存；未过调查窗口时不删，达到 cutoff 后下一 dispatcher tick 的有界 reconciler 最终删除。连续失败保持下次可选；与激活/人工 retry 并发无死锁，legacy task 不被 v2 pending cleanup 误删。
-26v. **`紧急回滚 fresh-terminal disposition`（F-AG，load-bearing）**：构造未过 retention 的 `dead + pending` protocol-v2 delivery，断言步骤 2 会把它交给 F-AG 而非要求先 terminalize token，且常规 reconciler不删除；分别走 (a) `retryTask()` 后回到可重试队列并正常投递，(b) 审计式放弃后在 task → token 锁序下变为 `cancelled`、预留清空、立即过期、task 仍 dead。另构造 `succeeded + pending` 异常残留，只允许审计式放弃并告警。**sweep-vs-SMTP 竞态**：让 final-attempt worker 阻塞在 SMTP、租约过期后由 sweep 标 dead；在 worker 下一次 renewal 中止 socket 前运行 F-AG，必须因未来预留而 fail closed，candidate/预留不变、晋升仍被阻断；确认 socket 拆除或把预留推进到安全到期后才允许取消。任一 live/retryable 引用、payload/tokenId 不匹配或锁后状态变化都必须 fail closed。再遗留一个 nonterminal `auth_intake` 给基线 dispatcher，断言它既不被领取/mark dead也不触发告警，而回滚 gate 因计数非零阻止切换镜像。
+26v. **`紧急回滚 fresh-terminal disposition`（F-AG，load-bearing）**：构造未过 retention 的 `dead + pending` protocol-v2 delivery，断言步骤 2 会把它交给 F-AG 而非要求先 terminalize token，且常规 reconciler不删除；分别走 (a) `retryTask()` 后回到可重试队列并正常投递，(b) 审计式放弃后在 task → token 锁序下变为 `cancelled`、预留清空、立即过期、task 仍 dead。另构造 `succeeded + pending` 异常残留，只允许审计式放弃并告警。**sweep-vs-SMTP / paused-worker 竞态**：让 final-attempt worker 阻塞在 SMTP、暂停 event loop、租约过期后由 sweep 标 dead，并把数据库时钟推进到 reservation 也已过期；此时 F-AG 仍必须 fail closed，candidate/预留不变、晋升仍被阻断。只有 (i) worker 恢复并由 F-Y 确认 socket 拆除、持久清空预留，或 (ii) 禁止重启且终止全部 delivery-capable worker、确认实例数为零，再由 SMTP/dispatcher 禁用的 maintenance job 在 quiescence 窗口内处置，才允许取消；单独推进时间的实现必须 RED。任一 live/retryable 引用、payload/tokenId 不匹配或锁后状态变化都必须 fail closed。再遗留一个 nonterminal `auth_intake` 给基线 dispatcher，断言它既不被领取/mark dead也不触发告警，而回滚 gate 因计数非零阻止切换镜像。
 
 ### 切片 5：回滚开关、混部兼容、路由测试、env、文档
 
@@ -1526,7 +1526,7 @@ MAGIC_LINK_REQUEST_RETENTION_HOURS=1     # 3600000 ≥ 60000 + 1200000，满足 
   21. delivery payload 以显式 `deliveryProtocol: 2` 区分 delivery-aware candidate；无 marker 的 migration 前、混部旧实例与显式回滚模式 legacy task 始终走基线 SMTP，绝不走 active recovery；基线 dispatcher 不领取 `auth_intake`，升级 dispatcher 可领取；
   22. cleanup 锁顺序固定 task → token，与 handler 同向；legacy task 不被 v2 pending cleanup 处理。
   23. 见 §5.5a 规则 R-FT：终态提交后才触发 hook，周期 reconciler 覆盖 hook 失败/崩溃并最终重试，不改变 terminal task、无外部副作用。
-  24. 回滚 drain 会先排空可重试任务；步骤 2 把只由 terminal task 引用的 pending candidate 交给 F-AG，而不要求其预先 token-terminal；F-AG 逐项重试或在 F-Y 已清除预留/预留安全到期后审计式取消，绝不提前清除仍保护 stale SMTP 的预留；随后逐项处置 dead intake。
+  24. 回滚 drain 会先排空可重试任务；步骤 2 把只由 terminal task 引用的 pending candidate 交给 F-AG，而不要求其预先 token-terminal；F-AG 逐项重试，或仅在 F-Y 已持久清除预留/全部 delivery worker 已终止并维持 quiescence 后审计式取消；预留时间戳到期不算 teardown 证据，绝不提前清除仍保护 paused SMTP 的预留；随后逐项处置 dead intake。
   25. 见 §5.3 规则 R-FO 与 §5.3a 规则 R-FAC / R-FP：事务 A/B 持 task 行锁到提交，事务 B 的 token 锁集合为 F-AC 有界最小集而非该邮箱全部行，激活前检查投递预留与投递期内消费；
   26. `setupSite()` 与 `changeAdminEmail()` 是仓库中仅有的两条 admin 晋升写路径，二者都在既有事务内取 advisory(email)、命中未到期投递预留时 fail closed 回滚、否则取消该邮箱 pending candidate 后才写 `role`/`email`；其它 `update(users)` 调用点均未写 `role`/`email`（§5.3b）；
   27. `MAGIC_LINK_DELIVERY_RESERVATION_SECONDS` 的下界断言、硬期限断言与 `SMTP_HANDSHAKE_IDLE_BUDGET_MS` 镜像漂移守卫均已实现；`MAGIC_LINK_INTAKE_ENABLED` 只接受精确 `true|false`、默认 true，其它值启动失败；intake 启用且 cap 为 0 时 `getEnv()` fail closed（§5.8）；
