@@ -88,7 +88,7 @@ Integration 是官方内置的第三方服务对接，随 Core 发布、由项�
 
 - App 仅监听 HTTP；TLS 由 Cloudflare Tunnel、Caddy、Nginx、Traefik 或 CDN 终止。✅
 - `/api/health` 与 `/api/ready` 已实现；可选 integrations 摘要不进入就绪门禁。✅
-- 可信代理 IP 解析、VPS/反代、CDN 和 Cloudflare Tunnel 文档与示例已实现。✅
+- 可信代理 IP 解析、VPS/反向代理、CDN 和 Cloudflare Tunnel 文档与示例已实现。✅
 - 单实例是 v1.0 运行边界；Redis/PG 共享 limiter、多实例滚动发布与高可用属于 Phase 10。🚧
 - S6 全局响应头/CSP 运行时实现是 #86。✅
 - S7 archive integrity、schema probe、恢复任务中和与 DB↔存储收敛是 #87。✅

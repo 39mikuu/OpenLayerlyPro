@@ -41,7 +41,7 @@
 
 ## 反向代理与 CDN ✅
 
-- 公网 VPS + 反代：[deploy-vps.md](../deploy-vps.md)。
+- 公网 VPS + 反向代理：[deploy-vps.md](../deploy-vps.md)。
 - CDN 接入：[deploy-cdn.md](../deploy-cdn.md)。
 - 代理必须保留视频 `Range` 请求以及应用的 206/416、`Content-Range`、`Accept-Ranges`。
 - 不得把 private/no-store 下载响应改写为公开缓存。
@@ -58,7 +58,7 @@
 
 - XFF 模式取右数第 N 个可信条目；`HOPS=0` 或条目不足返回 `null`，绝不退回客户端可控最左值。
 - 单值头只有在源站不直接暴露、且边缘会覆盖该头时安全。
-- Cloudflare Tunnel/CDN 推荐 `cf-connecting-ip`；常规反代使用 XFF + 准确 hops。
+- Cloudflare Tunnel/CDN 推荐 `cf-connecting-ip`；常规反向代理使用 XFF + 准确 hops。
 
 无法解析可信 IP 时：
 
@@ -66,7 +66,7 @@
 - admin login、request code、verify code、上传/下载等使用各操作独立的 unresolved emergency bucket；
 - unresolved 客户端之间仍共享对应操作桶，这是代理配置错误时的降级风险；
 - S4 verify 只在核心确认错误后记账，正确码不受 wrong-attempt 桶阻断；
-- 生产记录限频告警，提示运维修复代理配置。
+- 生产记录限流告警，提示运维修复代理配置。
 
 S4 已由当前运行时实现，权威语义见 [../handoff/harden-s4-auth-rate-limiting.md](../handoff/harden-s4-auth-rate-limiting.md)。
 
