@@ -28,7 +28,7 @@ ADR 0006 保持 `html:false`，因此不能允许作者直接写裸 iframe。
 
 系统不会自动把普通链接转成 iframe。
 
-合法 URL命中 provider 注册表后，由 Core 生成规范 embed。非法或不支持 URL退化为普通文本/链接。
+合法 URL 命中 provider 注册表后，由 Core 生成规范 embed。非法或不支持 URL 退化为普通文本/链接。
 
 ### 2. provider 注册表是唯一来源
 
@@ -161,7 +161,7 @@ iframe host 必须通过：
 allowedIframeHostnames: EMBED_HOSTS
 ```
 
-非白名单 iframe 整体剥离。裸 HTML中的 iframe 仍会先被 `html:false` 转义。
+非白名单 iframe 整体剥离。裸 HTML 中的 iframe 仍会先被 `html:false` 转义。
 
 ### 6. sandbox 策略
 
@@ -225,7 +225,7 @@ frame-src *
 - ✅ preview/public 共用同一 renderer，行为由明确模式区分；
 - ✅ sanitizer 与未来 CSP 共用 host 常量；
 - ⚠️ 第三方隐私和可用性依赖仍存在；
-- ⚠️ provider URL规则变化时需要维护注册表；
+- ⚠️ provider URL 规则变化时需要维护注册表；
 - ⚠️ 必须在 ADR 0006 实现完成后串行实施。
 
 ## 已确认决策

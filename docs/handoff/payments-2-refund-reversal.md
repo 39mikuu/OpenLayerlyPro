@@ -418,7 +418,7 @@ Stripe Dashboard webhook 必须勾选：
 5. 同一 `reversal_event_id` 重放只处理一次。
 6. 同一 `provider_payment_ref` 不可关联两个同 provider 请求。
 7. 不同 provider 可使用相同外部 ID，不发生跨 provider 冲突。
-8. 外部 PaymentIntent：无 Session或 `owned=false` → 200 no-op。
+8. 外部 PaymentIntent：无 Session 或 `owned=false` → 200 no-op。
 9. `owned=true` 但 DB 无行 → 可重试错误。
 10. 历史 approved 行只有 `provider_ref=session.id` → lazy backfill 后成功反转。
 11. 管理员已手动 reverse 后 webhook 到达 → no-op。

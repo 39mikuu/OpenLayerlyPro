@@ -55,7 +55,7 @@ Theme 只负责**表现层**：页面布局、样式、组件渲染、文案展�
 ## 已落地（第四步：WP5 鸣谢墙组件槽）✅
 
 - **契约扩展**：`ThemeComponents` 新增**必选**槽 `SupporterWall`（props：`{ view: SupporterWallViewModel; t: Translate }`），与既有槽同为静态契约的一部分——新增主题必须实现该槽才能通过编译。`SupporterWallViewModel` 由 Core 的 `getSupporterWallViewModel()` 在服务端按当前会员资格、opt-in、显示名、等级限制与审核状态**每次请求派生**（不缓存），主题只渲染，不旁路取数。
-- **三主题同步**：`builtin`（卡片网格）/ `blog`（分隔列表）/ `wordpress`（主栏 + 侧栏,内层为 `section` 避免与 chrome 的 `<main>` 形成嵌套 landmark）各自实现该槽；长显示名/献词以 `break-words` 折行,纯文本渲染、URL 不链接化。
+- **三主题同步**：`builtin`（卡片网格）/ `blog`（分隔列表）/ `wordpress`（主栏 + 侧栏，内层为 `section` 避免与 chrome 的 `<main>` 形成嵌套 landmark）各自实现该槽；长显示名/献词以 `break-words` 折行，纯文本渲染、URL 不链接化。
 - **账号页扩展**：`MeView` 新增 `supporterWall`（settings + fan entry 摘要）供账号页的 opt-in 控件消费；显示名编辑走独立粉丝写接口。
 - **视觉基线**：G6 视觉回归扩展覆盖三主题明暗 `/supporters` 基线与 WordPress 390px 移动端。
 

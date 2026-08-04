@@ -184,7 +184,7 @@ pnpm test && pnpm build:migrator && pnpm build
 ## 6. 验收 checklist（对应 issue #4）
 
 - [ ] 非法转移确定性拒绝（409）
-- [ ] 并发/幂等:已是该态 → `alreadyInState`(不静默 no-op);双击 extend 第二次 → `membershipStale`;乐观锁始终校验(#4 不含幂等键)
+- [ ] 并发/幂等：已是该态 → `alreadyInState`（不静默 no-op）；双击 extend 第二次 → `membershipStale`；乐观锁始终校验（#4 不含幂等键）
 - [ ] 状态与审计同提交 / 同回滚（审计失败回滚整笔）
 - [ ] 权限判定用新规则（status=active，去 tier.isActive）
 - [ ] 测试覆盖：合法 / 非法转移、stale version、duplicate、rollback、停用 tier 存量有效、suspended/revoked 无访问权

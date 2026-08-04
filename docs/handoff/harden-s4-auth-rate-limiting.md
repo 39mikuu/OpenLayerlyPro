@@ -255,7 +255,7 @@ LOGIN_CODE_ALPHABET
 - 80-bit code 全链路同源；
 - raw email 不出现在 key/log/metrics；
 - request-code Turnstile、dedupe、persistent task fence、加密 payload 和 SMTP 事务边界无回退；
-- 真实 PostgreSQL 覆盖：source max 高于 target max，先耗尽 target 后提交正确 code仍被拒绝，另一可信 IP 成功；
+- 真实 PostgreSQL 覆盖：source max 高于 target max，先耗尽 target 后提交正确 code 仍被拒绝，另一可信 IP 成功；
 - download/#60、proof 上传、admin login 与正常 session 行为无回退。
 
 ## 10. 提交前验证

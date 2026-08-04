@@ -14,7 +14,7 @@
 - 精确 seek；
 - 本地与 S3 Range；
 - member/login 视频逐请求鉴权；
-- public S3 视频签名 URL卸载；
+- public S3 视频签名 URL 卸载；
 - 独立视频限流；
 - 播放和下载 disposition 分离。
 
@@ -106,7 +106,7 @@ disposition?: "inline" | "attachment";
 contentType?: string;
 ```
 
-S3 签名 URL设置 `ResponseContentDisposition` / `ResponseContentType`。不传时保持现有普通附件行为。
+S3 签名 URL 设置 `ResponseContentDisposition` / `ResponseContentType`。不传时保持现有普通附件行为。
 
 ## 5. 下载授权拆分
 
@@ -233,7 +233,7 @@ X-Content-Type-Options: nosniff
 - Range 响应返回 206、`Content-Range` 和区间 `Content-Length`；
 - 无 Range 返回 200 和完整 `Content-Length`。
 
-public S3 redirect 的签名 URL同样设置正确 MIME 和 inline disposition。
+public S3 redirect 的签名 URL 同样设置正确 MIME 和 inline disposition。
 
 ## 9. 日志
 

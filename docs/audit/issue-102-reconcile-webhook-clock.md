@@ -39,9 +39,9 @@ Provider truth at reconcile time: `retrieveSubscription -> { status: active, cur
 | T-reconcile | `reconcileSubscriptions()` pulls remote truth | `status=active`, `currentPeriodEndsAt=2026-02-01`, **`statusEventAt=T0` (unchanged)** |
 | T1 (`2026-01-10`, `T0 < T1 < reconcile`) | delayed `subscription_payment_failed` webhook (`providerCreatedAt=T1`) dispatched | gate `T0 <= T1` passes → `status=past_due`, `statusEventAt=T1` |
 
-- **最终本地状态:** `past_due`, `currentPeriodEndsAt=2026-02-01`
-- **期望状态:** `active` (remote truth)
-- **是否产生用户可见错误:** **是** — an entitled member is locally marked `past_due` and loses
+- **最终本地状态：** `past_due`，`currentPeriodEndsAt=2026-02-01`
+- **期望状态：** `active` (remote truth)
+- **是否产生用户可见错误：** **是** — an entitled member is locally marked `past_due` and loses
   access, and the row is internally inconsistent (`status=past_due` while `currentPeriodEndsAt`
   points at an active future period).
 
