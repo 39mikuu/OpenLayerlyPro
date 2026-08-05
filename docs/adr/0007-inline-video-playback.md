@@ -150,7 +150,7 @@ video/x-m4v
 X-Content-Type-Options: nosniff
 ```
 
-S3 public video 签名 URL同步设置 `ResponseContentDisposition=inline` 和正确 Content-Type。
+S3 public video 签名 URL 同步设置 `ResponseContentDisposition=inline` 和正确 Content-Type。
 
 ### 7. 主题契约
 
@@ -182,7 +182,7 @@ playHref?: string;
 
 - 未授权请求不能探测文件大小；
 - member/login 视频每个 Range 请求重新鉴权；
-- public S3 签名 URL只用于本来就公开的内容；
+- public S3 签名 URL 只用于本来就公开的内容；
 - inline 只允许视频 MIME 白名单；
 - local 路径继续防穿越；
 - pre-auth 与 post-auth 两层限流都必须存在。

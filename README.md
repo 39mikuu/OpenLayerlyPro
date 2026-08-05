@@ -178,7 +178,7 @@ secrets volume。
 - Cloudflare Tunnel / Cloudflare CDN：`TRUSTED_PROXY_HEADER=cf-connecting-ip`
 - Caddy / Nginx / Traefik：`TRUSTED_PROXY_HEADER=x-forwarded-for`，并设置正确的 `TRUSTED_PROXY_HOPS`
 
-默认不信任任意 `X-Forwarded-For` 是安全设计，避免客户端伪造 IP。无法解析可信 IP 时会使用各操作独立的高阈值 unresolved emergency bucket，并记录限频告警；这不是正常生产配置的替代品。
+默认不信任任意 `X-Forwarded-For` 是安全设计，避免客户端伪造 IP。无法解析可信 IP 时会使用各操作独立的高阈值 unresolved emergency bucket，并记录限流告警；这不是正常生产配置的替代品。
 
 ### 配置加密根密钥
 

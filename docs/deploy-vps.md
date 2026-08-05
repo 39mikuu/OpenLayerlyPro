@@ -44,7 +44,7 @@ docker compose -f docker-compose.yml -f docker-compose.caddy.yml config
 - 从公网连接主机 `:3000` 失败；
 - 登录、上传、下载日志能解析正确客户端 IP；
 - local/S3 视频 seek 返回正确 Range 响应；
-- private 下载不被代理/CDN公开缓存；
+- private 下载不被代理/CDN 公开缓存；
 - DB 配置的 Turnstile、Storage、Stripe 和 SMTP 状态与后台一致。
 
 应用负责设置 nonce CSP 与全局安全响应头。先用 `SECURITY_CSP_MODE=auto`

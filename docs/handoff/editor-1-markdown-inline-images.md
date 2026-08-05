@@ -28,7 +28,7 @@
 9. 不直接调用现有 `deleteFile` 清理内联图片。
 10. 数据库先删除 file 身份，再由第二阶段 task 删除存储对象。
 11. 删除翻译或整篇文章时也必须 enqueue inline orphan cleanup，不能只依赖外键级联。
-12. 已发布文章允许内部 inline 同步，但通用 attach/detach API不得破坏仍被正文引用的文件。
+12. 已发布文章允许内部 inline 同步，但通用 attach/detach API 不得破坏仍被正文引用的文件。
 
 ## 3. 依赖
 
@@ -415,7 +415,7 @@ restoreProtectedMarkdown(translated, tokens)
 - `html:false`；
 - script、事件属性、SVG、object、裸 iframe；
 - `javascript:`、`data:`、协议相对 URL；
-- 内部图片 URL保留；
+- 内部图片 URL 保留；
 - 外链图和伪 UUID 图片剥离；
 - `breaks:true`；
 - public/preview 参数接口稳定。
@@ -460,7 +460,7 @@ restoreProtectedMarkdown(translated, tokens)
 
 - 正常 token 完整恢复；
 - 模型删除、复制、修改 token → 拒绝采用；
-- 代码、图片 URL、链接 URL和 `@video:` 保持不变。
+- 代码、图片 URL、链接 URL 和 `@video:` 保持不变。
 
 ## 16. 验证
 

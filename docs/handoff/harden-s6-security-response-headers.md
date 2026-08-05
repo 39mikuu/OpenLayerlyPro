@@ -179,7 +179,7 @@ SECURITY_HSTS_ENABLED = true | false   # default false
 
 ## 9. 验收 checklist
 
-- [ ] 文档响应包含 CSP/HSTS(条件)/nosniff/Referrer-Policy/XFO/Permissions-Policy/COOP/CORP
+- [ ] 文档响应包含 CSP/HSTS（条件）/nosniff/Referrer-Policy/XFO/Permissions-Policy/COOP/CORP
 - [ ] CSP 同时写 request/response，Next 与业务脚本使用同一 per-request nonce
 - [ ] 生产 `script-src` 无 `'unsafe-inline'/'unsafe-eval'`，无宽泛自定义来源
 - [ ] 视频/Turnstile/S3/integration 来源均由实际渲染配置单一派生
