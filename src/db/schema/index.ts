@@ -83,6 +83,17 @@ export const magicLinkTokens = pgTable(
     redirectPath: text("redirect_path"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    // Legacy rows are active as soon as they are created. Protocol v2 inserts
+    // pending rows explicitly and only makes them active after SMTP succeeds.
+    deliveryState: text("delivery_state", {
+      enum: ["pending", "active", "superseded", "cancelled"],
+    })
+      .notNull()
+      .default("active"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }).defaultNow(),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    deliveryReservationId: uuid("delivery_reservation_id"),
+    deliveryReservationUntil: timestamp("delivery_reservation_until", { withTimezone: true }),
     createdAt: createdAt(),
     ip: text("ip"),
     userAgent: text("user_agent"),
@@ -91,8 +102,131 @@ export const magicLinkTokens = pgTable(
     uniqueIndex("magic_link_tokens_token_hash_key_idx").on(table.tokenHash, table.keyId),
     index("magic_link_tokens_email_created_idx").on(table.email, table.createdAt.desc()),
     index("magic_link_tokens_email_active_idx").on(table.email, table.expiresAt, table.consumedAt),
+    index("magic_link_tokens_pending_cleanup_idx")
+      .on(table.createdAt, table.id)
+      .where(sql`${table.deliveryState} = 'pending' and ${table.deliveryReservationId} is null`),
+    index("magic_link_tokens_stuck_reservation_idx")
+      .on(table.createdAt, table.id)
+      .where(
+        sql`${table.deliveryState} = 'pending' and ${table.deliveryReservationId} is not null`,
+      ),
+    check(
+      "magic_link_tokens_delivery_state_check",
+      sql`${table.deliveryState} in ('pending', 'active', 'superseded', 'cancelled')`,
+    ),
+    check(
+      "magic_link_tokens_delivery_timestamp_check",
+      sql`(
+        (${table.deliveryState} = 'pending' and ${table.deliveredAt} is null)
+        or (${table.deliveryState} = 'active' and ${table.deliveredAt} is not null)
+        or ${table.deliveryState} in ('superseded', 'cancelled')
+      )`,
+    ),
+    check(
+      "magic_link_tokens_reservation_pair_check",
+      sql`(${table.deliveryReservationId} is null) = (${table.deliveryReservationUntil} is null)`,
+    ),
+    check(
+      "magic_link_tokens_reservation_state_check",
+      sql`${table.deliveryReservationId} is null or ${table.deliveryState} = 'pending'`,
+    ),
   ],
 );
+
+// A public Magic Link request is deliberately role-blind. It records the
+// request context needed by the intake worker, but never a role snapshot or a
+// suppression reason. The immutable ledger survives request retention so
+// rollback/disposition work never needs to infer a historic association.
+export const magicLinkRequests = pgTable(
+  "magic_link_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").notNull(),
+    locale: text("locale", { enum: ["zh", "en", "ja"] }),
+    redirectPath: text("redirect_path"),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+    createdAt: createdAt(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    mintedAt: timestamp("minted_at", { withTimezone: true }),
+    mintedTokenId: uuid("minted_token_id"),
+  },
+  (table) => [
+    index("magic_link_requests_mint_budget_idx")
+      .on(table.email, table.ip, table.mintedAt.desc())
+      .where(sql`${table.mintedAt} is not null`),
+    index("magic_link_requests_cleanup_idx")
+      .on(
+        sql`greatest(${table.createdAt}, coalesce(${table.mintedAt}, ${table.createdAt}))`,
+        table.id,
+      )
+      .where(sql`${table.resolvedAt} is not null`),
+    check(
+      "magic_link_requests_minted_pair_check",
+      sql`(${table.mintedAt} is null) = (${table.mintedTokenId} is null)`,
+    ),
+    check(
+      "magic_link_requests_minted_resolution_check",
+      sql`${table.mintedAt} is null or ${table.resolvedAt} is not null`,
+    ),
+  ],
+);
+
+export const magicLinkMintLedger = pgTable(
+  "magic_link_mint_ledger",
+  {
+    requestId: uuid("request_id").primaryKey(),
+    mintedTokenId: uuid("minted_token_id").notNull(),
+    deliveryTaskId: uuid("delivery_task_id").notNull(),
+    mintedAt: timestamp("minted_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("magic_link_mint_ledger_token_unique").on(table.mintedTokenId),
+    uniqueIndex("magic_link_mint_ledger_task_unique").on(table.deliveryTaskId),
+  ],
+);
+
+export const magicLinkDeliveryDispositions = pgTable(
+  "magic_link_delivery_dispositions",
+  {
+    candidateId: uuid("candidate_id").primaryKey(),
+    requestId: uuid("request_id").notNull(),
+    mintedTokenId: uuid("minted_token_id").notNull(),
+    deliveryTaskId: uuid("delivery_task_id").notNull(),
+    finalState: text("final_state", { enum: ["cancelled", "superseded", "abandoned"] }).notNull(),
+    reservationId: uuid("reservation_id"),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check(
+      "magic_link_delivery_dispositions_state_check",
+      sql`${table.finalState} in ('cancelled', 'superseded', 'abandoned')`,
+    ),
+  ],
+);
+
+export const magicLinkStuckFenceAlerts = pgTable(
+  "magic_link_stuck_fence_alerts",
+  {
+    candidateId: uuid("candidate_id").notNull(),
+    reservationId: uuid("reservation_id").notNull(),
+    lastNotifiedAt: timestamp("last_notified_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [primaryKey({ columns: [table.candidateId, table.reservationId] })],
+);
+
+// A dead intake task cannot be silently discarded: it contains the only
+// durable resolution attempt for an accepted public request. This opaque
+// task-keyed state deduplicates post-commit operational alerts across workers.
+export const magicLinkDeadIntakeAlerts = pgTable("magic_link_dead_intake_alerts", {
+  taskId: uuid("task_id").primaryKey(),
+  lastNotifiedAt: timestamp("last_notified_at", { withTimezone: true }).notNull(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
 
 export const oauthIdentities = pgTable(
   "oauth_identities",
@@ -668,7 +802,14 @@ export const tasks = pgTable(
     lastError: text("last_error"),
     priority: integer("priority").notNull().default(100),
     queueClass: text("queue_class", {
-      enum: ["transactional", "notification", "maintenance", "default"],
+      enum: [
+        "transactional",
+        "auth_delivery_v2",
+        "auth_intake",
+        "notification",
+        "maintenance",
+        "default",
+      ],
     })
       .notNull()
       .default("default"),
@@ -686,7 +827,7 @@ export const tasks = pgTable(
       .where(sql`${table.status} = 'processing'`),
     check(
       "tasks_queue_class_check",
-      sql`${table.queueClass} in ('transactional', 'notification', 'maintenance', 'default')`,
+      sql`${table.queueClass} in ('transactional', 'auth_delivery_v2', 'auth_intake', 'notification', 'maintenance', 'default')`,
     ),
     index("tasks_claimable_class_due_idx")
       .on(table.queueClass, table.runAfter, table.priority, table.id)
@@ -696,6 +837,56 @@ export const tasks = pgTable(
     index("tasks_stale_class_due_idx")
       .on(table.queueClass, table.leaseUntil, table.priority, table.id)
       .where(sql`${table.status} = 'processing' and ${table.attempts} < ${table.maxAttempts}`),
+    // The database, rather than only a TypeScript parser, prevents a v2
+    // delivery from being claimed by the legacy transactional queue or from
+    // carrying a plaintext email.
+    check(
+      "tasks_magic_link_protocol_check",
+      sql`
+        coalesce(
+          case
+            when ${table.kind} = 'auth.magic_link_request' then
+              ${table.queueClass} = 'auth_intake'
+              and jsonb_typeof(${table.payloadJson}) = 'object'
+              and not coalesce(${table.payloadJson} ? 'deliveryProtocol', false)
+              and not coalesce(${table.payloadJson} ? 'email', false)
+              and jsonb_typeof(${table.payloadJson}->'version') = 'number'
+              and ${table.payloadJson}->>'version' = '1'
+              and jsonb_typeof(${table.payloadJson}->'requestId') = 'string'
+              and (${table.payloadJson} - 'version' - 'requestId') = '{}'::jsonb
+            when ${table.kind} = 'auth.magic_link_email'
+              and coalesce(${table.payloadJson} ? 'deliveryProtocol', false) then
+              ${table.queueClass} = 'auth_delivery_v2'
+              and jsonb_typeof(${table.payloadJson}) = 'object'
+              and jsonb_typeof(${table.payloadJson}->'version') = 'number'
+              and ${table.payloadJson}->>'version' = '1'
+              and jsonb_typeof(${table.payloadJson}->'deliveryProtocol') = 'number'
+              and ${table.payloadJson}->>'deliveryProtocol' = '2'
+              and jsonb_typeof(${table.payloadJson}->'tokenId') = 'string'
+              and jsonb_typeof(${table.payloadJson}->'encryptedToken') = 'string'
+              and not coalesce(${table.payloadJson} ? 'email', false)
+              and (
+                not coalesce(${table.payloadJson} ? 'locale', false)
+                or (
+                  jsonb_typeof(${table.payloadJson}->'locale') = 'string'
+                  and ${table.payloadJson}->>'locale' in ('zh', 'en', 'ja')
+                )
+              )
+              and (
+                ${table.payloadJson} - 'version' - 'deliveryProtocol' - 'tokenId'
+                - 'encryptedToken' - 'locale'
+              ) = '{}'::jsonb
+            when ${table.kind} = 'auth.magic_link_email' then
+              ${table.queueClass} = 'transactional'
+              and not coalesce(${table.payloadJson} ? 'deliveryProtocol', false)
+            else
+              ${table.queueClass} not in ('auth_delivery_v2', 'auth_intake')
+              and not coalesce(${table.payloadJson} ? 'deliveryProtocol', false)
+          end,
+          false
+        )
+      `,
+    ),
   ],
 );
 
@@ -927,6 +1118,11 @@ export const notificationSuppressions = pgTable(
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type LoginCode = typeof loginCodes.$inferSelect;
+export type MagicLinkToken = typeof magicLinkTokens.$inferSelect;
+export type MagicLinkRequest = typeof magicLinkRequests.$inferSelect;
+export type MagicLinkMintLedger = typeof magicLinkMintLedger.$inferSelect;
+export type MagicLinkDeliveryDisposition = typeof magicLinkDeliveryDispositions.$inferSelect;
+export type MagicLinkDeadIntakeAlert = typeof magicLinkDeadIntakeAlerts.$inferSelect;
 export type SiteSetting = typeof siteSettings.$inferSelect;
 export type MembershipTier = typeof membershipTiers.$inferSelect;
 export type Membership = typeof memberships.$inferSelect;

@@ -1,10 +1,13 @@
+import { randomUUID } from "crypto";
 import { eq, inArray } from "drizzle-orm";
 import { cache } from "react";
 
 import { getDb } from "@/db";
 import { membershipTiers, siteSettings, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
-import { hashPassword } from "@/lib/crypto";
+import { hashPassword, hmacSha256WithPurpose } from "@/lib/crypto";
+import { recordAudit } from "@/modules/audit";
+import { enforceMagicLinkPromotionFence } from "@/modules/auth/magic-link-fence";
 import { isSiteFileSettingKey, lockSiteFileSettingReferences } from "@/modules/file/references";
 import {
   type LegacyFooterStatus,
@@ -244,14 +247,36 @@ export async function setupSite(input: {
   const email = input.adminEmail.trim().toLowerCase();
   const db = getDb();
 
-  await db.transaction(async (tx) => {
-    await tx
+  const result = await db.transaction(async (tx) => {
+    const fence = await enforceMagicLinkPromotionFence(tx, [email]);
+    if (fence.blocked) {
+      await recordAudit(tx, {
+        entityType: "magic_link",
+        entityId: fence.reservedCandidateIds[0]!,
+        action: "magic_link_promotion_blocked",
+        actor: { type: "system", id: null },
+        after: {
+          path: "site_setup",
+          reservedCandidateCount: fence.reservedCandidateCount,
+          targetEmailDigest: hmacSha256WithPurpose("magic-link-promotion-audit", email),
+        },
+        correlationId: randomUUID(),
+      });
+      return {
+        blocked: true,
+        reservedCandidateCount: fence.reservedCandidateCount,
+      } as const;
+    }
+
+    const [admin] = await tx
       .insert(users)
       .values({ email, passwordHash, role: "admin", displayName: input.artistName })
       .onConflictDoUpdate({
         target: users.email,
         set: { passwordHash, role: "admin", updatedAt: new Date() },
-      });
+      })
+      .returning({ id: users.id });
+    if (!admin) throw new Error("Site setup did not create its administrator");
     await tx.insert(membershipTiers).values(DEFAULT_TIERS);
 
     const settings: Record<string, unknown> = {
@@ -270,6 +295,25 @@ export async function setupSite(input: {
           set: { valueJson: value, updatedAt: new Date() },
         });
     }
+    await recordAudit(tx, {
+      entityType: "admin",
+      entityId: admin.id,
+      action: "site_initialized",
+      actor: { type: "system", id: null },
+      after: {
+        promotionFenceChecked: true,
+        cancelledPendingMagicLinks: fence.cancelledCandidateIds.length,
+      },
+      correlationId: randomUUID(),
+    });
+    return { blocked: false } as const;
   });
+  if (result.blocked) {
+    await recordEvent("magic_link_promotion_blocked", {
+      path: "site_setup",
+      reservedCandidateCount: result.reservedCandidateCount,
+    });
+    throw new ApiError(409, "magicLinkDeliveryInFlight");
+  }
   await recordEvent("site_initialized", { adminEmail: email });
 }

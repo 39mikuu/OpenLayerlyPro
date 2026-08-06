@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Task } from "@/db/schema";
+import { __resetEnvForTests } from "@/lib/env";
 
 import { dispatchClaimedTask, dispatchTaskBatch } from "./dispatcher";
 import { PermanentTaskError, TASK_BATCH_SIZE, TASK_LEASE_MS } from "./index";
@@ -59,7 +60,7 @@ describe("task dispatcher", () => {
 
     await expect(dispatchTaskBatch(deps)).resolves.toBe(2);
     expect(deps.sweep).toHaveBeenCalledTimes(1);
-    expect(deps.claimClass).toHaveBeenCalledTimes(6);
+    expect(deps.claimClass).toHaveBeenCalledTimes(7);
     expect(deps.claimClass).toHaveBeenNthCalledWith(1, "transactional", { includeStale: true });
     expect(deps.claimClass).toHaveBeenNthCalledWith(2, "transactional", { includeStale: true });
     expect(deps.succeed).toHaveBeenNthCalledWith(
@@ -100,7 +101,7 @@ describe("task dispatcher", () => {
     await expect(dispatchTaskBatch(deps)).resolves.toBe(2);
 
     expect(deps.sweep).toHaveBeenCalledTimes(1);
-    expect(deps.claimClass).toHaveBeenCalledTimes(6);
+    expect(deps.claimClass).toHaveBeenCalledTimes(7);
     expect(calls.slice(0, 2)).toEqual(["sweep", "claim"]);
   });
 
@@ -115,6 +116,60 @@ describe("task dispatcher", () => {
 
     await expect(dispatchTaskBatch(deps)).resolves.toBe(TASK_BATCH_SIZE);
     expect(deps.claimClass).toHaveBeenCalledTimes(TASK_BATCH_SIZE);
+  });
+
+  it("uses the stale-first transactional/v2 claim group for protocol-v2 delivery", async () => {
+    const deps = dependencies();
+    const v2Task = {
+      ...task("11111111-1111-4111-8111-111111111111"),
+      kind: "auth.magic_link_email",
+      payloadJson: {
+        version: 1,
+        deliveryProtocol: 2,
+        tokenId: "22222222-2222-4222-8222-222222222222",
+        encryptedToken: "encrypted",
+      },
+      queueClass: "auth_delivery_v2" as const,
+      reclaimedStale: true,
+    };
+    const claimGroup = vi.fn().mockResolvedValueOnce(v2Task).mockResolvedValue(null);
+    deps.run.mockResolvedValue({});
+    deps.succeed.mockResolvedValue(true);
+
+    await expect(dispatchTaskBatch({ ...deps, claimGroup })).resolves.toBe(1);
+    expect(claimGroup).toHaveBeenNthCalledWith(1, ["transactional", "auth_delivery_v2"], {
+      includeStale: true,
+    });
+  });
+
+  it("enforces the auth_intake cap before claiming another public request task", async () => {
+    const previousCap = process.env.TASK_AUTH_INTAKE_MAX_PER_BATCH;
+    process.env.TASK_AUTH_INTAKE_MAX_PER_BATCH = "1";
+    __resetEnvForTests();
+    try {
+      const deps = dependencies();
+      deps.claimClass.mockImplementation(async (queueClass: string) => {
+        if (queueClass !== "auth_intake") return null;
+        return {
+          ...task("11111111-1111-4111-8111-111111111111"),
+          kind: "auth.magic_link_request",
+          payloadJson: { version: 1, requestId: "22222222-2222-4222-8222-222222222222" },
+          queueClass: "auth_intake",
+          reclaimedStale: false,
+        };
+      });
+      deps.run.mockResolvedValue({});
+      deps.succeed.mockResolvedValue(true);
+
+      await expect(dispatchTaskBatch(deps)).resolves.toBe(1);
+      expect(
+        deps.claimClass.mock.calls.filter(([queueClass]) => queueClass === "auth_intake"),
+      ).toHaveLength(1);
+    } finally {
+      if (previousCap === undefined) delete process.env.TASK_AUTH_INTAKE_MAX_PER_BATCH;
+      else process.env.TASK_AUTH_INTAKE_MAX_PER_BATCH = previousCap;
+      __resetEnvForTests();
+    }
   });
 
   it("guarantees default progress when transactional and notification queues stay full", async () => {

@@ -3,7 +3,15 @@ import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
-import { auditEvents, sessions, users } from "@/db/schema";
+import {
+  auditEvents,
+  magicLinkMintLedger,
+  magicLinkRequests,
+  magicLinkTokens,
+  sessions,
+  tasks,
+  users,
+} from "@/db/schema";
 import { hashPassword, verifyPassword } from "@/lib/crypto";
 
 import {
@@ -52,6 +60,40 @@ describeWithDatabase("administrator account maintenance integration", () => {
       ])
       .returning();
     return { admin, currentTokenHash, otherTokenHash, sessions: created };
+  }
+
+  async function attachV2MintLedger(input: { candidateId: string; email: string }) {
+    const mintedAt = new Date();
+    const [request] = await db
+      .insert(magicLinkRequests)
+      .values({
+        email: input.email,
+        resolvedAt: mintedAt,
+        mintedAt,
+        mintedTokenId: input.candidateId,
+      })
+      .returning();
+    const [deliveryTask] = await db
+      .insert(tasks)
+      .values({
+        kind: "auth.magic_link_email",
+        dedupeKey: `admin-account-fixture:${input.candidateId}`,
+        payloadJson: {
+          version: 1,
+          deliveryProtocol: 2,
+          tokenId: input.candidateId,
+          encryptedToken: "fixture-encrypted-token",
+        },
+        queueClass: "auth_delivery_v2",
+        status: "pending",
+      })
+      .returning();
+    await db.insert(magicLinkMintLedger).values({
+      requestId: request!.id,
+      mintedTokenId: input.candidateId,
+      deliveryTaskId: deliveryTask!.id,
+      mintedAt,
+    });
   }
 
   it("changes the password, preserves the current session, revokes others, and audits safely", async () => {
@@ -160,6 +202,95 @@ describeWithDatabase("administrator account maintenance integration", () => {
     expect(event).toMatchObject({
       beforeJson: { email: admin.email },
       afterJson: { email: newEmail },
+    });
+  });
+
+  it("does not promote an address while a Magic Link SMTP reservation is fenced", async () => {
+    const { admin } = await seedAdmin();
+    const newEmail = `fenced-${randomUUID()}@example.test`;
+    const reservationId = randomUUID();
+    const [candidate] = await db
+      .insert(magicLinkTokens)
+      .values({
+        email: newEmail,
+        tokenHash: randomUUID().replaceAll("-", ""),
+        keyId: "test",
+        expiresAt: new Date(0),
+        deliveryState: "pending",
+        deliveredAt: null,
+        deliveryReservationId: reservationId,
+        deliveryReservationUntil: new Date(Date.now() - 60_000),
+      })
+      .returning();
+    await attachV2MintLedger({ candidateId: candidate!.id, email: newEmail });
+
+    await expect(
+      changeAdminEmail(admin.id, {
+        currentPassword: "current-password",
+        newEmail,
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "magicLinkDeliveryInFlight" });
+    const [unchanged] = await db.select().from(users).where(eq(users.id, admin.id));
+    expect(unchanged?.email).toBe(admin.email);
+    const actions = (await listAdminAuditHistory(admin.id)).map((event) => event.action);
+    expect(actions).toContain("magic_link_promotion_blocked");
+
+    await db
+      .update(magicLinkTokens)
+      .set({ deliveryReservationId: null, deliveryReservationUntil: null })
+      .where(eq(magicLinkTokens.id, candidate.id));
+    await expect(
+      changeAdminEmail(admin.id, {
+        currentPassword: "current-password",
+        newEmail,
+      }),
+    ).resolves.toEqual({ email: newEmail });
+    const [cancelled] = await db
+      .select()
+      .from(magicLinkTokens)
+      .where(eq(magicLinkTokens.id, candidate.id));
+    expect(cancelled).toMatchObject({ deliveryState: "cancelled" });
+  });
+
+  it("documents the exact-base change-admin write as a mixed-version rollout hazard", async () => {
+    const { admin } = await seedAdmin();
+    const newEmail = `legacy-change-admin-${randomUUID()}@example.test`;
+    const reservationId = randomUUID();
+    await db.insert(magicLinkTokens).values({
+      email: newEmail,
+      tokenHash: randomUUID().replaceAll("-", ""),
+      keyId: "test",
+      expiresAt: new Date(0),
+      deliveryState: "pending",
+      deliveredAt: null,
+      deliveryReservationId: reservationId,
+      deliveryReservationUntil: new Date(Date.now() - 60_000),
+    });
+
+    // This is the exact guarded UPDATE shape from changeAdminEmail on base
+    // 80dbaa. That code has no advisory lock or reservation predicate, so it
+    // demonstrates why old admin-operation executables must be absent in
+    // Phase B rather than merely unable to claim the new queues.
+    await db
+      .update(users)
+      .set({ email: newEmail, updatedAt: new Date() })
+      .where(
+        and(
+          eq(users.id, admin.id),
+          eq(users.email, admin.email),
+          eq(users.passwordHash, admin.passwordHash!),
+        ),
+      );
+
+    const [promoted] = await db.select().from(users).where(eq(users.id, admin.id));
+    const [candidate] = await db
+      .select()
+      .from(magicLinkTokens)
+      .where(eq(magicLinkTokens.email, newEmail));
+    expect(promoted).toMatchObject({ email: newEmail, role: "admin" });
+    expect(candidate).toMatchObject({
+      deliveryState: "pending",
+      deliveryReservationId: reservationId,
     });
   });
 });

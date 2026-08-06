@@ -5,6 +5,14 @@
 - **设计基线**：`origin/main` `2bb11b36dfed39de2b0f3ff4f69f6be5ebfd3907`
 - **变更类型**：Auth / authorization boundary security fix
 
+> **Supersession note.** Issue #184 supersedes this handoff's request-time
+> administrator suppression and its "0 task" language. Under protocol v2 every
+> accepted public request creates a role-blind intake task; an admin request
+> still creates zero token, zero delivery task, and zero SMTP. The consumption
+> transaction's administrator boundary, session atomicity, and uniform public
+> failure semantics in this document remain mandatory. See
+> [Issue #184](issue-184-cross-request-magic-link-role-indistinguishability.md).
+
 ## 1. 背景与目标
 
 `docs/release-v1.2-plan.md` 将 Magic Link 定义为粉丝/会员登录路径，并规定管理员继续使用邮箱与密码。当前基线没有强制该边界：
