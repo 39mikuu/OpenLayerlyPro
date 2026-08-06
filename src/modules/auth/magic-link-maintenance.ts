@@ -307,7 +307,7 @@ export async function alertOnStuckMagicLinkFences(): Promise<number> {
   return alerted;
 }
 
-type DeadIntake = { taskId: string; attempts: number; createdAt: Date };
+type DeadIntake = { taskId: string; attempts: number; createdAt: Date | string };
 
 /** A dead intake has no safe automatic resolution path, so make it durable and visible. */
 export async function alertOnDeadMagicLinkIntakes(): Promise<number> {
@@ -323,6 +323,7 @@ export async function alertOnDeadMagicLinkIntakes(): Promise<number> {
 
   let alerted = 0;
   for (const entry of tasksToAlert) {
+    const createdAt = entry.createdAt instanceof Date ? entry.createdAt : new Date(entry.createdAt);
     const notified = await getDb().transaction(async (tx) => {
       const [task] = await tx
         .select({ kind: tasks.kind, status: tasks.status })
@@ -352,7 +353,7 @@ export async function alertOnDeadMagicLinkIntakes(): Promise<number> {
     await recordEvent("magic_link_intake_dead", {
       taskId: entry.taskId,
       attempts: entry.attempts,
-      ageMs: Math.max(0, Date.now() - entry.createdAt.getTime()),
+      ageMs: Number.isNaN(createdAt.getTime()) ? 0 : Math.max(0, Date.now() - createdAt.getTime()),
       status: "dead",
     });
   }

@@ -418,7 +418,7 @@ async function deliverLegacyMagicLinkEmailTask(
       eq(tasks.kind, "auth.magic_link_email"),
       eq(tasks.status, "processing"),
       eq(tasks.lockedBy, lockToken),
-      gt(tasks.leaseUntil, sql<Date>`now()`),
+      gt(tasks.leaseUntil, sql<Date>`clock_timestamp()`),
     );
     const [claimedTask] = await tx.select().from(tasks).where(claimFilter).limit(1).for("update");
     if (!claimedTask) {
@@ -440,8 +440,9 @@ async function deliverLegacyMagicLinkEmailTask(
 
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${initial.email}))`);
 
-    // Re-check the claim after waiting for the per-email lock. A reclaimed or
-    // expired lease must become a successful no-op before decrypting or sending.
+    // Re-check the fencing token and current task lease after waiting for the
+    // per-email lock. A reclaimed or expired task must become a successful
+    // no-op before decrypting or sending.
     const [stillClaimed] = await tx
       .select({ id: tasks.id })
       .from(tasks)
@@ -551,7 +552,7 @@ export async function resolveMagicLinkRequestTask(
     if (!isExactMagicLinkIntakeTask(claimed, payload.requestId)) {
       throw new PermanentTaskError("Magic Link intake task graph is invalid");
     }
-    if (!claimed.leaseUntil || claimed.leaseUntil <= new Date()) {
+    if (!(await hasCurrentMagicLinkTaskLease(tx, fence.taskId))) {
       throw new Error("Magic Link intake task claim expired before resolution");
     }
 
@@ -587,15 +588,15 @@ export async function resolveMagicLinkRequestTask(
     ) {
       return "Magic Link intake task claim is stale; resolution skipped";
     }
-    if (!stillClaimed.leaseUntil || stillClaimed.leaseUntil <= new Date()) {
+    if (!(await hasCurrentMagicLinkTaskLease(tx, fence.taskId))) {
       throw new Error("Magic Link intake task claim expired while waiting for the email lock");
     }
     if (request.resolvedAt) {
       return "Magic Link intake request was already resolved";
     }
 
-    const [clock] = await executeRows<{ now: Date }>(tx, sql`select now() as now`);
-    const now = clock?.now ?? new Date();
+    const [clock] = await executeRows<{ now: Date | string }>(tx, sql`select now() as now`);
+    const now = clock ? parseMagicLinkDatabaseTimestamp(clock.now, "now") : new Date();
     const resolveWithoutMint = async (note: string) => {
       const [updated] = await tx
         .update(magicLinkRequests)
@@ -772,12 +773,11 @@ async function clearMagicLinkReservationAfterClosedSocket(input: {
       !task ||
       task.kind !== "auth.magic_link_email" ||
       task.status !== "processing" ||
-      task.lockedBy !== input.lockToken ||
-      !task.leaseUntil ||
-      task.leaseUntil <= new Date()
+      task.lockedBy !== input.lockToken
     ) {
       return false;
     }
+    if (!(await hasCurrentMagicLinkTaskLease(tx, input.taskId))) return false;
     if (!isExactMagicLinkDeliveryV2Task(task, input.candidateId)) return false;
 
     const [candidate] = await tx
@@ -824,8 +824,9 @@ async function clearMagicLinkReservationAfterClosedSocket(input: {
 
 /**
  * Extend only this invocation's observation lease while SMTP I/O is still
- * alive. Ownership comes from the UUID generation plus task claim, never from
- * matching a timestamp value or merely observing that the prior lease passed.
+ * alive. Ownership comes from the UUID generation plus a current task claim,
+ * never from matching a reservation timestamp or merely observing that its
+ * prior observation lease passed.
  */
 async function renewMagicLinkDeliveryReservation(input: {
   taskId: string;
@@ -845,29 +846,33 @@ async function renewMagicLinkDeliveryReservation(input: {
       !task ||
       task.kind !== "auth.magic_link_email" ||
       task.status !== "processing" ||
-      task.lockedBy !== input.lockToken ||
-      !task.leaseUntil ||
-      task.leaseUntil <= new Date()
+      task.lockedBy !== input.lockToken
     ) {
       return false;
     }
+    if (!(await hasCurrentMagicLinkTaskLease(tx, input.taskId))) return false;
     if (!isExactMagicLinkDeliveryV2Task(task, input.candidateId)) return false;
 
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.email}))`);
     const [stillClaimed] = await tx
-      .select({ status: tasks.status, lockedBy: tasks.lockedBy, leaseUntil: tasks.leaseUntil })
+      .select({
+        kind: tasks.kind,
+        status: tasks.status,
+        lockedBy: tasks.lockedBy,
+        leaseUntil: tasks.leaseUntil,
+      })
       .from(tasks)
       .where(eq(tasks.id, input.taskId))
       .limit(1);
     if (
       !stillClaimed ||
+      stillClaimed.kind !== "auth.magic_link_email" ||
       stillClaimed.status !== "processing" ||
-      stillClaimed.lockedBy !== input.lockToken ||
-      !stillClaimed.leaseUntil ||
-      stillClaimed.leaseUntil <= new Date()
+      stillClaimed.lockedBy !== input.lockToken
     ) {
       return false;
     }
+    if (!(await hasCurrentMagicLinkTaskLease(tx, input.taskId))) return false;
 
     const [candidate] = await tx
       .select({
@@ -939,7 +944,7 @@ async function reserveMagicLinkDeliveryV2(
     if (!isExactMagicLinkDeliveryV2Task(task, payload.tokenId)) {
       throw new PermanentTaskError("Magic Link delivery task graph is invalid");
     }
-    if (!task.leaseUntil || task.leaseUntil <= new Date()) {
+    if (!(await hasCurrentMagicLinkTaskLease(tx, fence.taskId))) {
       throw new Error("Magic Link delivery task claim expired before reservation");
     }
 
@@ -963,7 +968,7 @@ async function reserveMagicLinkDeliveryV2(
     ) {
       return { note: "Magic Link delivery task claim is stale; delivery skipped" };
     }
-    if (!stillClaimed.leaseUntil || stillClaimed.leaseUntil <= new Date()) {
+    if (!(await hasCurrentMagicLinkTaskLease(tx, fence.taskId))) {
       throw new Error("Magic Link delivery task claim expired while waiting for the email lock");
     }
 
@@ -1100,25 +1105,31 @@ async function activateMagicLinkDeliveryV2(input: {
     if (!isExactMagicLinkDeliveryV2Task(task, input.payload.tokenId)) {
       throw new PermanentTaskError("Magic Link delivery task graph is invalid after SMTP");
     }
-    if (!task.leaseUntil || task.leaseUntil <= new Date()) {
+    if (!(await hasCurrentMagicLinkTaskLease(tx, input.fence.taskId))) {
       throw new Error("Magic Link delivery task claim expired before activation");
     }
 
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.email}))`);
 
     const [stillClaimed] = await tx
-      .select({ status: tasks.status, lockedBy: tasks.lockedBy, leaseUntil: tasks.leaseUntil })
+      .select({
+        kind: tasks.kind,
+        status: tasks.status,
+        lockedBy: tasks.lockedBy,
+        leaseUntil: tasks.leaseUntil,
+      })
       .from(tasks)
       .where(eq(tasks.id, input.fence.taskId))
       .limit(1);
     if (
       !stillClaimed ||
+      stillClaimed.kind !== "auth.magic_link_email" ||
       stillClaimed.status !== "processing" ||
       stillClaimed.lockedBy !== lockToken
     ) {
       return "Magic Link delivery task claim became stale after SMTP";
     }
-    if (!stillClaimed.leaseUntil || stillClaimed.leaseUntil <= new Date()) {
+    if (!(await hasCurrentMagicLinkTaskLease(tx, input.fence.taskId))) {
       throw new Error("Magic Link delivery task claim expired while waiting for activation lock");
     }
 
@@ -1654,4 +1665,34 @@ async function executeRows<T>(
   if (Array.isArray(result)) return result as T[];
   const rows = (result as { rows?: unknown[] }).rows;
   return (rows ?? []) as T[];
+}
+
+/**
+ * Use PostgreSQL wall time rather than a transaction-start `now()`: a worker
+ * can wait on the email advisory lock while holding its task row. A current
+ * task lease remains a mandatory claim fence; only reservation-until is an
+ * observation timestamp that cannot revoke the UUID generation by itself.
+ */
+async function hasCurrentMagicLinkTaskLease(
+  tx: Pick<DbClient, "execute">,
+  taskId: string,
+): Promise<boolean> {
+  const [row] = await executeRows<{ leaseIsCurrent: boolean | string | null }>(
+    tx,
+    sql`
+      select ${tasks.leaseUntil} > clock_timestamp() as "leaseIsCurrent"
+      from ${tasks}
+      where ${eq(tasks.id, taskId)}
+    `,
+  );
+  return row?.leaseIsCurrent === true || row?.leaseIsCurrent === "t";
+}
+
+function parseMagicLinkDatabaseTimestamp(value: Date | string, field: string): Date {
+  if (value instanceof Date) return value;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Magic Link query returned an invalid ${field} timestamp`);
+  }
+  return parsed;
 }

@@ -51,6 +51,24 @@ const describeWithDatabase =
 
 const previousGate = process.env.MAGIC_LINK_INTAKE_ENABLED;
 
+async function expectPostgresCause(promise: Promise<unknown>, pattern: RegExp): Promise<void> {
+  try {
+    await promise;
+  } catch (error) {
+    const cause =
+      error && typeof error === "object" && "cause" in error
+        ? (error as { cause?: unknown }).cause
+        : undefined;
+    const message =
+      cause && typeof cause === "object" && "message" in cause
+        ? (cause as { message?: unknown }).message
+        : undefined;
+    expect(typeof message === "string" ? message : "").toMatch(pattern);
+    return;
+  }
+  throw new Error("Expected PostgreSQL to reject the query");
+}
+
 describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
   const db = getDb();
 
@@ -553,6 +571,28 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
     ).rejects.toThrow(/magic_link_token_not_delivered/);
   });
 
+  it("does not reserve or send after its task claim lease expires before reclaim", async () => {
+    const email = `expired-claim-${randomUUID()}@example.test`;
+    const { task, payload } = await createClaimedV2Delivery(email);
+    await db
+      .update(tasks)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(tasks.id, task.id));
+
+    await expect(runTaskHandler(task)).rejects.toThrow(/claim expired before reservation/i);
+    expect(mocks.sendMagicLinkEmailWithDeadline).not.toHaveBeenCalled();
+
+    const [candidate] = await db
+      .select()
+      .from(magicLinkTokens)
+      .where(eq(magicLinkTokens.id, payload.tokenId));
+    expect(candidate).toMatchObject({
+      deliveryState: "pending",
+      deliveryReservationId: null,
+      deliveryReservationUntil: null,
+    });
+  });
+
   it("uses a fresh reservation generation when a confirmed-closed SMTP retry resends the same candidate", async () => {
     const email = `retry-delivery-${randomUUID()}@example.test`;
     const { task: firstTask, payload } = await createClaimedV2Delivery(email);
@@ -723,7 +763,8 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
     await expect(exactBase80dbaa.verifyMagicLinkToken(superseded.token)).resolves.toMatchObject({
       status: "valid",
     });
-    await expect(exactBase80dbaa.consumeMagicLinkToken(superseded.token)).rejects.toThrow(
+    await expectPostgresCause(
+      exactBase80dbaa.consumeMagicLinkToken(superseded.token),
       /magic_link_token_not_delivered/,
     );
 
@@ -744,7 +785,7 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
   });
 
   it("has database-enforced v2 queue and non-sensitive payload boundaries", async () => {
-    await expect(
+    await expectPostgresCause(
       db.insert(tasks).values({
         kind: "auth.magic_link_email",
         queueClass: "auth_delivery_v2",
@@ -756,9 +797,10 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
           email: "must-not-be-persisted@example.test",
         },
       }),
-    ).rejects.toThrow(/tasks_magic_link_protocol_check/);
+      /tasks_magic_link_protocol_check/,
+    );
 
-    await expect(
+    await expectPostgresCause(
       db.insert(tasks).values({
         kind: "auth.magic_link_email",
         queueClass: "transactional",
@@ -769,9 +811,10 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
           encryptedToken: "fixture-encrypted-token",
         },
       }),
-    ).rejects.toThrow(/tasks_magic_link_protocol_check/);
+      /tasks_magic_link_protocol_check/,
+    );
 
-    await expect(
+    await expectPostgresCause(
       db.insert(tasks).values({
         kind: "auth.magic_link_request",
         queueClass: "auth_intake",
@@ -781,9 +824,10 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
           email: "must-not-be-persisted@example.test",
         },
       }),
-    ).rejects.toThrow(/tasks_magic_link_protocol_check/);
+      /tasks_magic_link_protocol_check/,
+    );
 
-    await expect(
+    await expectPostgresCause(
       db.insert(tasks).values({
         kind: "auth.magic_link_request",
         queueClass: "auth_intake",
@@ -793,6 +837,7 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
           role: "admin",
         },
       }),
-    ).rejects.toThrow(/tasks_magic_link_protocol_check/);
+      /tasks_magic_link_protocol_check/,
+    );
   });
 });

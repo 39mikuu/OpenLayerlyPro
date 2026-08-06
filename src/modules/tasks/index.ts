@@ -102,19 +102,28 @@ type RawTaskRow = {
   kind: string;
   dedupe_key: string | null;
   payload_json: unknown;
-  run_after: Date;
+  run_after: Date | string;
   status: TaskStatus;
   attempts: number;
   max_attempts: number;
-  locked_at: Date | null;
+  locked_at: Date | string | null;
   locked_by: string | null;
-  lease_until: Date | null;
+  lease_until: Date | string | null;
   last_error: string | null;
   priority: number;
   queue_class: TaskQueueClass;
-  created_at: Date;
-  updated_at: Date;
+  created_at: Date | string;
+  updated_at: Date | string;
 };
+
+function parseRawTaskTimestamp(value: Date | string, field: string): Date {
+  if (value instanceof Date) return value;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Task query returned an invalid ${field} timestamp`);
+  }
+  return parsed;
+}
 
 function rawTaskRowToTask(row: RawTaskRow, reclaimedStale: boolean): ClaimedTaskForClass {
   return {
@@ -122,18 +131,18 @@ function rawTaskRowToTask(row: RawTaskRow, reclaimedStale: boolean): ClaimedTask
     kind: row.kind,
     dedupeKey: row.dedupe_key,
     payloadJson: row.payload_json,
-    runAfter: row.run_after,
+    runAfter: parseRawTaskTimestamp(row.run_after, "run_after"),
     status: row.status,
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
-    lockedAt: row.locked_at,
+    lockedAt: row.locked_at ? parseRawTaskTimestamp(row.locked_at, "locked_at") : null,
     lockedBy: row.locked_by,
-    leaseUntil: row.lease_until,
+    leaseUntil: row.lease_until ? parseRawTaskTimestamp(row.lease_until, "lease_until") : null,
     lastError: row.last_error,
     priority: row.priority,
     queueClass: row.queue_class,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: parseRawTaskTimestamp(row.created_at, "created_at"),
+    updatedAt: parseRawTaskTimestamp(row.updated_at, "updated_at"),
     reclaimedStale,
   };
 }
@@ -501,7 +510,7 @@ export async function renewTaskLease(
         eq(tasks.id, id),
         eq(tasks.status, "processing"),
         eq(tasks.lockedBy, lockToken),
-        gt(tasks.leaseUntil, sql<Date>`now()`),
+        gt(tasks.leaseUntil, sql<Date>`clock_timestamp()`),
       ),
     )
     .returning({ id: tasks.id });
@@ -523,14 +532,7 @@ export async function markTaskSucceeded(
       lastError: note?.slice(0, TASK_ERROR_MAX_LENGTH) ?? null,
       updatedAt: sql`now()`,
     })
-    .where(
-      and(
-        eq(tasks.id, id),
-        eq(tasks.status, "processing"),
-        eq(tasks.lockedBy, lockToken),
-        gt(tasks.leaseUntil, sql<Date>`now()`),
-      ),
-    )
+    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
     .returning({ id: tasks.id });
   return Boolean(updated);
 }
@@ -550,7 +552,6 @@ async function markTaskFailedInternal(
       eq(tasks.id, id),
       eq(tasks.status, "processing"),
       eq(tasks.lockedBy, lockToken),
-      gt(tasks.leaseUntil, now ?? sql<Date>`now()`),
     );
     const [task] = await tx.select().from(tasks).where(ownership).limit(1).for("update");
     if (!task) {
@@ -629,14 +630,7 @@ export async function deferTask(id: string, lockToken: string, runAfter: Date): 
       lastError: null,
       updatedAt: sql`now()`,
     })
-    .where(
-      and(
-        eq(tasks.id, id),
-        eq(tasks.status, "processing"),
-        eq(tasks.lockedBy, lockToken),
-        gt(tasks.leaseUntil, sql<Date>`now()`),
-      ),
-    )
+    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
     .returning({ id: tasks.id });
   return Boolean(updated);
 }
@@ -657,14 +651,7 @@ export async function markTaskDead(
       lastError: safeError.slice(0, TASK_ERROR_MAX_LENGTH),
       updatedAt: sql`now()`,
     })
-    .where(
-      and(
-        eq(tasks.id, id),
-        eq(tasks.status, "processing"),
-        eq(tasks.lockedBy, lockToken),
-        gt(tasks.leaseUntil, sql<Date>`now()`),
-      ),
-    )
+    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
     .returning({
       id: tasks.id,
       kind: tasks.kind,

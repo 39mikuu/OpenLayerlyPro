@@ -354,7 +354,7 @@ describeWithDatabase("durable tasks integration", () => {
       .returning();
 
     const firstClaim = await claimDueTasksAt(2, now, { lockToken: "order-a" });
-    expect(firstClaim.map((task) => task.id)).toEqual([staleSecond!.id, staleFourth!.id]);
+    expect(firstClaim.map((task) => task.id)).toEqual([staleSecond!.id, staleFourth!.id].sort());
 
     const secondClaim = await claimDueTasksAt(2, now, { lockToken: "order-b" });
     expect(secondClaim.map((task) => task.id)).toEqual([pendingFirst!.id, failedThird!.id]);
@@ -409,8 +409,7 @@ describeWithDatabase("durable tasks integration", () => {
     const claimed = await claimDueTasksAt(4, now, { lockToken: "limit-worker" });
 
     expect(claimed.map((task) => task.id)).toEqual([
-      staleSecond!.id,
-      staleFourth!.id,
+      ...[staleSecond!.id, staleFourth!.id].sort(),
       pendingFirst!.id,
       failedThird!.id,
     ]);
@@ -540,7 +539,7 @@ describeWithDatabase("durable tasks integration", () => {
   });
 
   it("renews a lease only for the current claim token", async () => {
-    const now = new Date(Date.now() - 1_000);
+    const now = new Date();
     const [created] = await db
       .insert(tasks)
       .values({ kind: "email", payloadJson: {}, runAfter: now })
@@ -554,6 +553,12 @@ describeWithDatabase("durable tasks integration", () => {
     const [renewed] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
     expect(renewed?.leaseUntil?.getTime()).toBeGreaterThan(before!.leaseUntil!.getTime());
     expect(renewed).toMatchObject({ status: "processing", lockedBy: "current-claim" });
+
+    await db
+      .update(tasks)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(tasks.id, created!.id));
+    await expect(renewTaskLease(created!.id, "current-claim", 60_000)).resolves.toBe(false);
   });
 
   it("uses failed while waiting, reclaims only when due, and enters dead on attempt five", async () => {

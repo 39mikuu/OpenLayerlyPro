@@ -74,24 +74,24 @@ try {
       return { blocked: true, reservedCandidateCount: reserved.length };
     }
 
-    const pendingIds = pending.map((candidate) => candidate.id);
-    const cancelled =
-      pendingIds.length === 0
-        ? []
-        : await tx`
-            update magic_link_tokens
-            set delivery_state = 'cancelled',
-                expires_at = now(),
-                delivery_reservation_id = null,
-                delivery_reservation_until = null
-            where id = any(${tx.array(pendingIds, "uuid")})
-              and delivery_state = 'pending'
-              and delivery_reservation_id is null
-              and delivery_reservation_until is null
-            returning id
-          `;
-    if (cancelled.length !== pendingIds.length) {
-      throw new Error("Magic Link promotion fence lost a locked pending candidate");
+    const cancelled = [];
+    for (const pendingCandidate of pending) {
+      const updated = await tx`
+        update magic_link_tokens
+        set delivery_state = 'cancelled',
+            expires_at = now(),
+            delivery_reservation_id = null,
+            delivery_reservation_until = null
+        where id = ${pendingCandidate.id}
+          and delivery_state = 'pending'
+          and delivery_reservation_id is null
+          and delivery_reservation_until is null
+        returning id
+      `;
+      if (updated.length !== 1) {
+        throw new Error("Magic Link promotion fence lost a locked pending candidate");
+      }
+      cancelled.push(updated[0]);
     }
 
     for (const candidate of cancelled) {
@@ -130,13 +130,10 @@ try {
       `;
     }
 
-    if (cancelled.length > 0) {
+    for (const candidate of cancelled) {
       await tx`
         delete from magic_link_stuck_fence_alerts
-        where candidate_id = any(${tx.array(
-          cancelled.map((candidate) => candidate.id),
-          "uuid",
-        )})
+        where candidate_id = ${candidate.id}
       `;
     }
 
