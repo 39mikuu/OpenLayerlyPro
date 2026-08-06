@@ -42,14 +42,14 @@ NOTIFICATION_DELIVERY_MAX_AGE_HOURS=168
 NOTIFICATION_UNSUBSCRIBE_TOKEN_MAX_AGE_DAYS=180
 ```
 
-> SMTP 是粉丝验证码登录的必要条件。业务邮件遇到未配置或需运维修复的错误时，会按 `EMAIL_RETRY_RECHECK_MINUTES` 延迟重投且不消耗 attempts；超过 `EMAIL_DELIVERY_MAX_AGE_HOURS` 后进入 dead。登录码因 TTL 很短会直接进入 dead。建议同时修改 Compose 中 PostgreSQL 默认密码并同步 `DATABASE_URL`。
+> SMTP 是粉丝验证码登录的必要条件。业务邮件遇到未配置或待运维修复的错误时，会按 `EMAIL_RETRY_RECHECK_MINUTES` 延迟重投且不消耗 attempts；超过 `EMAIL_DELIVERY_MAX_AGE_HOURS` 后进入 dead。登录码因 TTL 很短会直接进入 dead。建议同时修改 Compose 中 PostgreSQL 默认密码并同步 `DATABASE_URL`。
 >
 > Docker entrypoint 会在生产 Compose 模式下为文件型当前退订 key 与 suppression digest key 生成 `/app/secrets/notification-unsubscribe-secret` 和 `/app/secrets/notification-suppression-digest-secret`（`0600`），但不会自动生成 previous keys。key id 仍应在 `.env` 中稳定配置；直接设置非空 `NOTIFICATION_*_SECRET` 时会优先于对应 `*_SECRET_FILE`。退订 previous key 要保留到旧 token 过期；suppression previous key 要保留到有明确 rehash/migration 程序。
 
 ### 认证限流与可信 IP
 
 - 当前 limiter 面向单 app 实例。多个副本会各自计数；v1.0 不提供共享 Redis/PG limiter。
-- Cloudflare Tunnel/CDN 推荐 `TRUSTED_PROXY_HEADER=cf-connecting-ip`；自建反代使用 XFF 并设置准确 `TRUSTED_PROXY_HOPS`。
+- Cloudflare Tunnel/CDN 推荐 `TRUSTED_PROXY_HEADER=cf-connecting-ip`；自建反向代理使用 XFF 并设置准确 `TRUSTED_PROXY_HOPS`。
 - 无法解析可信客户端 IP 时，`admin-login`、`request-code`、`verify-code` 会退回各操作专用的 unresolved emergency 桶；这不会把所有认证流量压进同一个低阈值全局桶，但 unresolved 客户端仍共享各自操作桶。生产应修复可信 IP 解析，而不是长期依赖降级路径。
 - S4 使用高熵登录码、keyed email identity、正确码优先、错误后记账和 source-scoped pre-comparison budget。详见 [S4 handoff](handoff/harden-s4-auth-rate-limiting.md)。
 - 登录码使用持久投递 fence；已有 active code 对应 pending/processing/retryable failed task 时，不创建替换码。

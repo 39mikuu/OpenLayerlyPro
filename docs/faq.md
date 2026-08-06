@@ -45,7 +45,7 @@ docker compose exec \
 应用默认**不信任**任何转发头（`TRUSTED_PROXY_HOPS=0`），以防伪造。需要按部署形态显式配置可信代理层：
 
 - 单层反向代理（Caddy / Nginx / Traefik）：`TRUSTED_PROXY_HOPS=1`；
-- CDN + 反代两层：`TRUSTED_PROXY_HOPS=2`；
+- CDN + 反向代理两层：`TRUSTED_PROXY_HOPS=2`；
 - Cloudflare Tunnel：`TRUSTED_PROXY_HEADER=cf-connecting-ip`。
 
 并确保应用 `3000` 端口不直接对公网暴露，否则 IP 仍可被伪造。详见 [公网 VPS 部署](deploy-vps.md) 与 [CDN 接入](deploy-cdn.md)。

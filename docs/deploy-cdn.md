@@ -35,14 +35,14 @@ Report-Only 观察和 enforce 切换由 `SECURITY_CSP_MODE` 控制。
 
 ## 客户端 IP
 
-经 CDN 和反代后，可选择：
+经 CDN 和反向代理后，可选择：
 
-- **按可信层数解析 XFF**：例如 CDN + 反代共两层时设置准确的 `TRUSTED_PROXY_HOPS`；
+- **按可信层数解析 XFF**：例如 CDN + 反向代理共两层时设置准确的 `TRUSTED_PROXY_HOPS`；
 - **可信单值头**：Cloudflare 可使用 `TRUSTED_PROXY_HEADER=cf-connecting-ip`。
 
 单值头只有在源站不能被绕过、边缘会覆盖该头时可信。用防火墙/安全组限制源站入口，并实际验证登录、上传和下载日志中的客户端 IP。
 
-解析失败时应用会使用各操作独立的 unresolved emergency bucket并告警；这不是可以长期忽略的正常配置。
+解析失败时应用会使用各操作独立的 unresolved emergency bucket 并告警；这不是可以长期忽略的正常配置。
 
 ## 备份与可恢复性
 

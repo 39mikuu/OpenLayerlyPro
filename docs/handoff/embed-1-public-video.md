@@ -267,7 +267,7 @@ allowedIframeHostnames: EMBED_HOSTS;
 - 非白名单 iframe 整体剥离；
 - 不允许 sandbox 属性；
 - 裸 iframe 源文本被 `html:false` 转义；
-- sanitizer 测试应直接注入伪造 HTML验证兜底。
+- sanitizer 测试应直接注入伪造 HTML 验证兜底。
 
 ## 8. CSP 接入点
 
@@ -293,7 +293,7 @@ frame-src 'self' https://www.youtube-nocookie.com https://player.vimeo.com https
 `MarkdownEditor` 工具栏新增“插入公开视频”：
 
 1. 输入观看 URL；
-2. 客户端调用共享 URL validator 或轻量 API确认支持；
+2. 客户端调用共享 URL validator 或轻量 API 确认支持；
 3. 合法时插入独立行：
 
 ```text
@@ -371,10 +371,10 @@ zh/en/ja 增加：
 
 ### public renderer
 
-- 合法 URL输出 iframe；
+- 合法 URL 输出 iframe；
 - iframe host 白名单；
 - loading/referrerpolicy/allow 正确；
-- 非法 URL无 iframe；
+- 非法 URL 无 iframe；
 - 裸 iframe 无可执行结果。
 
 ### preview renderer/API
