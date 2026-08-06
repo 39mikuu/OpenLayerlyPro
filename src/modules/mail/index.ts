@@ -131,6 +131,89 @@ export async function sendMagicLinkEmail(
   await sendMail({ to, subject: message.subject, text: message.text });
 }
 
+/**
+ * A protocol-v2 Magic Link reservation may only be released once this exact
+ * SMTP invocation cannot resume. Use a fresh transport per send, close it on
+ * every outcome, and make the total wall-clock deadline explicit instead of
+ * treating Nodemailer's individual socket timeouts as an end-to-end bound.
+ */
+export async function sendMagicLinkEmailWithDeadline(
+  to: string,
+  confirmUrl: string,
+  locale: Locale | undefined,
+  deadlineSeconds: number,
+  options?: { signal?: AbortSignal },
+): Promise<void> {
+  const cfg = await getSmtpConfig();
+  if (!cfg.configured) throw new ApiError(500, "mailNotConfigured");
+  if (options?.signal?.aborted) throw new MailDeliveryError("transient");
+
+  const message = renderMagicLinkEmail(confirmUrl, locale);
+  const transport = nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: cfg.user ? { user: cfg.user, pass: cfg.password } : undefined,
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 45_000,
+  });
+  const deadlineMs = Math.max(1, Math.floor(deadlineSeconds * 1_000));
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        options?.signal?.removeEventListener("abort", onAbort);
+        callback();
+      };
+      const timer = setTimeout(() => {
+        // close() destroys this invocation's sockets. It is deliberately not
+        // the shared cached transport used by unrelated transactional mail.
+        transport.close();
+        finish(() => reject(new MailDeliveryError("transient")));
+      }, deadlineMs);
+      timer.unref();
+      const onAbort = () => {
+        transport.close();
+        finish(() => reject(new MailDeliveryError("transient")));
+      };
+      options?.signal?.addEventListener("abort", onAbort, { once: true });
+      // Cover the narrow race between the early precondition check and
+      // listener registration. A cancelled SMTP invocation must never remain
+      // live after the v2 worker decides its reservation cannot be released.
+      if (options?.signal?.aborted) onAbort();
+
+      void transport
+        .sendMail({
+          from: cfg.from,
+          to,
+          subject: message.subject,
+          text: message.text,
+        })
+        .then(() => {
+          finish(resolve);
+        })
+        .catch((error) => {
+          finish(() => reject(new MailDeliveryError(classifyMailError(error))));
+        });
+    });
+  } finally {
+    // This is the proof used by the v2 worker before it clears or promotes a
+    // reservation: no shared/cached transporter can keep this send alive.
+    transport.close();
+  }
+
+  logger.info("邮件已发送", {
+    template: "magic_link",
+    category: "transactional",
+    recipientDigest: hmacSha256WithPurpose("mail-log-recipient", to.trim().toLowerCase()),
+  });
+}
+
 export function renderMembershipActivatedEmail(tierName: string, endsAt: Date, locale?: Locale) {
   const t = mailT(locale);
   return {

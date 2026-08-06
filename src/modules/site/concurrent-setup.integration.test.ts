@@ -17,7 +17,14 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
  * outcome so the file is a living record of the race resolution.
  */
 import { getDb } from "@/db";
-import { membershipTiers, siteSettings, users } from "@/db/schema";
+import {
+  appEvents,
+  auditEvents,
+  magicLinkTokens,
+  membershipTiers,
+  siteSettings,
+  users,
+} from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { isInitialized, setupSite } from "@/modules/site";
@@ -99,6 +106,88 @@ describeWithDatabase("issue #103 concurrent first-time initialization", () => {
     expect(state.admins[0]!.email).toBe(email);
     expect(state.tiers).toHaveLength(3);
     expect(state.initialized).toBe(true);
+  });
+
+  it("does not initialize an administrator address while a Magic Link reservation is fenced", async () => {
+    const email = `fenced-setup-${randomUUID()}@example.test`;
+    const reservationId = randomUUID();
+    await db.insert(magicLinkTokens).values({
+      email,
+      tokenHash: randomUUID().replaceAll("-", ""),
+      keyId: "test",
+      expiresAt: new Date(0),
+      deliveryState: "pending",
+      deliveredAt: null,
+      deliveryReservationId: reservationId,
+      deliveryReservationUntil: new Date(Date.now() - 60_000),
+    });
+
+    await expect(setupSite(baseInput(email))).rejects.toMatchObject({
+      status: 409,
+      code: "magicLinkDeliveryInFlight",
+    });
+    expect(await isInitialized()).toBe(false);
+    const [candidate] = await db
+      .select()
+      .from(magicLinkTokens)
+      .where(eq(magicLinkTokens.email, email));
+    const [event] = await db
+      .select()
+      .from(appEvents)
+      .where(eq(appEvents.type, "magic_link_promotion_blocked"));
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.entityId, candidate!.id),
+          eq(auditEvents.action, "magic_link_promotion_blocked"),
+        ),
+      );
+    expect(candidate).toMatchObject({
+      deliveryState: "pending",
+      deliveryReservationId: reservationId,
+    });
+    expect(JSON.stringify(event?.payloadJson)).not.toContain(email);
+    expect(JSON.stringify(audit?.afterJson)).not.toContain(email);
+  });
+
+  it("documents the exact-base setup write as a mixed-version rollout hazard", async () => {
+    const email = `legacy-setup-${randomUUID()}@example.test`;
+    const reservationId = randomUUID();
+    await db.insert(magicLinkTokens).values({
+      email,
+      tokenHash: randomUUID().replaceAll("-", ""),
+      keyId: "test",
+      expiresAt: new Date(0),
+      deliveryState: "pending",
+      deliveredAt: null,
+      deliveryReservationId: reservationId,
+      deliveryReservationUntil: new Date(Date.now() - 60_000),
+    });
+
+    // This is the administrator upsert from setupSite at base 80dbaa. It
+    // intentionally has no Magic Link fence, so the result is a compatibility
+    // risk fixture rather than a supported write path.
+    await raw`
+      insert into users (email, password_hash, role, display_name)
+      values (${email}, 'legacy-hash', 'admin', 'Legacy setup')
+      on conflict (email) do update
+      set password_hash = excluded.password_hash,
+          role = 'admin',
+          updated_at = now()
+    `;
+
+    const [legacyAdmin] = await db.select().from(users).where(eq(users.email, email));
+    const [candidate] = await db
+      .select()
+      .from(magicLinkTokens)
+      .where(eq(magicLinkTokens.email, email));
+    expect(legacyAdmin).toMatchObject({ role: "admin" });
+    expect(candidate).toMatchObject({
+      deliveryState: "pending",
+      deliveryReservationId: reservationId,
+    });
   });
 
   it("barrier: both callers pass the precheck, but the tier slug constraint serializes them", async () => {

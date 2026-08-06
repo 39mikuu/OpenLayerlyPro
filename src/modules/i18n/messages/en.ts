@@ -1143,6 +1143,8 @@ export const en: Messages = {
     sessionNotFound: "The login session does not exist or was already revoked",
     magicLinkNotConfigured:
       "Email login links are not configured. Please contact the site administrator.",
+    magicLinkDeliveryInFlight:
+      "A login-link delivery for this address is still in progress. Try again after it is resolved.",
     requestRateLimited: "Too many requests. Please try again later.",
     hourlyRateLimited: "Too many requests. Please try again in an hour.",
     cooldownRateLimited: "Please wait {seconds} seconds before sending again.",

@@ -50,6 +50,7 @@ jobs:
       - run: pnpm build:migrator
       - run: pnpm build:files-backfill
       - run: pnpm build:admin-reset
+      - run: pnpm build:magic-link-rollback
       - run: pnpm build:restore-tools
       - run: pnpm build
       - name: Verify one-off artifacts
@@ -57,6 +58,7 @@ jobs:
           node --check dist/migrate.mjs
           node --check dist/files-backfill.mjs
           node --check dist/admin-reset.mjs
+          node --check dist/magic-link-rollback.mjs
           node --check dist/restore-pre-scan.mjs
           node --check dist/restore-neutralize.mjs
           node --check dist/restore-converge.mjs

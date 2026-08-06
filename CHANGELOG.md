@@ -4,6 +4,18 @@
 
 ### WP1 Email Magic Link Login
 
+- Hardened public Magic Link requests with a role-blind `auth_intake` protocol:
+  accepted admin, member, and unknown-mailbox requests now share the same
+  request/task write shape, while minting, SMTP, and the admin boundary are
+  resolved asynchronously. Protocol-v2 candidates remain non-consumable until
+  an independently fenced SMTP attempt succeeds; UUID reservation generations
+  block promotion and rollback until their exact owner or an audited
+  full-quiescence recovery clears them. The rollout is deliberately two-phase:
+  `MAGIC_LINK_INTAKE_ENABLED` stays false after migration until every legacy
+  executable and maintenance bundle is retired. SMTP remains at-least-once for
+  a single candidate after a crash, and conservative stuck fences can delay
+  recovery rather than weakening this security boundary.
+
 - Added fan/member Magic Link login: the login page can request a one-time
   login link, the emailed link lands on a non-consuming confirmation page, and
   only an explicit POST confirmation atomically consumes the token and creates

@@ -125,4 +125,18 @@ the login-link entry on the login page instead of failing startup:
 
 Direct non-empty secret env values take precedence over file paths. Docker Compose production entrypoint defaults current key file paths to `/app/secrets/notification-unsubscribe-secret`, `/app/secrets/notification-suppression-digest-secret`, and `/app/secrets/magic-link-secret`, generates missing current key files atomically with `0600` permissions, and never auto-generates previous keys.
 
+## Magic Link protocol-v2 rollout
+
+- [ ] Migration `0031`–`0034` completed while `MAGIC_LINK_INTAKE_ENABLED=false` everywhere.
+- [ ] Recorded an approved-image inventory proving that no legacy Web/API, dispatcher, admin action, cron/job, `admin-reset`, or maintenance bundle can start or restart.
+- [ ] Stopped every Phase-A `MAGIC_LINK_INTAKE_ENABLED=false` runtime (including the target image), removed normal traffic/admin entrypoints, and proved no legacy SMTP I/O can resume before any `true` process starts.
+- [ ] Kept ordinary dispatchers stopped and ran only the target image's database-only `quarantine-legacy-residue`/residue-inspection commands; `TASK_AUTH_INTAKE_MAX_PER_BATCH` remains at least `1`.
+- [ ] `list-legacy-residue`, `quarantine-legacy-residue --confirm`, `count --scope legacy-delivery-residue`, and `verify-zero --scope legacy-delivery-residue` prove there is no runnable Phase-A legacy delivery task before normal `true` Web/API, administrator, or operations entrypoints start.
+- [ ] Started every normal approved process only after the quarantine proof, with `MAGIC_LINK_INTAKE_ENABLED=true`.
+- [ ] The production image contains `dist/admin-reset.mjs` and `dist/magic-link-rollback.mjs`, and their smoke checks passed for the exact image digest.
+- [ ] Any rollback keeps the intake cap at least `1` until intake residue is zero; a non-NULL delivery reservation is never removed by ordinary cleanup.
+
+See [Magic Link protocol-v2 rollout](magic-link-v2-rollout.md) for the required
+evidence, count/verify-zero sequence, and full-quiescence abandon procedure.
+
 See [Backup and Restore](backup-restore.md) for the current baseline limitations and required isolated restore drills.

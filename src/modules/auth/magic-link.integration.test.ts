@@ -5,6 +5,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getSmtpConfig: vi.fn(),
   sendMagicLinkEmail: vi.fn(),
+  sendMagicLinkEmailWithDeadline: vi.fn(),
 }));
 
 vi.mock("@/modules/config", () => ({
@@ -12,6 +13,7 @@ vi.mock("@/modules/config", () => ({
 }));
 vi.mock("@/modules/mail", () => ({
   sendMagicLinkEmail: mocks.sendMagicLinkEmail,
+  sendMagicLinkEmailWithDeadline: mocks.sendMagicLinkEmailWithDeadline,
 }));
 vi.mock("@/modules/security/magic-link-key", () => {
   const keyring = {
@@ -140,6 +142,7 @@ describeWithDatabase("WP1 magic link integration", () => {
       from: "noreply@example.test",
     });
     mocks.sendMagicLinkEmail.mockResolvedValue(undefined);
+    mocks.sendMagicLinkEmailWithDeadline.mockResolvedValue(undefined);
     await removeSessionInsertFailure();
     await removeSessionHandoffConstraint();
     await resetDatabase(db);

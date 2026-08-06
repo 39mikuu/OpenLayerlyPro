@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   sendRenewalReminderEmail: vi.fn(),
   dispatchPaymentProviderEvent: vi.fn(),
   deliverLoginCodeEmailTask: vi.fn(),
+  deliverMagicLinkEmailTask: vi.fn(),
+  resolveMagicLinkRequestTask: vi.fn(),
   reconcileSubscriptions: vi.fn(),
   nextSubscriptionReconcileAt: vi.fn(),
   handleCampaignExpandTask: vi.fn(),
@@ -26,6 +28,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/modules/auth/login-code", () => ({
   deliverLoginCodeEmailTask: mocks.deliverLoginCodeEmailTask,
+}));
+vi.mock("@/modules/auth/magic-link", () => ({
+  deliverMagicLinkEmailTask: mocks.deliverMagicLinkEmailTask,
+  resolveMagicLinkRequestTask: mocks.resolveMagicLinkRequestTask,
 }));
 vi.mock("@/modules/file/cleanup", () => ({
   cleanupOrphanFile: mocks.cleanupOrphanFile,
@@ -55,7 +61,12 @@ import { ApiError } from "@/lib/api";
 
 import { runTaskHandler } from "./handlers";
 
-function task(payloadJson: Record<string, unknown>, kind = "email", createdAt = new Date()): Task {
+function task(
+  payloadJson: Record<string, unknown>,
+  kind = "email",
+  createdAt = new Date(),
+  queueClass: Task["queueClass"] = "transactional",
+): Task {
   const now = new Date();
   return {
     id: "11111111-1111-4111-8111-111111111111",
@@ -71,7 +82,7 @@ function task(payloadJson: Record<string, unknown>, kind = "email", createdAt = 
     leaseUntil: new Date(now.getTime() + 60_000),
     lastError: null,
     priority: kind === "auth.login_code_email" ? 0 : 10,
-    queueClass: "transactional",
+    queueClass,
     createdAt,
     updatedAt: now,
   };
@@ -88,6 +99,8 @@ describe("task handlers", () => {
     mocks.deleteStorageObject.mockResolvedValue(undefined);
     mocks.dispatchPaymentProviderEvent.mockResolvedValue(undefined);
     mocks.deliverLoginCodeEmailTask.mockResolvedValue(undefined);
+    mocks.deliverMagicLinkEmailTask.mockResolvedValue(undefined);
+    mocks.resolveMagicLinkRequestTask.mockResolvedValue(undefined);
     mocks.reconcileSubscriptions.mockResolvedValue(0);
     mocks.nextSubscriptionReconcileAt.mockReturnValue(new Date("2026-06-25T08:00:00.000Z"));
     mocks.handleCampaignExpandTask.mockResolvedValue({});
@@ -222,6 +235,127 @@ describe("task handlers", () => {
       ),
     ).rejects.toThrow("Invalid auth.login_code_email payload");
     expect(mocks.deliverLoginCodeEmailTask).not.toHaveBeenCalled();
+  });
+
+  it("dispatches protocol-v2 Magic Link delivery only when the top-level protocol marker is exact", async () => {
+    const payload = {
+      version: 1,
+      deliveryProtocol: 2,
+      tokenId: "550e8400-e29b-41d4-a716-446655440000",
+      encryptedToken: "encrypted",
+      locale: "ja",
+    } as const;
+
+    await runTaskHandler(task(payload, "auth.magic_link_email", new Date(), "auth_delivery_v2"));
+
+    expect(mocks.deliverMagicLinkEmailTask).toHaveBeenCalledWith(payload, {
+      taskId: "11111111-1111-4111-8111-111111111111",
+      lockToken: "worker",
+    });
+  });
+
+  it("rejects an unknown Magic Link delivery protocol instead of downgrading it to legacy", async () => {
+    await expect(
+      runTaskHandler(
+        task(
+          {
+            version: 1,
+            deliveryProtocol: 3,
+            tokenId: "550e8400-e29b-41d4-a716-446655440000",
+            encryptedToken: "encrypted",
+          },
+          "auth.magic_link_email",
+        ),
+      ),
+    ).rejects.toThrow("Invalid auth.magic_link_email payload");
+    expect(mocks.deliverMagicLinkEmailTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects a bypassed v2 task graph before SMTP", async () => {
+    await expect(
+      runTaskHandler(
+        task(
+          {
+            version: 1,
+            deliveryProtocol: 2,
+            tokenId: "550e8400-e29b-41d4-a716-446655440000",
+            encryptedToken: "encrypted",
+            email: "leak@example.test",
+          },
+          "auth.magic_link_email",
+          new Date(),
+          "auth_delivery_v2",
+        ),
+      ),
+    ).rejects.toThrow("Invalid auth.magic_link_email payload");
+    expect(mocks.deliverMagicLinkEmailTask).not.toHaveBeenCalled();
+
+    await expect(
+      runTaskHandler(
+        task(
+          {
+            version: 1,
+            deliveryProtocol: 2,
+            tokenId: "550e8400-e29b-41d4-a716-446655440000",
+            encryptedToken: "encrypted",
+          },
+          "auth.magic_link_email",
+          new Date(),
+          "transactional",
+        ),
+      ),
+    ).rejects.toThrow("Invalid auth.magic_link_email task graph");
+    expect(mocks.deliverMagicLinkEmailTask).not.toHaveBeenCalled();
+  });
+
+  it("does not downgrade an unmarked v2-queue Magic Link task into legacy SMTP", async () => {
+    await expect(
+      runTaskHandler(
+        task(
+          {
+            version: 1,
+            tokenId: "550e8400-e29b-41d4-a716-446655440000",
+            encryptedToken: "encrypted",
+          },
+          "auth.magic_link_email",
+          new Date(),
+          "auth_delivery_v2",
+        ),
+      ),
+    ).rejects.toThrow("Invalid auth.magic_link_email task graph");
+    expect(mocks.deliverMagicLinkEmailTask).not.toHaveBeenCalled();
+  });
+
+  it("dispatches Magic Link intake from an email-free request payload", async () => {
+    const payload = {
+      version: 1,
+      requestId: "550e8400-e29b-41d4-a716-446655440000",
+    } as const;
+
+    await runTaskHandler(task(payload, "auth.magic_link_request", new Date(), "auth_intake"));
+
+    expect(mocks.resolveMagicLinkRequestTask).toHaveBeenCalledWith(payload, {
+      taskId: "11111111-1111-4111-8111-111111111111",
+      lockToken: "worker",
+    });
+  });
+
+  it("rejects an intake task with an email-bearing bypass payload", async () => {
+    await expect(
+      runTaskHandler(
+        task(
+          {
+            version: 1,
+            requestId: "550e8400-e29b-41d4-a716-446655440000",
+            email: "leak@example.test",
+          },
+          "auth.magic_link_request",
+          new Date(),
+          "auth_intake",
+        ),
+      ),
+    ).rejects.toThrow("Invalid auth.magic_link_request payload");
+    expect(mocks.resolveMagicLinkRequestTask).not.toHaveBeenCalled();
   });
 
   it("dispatches provider inbox tasks by row UUID", async () => {

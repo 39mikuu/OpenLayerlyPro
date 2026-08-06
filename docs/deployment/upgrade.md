@@ -50,6 +50,15 @@ the feature by providing `MAGIC_LINK_KEY_ID` plus `MAGIC_LINK_SECRET` or
 Magic link tokens live for 15 minutes, so rotation only needs the previous key
 retained briefly, and restores never require magic link key continuity.
 
+The Magic Link protocol-v2 security migration (`0031`–`0034`) has a mandatory
+two-phase deployment rather than an ordinary rolling upgrade. Its gate defaults
+to `MAGIC_LINK_INTAKE_ENABLED=false`; Phase B is a no-overlap stop-then-start
+cutover. Stop every `false` Web/API, dispatcher, admin-operation, and
+production maintenance-bundle executable—and prove its SMTP I/O cannot
+resume—before any `true` process starts. Follow the complete [Magic Link
+protocol-v2 rollout](magic-link-v2-rollout.md) runbook, including quarantine
+drain, rollback drain, and full-quiescence rules.
+
 Migration `0030_wp3_membership_entitlements` adds the non-null
 `membership_tiers.entitlements` JSONB column with an empty-array default.
 Existing tiers therefore keep their current sales and access behavior until an

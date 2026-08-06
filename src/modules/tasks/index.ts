@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, asc, desc, eq, inArray, lt, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lt, lte, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
@@ -305,7 +305,7 @@ async function claimDueTasksInternal(
 
   return getDb().transaction(async (tx) => {
     const staleProcessing = await tx
-      .select({ id: tasks.id, runAfter: tasks.runAfter })
+      .select({ id: tasks.id })
       .from(tasks)
       .where(
         and(
@@ -314,7 +314,7 @@ async function claimDueTasksInternal(
           leaseExpired,
         ),
       )
-      .orderBy(asc(tasks.runAfter))
+      .orderBy(asc(tasks.leaseUntil), asc(tasks.priority), asc(tasks.id))
       .limit(limit)
       .for("update", { skipLocked: true });
 
@@ -322,7 +322,7 @@ async function claimDueTasksInternal(
     const pendingOrFailed =
       remaining > 0
         ? await tx
-            .select({ id: tasks.id, runAfter: tasks.runAfter })
+            .select({ id: tasks.id })
             .from(tasks)
             .where(
               and(
@@ -331,7 +331,7 @@ async function claimDueTasksInternal(
                 dueToRun,
               ),
             )
-            .orderBy(asc(tasks.runAfter))
+            .orderBy(asc(tasks.runAfter), asc(tasks.priority), asc(tasks.id))
             .limit(remaining)
             .for("update", { skipLocked: true })
         : [];
@@ -362,19 +362,28 @@ async function claimDueTasksInternal(
   });
 }
 
-async function claimOneTaskForClassBranch(
-  queueClass: TaskQueueClass,
+function queueClassList(queueClasses: readonly TaskQueueClass[]) {
+  if (queueClasses.length === 0) throw new Error("At least one queue class is required");
+  return sql.join(
+    queueClasses.map((queueClass) => sql`${queueClass}`),
+    sql`, `,
+  );
+}
+
+async function claimOneTaskForClassesBranch(
+  queueClasses: readonly TaskQueueClass[],
   options: ClaimOneTaskForClassInternalOptions & { branch: "stale" | "due" },
 ): Promise<ClaimedTaskForClass | null> {
   const lockToken = options.lockToken ?? randomUUID();
   const leaseMs = options.leaseMs ?? TASK_LEASE_MS;
+  const classes = queueClassList(queueClasses);
   return getDb().transaction(async (tx) => {
     if (options.branch === "stale") {
       const rows = await tx.execute(sql<RawTaskRow>`
         WITH candidate AS (
           SELECT id
           FROM tasks
-          WHERE queue_class = ${queueClass}
+          WHERE queue_class in (${classes})
             AND status = 'processing'
             AND lease_until < now()
             AND attempts < max_attempts
@@ -401,7 +410,7 @@ async function claimOneTaskForClassBranch(
       WITH candidate AS (
         SELECT id
         FROM tasks
-        WHERE queue_class = ${queueClass}
+        WHERE queue_class in (${classes})
           AND status IN ('pending','failed')
           AND run_after <= now()
           AND attempts < max_attempts
@@ -429,11 +438,18 @@ async function claimOneTaskForClassInternal(
   queueClass: TaskQueueClass,
   options: ClaimOneTaskForClassInternalOptions,
 ): Promise<ClaimedTaskForClass | null> {
+  return claimOneTaskForClassesInternal([queueClass], options);
+}
+
+async function claimOneTaskForClassesInternal(
+  queueClasses: readonly TaskQueueClass[],
+  options: ClaimOneTaskForClassInternalOptions,
+): Promise<ClaimedTaskForClass | null> {
   if (options.includeStale ?? true) {
-    const stale = await claimOneTaskForClassBranch(queueClass, { ...options, branch: "stale" });
+    const stale = await claimOneTaskForClassesBranch(queueClasses, { ...options, branch: "stale" });
     if (stale) return stale;
   }
-  return claimOneTaskForClassBranch(queueClass, { ...options, branch: "due" });
+  return claimOneTaskForClassesBranch(queueClasses, { ...options, branch: "due" });
 }
 
 export async function claimOneTaskForClass(
@@ -441,6 +457,18 @@ export async function claimOneTaskForClass(
   options: ClaimOneTaskForClassOptions = {},
 ): Promise<ClaimedTaskForClass | null> {
   return claimOneTaskForClassInternal(queueClass, options);
+}
+
+/**
+ * Claim one item from a queue group without weakening stale-first ordering.
+ * `transactional` and `auth_delivery_v2` intentionally share one group: a
+ * stale v2 SMTP delivery must not sit behind a merely due legacy task.
+ */
+export async function claimOneTaskForClasses(
+  queueClasses: readonly TaskQueueClass[],
+  options: ClaimOneTaskForClassOptions = {},
+): Promise<ClaimedTaskForClass | null> {
+  return claimOneTaskForClassesInternal(queueClasses, options);
 }
 
 /** Production claim path. All due, lease and lock timestamps come from PostgreSQL. */
@@ -468,7 +496,14 @@ export async function renewTaskLease(
       leaseUntil: sql`now() + (${leaseMs} * interval '1 millisecond')`,
       updatedAt: sql`now()`,
     })
-    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .where(
+      and(
+        eq(tasks.id, id),
+        eq(tasks.status, "processing"),
+        eq(tasks.lockedBy, lockToken),
+        gt(tasks.leaseUntil, sql<Date>`now()`),
+      ),
+    )
     .returning({ id: tasks.id });
   return Boolean(renewed);
 }
@@ -488,7 +523,14 @@ export async function markTaskSucceeded(
       lastError: note?.slice(0, TASK_ERROR_MAX_LENGTH) ?? null,
       updatedAt: sql`now()`,
     })
-    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .where(
+      and(
+        eq(tasks.id, id),
+        eq(tasks.status, "processing"),
+        eq(tasks.lockedBy, lockToken),
+        gt(tasks.leaseUntil, sql<Date>`now()`),
+      ),
+    )
     .returning({ id: tasks.id });
   return Boolean(updated);
 }
@@ -508,6 +550,7 @@ async function markTaskFailedInternal(
       eq(tasks.id, id),
       eq(tasks.status, "processing"),
       eq(tasks.lockedBy, lockToken),
+      gt(tasks.leaseUntil, now ?? sql<Date>`now()`),
     );
     const [task] = await tx.select().from(tasks).where(ownership).limit(1).for("update");
     if (!task) {
@@ -586,7 +629,14 @@ export async function deferTask(id: string, lockToken: string, runAfter: Date): 
       lastError: null,
       updatedAt: sql`now()`,
     })
-    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .where(
+      and(
+        eq(tasks.id, id),
+        eq(tasks.status, "processing"),
+        eq(tasks.lockedBy, lockToken),
+        gt(tasks.leaseUntil, sql<Date>`now()`),
+      ),
+    )
     .returning({ id: tasks.id });
   return Boolean(updated);
 }
@@ -607,7 +657,14 @@ export async function markTaskDead(
       lastError: safeError.slice(0, TASK_ERROR_MAX_LENGTH),
       updatedAt: sql`now()`,
     })
-    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .where(
+      and(
+        eq(tasks.id, id),
+        eq(tasks.status, "processing"),
+        eq(tasks.lockedBy, lockToken),
+        gt(tasks.leaseUntil, sql<Date>`now()`),
+      ),
+    )
     .returning({
       id: tasks.id,
       kind: tasks.kind,

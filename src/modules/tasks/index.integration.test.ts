@@ -10,6 +10,7 @@ import { dispatchClaimedTask } from "./dispatcher";
 import {
   claimDueTasks,
   claimDueTasksAt,
+  claimOneTaskForClasses,
   countMailTaskFailures,
   deferTask,
   enqueueTask,
@@ -143,6 +144,65 @@ describeWithDatabase("durable tasks integration", () => {
       status: "processing",
       attempts: 2,
       lockedBy: "worker-b",
+    });
+  });
+
+  it("claims stale work across transactional and v2 delivery classes before due work with deterministic ties", async () => {
+    const now = new Date();
+    await db.insert(tasks).values([
+      {
+        id: "00000000-0000-4000-8000-000000000003",
+        kind: "auth.magic_link_email",
+        payloadJson: {
+          version: 1,
+          deliveryProtocol: 2,
+          tokenId: "00000000-0000-4000-8000-000000000103",
+          encryptedToken: "test-encrypted-token",
+        },
+        queueClass: "auth_delivery_v2",
+        status: "processing",
+        attempts: 1,
+        lockedBy: "stale-worker",
+        lockedAt: new Date(now.getTime() - 120_000),
+        leaseUntil: new Date(now.getTime() - 1_000),
+        runAfter: new Date(now.getTime() - 10_000),
+        priority: 0,
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000001",
+        kind: "email",
+        payloadJson: {},
+        queueClass: "transactional",
+        runAfter: new Date(now.getTime() - 5_000),
+        priority: 10,
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000002",
+        kind: "email",
+        payloadJson: {},
+        queueClass: "transactional",
+        runAfter: new Date(now.getTime() - 5_000),
+        priority: 10,
+      },
+    ]);
+
+    const classes = ["transactional", "auth_delivery_v2"] as const;
+    const stale = await claimOneTaskForClasses(classes, { lockToken: "group-stale" });
+    const firstDue = await claimOneTaskForClasses(classes, { lockToken: "group-due-1" });
+    const secondDue = await claimOneTaskForClasses(classes, { lockToken: "group-due-2" });
+
+    expect(stale).toMatchObject({
+      id: "00000000-0000-4000-8000-000000000003",
+      queueClass: "auth_delivery_v2",
+      reclaimedStale: true,
+    });
+    expect(firstDue).toMatchObject({
+      id: "00000000-0000-4000-8000-000000000001",
+      reclaimedStale: false,
+    });
+    expect(secondDue).toMatchObject({
+      id: "00000000-0000-4000-8000-000000000002",
+      reclaimedStale: false,
     });
   });
 

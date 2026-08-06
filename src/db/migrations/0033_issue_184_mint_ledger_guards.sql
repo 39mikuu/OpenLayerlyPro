@@ -1,0 +1,2 @@
+ALTER TABLE "magic_link_requests" ADD CONSTRAINT "magic_link_requests_minted_pair_check" CHECK (("magic_link_requests"."minted_at" is null) = ("magic_link_requests"."minted_token_id" is null));--> statement-breakpoint
+ALTER TABLE "magic_link_requests" ADD CONSTRAINT "magic_link_requests_minted_resolution_check" CHECK ("magic_link_requests"."minted_at" is null or "magic_link_requests"."resolved_at" is not null);

@@ -24,9 +24,16 @@ docker compose exec \
 The script:
 
 1. validates `DATABASE_URL`, `ADMIN_EMAIL`, and an administrator password of at least 8 characters;
-2. creates or updates the specified email as an administrator using bcrypt cost 12;
-3. revokes every session for that account;
-4. records an `account_recovered` system audit event.
+2. takes the same mailbox advisory lock and pending-candidate promotion fence as the application;
+3. exits with status `2`, makes no administrator change, and records an opaque audit event when any pending candidate has a non-NULL SMTP reservation generation—even when its reservation timestamp has passed;
+4. otherwise cancels only two-NULL pending candidates, writes their dispositions, creates or updates the administrator using bcrypt cost 12, revokes every session for that account, and records an `account_recovered` system audit event.
+
+Do not use an older `admin-reset` image or bundle after enabling Magic Link protocol v2. The
+old bundle does not know the SMTP reservation fence and can promote through an in-flight
+delivery. The mandatory two-phase deployment and the audited recovery/rollback procedure are
+in [Magic Link protocol-v2 rollout](../deployment/magic-link-v2-rollout.md). A status-`2`
+result is a safety stop, not evidence that the reservation has expired; use the normal
+delivery recovery path, or the separately attested full-quiescence `abandon` command.
 
 The script never prints the password or password hash. Environment variables may be visible to privileged
 host users while the command runs, so execute it only from a trusted host shell and remove it from shell
