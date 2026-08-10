@@ -397,7 +397,7 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
       for each row execute function olp_test_fail_v2_magic_link_delivery_task()
     `);
     try {
-      await expect(runTaskHandler(intake)).rejects.toThrow("test v2 delivery task insert failure");
+      await expectPostgresCause(runTaskHandler(intake), /test v2 delivery task insert failure/);
     } finally {
       await db.execute(
         sql`drop trigger if exists olp_test_fail_v2_magic_link_delivery_task on tasks`,
@@ -428,7 +428,7 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
       for each row execute function olp_test_fail_v2_magic_link_candidate()
     `);
     try {
-      await expect(runTaskHandler(intake)).rejects.toThrow("test v2 candidate insert failure");
+      await expectPostgresCause(runTaskHandler(intake), /test v2 candidate insert failure/);
     } finally {
       await db.execute(
         sql`drop trigger if exists olp_test_fail_v2_magic_link_candidate on magic_link_tokens`,
@@ -458,7 +458,7 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
       for each row execute function olp_test_fail_v2_magic_link_request_ledger()
     `);
     try {
-      await expect(runTaskHandler(intake)).rejects.toThrow("test v2 request ledger update failure");
+      await expectPostgresCause(runTaskHandler(intake), /test v2 request ledger update failure/);
     } finally {
       await db.execute(
         sql`drop trigger if exists olp_test_fail_v2_magic_link_request_ledger on magic_link_requests`,
@@ -485,7 +485,7 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
       for each row execute function olp_test_fail_v2_magic_link_ledger_insert()
     `);
     try {
-      await expect(runTaskHandler(intake)).rejects.toThrow("test v2 mint ledger insert failure");
+      await expectPostgresCause(runTaskHandler(intake), /test v2 mint ledger insert failure/);
     } finally {
       await db.execute(
         sql`drop trigger if exists olp_test_fail_v2_magic_link_ledger_insert on magic_link_mint_ledger`,
@@ -562,13 +562,22 @@ describeWithDatabase("Issue #184 Magic Link protocol v2", () => {
 
     await expect(verifyMagicLinkToken(generated.token)).resolves.toEqual({ status: "invalid" });
     await expect(consumeMagicLinkToken(generated.token)).resolves.toEqual({ status: "invalid" });
-    await expect(
+    await expectPostgresCause(
       db.execute(sql`
         update magic_link_tokens
         set consumed_at = now()
         where id = ${nonActive!.id}
       `),
-    ).rejects.toThrow(/magic_link_token_not_delivered/);
+      /magic_link_token_not_delivered/,
+    );
+    const [stillPending] = await db
+      .select({
+        deliveryState: magicLinkTokens.deliveryState,
+        consumedAt: magicLinkTokens.consumedAt,
+      })
+      .from(magicLinkTokens)
+      .where(eq(magicLinkTokens.id, nonActive!.id));
+    expect(stillPending).toEqual({ deliveryState: "pending", consumedAt: null });
   });
 
   it("does not reserve or send after its task claim lease expires before reclaim", async () => {
