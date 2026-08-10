@@ -26,6 +26,7 @@ pnpm test
 pnpm build:migrator
 pnpm build:files-backfill
 pnpm build:admin-reset
+pnpm build:magic-link-rollback
 pnpm build
 ```
 
@@ -34,8 +35,9 @@ pnpm build
 - `dist/migrate.mjs`；
 - `dist/files-backfill.mjs`；
 - `dist/admin-reset.mjs`。
+- `dist/magic-link-rollback.mjs`。
 
-当前 Dockerfile 会显式构建并复制三者。当前 CI 已运行 lint、format、request-body、tsc、migration、tests、migrator build 与 Next build；S7 #87 合并前必须把 `build:files-backfill` 纳入 CI 硬门槛，发布验收不能只依赖 Dockerfile 间接覆盖。
+当前 Dockerfile 会显式构建并复制这些 bundle。当前 CI 已运行 lint、format、request-body、tsc、migration、tests、migrator/rollback bundle build 与 Next build；发布验收不能只依赖 Dockerfile 间接覆盖。
 
 涉及 PostgreSQL 并发、约束、任务或支付行为时运行：
 

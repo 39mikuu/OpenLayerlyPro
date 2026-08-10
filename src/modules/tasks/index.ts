@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, asc, desc, eq, inArray, lt, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lt, lte, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
@@ -102,19 +102,28 @@ type RawTaskRow = {
   kind: string;
   dedupe_key: string | null;
   payload_json: unknown;
-  run_after: Date;
+  run_after: Date | string;
   status: TaskStatus;
   attempts: number;
   max_attempts: number;
-  locked_at: Date | null;
+  locked_at: Date | string | null;
   locked_by: string | null;
-  lease_until: Date | null;
+  lease_until: Date | string | null;
   last_error: string | null;
   priority: number;
   queue_class: TaskQueueClass;
-  created_at: Date;
-  updated_at: Date;
+  created_at: Date | string;
+  updated_at: Date | string;
 };
+
+function parseRawTaskTimestamp(value: Date | string, field: string): Date {
+  if (value instanceof Date) return value;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Task query returned an invalid ${field} timestamp`);
+  }
+  return parsed;
+}
 
 function rawTaskRowToTask(row: RawTaskRow, reclaimedStale: boolean): ClaimedTaskForClass {
   return {
@@ -122,18 +131,18 @@ function rawTaskRowToTask(row: RawTaskRow, reclaimedStale: boolean): ClaimedTask
     kind: row.kind,
     dedupeKey: row.dedupe_key,
     payloadJson: row.payload_json,
-    runAfter: row.run_after,
+    runAfter: parseRawTaskTimestamp(row.run_after, "run_after"),
     status: row.status,
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
-    lockedAt: row.locked_at,
+    lockedAt: row.locked_at ? parseRawTaskTimestamp(row.locked_at, "locked_at") : null,
     lockedBy: row.locked_by,
-    leaseUntil: row.lease_until,
+    leaseUntil: row.lease_until ? parseRawTaskTimestamp(row.lease_until, "lease_until") : null,
     lastError: row.last_error,
     priority: row.priority,
     queueClass: row.queue_class,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: parseRawTaskTimestamp(row.created_at, "created_at"),
+    updatedAt: parseRawTaskTimestamp(row.updated_at, "updated_at"),
     reclaimedStale,
   };
 }
@@ -305,7 +314,7 @@ async function claimDueTasksInternal(
 
   return getDb().transaction(async (tx) => {
     const staleProcessing = await tx
-      .select({ id: tasks.id, runAfter: tasks.runAfter })
+      .select({ id: tasks.id })
       .from(tasks)
       .where(
         and(
@@ -314,7 +323,7 @@ async function claimDueTasksInternal(
           leaseExpired,
         ),
       )
-      .orderBy(asc(tasks.runAfter))
+      .orderBy(asc(tasks.leaseUntil), asc(tasks.priority), asc(tasks.id))
       .limit(limit)
       .for("update", { skipLocked: true });
 
@@ -322,7 +331,7 @@ async function claimDueTasksInternal(
     const pendingOrFailed =
       remaining > 0
         ? await tx
-            .select({ id: tasks.id, runAfter: tasks.runAfter })
+            .select({ id: tasks.id })
             .from(tasks)
             .where(
               and(
@@ -331,7 +340,7 @@ async function claimDueTasksInternal(
                 dueToRun,
               ),
             )
-            .orderBy(asc(tasks.runAfter))
+            .orderBy(asc(tasks.runAfter), asc(tasks.priority), asc(tasks.id))
             .limit(remaining)
             .for("update", { skipLocked: true })
         : [];
@@ -362,19 +371,28 @@ async function claimDueTasksInternal(
   });
 }
 
-async function claimOneTaskForClassBranch(
-  queueClass: TaskQueueClass,
+function queueClassList(queueClasses: readonly TaskQueueClass[]) {
+  if (queueClasses.length === 0) throw new Error("At least one queue class is required");
+  return sql.join(
+    queueClasses.map((queueClass) => sql`${queueClass}`),
+    sql`, `,
+  );
+}
+
+async function claimOneTaskForClassesBranch(
+  queueClasses: readonly TaskQueueClass[],
   options: ClaimOneTaskForClassInternalOptions & { branch: "stale" | "due" },
 ): Promise<ClaimedTaskForClass | null> {
   const lockToken = options.lockToken ?? randomUUID();
   const leaseMs = options.leaseMs ?? TASK_LEASE_MS;
+  const classes = queueClassList(queueClasses);
   return getDb().transaction(async (tx) => {
     if (options.branch === "stale") {
       const rows = await tx.execute(sql<RawTaskRow>`
         WITH candidate AS (
           SELECT id
           FROM tasks
-          WHERE queue_class = ${queueClass}
+          WHERE queue_class in (${classes})
             AND status = 'processing'
             AND lease_until < now()
             AND attempts < max_attempts
@@ -401,7 +419,7 @@ async function claimOneTaskForClassBranch(
       WITH candidate AS (
         SELECT id
         FROM tasks
-        WHERE queue_class = ${queueClass}
+        WHERE queue_class in (${classes})
           AND status IN ('pending','failed')
           AND run_after <= now()
           AND attempts < max_attempts
@@ -429,11 +447,18 @@ async function claimOneTaskForClassInternal(
   queueClass: TaskQueueClass,
   options: ClaimOneTaskForClassInternalOptions,
 ): Promise<ClaimedTaskForClass | null> {
+  return claimOneTaskForClassesInternal([queueClass], options);
+}
+
+async function claimOneTaskForClassesInternal(
+  queueClasses: readonly TaskQueueClass[],
+  options: ClaimOneTaskForClassInternalOptions,
+): Promise<ClaimedTaskForClass | null> {
   if (options.includeStale ?? true) {
-    const stale = await claimOneTaskForClassBranch(queueClass, { ...options, branch: "stale" });
+    const stale = await claimOneTaskForClassesBranch(queueClasses, { ...options, branch: "stale" });
     if (stale) return stale;
   }
-  return claimOneTaskForClassBranch(queueClass, { ...options, branch: "due" });
+  return claimOneTaskForClassesBranch(queueClasses, { ...options, branch: "due" });
 }
 
 export async function claimOneTaskForClass(
@@ -441,6 +466,18 @@ export async function claimOneTaskForClass(
   options: ClaimOneTaskForClassOptions = {},
 ): Promise<ClaimedTaskForClass | null> {
   return claimOneTaskForClassInternal(queueClass, options);
+}
+
+/**
+ * Claim one item from a queue group without weakening stale-first ordering.
+ * `transactional` and `auth_delivery_v2` intentionally share one group: a
+ * stale v2 SMTP delivery must not sit behind a merely due legacy task.
+ */
+export async function claimOneTaskForClasses(
+  queueClasses: readonly TaskQueueClass[],
+  options: ClaimOneTaskForClassOptions = {},
+): Promise<ClaimedTaskForClass | null> {
+  return claimOneTaskForClassesInternal(queueClasses, options);
 }
 
 /** Production claim path. All due, lease and lock timestamps come from PostgreSQL. */
@@ -468,7 +505,14 @@ export async function renewTaskLease(
       leaseUntil: sql`now() + (${leaseMs} * interval '1 millisecond')`,
       updatedAt: sql`now()`,
     })
-    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .where(
+      and(
+        eq(tasks.id, id),
+        eq(tasks.status, "processing"),
+        eq(tasks.lockedBy, lockToken),
+        gt(tasks.leaseUntil, sql<Date>`clock_timestamp()`),
+      ),
+    )
     .returning({ id: tasks.id });
   return Boolean(renewed);
 }

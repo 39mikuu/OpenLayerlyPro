@@ -136,6 +136,8 @@ docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 |---|---|
 | `APP_URL` | 站点对外地址 |
 | `SESSION_SECRET` / `SESSION_SECRET_FILE` | 外部托管值优先；Compose 默认使用 `/app/secrets/session-secret` |
+| `MAGIC_LINK_INTAKE_ENABLED` | Magic Link protocol-v2 rollout gate; defaults to `false`. Phase B is a no-overlap cutover: stop every `false` process and its possible SMTP I/O before any `true` process starts. |
+| `TASK_AUTH_INTAKE_MAX_PER_BATCH` | Bounded independent intake queue capacity; must remain at least `1`, including rollback drain. |
 | `DATABASE_URL` | PostgreSQL 连接串 |
 | `SMTP_HOST` / `SMTP_FROM` 等 | SMTP 邮件配置，粉丝验证码登录必需 |
 | `EMAIL_RETRY_RECHECK_MINUTES` / `EMAIL_DELIVERY_MAX_AGE_HOURS` | 业务邮件待运维修复时的重投间隔与最长待命时间（默认 15 分钟 / 24 小时） |

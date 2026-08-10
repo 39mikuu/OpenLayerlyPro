@@ -1085,6 +1085,7 @@ export const zh = {
     adminAccountChanged: "管理员账号已发生变化，请刷新后重试",
     sessionNotFound: "登录会话不存在或已被吊销",
     magicLinkNotConfigured: "邮件登录链接未配置，请联系站点管理员",
+    magicLinkDeliveryInFlight: "该邮箱的登录链接投递仍在进行中，请在处理完成后重试。",
     requestRateLimited: "请求过于频繁，请稍后再试",
     hourlyRateLimited: "请求过于频繁，请一小时后再试",
     cooldownRateLimited: "发送过于频繁，请 {seconds} 秒后再试",

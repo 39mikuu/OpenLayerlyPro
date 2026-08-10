@@ -4,8 +4,9 @@ import { and, desc, eq, gt, inArray, ne } from "drizzle-orm";
 import { getDb } from "@/db";
 import { type AuditEvent, auditEvents, sessions, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
-import { hashPassword, verifyPassword } from "@/lib/crypto";
+import { hashPassword, hmacSha256WithPurpose, verifyPassword } from "@/lib/crypto";
 import { recordAudit } from "@/modules/audit";
+import { enforceMagicLinkPromotionFence } from "@/modules/auth/magic-link-fence";
 
 const MIN_PASSWORD_LENGTH = 8;
 const ADMIN_AUDIT_ACTIONS = [
@@ -14,6 +15,7 @@ const ADMIN_AUDIT_ACTIONS = [
   "session_revoked",
   "sessions_revoked_all",
   "account_recovered",
+  "magic_link_promotion_blocked",
 ] as const;
 
 export type AdminSessionView = {
@@ -165,7 +167,24 @@ export async function changeAdminEmail(
   if (email === user.email) return { email };
 
   try {
-    return await getDb().transaction(async (tx) => {
+    const result = await getDb().transaction(async (tx) => {
+      const fence = await enforceMagicLinkPromotionFence(tx, [user.email, email]);
+      if (fence.blocked) {
+        await recordAudit(tx, {
+          entityType: "admin",
+          entityId: userId,
+          action: "magic_link_promotion_blocked",
+          actor: { type: "admin", id: userId },
+          before: null,
+          after: {
+            reservedCandidateCount: fence.reservedCandidateCount,
+            targetEmailDigest: hmacSha256WithPurpose("magic-link-promotion-audit", email),
+          },
+          correlationId: randomUUID(),
+        });
+        return { blocked: true } as const;
+      }
+
       const [existing] = await tx
         .select({ id: users.id })
         .from(users)
@@ -190,11 +209,17 @@ export async function changeAdminEmail(
         action: "email_changed",
         actor: { type: "admin", id: userId },
         before: { email: user.email },
-        after: { email: updated.email },
+        after: {
+          email: updated.email,
+          promotionFenceChecked: true,
+          cancelledPendingMagicLinks: fence.cancelledCandidateIds.length,
+        },
         correlationId: randomUUID(),
       });
-      return updated;
+      return { blocked: false, email: updated.email } as const;
     });
+    if (result.blocked) throw new ApiError(409, "magicLinkDeliveryInFlight");
+    return { email: result.email };
   } catch (error) {
     if (
       error instanceof ApiError ||

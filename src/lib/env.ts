@@ -57,6 +57,69 @@ const envSchema = z.object({
     .max(20)
     .default(2),
   TASK_MAINTENANCE_MAX_PER_BATCH: z.coerce.number().finite().int().min(0).max(20).default(2),
+  // Protocol v2 is deliberately opt-in. A compatibility migration may be
+  // deployed while this remains false, but a malformed value must never
+  // silently enable a new Magic Link protocol.
+  MAGIC_LINK_INTAKE_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  TASK_AUTH_INTAKE_MAX_PER_BATCH: z.coerce
+    .number()
+    .finite()
+    .int()
+    .min(1)
+    .max(TASK_BATCH_SIZE)
+    .default(4),
+  MAGIC_LINK_DELIVERY_RESERVATION_SECONDS: z.coerce
+    .number()
+    .finite()
+    .int()
+    .min(15)
+    .max(3_600)
+    .default(120),
+  MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS: z.coerce
+    .number()
+    .finite()
+    .int()
+    .min(1)
+    .max(3_600)
+    .default(60),
+  MAGIC_LINK_REQUEST_MAX_AGE_MINUTES: z.coerce
+    .number()
+    .finite()
+    .int()
+    .min(1)
+    .max(1_440)
+    .default(30),
+  MAGIC_LINK_PENDING_CLEANUP_MIN_AGE_MINUTES: z.coerce
+    .number()
+    .finite()
+    .int()
+    .min(1)
+    .max(10_080)
+    .default(30),
+  MAGIC_LINK_REQUEST_RETENTION_MINUTES: z.coerce
+    .number()
+    .finite()
+    .int()
+    .min(1)
+    .max(43_200)
+    .default(1_440),
+  MAGIC_LINK_STUCK_FENCE_ALERT_INTERVAL_SECONDS: z.coerce
+    .number()
+    .finite()
+    .int()
+    .min(30)
+    .max(86_400)
+    .default(300),
+  MAGIC_LINK_STUCK_FENCE_MAX_PER_SWEEP: z.coerce
+    .number()
+    .finite()
+    .int()
+    .min(1)
+    .max(100)
+    .default(20),
   NOTIFICATION_EMAIL_DAILY_BUDGET: z.coerce
     .number()
     .finite()
@@ -235,6 +298,18 @@ function assertRuntimeSecurity(env: Env) {
     );
   }
 
+  if (env.MAGIC_LINK_DELIVERY_RESERVATION_SECONDS < env.MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS) {
+    throw new Error(
+      "MAGIC_LINK_DELIVERY_RESERVATION_SECONDS must be >= MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS",
+    );
+  }
+
+  if (env.MAGIC_LINK_REQUEST_RETENTION_MINUTES * 60_000 < env.REQUEST_CODE_RATE_WINDOW_MS) {
+    throw new Error(
+      "MAGIC_LINK_REQUEST_RETENTION_MINUTES must cover the full REQUEST_CODE_RATE_WINDOW_MS",
+    );
+  }
+
   if (process.env.NEXT_PHASE === "phase-production-build") return;
 
   validateNotificationRuntimeKeyEnv({
@@ -342,6 +417,11 @@ export function getEnv(): Env {
   assertRuntimeSecurity(parsed.data);
   cached = parsed.data;
   return cached;
+}
+
+/** Test-only cache reset for suites that exercise explicit rollout gates. */
+export function __resetEnvForTests(): void {
+  cached = null;
 }
 
 export function isProduction(): boolean {

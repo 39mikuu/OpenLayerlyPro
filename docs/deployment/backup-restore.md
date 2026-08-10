@@ -234,6 +234,7 @@ The target image must contain and be able to execute:
 dist/migrate.mjs
 dist/files-backfill.mjs
 dist/admin-reset.mjs
+dist/magic-link-rollback.mjs
 dist/restore-pre-scan.mjs
 dist/restore-neutralize.mjs
 dist/restore-converge.mjs

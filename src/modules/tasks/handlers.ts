@@ -12,8 +12,13 @@ import {
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
+import {
+  isExactLegacyMagicLinkDeliveryTask,
+  isExactMagicLinkDeliveryV2Task,
+  isExactMagicLinkIntakeTask,
+} from "@/lib/magic-link-v2-task-graph";
 import { deliverLoginCodeEmailTask } from "@/modules/auth/login-code";
-import { deliverMagicLinkEmailTask } from "@/modules/auth/magic-link";
+import { deliverMagicLinkEmailTask, resolveMagicLinkRequestTask } from "@/modules/auth/magic-link";
 import { executeScheduledPublish } from "@/modules/content/publishing";
 import {
   cleanupOrphanFile,
@@ -101,12 +106,25 @@ const loginCodeEmailPayloadSchema = z.object({
   encryptedCode: z.string().min(1),
   locale: z.enum(SUPPORTED_LOCALES).optional(),
 });
-const magicLinkEmailPayloadSchema = z.object({
-  version: z.literal(1),
-  tokenId: z.string().uuid(),
-  encryptedToken: z.string().min(1),
-  locale: z.enum(SUPPORTED_LOCALES).optional(),
-});
+const magicLinkEmailPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    tokenId: z.string().uuid(),
+    encryptedToken: z.string().min(1),
+    locale: z.enum(SUPPORTED_LOCALES).optional(),
+  })
+  .strict();
+const magicLinkDeliveryV2PayloadSchema = magicLinkEmailPayloadSchema
+  .extend({
+    deliveryProtocol: z.literal(2),
+  })
+  .strict();
+const magicLinkRequestPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    requestId: z.string().uuid(),
+  })
+  .strict();
 
 export type TaskHandlerResult = { note?: string; deferUntil?: Date };
 
@@ -340,9 +358,33 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
       return note ? { note } : {};
     }
     case "auth.magic_link_email": {
-      const parsed = magicLinkEmailPayloadSchema.safeParse(task.payloadJson);
+      const hasDeliveryProtocol =
+        typeof task.payloadJson === "object" &&
+        task.payloadJson !== null &&
+        "deliveryProtocol" in task.payloadJson;
+      const parsed = hasDeliveryProtocol
+        ? magicLinkDeliveryV2PayloadSchema.safeParse(task.payloadJson)
+        : magicLinkEmailPayloadSchema.safeParse(task.payloadJson);
       if (!parsed.success) throw new PermanentTaskError("Invalid auth.magic_link_email payload");
+      if (hasDeliveryProtocol && !isExactMagicLinkDeliveryV2Task(task, parsed.data.tokenId)) {
+        throw new PermanentTaskError("Invalid auth.magic_link_email task graph");
+      }
+      if (!hasDeliveryProtocol && !isExactLegacyMagicLinkDeliveryTask(task, parsed.data.tokenId)) {
+        throw new PermanentTaskError("Invalid auth.magic_link_email task graph");
+      }
       const note = await deliverMagicLinkEmailTask(parsed.data, {
+        taskId: task.id,
+        lockToken: task.lockedBy,
+      });
+      return note ? { note } : {};
+    }
+    case "auth.magic_link_request": {
+      const parsed = magicLinkRequestPayloadSchema.safeParse(task.payloadJson);
+      if (!parsed.success) throw new PermanentTaskError("Invalid auth.magic_link_request payload");
+      if (!isExactMagicLinkIntakeTask(task, parsed.data.requestId)) {
+        throw new PermanentTaskError("Invalid auth.magic_link_request task graph");
+      }
+      const note = await resolveMagicLinkRequestTask(parsed.data, {
         taskId: task.id,
         lockToken: task.lockedBy,
       });

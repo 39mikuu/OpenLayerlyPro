@@ -22,6 +22,8 @@
     "files:backfill-safety": "node dist/files-backfill.mjs",
     "admin:reset": "node scripts/admin-reset.mjs",
     "build:admin-reset": "esbuild scripts/admin-reset.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=dist/admin-reset.mjs",
+    "magic-link:rollback": "node scripts/magic-link-rollback.mjs",
+    "build:magic-link-rollback": "esbuild scripts/magic-link-rollback.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=dist/magic-link-rollback.mjs",
     "build:restore-pre-scan": "esbuild scripts/restore-pre-scan.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --alias:@=./src --outfile=dist/restore-pre-scan.mjs",
     "build:restore-neutralize": "esbuild scripts/restore-neutralize.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --alias:@=./src --outfile=dist/restore-neutralize.mjs",
     "build:restore-converge": "esbuild scripts/restore-converge.mjs --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --alias:@=./src --outfile=dist/restore-converge.mjs",

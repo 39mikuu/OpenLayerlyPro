@@ -12,7 +12,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.{ts,tsx}"],
+    include: ["src/**/*.test.{ts,tsx}", "scripts/**/*.test.{ts,tsx}"],
     // Database integration files truncate shared tables between cases.
     // Keep the regular unit suite parallel, but serialize files when those tests are enabled.
     fileParallelism: process.env.RUN_DB_INTEGRATION_TESTS !== "true",

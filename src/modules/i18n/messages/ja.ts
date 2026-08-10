@@ -1131,6 +1131,8 @@ export const ja: Messages = {
     sessionNotFound: "ログインセッションが存在しないか、すでに無効化されています",
     magicLinkNotConfigured:
       "メールログインリンクが設定されていません。サイト管理者にお問い合わせください。",
+    magicLinkDeliveryInFlight:
+      "このメールアドレスのログインリンク配信はまだ処理中です。解決後にもう一度お試しください。",
     requestRateLimited: "リクエストが多すぎます。しばらくしてから再度お試しください。",
     hourlyRateLimited: "リクエストが多すぎます。1時間後に再度お試しください。",
     cooldownRateLimited: "{seconds} 秒待ってから再送信してください。",
