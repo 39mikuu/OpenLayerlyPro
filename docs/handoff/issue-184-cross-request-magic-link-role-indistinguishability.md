@@ -1,12 +1,13 @@
 # Issue #184：跨请求 Magic Link 角色不可区分性规格
 
-- **状态**：Proposed（v28；实现前安全规格）
-- **Issue**：[#184](https://github.com/39mikuu/OpenLayerlyPro/issues/184)
-- **PR**：[#186](https://github.com/39mikuu/OpenLayerlyPro/pull/186)
+- **状态**：已完成（v28；历史实现前安全规格）
+- **Issue**：[#184](https://github.com/39mikuu/OpenLayerlyPro/issues/184)（已以 `completed` 关闭）
+- **Spec PR / merge**：[#186](https://github.com/39mikuu/OpenLayerlyPro/pull/186) → `58905079974f3819f49a7e679b5fd6448bba9a0b`
+- **Implementation PR / merge**：[#197](https://github.com/39mikuu/OpenLayerlyPro/pull/197) → `5bbcac6c1629d97ce1fe90953a3e3f93fd730c32`
 - **设计基线**：origin/main 80dbaa057a637ee88b7643da5b68f7671a57437c
 - **变更类型**：Auth / anti-enumeration security fix；后续实现会包含 schema、migration、任务协议、运维 bundle 与文档变更
 
-本文件是 Issue #184 的实现前权威规格。它只描述未来独立 implementation PR 必须实现的行为；本 Spec PR **不得**修改生产代码、migration、脚本、Dockerfile 或测试。
+本文件曾是 Issue #184 的实现前权威规格，并作为 implementation PR #197 的验收依据。它保留当时的未来时态、Spec PR 范围和 rollout 要求，作为历史设计与安全证据；不应被读作仍未完成的任务、当前生产运维手册，或 v1.2 已正式发布的声明。
 
 ## 1. 权威来源、范围与强制语义
 

@@ -1,6 +1,10 @@
 # v1.2 计划书：登录与会员权益完成度
 
-> 状态：**规划中**。基线为 2026-07-17 发布的 `v1.1.0`（tag `3a80b34`）。
+> 状态：**M1–M4 已完成并合并；M5 的验收收尾与发布准备已完成。** 基线为 2026-07-17 发布的 `v1.1.0`（tag `3a80b34`）。
+>
+> 已合并的里程碑：M1 [#168](https://github.com/39mikuu/OpenLayerlyPro/pull/168)、M2 [#170](https://github.com/39mikuu/OpenLayerlyPro/pull/170)、M3 [#171](https://github.com/39mikuu/OpenLayerlyPro/pull/171)、M4 [#172](https://github.com/39mikuu/OpenLayerlyPro/pull/172)、M5 验收收尾/发布准备 [#174](https://github.com/39mikuu/OpenLayerlyPro/pull/174)。Magic Link 的后续安全边界由 [#183](https://github.com/39mikuu/OpenLayerlyPro/pull/183) 与 [#197](https://github.com/39mikuu/OpenLayerlyPro/pull/197) 合并。
+>
+> 这只记录工作已进入 `main` 及其验收收尾状态；**本文不宣称 v1.2 已正式发布**。正式发布仍需单独指定 exact release HEAD，并完成相应 tag / release 记录与证据归档。
 >
 > 2026-07-17 确认的范围：
 >
@@ -128,16 +132,16 @@ v1.2 聚焦粉丝登录和会员权益配置，同时处理两项低风险工程
 
 ```text
 M0  v1.1.0 发布完成（2026-07-17，tag 3a80b34）
-M1  WP1 邮件 Magic Link
-M2  WP2 Google / GitHub OAuth（以 M1 为前置）
-M3  WP3 Membership Bundle
-M4  WP4 债务包：G5 CI actions、G7 Plausible parity；dispatcher baseline 回归保持绿
-M5  v1.2 验收与发布（明确不包含 G3 legacy removal）
+M1  [已完成并合并 #168] WP1 邮件 Magic Link（后续安全边界 #183 / #197）
+M2  [已完成并合并 #170] WP2 Google / GitHub OAuth（以 M1 为前置）
+M3  [已完成并合并 #171] WP3 Membership Bundle
+M4  [已完成并合并 #172] WP4 债务包：G5 CI actions、G7 Plausible parity；dispatcher baseline 回归保持绿
+M5  [验收收尾与发布准备已完成 #174] 正式发布待单独判断（明确不包含 G3 legacy removal）
 ```
 
-M1-M4 必须串行合并；每个里程碑合并后由创作者实例 dogfood。发现 Auth、会员授权、通知、统计或 task regression 时，在下一个里程碑前优先修复。
+M1-M4 已按上述顺序串行合并。创作者实例 dogfood 与 exact release HEAD 证据仍属于正式发布决定的独立记录；不得仅因里程碑已经合并就推断这些发布状态。
 
-M5 只验收本计划纳入的 WP。G3 legacy compatibility removal 不进入 v1.2，无论 v1.2 的发布日期为何，都保留 v1 archive restore、legacy footer migration 和 pre-v1.0 file backfill compatibility paths。
+M5 的验收收尾与发布准备已合并，但 v1.2 的正式发布状态不由本计划书或本次状态同步判定。G3 legacy compatibility removal 不进入 v1.2，无论 v1.2 的发布日期为何，都保留 v1 archive restore、legacy footer migration 和 pre-v1.0 file backfill compatibility paths。
 
 ## 5. v1.2 范围外与后续候选
 
@@ -154,6 +158,8 @@ M5 只验收本计划纳入的 WP。G3 legacy compatibility removal 不进入 v1
 | Plugin runtime / Hub / HA | Plugin/Hub 暂不规划；HA 维持 roadmap 触发条件 | 不进入 v1.2 Core；Hub 未来只有在真实运营证明需要跨站发现时再作为独立产品方向重新评估 |
 
 ## 6. 发布门槛
+
+> 本节保留正式发布时必须绑定 exact release HEAD 的独立门槛。其未归档的发布记录不能被“相关工作已合并至 `main`”替代；同样，里程碑已完成也不等同于已经创建 v1.2 tag 或 GitHub Release。
 
 - [ ] 全部纳入范围的 WP 验收通过；发布证据必须绑定 exact release HEAD，不能引用旧 SHA、摘要或非目标分支 run。
 - [ ] `.github/workflows/ci.yml` 在 exact release HEAD 通过；同时保留本地/CI 静态门证据：`pnpm check:request-bodies` 与 `pnpm check:auth-before-body` 均绿。
