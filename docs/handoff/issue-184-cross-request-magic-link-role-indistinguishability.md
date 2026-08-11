@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 17585)
-Total output lines: 841
-
 # Issue #184：跨请求 Magic Link 角色不可区分性规格
 
 - **状态**：已完成（v28；历史实现前安全规格）
@@ -340,7 +337,239 @@ returning id, minted_at, minted_token_id;
 
 candidate、delivery task、resolved_at、minted_at、minted_token_id 与 mint ledger 必须全有或全无。task INSERT、request update、ledger INSERT 影响零行/失败、token INSERT 失败、事务冲突、进程崩溃或提交失败时，事务必须回滚；不得留下孤立 candidate、孤立 delivery task、已记账未投递 token、未记账已投递 token 或无 request 锚点的 candidate。
 
-epoch placeholder 会使 exact-base 旧 verifier/consumer 的既有 `expires_at > now()` 谓词拒绝 pending token，但它**不**保护 superseded/cancelled、管理员写路径或旧运维 bundle，因而不是完整数据库兼容保护，更不得用它允许任何旧实例继续运行。若后续实现额外选择完整数据库兼容保护，仍必须满足第 9…5585 tokens truncated…rminal hooks
+epoch placeholder 会使 exact-base 旧 verifier/consumer 的既有 `expires_at > now()` 谓词拒绝 pending token，但它**不**保护 superseded/cancelled、管理员写路径或旧运维 bundle，因而不是完整数据库兼容保护，更不得用它允许任何旧实例继续运行。若后续实现额外选择完整数据库兼容保护，仍必须满足第 9.3 节对所有 non-active token 的旧读取/消费拒绝证明，且不能替代两阶段门禁。
+
+minted_token_id 是 request 与 candidate 的不可变审计、rollback disposition 和重试定位锚点；任何 rollback/abandon 命令必须重新验证该关联，或在 request 已按第 3.1/7.1 节合法清理后读取其 immutable mint ledger 与 disposition。pending -> cancelled/superseded 的 candidate 转换、以及 full-quiescence abandon，必须与写入该 candidate 唯一 disposition record 在同一事务内完成。retry 读到 resolved_at 非 NULL 时必须 no-op，不能再次 mint 或再次记账。
+
+### 4.4 dedupe、replacement 与消费竞态
+
+同邮箱存在 live pending candidate 或 fence-blocking candidate 时，后续 intake 必须只 resolved，不得再 mint。后者即使关联 task 为 succeeded/dead、reservation_until 已过或 candidate 超龄也必须持续抑制新 mint，直到第 5.5 节 exact owner 或第 9.4 节 full-quiescence audited disposition 实际清除 reservation。candidate 在 Transaction B 成功提交前不得使旧 active token superseded、expired 或不可消费。
+
+SMTP 失败、SMTP 前崩溃、SMTP 后但 Transaction B 前崩溃、Transaction B 回滚、陈旧 claim 或 ownership loss 时，旧 active token 必须保持原状。任何 retry 若再次发送，必须发送同一个 candidate token；不得以创建第二个 candidate 作为补偿。系统不声称 SMTP exactly-once，但不得因为邮件投递失败提前剥夺已投递 active token 的自然有效期。
+
+Transaction B 的最小 token 锁集合必须同时覆盖：
+
+1. candidate 本身；
+2. 所有未消费 pending candidate，用于单调 latest-candidate 判定；
+3. 未消费、未过期 active token，用于 supersede 与消费竞争；
+4. 最新的未消费 active token，即使已过期，作为 active 单调锚点；
+5. candidate.created_at 之后发生的消费，用于阻止“旧链接已消费、replacement 随后激活”产生第二个 session。
+
+同邮箱的 eligible replacement 谓词固定为：`consumed_at IS NULL`、`delivery_state IN ('pending','active')`，并以 `(created_at, id)` 的字典序比较新旧；`created_at` 相同必须由 UUID id 决胜。未消费 active 即使已过期也必须进入“最新 active anchor”比较；superseded、cancelled 和已 consumed 行永不 eligible。Transaction B 在锁住该集合后必须先判断是否存在比 candidate 更大的 eligible tuple：存在时，当前 exact generation owner 必须把 candidate 转为 superseded、清空自己的 reservation、terminal success，且不得激活或触碰较新行。
+
+若存在 `consumed_at IS NOT NULL AND consumed_at >= candidate.created_at` 的旧 active 消费，Transaction B 必须取消 candidate 而不得激活；若 Transaction B 先提交，旧 token 必须已经被 superseded，消费必须返回既有 invalid/replayed 语义。只有不存在更新 eligible tuple 或投递期消费时，candidate 才可激活，并且只能 supersede 比自己旧的、未消费且未过期 active token。pending candidate 永远不可 verify/consume。candidate 的 expires_at 必须在 Transaction B 激活时覆盖 epoch placeholder，以 activation time 加 MAGIC_LINK_TTL_MINUTES 设置；不得在 intake mint 时开始真实 TTL。epoch placeholder 是 defense in depth，不能替代第 9 节的两阶段旧版本退出门禁。
+
+## 5. protocol v2 delivery 与 reservation ownership
+
+### 5.1 邮箱来源和预读
+
+v2 delivery payload 不携带 email。worker 必须：
+
+1. 在事务外按 payload.tokenId 对 candidate 做一次非权威只读预读，以取得规范化 email；
+2. 开启事务并先锁 task；
+3. 取得该预读 email 的 advisory lock；
+4. 再 SELECT candidate FOR UPDATE；
+5. 重新验证 candidate.email 与预读 email 相同、candidate ID、task kind、payload tokenId、deliveryProtocol、queue class、candidate delivery_state 与 reservation generation。
+
+预读只用于选择 advisory lock，不能作为授权依据。任何不一致都必须不 SMTP、不得激活；实现必须保守地保留或终结状态，并输出不含邮箱/密文的诊断。此流程保持 task -> advisory -> candidate/token 的锁方向；不得先锁 candidate 再锁 task。
+
+### 5.2 Transaction A：取得一代 reservation
+
+Transaction A 必须在 task claim 仍有效时完成：
+
+~~~text
+lock task FOR UPDATE and validate current claim
+-> advisory lock normalized email
+-> lock candidate FOR UPDATE and revalidate linkage/state
+-> if candidate is active with delivered_at non-NULL and both reservation fields NULL:
+   terminal success no-op; do not SMTP, re-reserve, activate or supersede
+-> if candidate is superseded/cancelled, or consumed_at is non-NULL:
+   terminal success no-op; do not SMTP or alter token state
+-> if candidate has any non-NULL reservation field: do not lock user, overwrite,
+   clear, cancel or SMTP; throw the dedicated stuck-fence terminal error so the
+   task becomes dead and the scanner/runbook owns recovery
+-> if candidate is not pending, is consumed, has an invalid delivered_at shape, or
+   has an invalid task/payload linkage: terminal safe failure; do not SMTP
+-> only for pending, consumed_at IS NULL candidate with both reservation fields NULL:
+   lock user role FOR UPDATE
+-> if admin: candidate -> cancelled and INSERT its unique disposition from the mint ledger,
+   no SMTP, then terminal success
+-> else generate fresh random UUID reservationId
+-> set delivery_reservation_id=reservationId,
+       delivery_reservation_until=now()+configured interval
+-> commit
+~~~
+
+Transaction A may create a reservation **only** for a pending, consumed_at IS NULL candidate whose two reservation columns are both NULL. It must never reuse, replace or adopt a non-NULL reservation from a prior claim. An admin cancellation is likewise permitted **only after** the two-NULL check; no current, stale or retrying worker may cancel a non-NULL reservation merely because the user is now admin. A retry after a confirmed socket teardown may obtain a fresh UUID because the prior worker cleared both columns with its own generation; a retry after crash or ambiguous SMTP state must remain fenced and enter the stuck-fence recovery flow. If Transaction B committed and the process crashed before task success, the next invocation must take the active/delivered terminal-success branch above.
+
+### 5.3 SMTP、续期与 Transaction B
+
+SMTP 必须在 Transaction A 提交后、所有数据库事务之外执行。每个 send attempt holds its generated reservationId only in invocation state。SMTP 返回成功后、进入会清空 reservation 的 Transaction B 前，该 invocation 必须已不可恢复为继续 SMTP I/O：实现必须关闭其独立 per-send transport/socket，或以等价证据证明该 invocation 不能恢复/重发。不得让共享 cached transporter 的后台 I/O 在 B 清 fence 后继续运行。
+
+SMTP 调用的成功、可分类失败和硬中止必须按以下顺序收敛：
+
+1. 成功返回且该 invocation 已不可恢复为 SMTP I/O 时，worker 才可进入 Transaction B。
+2. SMTP rejection、可重试错误、永久错误、墙钟超时、renewal 不能确认或明确 ownership loss 时，worker 必须先停止续期并真正中止该次 I/O；不得先标记 task failed/dead。
+3. 仅在已确认该 socket 关闭后，仍持有 current processing claim 的 worker 必须运行一个短的 `task FOR UPDATE -> candidate FOR UPDATE` 清除事务，精确验证 task ID、status=processing、lock token、lease_until>now()、candidate ID、pending state 和 reservationId；只有 UPDATE 恰好一行时才可同时将两个 reservation 列置 NULL 并提交。
+4. 该清除成功后，worker 才可用同一 claim 报告原始 SMTP 错误：可重试错误进入 failed/retry，永久错误进入 dead。若进程在清除提交后、task 状态写入前崩溃，stale reclaim 必须以两列均 NULL 的 pending candidate 取得新 UUID 并重试同一个 candidate。
+5. socket 未确认关闭、清除 UPDATE 零行、claim/generation 不匹配或清除事务失败时，worker 必须保留 non-NULL fence。若仍持有 current claim，必须以 dedicated stuck-fence terminal error 使 task dead 并进入第 7 节告警/恢复；若 claim 已失去，worker 不得写 task 或 candidate，后续 claimant 必须 fail closed。不得在这种不确定状态标记普通 failed/retry。
+
+这条顺序是第 5.2 节“retry 可用同一 candidate”的前置条件：已安全关闭的普通失败必须释放**自己的** generation，SMTP 结果或 I/O 状态不确定时则必须保守保留 fence。
+
+续期必须是一个短数据库事务，而不是 candidate UPDATE 加未锁定 EXISTS。锁顺序必须为 task FOR UPDATE -> candidate FOR UPDATE/update；这是 task -> advisory -> candidate 全局顺序中不取得 advisory lock 的合法子序列，绝不得先锁 candidate。事务必须先以 task ID FOR UPDATE 锁定 task，并精确验证 status=processing、locked_by=本 invocation 的 claim、lease_until>now()；随后以 candidate ID FOR UPDATE 锁定 candidate，验证 pending、task/payload 关联与 exact reservationId，最后在同一事务更新 until。任何 task claim/finalization/reclaim 都必须与这次 task 锁串行化，不能通过 EXISTS 旁路。
+
+~~~sql
+begin;
+select id, status, locked_by, lease_until
+from tasks
+where id = :task_id
+for update;
+-- Require processing, exact :lock_token, and lease_until > now(); otherwise ROLLBACK.
+
+select id, delivery_state, delivery_reservation_id
+from magic_link_tokens
+where id = :candidate_id
+for update;
+-- Require pending and exact :reservation_id; also revalidate task/payload linkage.
+
+update magic_link_tokens
+set delivery_reservation_until = now() + :reservation_interval
+where id = :candidate_id
+  and delivery_state = 'pending'
+  and delivery_reservation_id = :reservation_id
+returning id;
+commit;
+~~~
+
+任一验证失败、UPDATE 零行或数据库错误必须回滚，worker 必须立即停止续期并真正中止 SMTP socket。只有在 socket 已确认关闭，且第 5.3 节第 3 步仍可用 exact current claim + generation 成功清除两列时，原始可重试错误才可进入 failed/retry；新 claim 随后必须用 fresh UUID 重试同一个 candidate。已证实由他人接手或 candidate 已终结时才可 terminal no-op。socket/I-O 状态、claim 或 generation 无法证实，以及本 worker lease 已过期但尚未能证明由谁接手时，均**不得**被标记为普通 retryable：必须保留 non-NULL fence，并按第 5.3 节第 5 步进入 terminal-safe/stuck 告警恢复。不得把这种不确定状态伪装为成功或普通 retry。
+
+Transaction B 是唯一可激活 candidate 的位置。它必须：
+
+1. 先锁 task 并验证当前 claim；
+2. 取得同一 email advisory lock；
+3. 以 FOR UPDATE 锁定 candidate 和进行消费/monotonic 必需的最小 token 集；
+4. 精确匹配 candidate ID、delivery_state=pending、consumed_at IS NULL、delivery_reservation_id=reservationId、有效 task claim、未记录 ownership loss、task/payload 关联与当前非 admin 角色；在 token 锁集合后必须以 FOR UPDATE 锁定对应 user 行（不存在 user 行也必须以 advisory lock 语义复验）。若此处读到 admin，当前 exact generation owner 必须把 candidate 转为 cancelled、清空其自己的 reservation 两列、从 ledger INSERT unique cancelled disposition 并 terminal success；不得激活或 supersede；
+5. 检查 delivery 期间不存在使 replacement 不再安全的消费、较新的 eligible replacement 或取消；旧 active 消费导致 cancelled、较新 eligible tuple 导致 superseded 时，也必须在同一事务从 ledger INSERT 该 candidate 的 unique disposition；
+6. 原子地把 candidate 激活、设置 delivered_at/expiry、supersede 旧 live active token，并清空 reservation 两列；任何被此次批量 supersede 的 protocol-v2 candidate 也必须写入其 unique superseded disposition。
+
+Transaction B **不得**以 delivery_reservation_until <= now() 为失败或失权条件。只要 reservationId 属于本次 invocation、task claim 仍有效、没有明确 ownership loss、promotion fence 从未被清除，时间经过本身不能使邮件“必须失效”。反之，只要 reservationId 不匹配，B 必须失败关闭，即使 until 尚未来临。
+
+Transaction B 任一前置条件不满足时不得激活、supersede、取消或清除 reservation。若 candidate 已是 active/delivered、superseded、cancelled 或已 consumed，task 必须 terminal success no-op。SMTP 已成功但 B 因数据库/前置条件失败时属于 SMTP 结果不确定：只有 socket 已确认关闭且 exact current claim + generation 能按第 5.3 节第 3 步清除两列时，才可 failed/retry 并重发同一 candidate；claim/generation/lock/linkage 不匹配、socket 未确认关闭或清除失败时必须保留 non-NULL fence 并按第 5.3 节第 5 步 terminal-safe/stuck。进程在 B 提交前崩溃时也适用该规则；进程在 B 提交后、任务成功前崩溃时适用第 5.2 节 active/delivered 幂等分支。
+
+旧 verifier 与旧 consumer 不识别 delivery_state，因而不得在 protocol v2 出现后仍允许旧版本运行。新的 verifyMagicLinkToken 和 consumeMagicLinkToken 必须同时要求 delivery_state=active 与 delivered_at 非 NULL；pending、superseded、cancelled 与无效 token 必须有相同公开结果。
+
+### 5.4 SMTP 中止与 liveness 上限
+
+SMTP transport 的 connection、greeting 与 socket idle timeout 之和不是一次调用的墙钟上界。实现不得以该和数证明 promotion fence 已覆盖完整 SMTP 调用。
+
+实现必须提供单次 Magic Link SMTP 的可中止墙钟上限 MAGIC_LINK_DELIVERY_MAX_TOTAL_SECONDS。该上限到达、reservation renewal 不能确认、或 task ownership 明确丢失时，worker 必须停止续期并真正拆除该次发送的 socket；只用 Promise.race 而让共享 transporter 继续发送不合格。为了不关闭其他邮件，Magic Link 必须使用可单次中止的 transport 或等价的 AbortSignal 到 socket-destroy 实现。
+
+delivery_reservation_until 必须在 SMTP 期间由本 generation 持续续期。它提供 promotion fence 的观测期限，但不是 ownership 到期；即使它过去，非 NULL reservation 仍阻止 promotion。墙钟上限限制的是一次调用的可用性阻塞，不能被表述为时间到后自动安全 abandon 的依据。
+
+### 5.5 清除 reservation 的唯一安全路径
+
+一个 worker 仅当同时证明以下条件时才可清空 reservation：
+
+~~~text
+task ID matches
+AND task is processing with the worker's exact claim/lock token
+AND task.lease_until > now()
+AND candidate ID matches
+AND candidate is pending
+AND candidate.delivery_reservation_id equals the worker's exact reservationId
+AND the worker has confirmed its SMTP socket is closed
+~~~
+
+清除必须在短事务中精确匹配 reservationId，并同时把 reservation ID 与 until 置 NULL。此 socket-closed 条件适用于“保持 candidate=pending 的失败/cleanup 清除”；Transaction B 的 pending -> active 或 pending -> cancelled 转换是唯一的状态转换例外，但它仍必须精确匹配当前 claim 与 generation，且在 B 前满足第 5.3 节“该 invocation 已不可恢复为 SMTP I/O”的条件。stale worker、租约过期 worker、其他 task、旧 generation、仅凭 timestamp 的 worker 均不得清除。
+
+一旦 task 已为 dead 或 succeeded 且 candidate 的任一 reservation 字段仍非 NULL，普通 worker cleanup 不得取消 candidate、清空 reservation、允许新 mint 或让管理员晋升绕过 fence。此后只有：
+
+1. 在 task 仍 processing 时、持有上述精确 claim 与 generation 的原 worker；或
+2. 第 9 节定义的 full quiescence 后、受审计 maintenance command；
+
+才可改变该 reservation。一旦 task 已为 terminal，第 1 条的 processing claim 前置条件不成立，因此 full quiescence 的第 2 条是唯一允许的 maintenance 路径。
+
+## 6. 管理员晋升与 admin-reset
+
+### 6.1 全部三条生产晋升路径
+
+下列所有路径必须实施同一 promotion fence 合约：
+
+| 路径 | 未来实现位置 |
+|---|---|
+| setupSite() | src/modules/site/index.ts |
+| changeAdminEmail() | src/modules/auth/admin-account.ts |
+| 管理员恢复脚本 | scripts/admin-reset.mjs 与 production dist/admin-reset.mjs |
+
+不得再声称只有前两条路径会让邮箱成为 admin。admin-reset 当前以直接 SQL upsert 写 role=admin，旧 bundle 在 protocol v2 存在时会绕过 reservation，因而是安全关键路径。
+
+推荐且本规格选择的实现是：三个路径复用同一个可从应用和 self-contained script 调用的 promotion-fence contract。不得仅写“管理员应确保系统空闲”。
+
+### 6.2 promotion-fence contract
+
+对每个即将成为 admin 或仍保持 admin 身份的规范化邮箱，路径必须在写 role/email 之前：
+
+1. 取得相同的 pg_advisory_xact_lock(hashtext(normalizedEmail))；
+2. 以 FOR UPDATE 锁定该邮箱的 pending candidate；
+3. 若任意 pending candidate 的 delivery_reservation_id 或 delivery_reservation_until 非 NULL，整个管理员事务必须 fail closed；不得取消、清空、忽略或等待其到期；
+4. 仅当所有 pending candidate 的 reservation 两列均为 NULL 时，才可取消这些 pending candidate，再执行既有 role/email 写入；
+5. 对 changeAdminEmail()，旧邮箱和新邮箱均必须先按规范化字符串升序取得 advisory locks，并在任一邮箱发现 non-NULL reservation 时整体失败；
+6. 成功 promotion 必须在同一业务事务写入审计记录，记录 fence 已检查、已取消 NULL-reservation candidate 数量、受影响 user ID 和 correlation ID；不得记录明文 token 或加密 token；
+7. 被 fence 阻断的 setup/change/reset 必须有单独的安全审计记录，包含不可逆 target digest、阻断数量、correlation ID 与时间，不得包含明文邮箱、token、token hash 或 reservation 原文。
+
+admin-reset 的退出码与控制台输出必须把 fence block 视为可重试且安全的拒绝，不能继续上升为 admin。它必须被 esbuild 打包进 production image；源码脚本与 dist bundle 不得有不同的 fencing 行为。
+
+应用的被 fence 阻断管理 API 必须返回明确的可重试 409 `magicLinkDeliveryInFlight`，不得把它伪装为 role/email 冲突或 500；该 key 的 zh/en/ja 文案必须表达“仍在投递、稍后重试”，不得承诺一个等待秒数。CLI 只可输出等价的非敏感可重试信息。
+
+### 6.3 legacy admin-reset bundle
+
+旧 dist/admin-reset.mjs 在 migration 后仍可直接升 admin，且不识别 reservation。它在阶段 B 前必须被淘汰：部署证明必须覆盖 production 镜像中的 ad hoc exec、CronJob、CI 运维 job、备份镜像和人工维护入口。阶段 B 后，任何仍可执行旧 bundle 的环境都使启用条件不成立。
+
+数据库 CHECK、queue class 隔离或新应用 helper 都不能阻止旧 raw SQL bundle 写 users.role；它们只能是 defense in depth，不能替代两阶段启用门禁。
+
+## 7. 普通 cleanup、stuck fence 与告警
+
+普通 terminal cleanup 的可处理集合必须同时满足：
+
+~~~text
+candidate.delivery_state = pending
+AND candidate.delivery_reservation_id IS NULL
+AND candidate.delivery_reservation_until IS NULL
+AND matching protocol-v2 task is succeeded or dead
+AND retention rule is satisfied
+~~~
+
+普通 cleanup 必须以 task FOR UPDATE -> candidate FOR UPDATE 的固定顺序复验上述谓词。任何 reservation 非 NULL 的 candidate 均不得进入自动删除、自动取消、自动清空或新 mint 的集合；它必须抑制同邮箱新 mint，也必须阻止第 6 节所有管理员晋升。
+
+对上述两列均 NULL 的匹配行，ordinary cleanup 必须在同一 task -> candidate 事务内把 pending candidate 转为 cancelled，并从 magic_link_mint_ledger 精确读取关联后 INSERT 该 candidate 唯一的 magic_link_delivery_dispositions(final_state='cancelled') record；在任何 candidate 或其 minted request 物理删除前，该 ledger 与 disposition 必须已经提交。保留期随后允许物理删除时，也必须只删除已取消且两列仍均为 NULL 的行。任一状态/关联/锁/ledger 验证失败、唯一 disposition INSERT 冲突不表示同一幂等 disposition、或事务崩溃必须回滚且不得改变 candidate。ordinary cleanup 不得创建 replacement token、delivery task 或管理员提升。
+
+独立 stuck-fence scanner 必须使用 magic_link_tokens_stuck_reservation_idx，查询 terminal v2 task 仍引用、且 reservation 非 NULL 的 pending candidate。它只能读取、计数和告警；不得删除或修改 candidate。
+
+scanner 必须产生有节流、跨实例去重的告警。后续 migration 必须增加一个仅含 opaque IDs 的 durable alert-dedup state，以 candidate_id 与 reservation_id 为复合唯一键，并以单条原子 SQL claim 通知资格：
+
+~~~sql
+insert into magic_link_stuck_fence_alerts
+  (candidate_id, reservation_id, last_notified_at)
+values
+  (:candidate_id, :reservation_id, now())
+on conflict (candidate_id, reservation_id) do update
+  set last_notified_at = excluded.last_notified_at
+  where magic_link_stuck_fence_alerts.last_notified_at
+        < now() - :minimum_resend_interval
+returning candidate_id, reservation_id;
+~~~
+
+只有该语句 RETURNING 一行的 scanner 可以发送一次通知；零行 RETURNING 必须静默跳过。先读再写、进程内去重或仅靠告警服务去重均不合格。告警 payload 只允许 task ID、candidate ID、task 状态、reservation 是否已超过观测时刻与聚合数量；不得泄漏邮箱、角色、token、token hash、IP 或 user-agent。清除 candidate 时应清理对应 dedup state。
+
+当 terminal + non-NULL fence 发现时，系统必须：
+
+1. 抑制新 mint；
+2. 阻止管理员晋升；
+3. 发出节流告警；
+4. 进入 stuck-fence recovery queue/runbook；
+5. 保留 reservation，直到第 5.5 节精确 generation owner 或 full quiescence 的受审计处置。
+
+### 7.1 request/task retention 与 terminal hooks
 
 magic_link_requests 的普通 retention cleanup 必须只选择 resolved_at 非 NULL 的行，并以 FOR UPDATE SKIP LOCKED 删除。对 minted request，它还必须执行第 3.1 节的完整 budget-window 与 mint-ledger 存在谓词；不得因 resolved_at 非 NULL 就提前删除。未 resolved request、pending/processing/retryable failed intake 与 dead intake 必须保留其 durable payload state。成功 intake task 可以在同一 retention window 后有界删除；dead intake task 必须保留到显式 retry 或审计 disposition。
 
