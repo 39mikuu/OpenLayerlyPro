@@ -34,7 +34,11 @@ import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { getMagicLinkKeys } from "@/modules/security/magic-link-key";
 import { claimDueTasks } from "@/modules/tasks";
-import { runTaskHandler } from "@/modules/tasks/handlers";
+import { runTaskHandler as runTaskHandlerWithOwnership } from "@/modules/tasks/handlers";
+import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+
+const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
+  runTaskHandlerWithOwnership(task, ownedTaskExecutionContext());
 
 import {
   consumeMagicLinkToken,

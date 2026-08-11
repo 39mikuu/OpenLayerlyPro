@@ -42,6 +42,7 @@ import {
 import { getNotificationUnsubscribeKeys } from "@/modules/security/notification-unsubscribe-key";
 import { PermanentTaskError } from "@/modules/tasks/errors";
 import type { TaskHandlerResult } from "@/modules/tasks/handlers";
+import type { TaskExecutionContext } from "@/modules/tasks/ownership";
 
 const notificationDeliveryPayloadSchema = z.object({
   version: z.literal(1),
@@ -1074,7 +1075,10 @@ async function finishFailureTx(
   throw new MailDeliveryError("transient");
 }
 
-export async function handleNotificationDeliveryTask(task: Task): Promise<TaskHandlerResult> {
+export async function handleNotificationDeliveryTask(
+  task: Task,
+  execution: TaskExecutionContext,
+): Promise<TaskHandlerResult> {
   const parsed = notificationDeliveryPayloadSchema.safeParse(task.payloadJson);
   if (!parsed.success) throw new PermanentTaskError("Invalid notification delivery payload");
 
@@ -1101,6 +1105,7 @@ export async function handleNotificationDeliveryTask(task: Task): Promise<TaskHa
   if (prepared.kind === "done") return {};
 
   const message = prepared.message;
+  await execution.assertOwnership();
   try {
     // SMTP accepted is at-least-once, not exactly-once. If the worker crashes
     // after the SMTP server accepts but before the post-SMTP transaction or task

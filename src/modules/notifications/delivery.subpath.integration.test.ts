@@ -42,7 +42,12 @@ import {
   users,
 } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
-import { handleNotificationDeliveryTask } from "@/modules/notifications";
+import { handleNotificationDeliveryTask as handleNotificationDeliveryTaskWithOwnership } from "@/modules/notifications";
+import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+
+const handleNotificationDeliveryTask = (
+  task: Parameters<typeof handleNotificationDeliveryTaskWithOwnership>[0],
+) => handleNotificationDeliveryTaskWithOwnership(task, ownedTaskExecutionContext());
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;

@@ -92,6 +92,15 @@ export type ClaimOneTaskForClassOptions = ClaimOptions & { includeStale?: boolea
 type ClaimOneTaskForClassInternalOptions = ClaimOptions & { includeStale?: boolean };
 export type ClaimedTaskForClass = Task & { reclaimedStale: boolean };
 
+function taskOwnershipFence(id: string, lockToken: string, now?: Date) {
+  return and(
+    eq(tasks.id, id),
+    eq(tasks.status, "processing"),
+    eq(tasks.lockedBy, lockToken),
+    gt(tasks.leaseUntil, now ?? sql<Date>`clock_timestamp()`),
+  );
+}
+
 type NotificationDeliverPayload = {
   version: 1;
   userId?: string;
@@ -532,7 +541,7 @@ export async function markTaskSucceeded(
       lastError: note?.slice(0, TASK_ERROR_MAX_LENGTH) ?? null,
       updatedAt: sql`now()`,
     })
-    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .where(taskOwnershipFence(id, lockToken))
     .returning({ id: tasks.id });
   return Boolean(updated);
 }
@@ -548,11 +557,7 @@ async function markTaskFailedInternal(
   now?: Date,
 ): Promise<TaskFinalizationResult> {
   const outcome = await getDb().transaction(async (tx) => {
-    const ownership = and(
-      eq(tasks.id, id),
-      eq(tasks.status, "processing"),
-      eq(tasks.lockedBy, lockToken),
-    );
+    const ownership = taskOwnershipFence(id, lockToken, now);
     const [task] = await tx.select().from(tasks).where(ownership).limit(1).for("update");
     if (!task) {
       return {
@@ -630,7 +635,7 @@ export async function deferTask(id: string, lockToken: string, runAfter: Date): 
       lastError: null,
       updatedAt: sql`now()`,
     })
-    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .where(taskOwnershipFence(id, lockToken))
     .returning({ id: tasks.id });
   return Boolean(updated);
 }
@@ -651,7 +656,7 @@ export async function markTaskDead(
       lastError: safeError.slice(0, TASK_ERROR_MAX_LENGTH),
       updatedAt: sql`now()`,
     })
-    .where(and(eq(tasks.id, id), eq(tasks.status, "processing"), eq(tasks.lockedBy, lockToken)))
+    .where(taskOwnershipFence(id, lockToken))
     .returning({
       id: tasks.id,
       kind: tasks.kind,

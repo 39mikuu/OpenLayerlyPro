@@ -34,7 +34,11 @@ import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { MailDeliveryError } from "@/modules/mail/delivery";
 import { claimOneTaskForClass, markTaskFailed, markTaskSucceeded } from "@/modules/tasks";
-import { runTaskHandler } from "@/modules/tasks/handlers";
+import { runTaskHandler as runTaskHandlerWithOwnership } from "@/modules/tasks/handlers";
+import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+
+const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
+  runTaskHandlerWithOwnership(task, ownedTaskExecutionContext());
 
 import * as exactBase80dbaa from "./fixtures/magic-link-exact-base-80dbaa";
 import {

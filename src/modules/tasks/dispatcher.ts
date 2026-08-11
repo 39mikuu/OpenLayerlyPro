@@ -18,6 +18,7 @@ import {
 } from "@/modules/tasks";
 import { PermanentTaskError } from "@/modules/tasks/errors";
 import { runTaskHandler } from "@/modules/tasks/handlers";
+import { type TaskExecutionContext, TaskOwnershipLostError } from "@/modules/tasks/ownership";
 
 type DispatcherDependencies = {
   claim: typeof claimDueTasks;
@@ -58,42 +59,88 @@ export async function dispatchClaimedTask(
   }
 
   let leaseLost = false;
-  const heartbeat = setInterval(
-    async () => {
+  let stopped = false;
+  let renewalInFlight: Promise<boolean> | null = null;
+  const abortController = new AbortController();
+  const loseOwnership = (message: string, error?: unknown) => {
+    if (leaseLost || stopped) return;
+    leaseLost = true;
+    abortController.abort(new TaskOwnershipLostError());
+    if (error === undefined) {
+      logger.warn(message, { taskId: task.id });
+      return;
+    }
+    logger.error(message, {
+      taskId: task.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+  const renewOwnership = (): Promise<boolean> => {
+    if (leaseLost || stopped) return Promise.resolve(false);
+    if (renewalInFlight) return renewalInFlight;
+    renewalInFlight = (async () => {
       try {
         const renewed = await dependencies.renew(task.id, lockToken);
-        if (!renewed && !leaseLost) {
-          leaseLost = true;
-          logger.warn("Task lease was lost during execution", { taskId: task.id });
-        }
+        if (!renewed) loseOwnership("Task lease was lost during execution");
+        return renewed;
       } catch (error) {
-        logger.error("Task lease renewal failed", {
-          taskId: task.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        loseOwnership("Task lease renewal failed", error);
+        return false;
+      } finally {
+        renewalInFlight = null;
       }
+    })();
+    return renewalInFlight;
+  };
+  const execution: TaskExecutionContext = {
+    signal: abortController.signal,
+    ownershipLost: () => leaseLost,
+    assertOwnership: async () => {
+      if (leaseLost || abortController.signal.aborted || !(await renewOwnership())) {
+        throw new TaskOwnershipLostError();
+      }
+    },
+  };
+  const heartbeat = setInterval(
+    () => {
+      void renewOwnership();
     },
     Math.floor(TASK_LEASE_MS / 3),
   );
   heartbeat.unref();
 
   try {
-    const result = await dependencies.run(task);
+    let result;
+    try {
+      result = await dependencies.run(task, execution);
+    } catch (error) {
+      if (leaseLost || error instanceof TaskOwnershipLostError) return;
+      try {
+        await execution.assertOwnership();
+      } catch (ownershipError) {
+        if (ownershipError instanceof TaskOwnershipLostError) return;
+        throw ownershipError;
+      }
+      const failure =
+        error instanceof PermanentTaskError
+          ? await dependencies.dead(task.id, lockToken, error)
+          : await dependencies.fail(task.id, lockToken, error);
+      if (!failure.updated) {
+        loseOwnership("Task failure ignored because the lease was lost");
+      }
+      return;
+    }
+
+    await execution.assertOwnership();
     const completed = result.deferUntil
       ? await dependencies.defer(task.id, lockToken, result.deferUntil)
       : await dependencies.succeed(task.id, lockToken, result.note);
-    if (!completed && !leaseLost) {
-      logger.warn("Task completion ignored because the lease was lost", { taskId: task.id });
-    }
+    if (!completed) loseOwnership("Task completion ignored because the lease was lost");
   } catch (error) {
-    const failure =
-      error instanceof PermanentTaskError
-        ? await dependencies.dead(task.id, lockToken, error)
-        : await dependencies.fail(task.id, lockToken, error);
-    if (!failure.updated && !leaseLost) {
-      logger.warn("Task failure ignored because the lease was lost", { taskId: task.id });
-    }
+    if (error instanceof TaskOwnershipLostError) return;
+    throw error;
   } finally {
+    stopped = true;
     clearInterval(heartbeat);
   }
 }

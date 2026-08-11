@@ -561,6 +561,40 @@ describeWithDatabase("durable tasks integration", () => {
     await expect(renewTaskLease(created!.id, "current-claim", 60_000)).resolves.toBe(false);
   });
 
+  it("rejects every finalization path after the current token's lease expires", async () => {
+    const now = new Date();
+    const [created] = await db
+      .insert(tasks)
+      .values({
+        kind: "email",
+        payloadJson: {},
+        status: "processing",
+        attempts: 1,
+        lockedAt: new Date(now.getTime() - 2_000),
+        lockedBy: "expired-claim",
+        leaseUntil: new Date(now.getTime() - 1_000),
+      })
+      .returning();
+
+    await expect(markTaskSucceeded(created!.id, "expired-claim")).resolves.toBe(false);
+    await expect(
+      deferTask(created!.id, "expired-claim", new Date(now.getTime() + 60_000)),
+    ).resolves.toBe(false);
+    await expect(
+      markTaskFailedAt(created!.id, "expired-claim", new Error("late failure"), now),
+    ).resolves.toEqual({ updated: false, status: null });
+    await expect(
+      markTaskDead(created!.id, "expired-claim", new PermanentTaskError("late dead")),
+    ).resolves.toEqual({ updated: false, status: null });
+
+    const [unchanged] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(unchanged).toMatchObject({
+      status: "processing",
+      lockedBy: "expired-claim",
+      leaseUntil: created!.leaseUntil,
+    });
+  });
+
   it("uses failed while waiting, reclaims only when due, and enters dead on attempt five", async () => {
     const start = new Date("2026-06-18T10:00:00.000Z");
     const [created] = await db

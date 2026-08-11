@@ -25,6 +25,7 @@ import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { setStoredGroup } from "@/modules/config/store";
 import { claimDueTasks } from "@/modules/tasks";
 import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
+import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
 
 import {
   deliverLoginCodeEmailTask,
@@ -130,6 +131,7 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
       deliverLoginCodeEmailTask(payloadOf(claimed!), {
         taskId: claimed!.id,
         lockToken: "wrong-worker",
+        assertTaskOwnership: async () => undefined,
       }),
     ).resolves.toContain("stale");
 
@@ -141,6 +143,7 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
       deliverLoginCodeEmailTask(payloadOf(claimed!), {
         taskId: claimed!.id,
         lockToken: "current-worker",
+        assertTaskOwnership: async () => undefined,
       }),
     ).resolves.toContain("stale");
 
@@ -155,6 +158,7 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
     await deliverLoginCodeEmailTask(payloadOf(firstClaim!), {
       taskId: firstClaim!.id,
       lockToken: "worker-a",
+      assertTaskOwnership: async () => undefined,
     });
     expect(mocks.sendLoginCodeEmail).toHaveBeenCalledTimes(1);
     const firstCode = mocks.sendLoginCodeEmail.mock.calls[0]?.[1];
@@ -169,9 +173,27 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
     await deliverLoginCodeEmailTask(payloadOf(secondClaim!), {
       taskId: secondClaim!.id,
       lockToken: "worker-b",
+      assertTaskOwnership: async () => undefined,
     });
     expect(mocks.sendLoginCodeEmail).toHaveBeenCalledTimes(2);
     expect(mocks.sendLoginCodeEmail.mock.calls[1]?.[1]).toBe(firstCode);
+  });
+
+  it("revalidates task ownership immediately before SMTP", async () => {
+    await requestLoginCode("lost-before-smtp@example.com", { locale: "en" });
+    const [claimed] = await claimDueTasks(1, { lockToken: "worker-a" });
+    expect(claimed).toBeDefined();
+
+    await expect(
+      deliverLoginCodeEmailTask(payloadOf(claimed!), {
+        taskId: claimed!.id,
+        lockToken: "worker-a",
+        assertTaskOwnership: async () => {
+          throw new TaskOwnershipLostError();
+        },
+      }),
+    ).rejects.toBeInstanceOf(TaskOwnershipLostError);
+    expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();
   });
 
   it("successfully no-ops a manually retried old task after a newer active code exists", async () => {
@@ -189,6 +211,7 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
       deliverLoginCodeEmailTask(payloadOf(oldClaim!), {
         taskId: oldClaim!.id,
         lockToken: "retry-worker",
+        assertTaskOwnership: async () => undefined,
       }),
     ).resolves.toContain("superseded");
     expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();

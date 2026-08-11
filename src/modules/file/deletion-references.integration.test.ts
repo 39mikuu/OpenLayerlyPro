@@ -30,7 +30,11 @@ import { resubmitPaymentProof } from "@/modules/payment";
 import { cleanupPaymentProof } from "@/modules/payment/proof-lifecycle";
 import { runRestorePreScan } from "@/modules/restore/preScan";
 import { setSetting } from "@/modules/site";
-import { runTaskHandler } from "@/modules/tasks/handlers";
+import { runTaskHandler as runTaskHandlerWithOwnership } from "@/modules/tasks/handlers";
+import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+
+const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
+  runTaskHandlerWithOwnership(task, ownedTaskExecutionContext());
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
