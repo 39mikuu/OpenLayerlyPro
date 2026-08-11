@@ -496,7 +496,7 @@ describeWithDatabase("durable tasks integration", () => {
   });
 
   it("fences stale success and failure updates after another worker reclaims the task", async () => {
-    const now = new Date("2026-06-18T10:00:00.000Z");
+    const now = new Date();
     const [created] = await db
       .insert(tasks)
       .values({
@@ -702,7 +702,12 @@ describeWithDatabase("durable tasks integration", () => {
 
     await db
       .update(tasks)
-      .set({ status: "processing", attempts: 0, lockedBy: "zero-claim" })
+      .set({
+        status: "processing",
+        attempts: 0,
+        lockedBy: "zero-claim",
+        leaseUntil: sql`now() + interval '1 minute'`,
+      })
       .where(eq(tasks.id, created!.id));
     await expect(deferTask(created!.id, "zero-claim", deferUntil)).resolves.toBe(true);
     const [zero] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
@@ -718,6 +723,7 @@ describeWithDatabase("durable tasks integration", () => {
         status: "processing",
         attempts: 1,
         lockedBy: "current-claim",
+        leaseUntil: sql`now() + interval '1 minute'`,
       })
       .returning();
     const error = new PermanentTaskError("Invalid publish_post payload");
@@ -775,6 +781,7 @@ describeWithDatabase("durable tasks integration", () => {
         status: "processing",
         attempts: 1,
         lockedBy: "current-claim",
+        leaseUntil: sql`now() + interval '1 minute'`,
       })
       .returning();
 
@@ -811,6 +818,7 @@ describeWithDatabase("durable tasks integration", () => {
           attempts: 1,
           maxAttempts: 5,
           lockedBy: "retryable-claim",
+          leaseUntil: sql`now() + interval '1 minute'`,
         },
         {
           kind: "email",
@@ -819,6 +827,7 @@ describeWithDatabase("durable tasks integration", () => {
           attempts: 5,
           maxAttempts: 5,
           lockedBy: "exhausted-claim",
+          leaseUntil: sql`now() + interval '1 minute'`,
         },
       ])
       .returning();
