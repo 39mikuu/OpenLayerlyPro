@@ -2,19 +2,19 @@
 
 > ✅ 已完成｜▶ 当前主线｜🚧 计划中｜⏸ 推迟。只有一个阶段可以标记为当前主线。
 
-## 当前主线：v1.2「登录与会员权益完成度」 ▶
+## 当前主线：v1.2「登录与会员权益完成度」——实现完成、正式发布待单独判断 ▶
 
-`v1.1.0` 已于 2026-07-17 发布（tag `3a80b34`；[验收记录](./releases/v1.1.0-release-notes.md)）。v1.2 的完整范围和发布门槛见 [release-v1.2-plan.md](./release-v1.2-plan.md)。G3 legacy compatibility removal 不进入 v1.2，当前预期在不早于 2026-10-14 的 v1.3 处理。
+`v1.1.0` 已于 2026-07-17 发布（tag `3a80b34`；[验收记录](./releases/v1.1.0-release-notes.md)）。v1.2 的 M1–M4 已分别随 [#168](https://github.com/39mikuu/OpenLayerlyPro/pull/168)、[#170](https://github.com/39mikuu/OpenLayerlyPro/pull/170)、[#171](https://github.com/39mikuu/OpenLayerlyPro/pull/171)、[#172](https://github.com/39mikuu/OpenLayerlyPro/pull/172) 合并；M5 的验收收尾与发布准备已随 [#174](https://github.com/39mikuu/OpenLayerlyPro/pull/174) 合并。Magic Link 的后续安全边界已由 [#183](https://github.com/39mikuu/OpenLayerlyPro/pull/183) 与 [#197](https://github.com/39mikuu/OpenLayerlyPro/pull/197) 合并。以上只同步已进入 `main` 的实现/验收收尾状态，**不构成 v1.2 已正式发布的声明**；正式发布仍须单独指定 exact release HEAD、证据和 tag / release 记录。G3 legacy compatibility removal 不进入 v1.2，当前预期在不早于 2026-10-14 的 v1.3 处理。
 
 实施顺序：
 
 ```text
 v1.1.0 发布完成 ✅
-→ M1 邮件 Magic Link（粉丝/会员；验证码 fallback 保留）
-→ M2 Google / GitHub OAuth（粉丝/会员；管理员仍邮箱 + 密码）
-→ M3 Membership Bundle（`membership_tiers` 白名单 entitlements，Core-only）
-→ M4 债务包（G5 CI actions、G7 Plausible parity；dispatcher baseline 回归保持绿）
-→ M5 v1.2 验收与发布（不包含 G3 legacy removal）
+→ M1 邮件 Magic Link ✅（#168；后续安全边界 #183 / #197）
+→ M2 Google / GitHub OAuth ✅（#170；粉丝/会员，管理员仍邮箱 + 密码）
+→ M3 Membership Bundle ✅（#171；`membership_tiers` 白名单 entitlements，Core-only）
+→ M4 债务包 ✅（#172；G5 CI actions、G7 Plausible parity；dispatcher baseline 回归保持绿）
+→ M5 验收收尾与发布准备 ✅（#174；正式发布待单独判断，不包含 G3 legacy removal）
 ```
 
 ## Phase 0：MVP 主链路 ✅

@@ -1,17 +1,13 @@
 # Issue #176：管理员账号 Magic Link 边界规格
 
-- **状态**：Proposed
+- **状态**：已完成（Spec PR [#182](https://github.com/39mikuu/OpenLayerlyPro/pull/182) 与 implementation PR [#183](https://github.com/39mikuu/OpenLayerlyPro/pull/183) 均已合并；Issue 已以 `completed` 关闭）
 - **Issue**：[#176](https://github.com/39mikuu/OpenLayerlyPro/issues/176)
+- **Spec PR / merge**：[#182](https://github.com/39mikuu/OpenLayerlyPro/pull/182) → `362c344314465a55fb52e81fca24862c3f277189`
+- **Implementation PR / merge**：[#183](https://github.com/39mikuu/OpenLayerlyPro/pull/183) → `8cb80623ae23fd34b1a3b9489e0c4f354481c90a`
 - **设计基线**：`origin/main` `2bb11b36dfed39de2b0f3ff4f69f6be5ebfd3907`
 - **变更类型**：Auth / authorization boundary security fix
 
-> **Supersession note.** Issue #184 supersedes this handoff's request-time
-> administrator suppression and its "0 task" language. Under protocol v2 every
-> accepted public request creates a role-blind intake task; an admin request
-> still creates zero token, zero delivery task, and zero SMTP. The consumption
-> transaction's administrator boundary, session atomicity, and uniform public
-> failure semantics in this document remain mandatory. See
-> [Issue #184](issue-184-cross-request-magic-link-role-indistinguishability.md).
+> **完成与 supersession note.** #183 已实现并合并本 handoff 的原始边界；随后 Issue #184 的 protocol v2 取代了本文件的请求期管理员抑制与“0 task”表述。#184 的 implementation PR [#197](https://github.com/39mikuu/OpenLayerlyPro/pull/197) 也已合并：每个 accepted public request 创建 role-blind intake task；管理员仍产生 0 token、0 delivery task、0 SMTP。本文件中的消费事务管理员边界、session 原子性和统一公开失败语义继续有效。见 [Issue #184](issue-184-cross-request-magic-link-role-indistinguishability.md)。
 
 ## 1. 背景与目标
 
