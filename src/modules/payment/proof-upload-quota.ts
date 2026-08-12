@@ -62,6 +62,12 @@ export async function completePaymentProofUploadReservation(
     )
     .returning({ id: paymentProofUploadReservations.id });
   if (!updated) {
+    const [current] = await db
+      .select({ status: paymentProofUploadReservations.status })
+      .from(paymentProofUploadReservations)
+      .where(eq(paymentProofUploadReservations.id, reservationId))
+      .limit(1);
+    if (current?.status === (succeeded ? "succeeded" : "failed")) return;
     throw new Error("Payment proof upload reservation is not pending");
   }
 }

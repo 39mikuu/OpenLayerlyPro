@@ -14,6 +14,7 @@ import {
   siteSettings,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import { compensateAndPreserveError, opaqueCompensationResourceId } from "@/lib/compensation";
 import { getEnv } from "@/lib/env";
 import {
   type AdminListPage,
@@ -223,15 +224,32 @@ export async function saveUploadedFile(input: {
   const downloadName = withAuthoritativeExtension(originalName, normalized.ext);
 
   const storage = await getStorage();
-  const stored = await storage.putObject({
-    objectKey,
-    body: normalized.outputBuffer,
-    contentType: normalized.mimeType,
-    contentDisposition:
-      purpose === "payment_proof"
-        ? `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`
-        : undefined,
-  });
+  let stored: Awaited<ReturnType<typeof storage.putObject>>;
+  try {
+    stored = await storage.putObject({
+      objectKey,
+      body: normalized.outputBuffer,
+      contentType: normalized.mimeType,
+      contentDisposition:
+        purpose === "payment_proof"
+          ? `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`
+          : undefined,
+    });
+  } catch (error) {
+    throw await compensateAndPreserveError(
+      error,
+      [
+        {
+          operation: "storage.delete_object",
+          run: () => storage.deleteObject({ objectKey }),
+        },
+      ],
+      {
+        storageDriver: storage.driver,
+        objectRef: opaqueCompensationResourceId(storage.driver, objectKey),
+      },
+    );
+  }
 
   let record: FileRecord;
   try {
@@ -266,8 +284,14 @@ export async function saveUploadedFile(input: {
       return inserted;
     });
   } catch (error) {
-    await storage.deleteObject(stored);
-    throw error;
+    throw await compensateAndPreserveError(
+      error,
+      [{ operation: "storage.delete_object", run: () => storage.deleteObject(stored) }],
+      {
+        storageDriver: storage.driver,
+        objectRef: opaqueCompensationResourceId(storage.driver, stored.objectKey),
+      },
+    );
   }
 
   await recordEvent("file_uploaded", {
@@ -321,8 +345,19 @@ export async function saveStreamedFile(input: {
   }
 
   if (streamed.sizeBytes === 0) {
-    await storage.deleteObject(streamed.stored);
-    throw new ApiError(400, "fileEmpty");
+    throw await compensateAndPreserveError(
+      new ApiError(400, "fileEmpty"),
+      [
+        {
+          operation: "storage.delete_object",
+          run: () => storage.deleteObject(streamed.stored),
+        },
+      ],
+      {
+        storageDriver: storage.driver,
+        objectRef: opaqueCompensationResourceId(storage.driver, streamed.stored.objectKey),
+      },
+    );
   }
 
   let record: FileRecord;
@@ -346,8 +381,19 @@ export async function saveStreamedFile(input: {
     if (!inserted) throw new Error("文件记录写入失败");
     record = inserted;
   } catch (err) {
-    await storage.deleteObject(streamed.stored);
-    throw err;
+    throw await compensateAndPreserveError(
+      err,
+      [
+        {
+          operation: "storage.delete_object",
+          run: () => storage.deleteObject(streamed.stored),
+        },
+      ],
+      {
+        storageDriver: storage.driver,
+        objectRef: opaqueCompensationResourceId(storage.driver, streamed.stored.objectKey),
+      },
+    );
   }
 
   await recordEvent("file_uploaded", {

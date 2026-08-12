@@ -360,6 +360,7 @@ describeWithDatabase("payment proof lifecycle integration", () => {
     const { user } = await seedIdentity();
     const failedId = await reservePaymentProofUpload(user.id);
     await completePaymentProofUploadReservation(failedId, false);
+    await expect(completePaymentProofUploadReservation(failedId, false)).resolves.toBeUndefined();
 
     await db.insert(paymentProofUploadReservations).values({
       userId: user.id,
@@ -368,6 +369,21 @@ describeWithDatabase("payment proof lifecycle integration", () => {
     });
 
     await expect(reservePaymentProofUpload(user.id)).resolves.toEqual(expect.any(String));
+  });
+
+  it("keeps an opposite terminal reservation transition fail-closed", async () => {
+    const { user } = await seedIdentity();
+    const reservationId = await reservePaymentProofUpload(user.id);
+    await completePaymentProofUploadReservation(reservationId, false);
+
+    await expect(completePaymentProofUploadReservation(reservationId, true)).rejects.toThrow(
+      "Payment proof upload reservation is not pending",
+    );
+    const [reservation] = await db
+      .select()
+      .from(paymentProofUploadReservations)
+      .where(eq(paymentProofUploadReservations.id, reservationId));
+    expect(reservation?.status).toBe("failed");
   });
 
   it("serializes concurrent reservations and never exceeds the configured daily limit", async () => {

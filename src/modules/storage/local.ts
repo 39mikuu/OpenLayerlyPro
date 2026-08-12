@@ -5,6 +5,7 @@ import path from "path";
 import type { Readable } from "stream";
 import { pipeline } from "stream/promises";
 
+import { compensateAndPreserveError, opaqueCompensationResourceId } from "@/lib/compensation";
 import { getEnv } from "@/lib/env";
 
 import { createMeasuredStream } from "./stream";
@@ -88,9 +89,29 @@ export class LocalStorageAdapter implements StorageAdapter {
 
   async putObject(input: PutObjectInput): Promise<StoredObject> {
     const full = resolveSafePath(input.objectKey);
+    const temporary = `${full}.${randomUUID()}${PART_SUFFIX}`;
     await mkdir(path.dirname(full), { recursive: true });
-    await writeFile(full, input.body);
-    return { objectKey: input.objectKey, bucket: null };
+    await maybeCleanupStaleParts();
+    try {
+      await writeFile(temporary, input.body, { flag: "wx" });
+      await rename(temporary, full);
+      return { objectKey: input.objectKey, bucket: null };
+    } catch (error) {
+      throw await compensateAndPreserveError(
+        error,
+        [
+          {
+            operation: "local_upload_part.unlink",
+            run: async () => {
+              await unlink(temporary).catch((cleanupError) => {
+                if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") throw cleanupError;
+              });
+            },
+          },
+        ],
+        { objectRef: opaqueCompensationResourceId(this.driver, input.objectKey) },
+      );
+    }
   }
 
   async putObjectStream(input: PutObjectStreamInput): Promise<{
@@ -116,10 +137,20 @@ export class LocalStorageAdapter implements StorageAdapter {
         ...result,
       };
     } catch (err) {
-      await unlink(temporary).catch((cleanupError) => {
-        if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") throw cleanupError;
-      });
-      throw err;
+      throw await compensateAndPreserveError(
+        err,
+        [
+          {
+            operation: "local_upload_part.unlink",
+            run: async () => {
+              await unlink(temporary).catch((cleanupError) => {
+                if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") throw cleanupError;
+              });
+            },
+          },
+        ],
+        { objectRef: opaqueCompensationResourceId(this.driver, input.objectKey) },
+      );
     }
   }
 

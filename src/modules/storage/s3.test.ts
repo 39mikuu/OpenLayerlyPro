@@ -17,6 +17,7 @@ import { StorageObjectTooLargeError } from "./stream";
 
 const state = vi.hoisted(() => ({
   abortMock: vi.fn(),
+  abortError: null as Error | null,
   doneError: null as Error | null,
   sendMock: vi.fn(),
   signedUrlMock: vi.fn(),
@@ -66,6 +67,7 @@ vi.mock("@aws-sdk/lib-storage", () => ({
 
     async abort() {
       state.abortMock();
+      if (state.abortError) throw state.abortError;
     }
   },
 }));
@@ -83,6 +85,7 @@ describe("S3StorageAdapter", () => {
   afterEach(() => {
     vi.clearAllMocks();
     state.doneError = null;
+    state.abortError = null;
     state.uploadOptions.length = 0;
     state.uploadedBodies.length = 0;
     state.signedUrlMock.mockResolvedValue("https://storage.example/signed");
@@ -284,6 +287,45 @@ describe("S3StorageAdapter", () => {
 
     expect(state.abortMock).toHaveBeenCalledTimes(1);
     expect(state.sendMock.mock.calls.at(-1)?.[0]).toBeInstanceOf(DeleteObjectCommand);
+  });
+
+  it("attempts every cleanup and preserves the upload error when abort and delete also fail", async () => {
+    const primary = Object.assign(new Error("multipart response lost"), {
+      code: "TimeoutError",
+    });
+    state.doneError = primary;
+    state.abortError = Object.assign(new Error("abort failed"), { code: "AbortDenied" });
+    state.sendMock.mockRejectedValue(
+      Object.assign(new Error("delete failed"), { code: "AccessDenied" }),
+    );
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const adapter = new S3StorageAdapter(config);
+
+    let thrown: unknown;
+    try {
+      await adapter.putObjectStream({
+        objectKey: "content/private-name.zip",
+        body: Readable.from([Buffer.from("multipart body")]),
+        contentType: "application/zip",
+        maxBytes: 1024,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(primary);
+    expect(state.abortMock).toHaveBeenCalledOnce();
+    expect(state.sendMock.mock.calls.at(-1)?.[0]).toBeInstanceOf(DeleteObjectCommand);
+    expect(log).toHaveBeenCalledTimes(2);
+    for (const [line] of log.mock.calls) {
+      const entry = JSON.parse(String(line)) as Record<string, unknown>;
+      expect(entry.objectRef).toMatch(/^[a-f0-9]{64}$/);
+      expect(entry).not.toHaveProperty("objectKey");
+      expect(line).not.toContain("private-name.zip");
+      expect(line).not.toContain("abort failed");
+      expect(line).not.toContain("delete failed");
+    }
+    log.mockRestore();
   });
 
   it("aborts multipart and cleans the object when the request signal is cancelled", async () => {
