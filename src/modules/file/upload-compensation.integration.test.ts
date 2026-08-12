@@ -70,10 +70,9 @@ describeWithDatabase("upload compensation integration", () => {
       thrown = error;
     }
 
-    expect(thrown).toMatchObject({
-      name: "DrizzleQueryError",
-      cause: expect.objectContaining({ code: "22012" }),
-    });
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).name).toBe("DrizzleQueryError");
+    expect((thrown as Error & { cause?: unknown }).cause).toMatchObject({ code: "22012" });
     await expect(db.select().from(files)).resolves.toHaveLength(0);
     expect(mocks.deleteObject).toHaveBeenCalledOnce();
     expect(mocks.loggerError).toHaveBeenCalledWith(
