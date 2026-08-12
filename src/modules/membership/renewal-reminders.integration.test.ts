@@ -22,7 +22,11 @@ import { getDb } from "@/db";
 import { memberships, membershipTiers, subscriptions, tasks, users } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { grantMembership } from "@/modules/membership";
-import { runTaskHandler } from "@/modules/tasks/handlers";
+import { runTaskHandler as runTaskHandlerWithOwnership } from "@/modules/tasks/handlers";
+import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+
+const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
+  runTaskHandlerWithOwnership(task, ownedTaskExecutionContext());
 
 import {
   disableManualRenewalReminder,

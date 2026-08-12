@@ -496,7 +496,7 @@ describeWithDatabase("durable tasks integration", () => {
   });
 
   it("fences stale success and failure updates after another worker reclaims the task", async () => {
-    const now = new Date("2026-06-18T10:00:00.000Z");
+    const now = new Date();
     const [created] = await db
       .insert(tasks)
       .values({
@@ -559,6 +559,40 @@ describeWithDatabase("durable tasks integration", () => {
       .set({ leaseUntil: new Date(0) })
       .where(eq(tasks.id, created!.id));
     await expect(renewTaskLease(created!.id, "current-claim", 60_000)).resolves.toBe(false);
+  });
+
+  it("rejects every finalization path after the current token's lease expires", async () => {
+    const now = new Date();
+    const [created] = await db
+      .insert(tasks)
+      .values({
+        kind: "email",
+        payloadJson: {},
+        status: "processing",
+        attempts: 1,
+        lockedAt: new Date(now.getTime() - 2_000),
+        lockedBy: "expired-claim",
+        leaseUntil: new Date(now.getTime() - 1_000),
+      })
+      .returning();
+
+    await expect(markTaskSucceeded(created!.id, "expired-claim")).resolves.toBe(false);
+    await expect(
+      deferTask(created!.id, "expired-claim", new Date(now.getTime() + 60_000)),
+    ).resolves.toBe(false);
+    await expect(
+      markTaskFailedAt(created!.id, "expired-claim", new Error("late failure"), now),
+    ).resolves.toEqual({ updated: false, status: null });
+    await expect(
+      markTaskDead(created!.id, "expired-claim", new PermanentTaskError("late dead")),
+    ).resolves.toEqual({ updated: false, status: null });
+
+    const [unchanged] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
+    expect(unchanged).toMatchObject({
+      status: "processing",
+      lockedBy: "expired-claim",
+      leaseUntil: created!.leaseUntil,
+    });
   });
 
   it("uses failed while waiting, reclaims only when due, and enters dead on attempt five", async () => {
@@ -668,7 +702,12 @@ describeWithDatabase("durable tasks integration", () => {
 
     await db
       .update(tasks)
-      .set({ status: "processing", attempts: 0, lockedBy: "zero-claim" })
+      .set({
+        status: "processing",
+        attempts: 0,
+        lockedBy: "zero-claim",
+        leaseUntil: sql`now() + interval '1 minute'`,
+      })
       .where(eq(tasks.id, created!.id));
     await expect(deferTask(created!.id, "zero-claim", deferUntil)).resolves.toBe(true);
     const [zero] = await db.select().from(tasks).where(eq(tasks.id, created!.id));
@@ -684,6 +723,7 @@ describeWithDatabase("durable tasks integration", () => {
         status: "processing",
         attempts: 1,
         lockedBy: "current-claim",
+        leaseUntil: sql`now() + interval '1 minute'`,
       })
       .returning();
     const error = new PermanentTaskError("Invalid publish_post payload");
@@ -741,6 +781,7 @@ describeWithDatabase("durable tasks integration", () => {
         status: "processing",
         attempts: 1,
         lockedBy: "current-claim",
+        leaseUntil: sql`now() + interval '1 minute'`,
       })
       .returning();
 
@@ -777,6 +818,7 @@ describeWithDatabase("durable tasks integration", () => {
           attempts: 1,
           maxAttempts: 5,
           lockedBy: "retryable-claim",
+          leaseUntil: sql`now() + interval '1 minute'`,
         },
         {
           kind: "email",
@@ -785,6 +827,7 @@ describeWithDatabase("durable tasks integration", () => {
           attempts: 5,
           maxAttempts: 5,
           lockedBy: "exhausted-claim",
+          leaseUntil: sql`now() + interval '1 minute'`,
         },
       ])
       .returning();

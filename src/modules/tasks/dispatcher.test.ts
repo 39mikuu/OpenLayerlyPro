@@ -275,4 +275,68 @@ describe("task dispatcher", () => {
     expect(deps.succeed).toHaveBeenCalledWith(claimed.id, claimed.lockedBy, undefined);
     expect(deps.fail).not.toHaveBeenCalled();
   });
+
+  it("aborts ownership and blocks a second side effect after renewal returns false", async () => {
+    vi.useFakeTimers();
+    const claimed = task("11111111-1111-4111-8111-111111111111");
+    const deps = dependencies();
+    const effects: string[] = [];
+    let resume: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const firstEffectStarted = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    deps.renew.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    deps.run.mockImplementation(async (_task, execution) => {
+      await execution.assertOwnership();
+      effects.push("first");
+      entered?.();
+      await paused;
+      await execution.assertOwnership();
+      effects.push("second");
+      return {};
+    });
+
+    const dispatching = dispatchClaimedTask(claimed, deps);
+    await firstEffectStarted;
+    await vi.advanceTimersByTimeAsync(Math.floor(TASK_LEASE_MS / 3));
+    resume?.();
+    await dispatching;
+
+    expect(effects).toEqual(["first"]);
+    expect(deps.succeed).not.toHaveBeenCalled();
+    expect(deps.fail).not.toHaveBeenCalled();
+    expect(deps.dead).not.toHaveBeenCalled();
+  });
+
+  it("treats a renewal exception as immediate ownership loss", async () => {
+    vi.useFakeTimers();
+    const claimed = task("11111111-1111-4111-8111-111111111111");
+    const deps = dependencies();
+    let executionSignal: AbortSignal | undefined;
+    let resume: (() => void) | undefined;
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    deps.renew.mockRejectedValue(new Error("database connection lost"));
+    deps.run.mockImplementation(async (_task, execution) => {
+      executionSignal = execution.signal;
+      await paused;
+      await execution.assertOwnership();
+      return {};
+    });
+
+    const dispatching = dispatchClaimedTask(claimed, deps);
+    await vi.advanceTimersByTimeAsync(Math.floor(TASK_LEASE_MS / 3));
+    expect(executionSignal?.aborted).toBe(true);
+    resume?.();
+    await dispatching;
+
+    expect(deps.succeed).not.toHaveBeenCalled();
+    expect(deps.fail).not.toHaveBeenCalled();
+    expect(deps.dead).not.toHaveBeenCalled();
+  });
 });

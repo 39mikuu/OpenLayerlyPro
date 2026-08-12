@@ -44,6 +44,7 @@ export type LoginCodeEmailTaskPayload = {
 export type LoginCodeEmailTaskFence = {
   taskId: string;
   lockToken: string | null;
+  assertTaskOwnership: () => Promise<void>;
 };
 
 export async function requestLoginCode(
@@ -317,6 +318,7 @@ export async function deliverLoginCodeEmailTask(
 
   // SMTP and config lookup intentionally happen after Tx1 commits, so neither a
   // database connection nor the per-email advisory lock is held during network I/O.
+  await fence.assertTaskOwnership();
   try {
     await sendLoginCodeEmail(delivery.email, delivery.code, payload.locale);
   } catch (error) {

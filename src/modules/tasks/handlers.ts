@@ -50,6 +50,7 @@ import {
 } from "@/modules/payment/subscriptions";
 
 import { PermanentTaskError } from "./errors";
+import type { TaskExecutionContext } from "./ownership";
 import { paymentProviderEventPayloadSchema } from "./payloads";
 
 const emailPayloadSchema = z.discriminatedUnion("template", [
@@ -241,7 +242,10 @@ async function resolveRenewalReminderEmail(input: {
   };
 }
 
-async function runEmailTask(task: Task): Promise<TaskHandlerResult> {
+async function runEmailTask(
+  task: Task,
+  execution: TaskExecutionContext,
+): Promise<TaskHandlerResult> {
   const parsed = emailPayloadSchema.safeParse(task.payloadJson);
   if (!parsed.success) throw new PermanentTaskError("Invalid email payload");
   const payload = parsed.data;
@@ -281,6 +285,7 @@ async function runEmailTask(task: Task): Promise<TaskHandlerResult> {
     deliver = () => sendRenewalReminderEmail(email.to, email.tierName, email.endsAt, email.locale);
   }
 
+  await execution.assertOwnership();
   try {
     await deliver();
     return {};
@@ -339,14 +344,21 @@ async function runCleanupOrphanTask(task: Task): Promise<TaskHandlerResult> {
   }
 }
 
-async function runStorageDeleteTask(task: Task): Promise<TaskHandlerResult> {
+async function runStorageDeleteTask(
+  task: Task,
+  execution: TaskExecutionContext,
+): Promise<TaskHandlerResult> {
   const parsed = storageDeletePayloadSchema.safeParse(task.payloadJson);
   if (!parsed.success) throw new PermanentTaskError("Invalid storage.delete_object payload");
+  await execution.assertOwnership();
   await deleteStorageObject(parsed.data);
   return {};
 }
 
-export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
+export async function runTaskHandler(
+  task: Task,
+  execution: TaskExecutionContext,
+): Promise<TaskHandlerResult> {
   switch (task.kind) {
     case "auth.login_code_email": {
       const parsed = loginCodeEmailPayloadSchema.safeParse(task.payloadJson);
@@ -354,6 +366,7 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
       const note = await deliverLoginCodeEmailTask(parsed.data, {
         taskId: task.id,
         lockToken: task.lockedBy,
+        assertTaskOwnership: execution.assertOwnership,
       });
       return note ? { note } : {};
     }
@@ -372,6 +385,7 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
       if (!hasDeliveryProtocol && !isExactLegacyMagicLinkDeliveryTask(task, parsed.data.tokenId)) {
         throw new PermanentTaskError("Invalid auth.magic_link_email task graph");
       }
+      await execution.assertOwnership();
       const note = await deliverMagicLinkEmailTask(parsed.data, {
         taskId: task.id,
         lockToken: task.lockedBy,
@@ -391,13 +405,13 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
       return note ? { note } : {};
     }
     case "email":
-      return runEmailTask(task);
+      return runEmailTask(task, execution);
     case "publish_post":
       return runPublishPostTask(task);
     case "file.cleanup_orphan":
       return runCleanupOrphanTask(task);
     case "storage.delete_object":
-      return runStorageDeleteTask(task);
+      return runStorageDeleteTask(task, execution);
     case "payment_proof.cleanup": {
       const parsed = paymentProofCleanupPayloadSchema.safeParse(task.payloadJson);
       if (!parsed.success) throw new PermanentTaskError("Invalid payment proof cleanup payload");
@@ -445,7 +459,7 @@ export async function runTaskHandler(task: Task): Promise<TaskHandlerResult> {
     case "notification.campaign_expand":
       return handleCampaignExpandTask(task.payloadJson);
     case "notification.deliver":
-      return handleNotificationDeliveryTask(task);
+      return handleNotificationDeliveryTask(task, execution);
     case "notification.campaign_finalize":
       return handleCampaignFinalizeTask(task.payloadJson);
     default:

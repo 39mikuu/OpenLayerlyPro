@@ -49,11 +49,17 @@ import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { MailDeliveryError } from "@/modules/mail/delivery";
 import {
   __testOnlyFinalizerFaults,
-  handleNotificationDeliveryTask,
+  handleNotificationDeliveryTask as handleNotificationDeliveryTaskWithOwnership,
 } from "@/modules/notifications/delivery";
 import { handleCampaignFinalizeTask } from "@/modules/notifications/expansion";
 import { createNotificationSuppressionDigest } from "@/modules/security/notification-suppression-key";
 import { PermanentTaskError, sweepExpiredFinalAttemptTasksAt } from "@/modules/tasks";
+import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
+import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+
+const handleNotificationDeliveryTask = (
+  task: Parameters<typeof handleNotificationDeliveryTaskWithOwnership>[0],
+) => handleNotificationDeliveryTaskWithOwnership(task, ownedTaskExecutionContext());
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -440,6 +446,19 @@ describeWithDatabase("notification delivery", () => {
       firstDeliveryId: delivery.id,
       lastDeliveryId: delivery.id,
     });
+  });
+
+  it("does not start notification SMTP after task ownership is lost", async () => {
+    const { task } = await seedDelivery();
+    const execution = ownedTaskExecutionContext();
+    execution.assertOwnership = async () => {
+      throw new TaskOwnershipLostError();
+    };
+
+    await expect(
+      handleNotificationDeliveryTaskWithOwnership(task, execution),
+    ).rejects.toBeInstanceOf(TaskOwnershipLostError);
+    expect(mocks.sendNewPostNotificationEmail).not.toHaveBeenCalled();
   });
 
   it("keeps transient SMTP failures retryable with a failed delivery status", async () => {

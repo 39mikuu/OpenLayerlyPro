@@ -43,7 +43,11 @@ import {
 import { canAccessFile } from "@/modules/download";
 import { saveUploadedFile } from "@/modules/file";
 import { cleanupOrphanFile } from "@/modules/file/cleanup";
-import { runTaskHandler } from "@/modules/tasks/handlers";
+import { runTaskHandler as runTaskHandlerWithOwnership } from "@/modules/tasks/handlers";
+import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+
+const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
+  runTaskHandlerWithOwnership(task, ownedTaskExecutionContext());
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;

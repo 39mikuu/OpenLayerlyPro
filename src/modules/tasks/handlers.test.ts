@@ -59,7 +59,12 @@ vi.mock("@/modules/notifications", () => ({
 import type { Task } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 
-import { runTaskHandler } from "./handlers";
+import { runTaskHandler as runTaskHandlerWithOwnership } from "./handlers";
+import { TaskOwnershipLostError } from "./ownership";
+import { ownedTaskExecutionContext } from "./ownership.test-helper";
+
+const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
+  runTaskHandlerWithOwnership(task, ownedTaskExecutionContext());
 
 function task(
   payloadJson: Record<string, unknown>,
@@ -200,6 +205,21 @@ describe("task handlers", () => {
     expect(mocks.deleteStorageObject).toHaveBeenCalledWith(payload);
   });
 
+  it("does not start storage deletion after task ownership is lost", async () => {
+    const payload = {
+      storageDriver: "s3",
+      bucket: "private",
+      objectKey: "content/2026/06/image.png",
+    } as const;
+    const execution = ownedTaskExecutionContext();
+    execution.assertOwnership = vi.fn().mockRejectedValue(new TaskOwnershipLostError());
+
+    await expect(
+      runTaskHandlerWithOwnership(task(payload, "storage.delete_object"), execution),
+    ).rejects.toBeInstanceOf(TaskOwnershipLostError);
+    expect(mocks.deleteStorageObject).not.toHaveBeenCalled();
+  });
+
   it("dispatches auth login-code email tasks without recipient or code in the payload", async () => {
     mocks.deliverLoginCodeEmailTask.mockResolvedValue(
       "Login code was superseded; delivery skipped",
@@ -216,6 +236,7 @@ describe("task handlers", () => {
     expect(mocks.deliverLoginCodeEmailTask).toHaveBeenCalledWith(payload, {
       taskId: "11111111-1111-4111-8111-111111111111",
       lockToken: "worker",
+      assertTaskOwnership: expect.any(Function),
     });
     expect(JSON.stringify(payload)).not.toContain("@");
     expect(result.note).toContain("superseded");
