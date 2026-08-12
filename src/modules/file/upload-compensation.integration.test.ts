@@ -11,6 +11,7 @@ vi.mock("@/lib/logger", () => ({ logger: { error: mocks.loggerError } }));
 vi.mock("@/modules/storage", () => ({
   getStorage: vi.fn(async () => ({
     driver: "s3" as const,
+    objectLocation: (objectKey: string) => ({ objectKey, bucket: "test-bucket" }),
     putObject: mocks.putObject,
     putObjectStream: vi.fn(),
     getObject: vi.fn(),
@@ -20,7 +21,7 @@ vi.mock("@/modules/storage", () => ({
 }));
 
 import { getDb } from "@/db";
-import { files } from "@/db/schema";
+import { files, storageUploadJournal, tasks } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 
 import { saveUploadedFile } from "./index";
@@ -74,15 +75,29 @@ describeWithDatabase("upload compensation integration", () => {
     expect((thrown as Error).constructor.name).toBe("DrizzleQueryError");
     expect((thrown as Error & { cause?: unknown }).cause).toMatchObject({ code: "22012" });
     await expect(db.select().from(files)).resolves.toHaveLength(0);
+    await expect(db.select().from(storageUploadJournal)).resolves.toMatchObject([
+      {
+        storageDriver: "s3",
+        bucket: "test-bucket",
+        status: "deleting",
+      },
+    ]);
+    await expect(db.select().from(tasks)).resolves.toMatchObject([
+      {
+        kind: "storage.reconcile_upload",
+        status: "pending",
+        maxAttempts: 10,
+      },
+    ]);
     expect(mocks.deleteObject).toHaveBeenCalledOnce();
     expect(mocks.loggerError).toHaveBeenCalledWith(
       "Compensation step failed",
       expect.objectContaining({
         storageDriver: "s3",
         objectRef: expect.stringMatching(/^[a-f0-9]{64}$/),
-        operation: "storage.delete_object",
+        operation: "storage.reconcile_upload",
         primaryError: { name: "DrizzleQueryError", identifier: "22012" },
-        cleanupError: { name: "Error", identifier: "AccessDenied" },
+        cleanupError: { name: "StorageUploadReconciliationError", identifier: "AccessDenied" },
       }),
     );
     expect(mocks.loggerError.mock.calls[0]?.[1]).not.toHaveProperty("objectKey");

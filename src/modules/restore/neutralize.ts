@@ -7,6 +7,7 @@ import {
   paymentProviderEvents,
   tasks,
 } from "@/db/schema";
+import { rearmStorageUploadJournalsAfterRestore } from "@/modules/file/uploadJournal";
 import { enqueueTask } from "@/modules/tasks/enqueue";
 
 import type { NeutralizeReport } from "./types";
@@ -74,6 +75,7 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
   return db.transaction(async (tx) => {
     const report: NeutralizeReport = {
       deletedStorageDeleteTasks: 0,
+      storageUploadJournalsRearmed: 0,
       providerEventsReset: 0,
       providerDispatchTasksEnsured: 0,
       emailRenewalRemindersReset: 0,
@@ -90,6 +92,7 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
       .where(eq(tasks.kind, "storage.delete_object"))
       .returning({ id: tasks.id });
     report.deletedStorageDeleteTasks = deletedStorageTasks.length;
+    report.storageUploadJournalsRearmed = await rearmStorageUploadJournalsAfterRestore(tx);
 
     const providerEvents = await tx
       .select()
@@ -304,6 +307,7 @@ export async function neutralizeRestoredTasks(db: DbClient = getDb()): Promise<N
           not(eq(tasks.kind, "email")),
           not(inArray(tasks.kind, [...NOTIFICATION_TASK_KINDS])),
           not(eq(tasks.kind, "storage.delete_object")),
+          not(eq(tasks.kind, "storage.reconcile_upload")),
           not(eq(tasks.kind, "subscription.reconcile")),
         ),
       )

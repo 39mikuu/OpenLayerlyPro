@@ -8,11 +8,16 @@ import {
   notificationDeliveries,
   paymentProviderEvents,
   posts,
+  storageUploadJournal,
   tasks,
   users,
 } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { createStorageDeleteDedupeKeyForTests } from "@/modules/file/cleanup";
+import {
+  createStorageUploadJournal,
+  STORAGE_UPLOAD_RECONCILE_MAX_ATTEMPTS,
+} from "@/modules/file/uploadJournal";
 
 import {
   NEUTRALIZED_EMAIL_LAST_ERROR,
@@ -55,6 +60,15 @@ describeWithDatabase("restore neutralize integration", () => {
       bucket: null,
       objectKey: "orphan.png",
     };
+    const uploadJournal = await createStorageUploadJournal({
+      storageDriver: "local",
+      bucket: null,
+      objectKey: "interrupted-upload.png",
+    });
+    await db
+      .update(tasks)
+      .set({ status: "dead", attempts: 10, lastError: "exhausted before backup" })
+      .where(eq(tasks.id, uploadJournal.id));
 
     await db.insert(tasks).values([
       {
@@ -119,6 +133,7 @@ describeWithDatabase("restore neutralize integration", () => {
     const report = await neutralizeRestoredTasks(db);
 
     expect(report.deletedStorageDeleteTasks).toBe(1);
+    expect(report.storageUploadJournalsRearmed).toBe(1);
     expect(report.providerEventsReset).toBe(1);
     expect(report.providerDispatchTasksEnsured).toBe(1);
     expect(report.emailRenewalRemindersReset).toBe(1);
@@ -128,6 +143,25 @@ describeWithDatabase("restore neutralize integration", () => {
 
     const remainingTasks = await db.select().from(tasks);
     expect(remainingTasks.some((task) => task.kind === "storage.delete_object")).toBe(false);
+
+    const uploadReconcileTasks = remainingTasks.filter(
+      (task) => task.kind === "storage.reconcile_upload",
+    );
+    expect(uploadReconcileTasks).toHaveLength(1);
+    expect(uploadReconcileTasks[0]).toMatchObject({
+      id: uploadJournal.id,
+      status: "pending",
+      attempts: 0,
+      maxAttempts: STORAGE_UPLOAD_RECONCILE_MAX_ATTEMPTS,
+      lastError: null,
+      payloadJson: { journalId: uploadJournal.id },
+    });
+    const [rearmedJournal] = await db
+      .select()
+      .from(storageUploadJournal)
+      .where(eq(storageUploadJournal.id, uploadJournal.id));
+    expect(rearmedJournal).toMatchObject({ status: "deleting" });
+    expect(rearmedJournal!.reconcileAfter.getTime()).toBeLessThanOrEqual(Date.now());
 
     const [updatedEvent] = await db
       .select()

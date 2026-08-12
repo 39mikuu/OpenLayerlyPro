@@ -108,6 +108,10 @@ async function maybeCleanupStaleParts(): Promise<void> {
 export class LocalStorageAdapter implements StorageAdapter {
   driver = "local" as const;
 
+  objectLocation(objectKey: string): StoredObject {
+    return { objectKey, bucket: null };
+  }
+
   async putObject(input: PutObjectInput): Promise<StoredObject> {
     const full = resolveSafePath(input.objectKey);
     const temporary = `${full}.${randomUUID()}${PART_SUFFIX}`;
@@ -116,7 +120,7 @@ export class LocalStorageAdapter implements StorageAdapter {
     try {
       await writeFile(temporary, input.body, { flag: "wx" });
       await rename(temporary, full);
-      return { objectKey: input.objectKey, bucket: null };
+      return this.objectLocation(input.objectKey);
     } catch (error) {
       throw await compensateAndPreserveError(
         error,
@@ -154,7 +158,7 @@ export class LocalStorageAdapter implements StorageAdapter {
       const result = measured.result();
       await rename(temporary, full);
       return {
-        stored: { objectKey: input.objectKey, bucket: null },
+        stored: this.objectLocation(input.objectKey),
         ...result,
       };
     } catch (err) {

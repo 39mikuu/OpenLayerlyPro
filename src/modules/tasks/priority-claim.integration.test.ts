@@ -149,6 +149,7 @@ describeWithDatabase("priority task class claims", () => {
       { kind: "notification.deliver", payload: { version: 1, userId: randomUUID() } },
       { kind: "notification.campaign_finalize", payload: { version: 1, campaignId: randomUUID() } },
       { kind: "file.cleanup_orphan", payload: { fileId: randomUUID() } },
+      { kind: "storage.reconcile_upload", payload: { journalId: randomUUID() } },
       { kind: "storage.delete_object", payload: { objectKey: "x", bucket: null } },
       { kind: "payment_proof.cleanup", payload: { requestId: randomUUID(), fileId: randomUUID() } },
     ];
@@ -199,6 +200,10 @@ describeWithDatabase("priority task class claims", () => {
       priority: 95,
     });
     expect(byKind.get("file.cleanup_orphan")).toMatchObject({
+      queue_class: "maintenance",
+      priority: 120,
+    });
+    expect(byKind.get("storage.reconcile_upload")).toMatchObject({
       queue_class: "maintenance",
       priority: 120,
     });

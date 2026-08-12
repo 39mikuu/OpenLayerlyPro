@@ -721,6 +721,36 @@ export const files = pgTable(
   ],
 );
 
+// Row existence means an object write has not yet been atomically paired with
+// a files row or durably reconciled. The cleanup task is created in the same
+// transaction as this row, before storage I/O begins.
+export const storageUploadJournal = pgTable(
+  "storage_upload_journal",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    storageDriver: text("storage_driver", { enum: ["local", "s3"] }).notNull(),
+    bucket: text("bucket"),
+    objectKey: text("object_key").notNull(),
+    status: text("status", { enum: ["pending", "deleting"] })
+      .notNull()
+      .default("pending"),
+    reconcileAfter: timestamp("reconcile_after", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    check(
+      "storage_upload_journal_location_check",
+      sql`(
+        (${table.storageDriver} = 'local' and ${table.bucket} is null)
+        or (${table.storageDriver} = 's3' and ${table.bucket} is not null)
+      )`,
+    ),
+    check("storage_upload_journal_status_check", sql`${table.status} in ('pending', 'deleting')`),
+    index("storage_upload_journal_reconcile_idx").on(table.status, table.reconcileAfter, table.id),
+  ],
+);
+
 export const postFiles = pgTable(
   "post_files",
   {
@@ -1142,6 +1172,7 @@ export type PostCategory = typeof postCategories.$inferSelect;
 export type PostTag = typeof postTags.$inferSelect;
 export type PostTranslation = typeof postTranslations.$inferSelect;
 export type FileRecord = typeof files.$inferSelect;
+export type StorageUploadJournalRecord = typeof storageUploadJournal.$inferSelect;
 export type PostFile = typeof postFiles.$inferSelect;
 export type DownloadLog = typeof downloadLogs.$inferSelect;
 export type AppEvent = typeof appEvents.$inferSelect;

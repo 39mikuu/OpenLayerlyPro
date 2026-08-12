@@ -10,6 +10,7 @@ vi.hoisted(() => {
 const mocks = vi.hoisted(() => ({
   cleanupOrphanFile: vi.fn(),
   deleteStorageObject: vi.fn(),
+  reconcileStorageUploadJournal: vi.fn(),
   sendMembershipActivatedEmail: vi.fn(),
   sendMembershipRevokedEmail: vi.fn(),
   sendPaymentRejectedEmail: vi.fn(),
@@ -37,6 +38,9 @@ vi.mock("@/modules/file/cleanup", () => ({
   cleanupOrphanFile: mocks.cleanupOrphanFile,
   deleteStorageObject: mocks.deleteStorageObject,
   UnsupportedOrphanCleanupPurposeError: class UnsupportedOrphanCleanupPurposeError extends Error {},
+}));
+vi.mock("@/modules/file/uploadJournal", () => ({
+  reconcileStorageUploadJournal: mocks.reconcileStorageUploadJournal,
 }));
 vi.mock("@/modules/mail", () => ({
   sendMembershipActivatedEmail: mocks.sendMembershipActivatedEmail,
@@ -102,6 +106,7 @@ describe("task handlers", () => {
     mocks.sendRenewalReminderEmail.mockResolvedValue(undefined);
     mocks.cleanupOrphanFile.mockResolvedValue("deleted");
     mocks.deleteStorageObject.mockResolvedValue(undefined);
+    mocks.reconcileStorageUploadJournal.mockResolvedValue({ outcome: "deleted" });
     mocks.dispatchPaymentProviderEvent.mockResolvedValue(undefined);
     mocks.deliverLoginCodeEmailTask.mockResolvedValue(undefined);
     mocks.deliverMagicLinkEmailTask.mockResolvedValue(undefined);
@@ -218,6 +223,37 @@ describe("task handlers", () => {
       runTaskHandlerWithOwnership(task(payload, "storage.delete_object"), execution),
     ).rejects.toBeInstanceOf(TaskOwnershipLostError);
     expect(mocks.deleteStorageObject).not.toHaveBeenCalled();
+  });
+
+  it("reconciles an upload journal through the task ownership fence", async () => {
+    const journalId = "550e8400-e29b-41d4-a716-446655440000";
+    const execution = ownedTaskExecutionContext();
+
+    const result = await runTaskHandlerWithOwnership(
+      task({ journalId }, "storage.reconcile_upload", new Date(), "maintenance"),
+      execution,
+    );
+
+    expect(mocks.reconcileStorageUploadJournal).toHaveBeenCalledWith(journalId, {
+      assertOwnership: execution.assertOwnership,
+    });
+    expect(result.note).toContain("deleted");
+  });
+
+  it("defers an upload journal when its authoritative grace period has not elapsed", async () => {
+    const deferUntil = new Date("2026-06-26T08:00:00.000Z");
+    mocks.reconcileStorageUploadJournal.mockResolvedValue({ outcome: "defer", deferUntil });
+
+    const result = await runTaskHandler(
+      task(
+        { journalId: "550e8400-e29b-41d4-a716-446655440000" },
+        "storage.reconcile_upload",
+        new Date(),
+        "maintenance",
+      ),
+    );
+
+    expect(result).toEqual({ deferUntil });
   });
 
   it("dispatches auth login-code email tasks without recipient or code in the payload", async () => {

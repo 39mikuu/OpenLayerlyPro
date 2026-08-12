@@ -14,7 +14,7 @@ Core 负责且仅 Core 负责：
 |---|---|---|
 | 会员 | 等级、按笔时间窗、active/suspended/revoked 生命周期、按 user 串行授予 | ✅ |
 | 内容 | 作品、定时发布、分类/标签、Markdown、内联媒体、public/login/member 权限、多语言版本 | ✅ |
-| 文件 | 有界上传、权威 MIME、图片重编码/quarantine、local/S3、Range、引用与删除生命周期 | ✅ |
+| 文件 | 有界上传、权威 MIME、图片重编码/quarantine、local/S3、Range、引用与删除生命周期、上传 orphan journal | ✅ |
 | 下载鉴权 | 所有非公开字节逐请求鉴权、日志与限流；公开 S3 只按真实公开授权签名 | ✅ |
 | 付款与订阅 | 人工审核、Stripe 一次性/订阅、手动提醒、退款/拒付、provider inbox/dispatch/reconcile | ✅ |
 | Session / Auth | 管理员会话、粉丝验证码、Turnstile、可信 IP、S4 rate-limit/fence | ✅ |
@@ -60,6 +60,7 @@ src/
 5. **配置契约单一来源**：消费者只调用 `src/modules/config/*`；不得在 UI、Integration 与业务模块各维护一份启用/来源判断。
 6. **存储位置按文件记录**：历史文件按 `storageDriver` 与 bucket 读取；切换当前 driver 不迁移旧文件。
 7. **事务外不做外部 I/O**：SMTP、Stripe/S3 网络调用不得占用数据库事务或 advisory lock；使用 claim/fence 分阶段提交。
+   文件上传在对象写入前原子创建 `storage_upload_journal` 与 cleanup task；成功时 `files` 行与 journal 消费同事务提交，失败/崩溃后由 maintenance task 在事务外幂等删除对象；耗尽单轮重试的 journal task 会在冷却后自动重新武装，直到收敛。
 8. **敏感信息边界明确**：secret、token、验证码明文和原始 provider 错误不得进入日志、非授权管理响应或可公开输出；邮件任务 `payload_json` 属于敏感数据库数据，当前仍保存收件人地址，必须按用户数据保护其数据库访问、备份与留存。
 9. **单实例边界明确**：当前限流与 dispatcher 以单 app 实例为目标；多实例共享 limiter/调度属于 Phase 10。
 

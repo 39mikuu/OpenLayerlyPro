@@ -253,6 +253,13 @@
       "when": 1786507302997,
       "tag": "0035_solid_stepford_cuckoos",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1786535708480,
+      "tag": "0036_pretty_lester",
+      "breakpoints": true
     }
   ]
 }

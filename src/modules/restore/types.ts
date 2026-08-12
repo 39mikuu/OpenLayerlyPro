@@ -33,6 +33,7 @@ export type PreScanReport = {
 
 export type NeutralizeReport = {
   deletedStorageDeleteTasks: number;
+  storageUploadJournalsRearmed: number;
   providerEventsReset: number;
   providerDispatchTasksEnsured: number;
   emailRenewalRemindersReset: number;

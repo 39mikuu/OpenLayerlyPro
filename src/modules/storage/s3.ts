@@ -107,6 +107,10 @@ export class S3StorageAdapter implements StorageAdapter {
     });
   }
 
+  objectLocation(objectKey: string): StoredObject {
+    return { objectKey, bucket: this.bucket };
+  }
+
   async putObject(input: PutObjectInput): Promise<StoredObject> {
     await this.client.send(
       new PutObjectCommand({
@@ -117,7 +121,7 @@ export class S3StorageAdapter implements StorageAdapter {
         ContentDisposition: input.contentDisposition,
       }),
     );
-    return { objectKey: input.objectKey, bucket: this.bucket };
+    return this.objectLocation(input.objectKey);
   }
 
   async putObjectStream(input: PutObjectStreamInput): Promise<{
@@ -147,7 +151,7 @@ export class S3StorageAdapter implements StorageAdapter {
       ]);
       input.signal?.throwIfAborted();
       return {
-        stored: { objectKey: input.objectKey, bucket: this.bucket },
+        stored: this.objectLocation(input.objectKey),
         ...measured.result(),
       };
     } catch (err) {

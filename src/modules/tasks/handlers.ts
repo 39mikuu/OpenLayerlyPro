@@ -25,6 +25,7 @@ import {
   deleteStorageObject,
   UnsupportedOrphanCleanupPurposeError,
 } from "@/modules/file/cleanup";
+import { reconcileStorageUploadJournal } from "@/modules/file/uploadJournal";
 import { SUPPORTED_LOCALES } from "@/modules/i18n";
 import {
   sendMembershipActivatedEmail,
@@ -88,6 +89,7 @@ const publishPostPayloadSchema = z.object({
 });
 
 const cleanupOrphanPayloadSchema = z.object({ fileId: z.string().uuid() });
+const storageUploadReconcilePayloadSchema = z.object({ journalId: z.string().uuid() }).strict();
 const storageDeletePayloadSchema = z.object({
   storageDriver: z.enum(["local", "s3"]),
   bucket: z.string().nullable(),
@@ -355,6 +357,21 @@ async function runStorageDeleteTask(
   return {};
 }
 
+async function runStorageUploadReconcileTask(
+  task: Task,
+  execution: TaskExecutionContext,
+): Promise<TaskHandlerResult> {
+  const parsed = storageUploadReconcilePayloadSchema.safeParse(task.payloadJson);
+  if (!parsed.success) {
+    throw new PermanentTaskError("Invalid storage.reconcile_upload payload");
+  }
+  const result = await reconcileStorageUploadJournal(parsed.data.journalId, {
+    assertOwnership: execution.assertOwnership,
+  });
+  if (result.outcome === "defer") return { deferUntil: result.deferUntil };
+  return { note: `Storage upload reconciliation ${result.outcome}` };
+}
+
 export async function runTaskHandler(
   task: Task,
   execution: TaskExecutionContext,
@@ -410,6 +427,8 @@ export async function runTaskHandler(
       return runPublishPostTask(task);
     case "file.cleanup_orphan":
       return runCleanupOrphanTask(task);
+    case "storage.reconcile_upload":
+      return runStorageUploadReconcileTask(task, execution);
     case "storage.delete_object":
       return runStorageDeleteTask(task, execution);
     case "payment_proof.cleanup": {
