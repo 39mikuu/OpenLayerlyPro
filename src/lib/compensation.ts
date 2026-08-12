@@ -29,13 +29,21 @@ function findErrorIdentifier(error: Error): string | number | undefined {
 }
 
 function summarizeError(error: unknown): ErrorSummary {
-  if (!(error instanceof Error)) return { name: typeof error };
+  try {
+    if (!(error instanceof Error)) return { name: typeof error };
 
-  const identifier = findErrorIdentifier(error);
-  return {
-    name: error.name,
-    ...(identifier === undefined ? {} : { identifier }),
-  };
+    const identifier = findErrorIdentifier(error);
+    const constructorName = Object.getPrototypeOf(error)?.constructor?.name;
+    return {
+      name:
+        typeof constructorName === "string" && constructorName.length > 0
+          ? constructorName
+          : error.name,
+      ...(identifier === undefined ? {} : { identifier }),
+    };
+  } catch {
+    return { name: "unknown" };
+  }
 }
 
 export function opaqueCompensationResourceId(...parts: Array<string | null>): string {
@@ -59,12 +67,16 @@ export async function compensateAndPreserveError<T>(
     try {
       await step.run();
     } catch (cleanupError) {
-      logger.error("Compensation step failed", {
-        ...context,
-        operation: step.operation,
-        primaryError: summarizeError(primaryError),
-        cleanupError: summarizeError(cleanupError),
-      });
+      try {
+        logger.error("Compensation step failed", {
+          ...context,
+          operation: step.operation,
+          primaryError: summarizeError(primaryError),
+          cleanupError: summarizeError(cleanupError),
+        });
+      } catch {
+        // Observability failures must not replace the error that required compensation.
+      }
     }
   }
 

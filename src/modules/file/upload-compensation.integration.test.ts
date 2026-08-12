@@ -71,7 +71,7 @@ describeWithDatabase("upload compensation integration", () => {
     }
 
     expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as Error).name).toBe("DrizzleQueryError");
+    expect((thrown as Error).constructor.name).toBe("DrizzleQueryError");
     expect((thrown as Error & { cause?: unknown }).cause).toMatchObject({ code: "22012" });
     await expect(db.select().from(files)).resolves.toHaveLength(0);
     expect(mocks.deleteObject).toHaveBeenCalledOnce();
