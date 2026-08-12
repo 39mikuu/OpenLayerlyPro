@@ -28,7 +28,7 @@ function findErrorIdentifier(error: Error): string | number | undefined {
   return undefined;
 }
 
-function summarizeError(error: unknown): ErrorSummary {
+export function summarizeErrorForLog(error: unknown): ErrorSummary {
   try {
     if (!(error instanceof Error)) return { name: typeof error };
 
@@ -71,8 +71,8 @@ export async function compensateAndPreserveError<T>(
         logger.error("Compensation step failed", {
           ...context,
           operation: step.operation,
-          primaryError: summarizeError(primaryError),
-          cleanupError: summarizeError(cleanupError),
+          primaryError: summarizeErrorForLog(primaryError),
+          cleanupError: summarizeErrorForLog(cleanupError),
         });
       } catch {
         // Observability failures must not replace the error that required compensation.

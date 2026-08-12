@@ -5,8 +5,13 @@ import path from "path";
 import type { Readable } from "stream";
 import { pipeline } from "stream/promises";
 
-import { compensateAndPreserveError, opaqueCompensationResourceId } from "@/lib/compensation";
+import {
+  compensateAndPreserveError,
+  opaqueCompensationResourceId,
+  summarizeErrorForLog,
+} from "@/lib/compensation";
 import { getEnv } from "@/lib/env";
+import { logger } from "@/lib/logger";
 
 import { createMeasuredStream } from "./stream";
 import type {
@@ -22,8 +27,16 @@ const PART_SUFFIX = ".part";
 const PART_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const PART_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
-let lastPartCleanupAt = 0;
+let lastPartCleanupAttemptAt = 0;
 let partCleanupPromise: Promise<void> | null = null;
+
+export function resetLocalUploadPartCleanupStateForTests(): void {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("Local upload cleanup state can only be reset in tests");
+  }
+  lastPartCleanupAttemptAt = 0;
+  partCleanupPromise = null;
+}
 
 function uploadRoot(): string {
   return path.resolve(getEnv().UPLOAD_DIR);
@@ -71,17 +84,25 @@ export async function cleanupStaleLocalUploadParts(now = Date.now()): Promise<vo
 
 async function maybeCleanupStaleParts(): Promise<void> {
   const now = Date.now();
-  if (now - lastPartCleanupAt < PART_CLEANUP_INTERVAL_MS) return;
+  if (now - lastPartCleanupAttemptAt < PART_CLEANUP_INTERVAL_MS) return;
   if (!partCleanupPromise) {
-    partCleanupPromise = cleanupStaleLocalUploadParts(now)
-      .then(() => {
-        lastPartCleanupAt = now;
-      })
-      .finally(() => {
-        partCleanupPromise = null;
-      });
+    lastPartCleanupAttemptAt = now;
+    partCleanupPromise = cleanupStaleLocalUploadParts(now).finally(() => {
+      partCleanupPromise = null;
+    });
   }
-  await partCleanupPromise;
+  try {
+    await partCleanupPromise;
+  } catch (cleanupError) {
+    try {
+      logger.warn("Stale local upload part cleanup failed", {
+        operation: "local_upload_part.cleanup_stale",
+        cleanupError: summarizeErrorForLog(cleanupError),
+      });
+    } catch {
+      // Opportunistic cleanup and its observability must not block a valid upload.
+    }
+  }
 }
 
 export class LocalStorageAdapter implements StorageAdapter {
