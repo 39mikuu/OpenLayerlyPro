@@ -127,7 +127,7 @@ describeWithDatabase("auth login-code SMTP failure redaction", () => {
 
   it("moves a queued login code directly to dead when SMTP becomes unconfigured", async () => {
     const requested = await requestLoginCode("fan-unconfigured@example.com", { locale: "en" });
-    await setStoredGroup("smtp", { host: "", from: "" });
+    await setStoredGroup("smtp", { host: "", from: "" }, 1);
     const [claimed] = await claimDueTasks(1, { lockToken: "mail-unconfigured-worker" });
 
     await dispatchClaimedTask(claimed!);
