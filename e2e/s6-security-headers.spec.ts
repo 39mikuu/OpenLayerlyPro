@@ -272,9 +272,13 @@ test("nonce CSP protects public, admin, login, integration, media, and download 
       data: browserVideo,
     }),
   );
-  const turnstileView = await okData<{ enabled: boolean; siteKey?: string }>(
+  const turnstileCurrent = await okData<{ revision: number }>(
+    await page.request.get("/api/admin/config/turnstile"),
+  );
+  const turnstileView = await okData<{ enabled: boolean; siteKey?: string; revision: number }>(
     await page.request.put("/api/admin/config/turnstile", {
       data: {
+        revision: turnstileCurrent.revision,
         enabled: true,
         siteKey: "e2e-site-key",
         secretKey: "e2e-secret-key",
@@ -400,9 +404,13 @@ test("nonce CSP protects public, admin, login, integration, media, and download 
   expect(mediaResponse.headers()["x-content-type-options"]).toBe("nosniff");
   expect(mediaResponse.headers()["cache-control"]).toBe("private, no-store");
 
+  const storageCurrent = await okData<{ revision: number }>(
+    await page.request.get("/api/admin/config/storage"),
+  );
   await okData(
     await page.request.put("/api/admin/config/storage", {
       data: {
+        revision: storageCurrent.revision,
         driver: "s3",
         endpoint: "https://objects.example",
         region: "auto",
