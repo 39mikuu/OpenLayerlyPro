@@ -2,7 +2,8 @@ import { z } from "zod";
 
 import { ApiError } from "@/lib/api";
 
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { requireExpectedRevision } from "./revision";
+import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 export const TRANSLATION_GROUP = "translation";
 
@@ -32,6 +33,7 @@ export type ResolvedTranslationConfig = {
 };
 
 export type TranslationAdminView = Omit<ResolvedTranslationConfig, "apiKey"> & {
+  revision: number;
   apiKeySet: boolean;
 };
 
@@ -87,8 +89,9 @@ function preserveOrNormalize(
   return input === undefined ? normalize(existing) : normalize(input);
 }
 
-export async function getTranslationConfig(): Promise<ResolvedTranslationConfig> {
-  const stored = await getStoredGroup<TranslationConfigInput>(TRANSLATION_GROUP);
+function resolveTranslationConfig(
+  stored: TranslationConfigInput | null,
+): ResolvedTranslationConfig {
   const provider = stored?.provider ?? "openai-compatible";
   const apiKey = nonEmpty(stored?.apiKey);
   const model = nonEmpty(stored?.model);
@@ -108,11 +111,18 @@ export async function getTranslationConfig(): Promise<ResolvedTranslationConfig>
   };
 }
 
+export async function getTranslationConfig(): Promise<ResolvedTranslationConfig> {
+  const stored = await getStoredGroup<TranslationConfigInput>(TRANSLATION_GROUP);
+  return resolveTranslationConfig(stored);
+}
+
 export async function getTranslationAdminView(): Promise<TranslationAdminView> {
-  const config = await getTranslationConfig();
+  const snapshot = await getStoredGroupSnapshot<TranslationConfigInput>(TRANSLATION_GROUP);
+  const config = resolveTranslationConfig(snapshot.value);
   const { apiKey, ...safe } = config;
   return {
     ...safe,
+    revision: snapshot.revision,
     apiKeySet: Boolean(apiKey),
   };
 }
@@ -134,8 +144,13 @@ function resolveEndpointForSave(
   return validateTranslationEndpoint(input);
 }
 
-export async function saveTranslationConfig(input: TranslationConfigInput): Promise<void> {
-  const existing = (await getStoredGroup<TranslationConfigInput>(TRANSLATION_GROUP)) ?? {};
+export async function saveTranslationConfig(
+  input: TranslationConfigInput,
+  expectedRevision = 0,
+): Promise<number> {
+  const snapshot = await getStoredGroupSnapshot<TranslationConfigInput>(TRANSLATION_GROUP);
+  requireExpectedRevision(snapshot.revision, expectedRevision);
+  const existing = snapshot.value ?? {};
   const next: TranslationConfigInput = {
     enabled: input.enabled ?? existing.enabled ?? false,
     provider: input.provider ?? existing.provider ?? "openai-compatible",
@@ -153,9 +168,9 @@ export async function saveTranslationConfig(input: TranslationConfigInput): Prom
     if (next[key] === undefined) delete next[key];
   }
 
-  await setStoredGroup<TranslationConfigInput>(TRANSLATION_GROUP, next);
+  return setStoredGroup<TranslationConfigInput>(TRANSLATION_GROUP, next, expectedRevision);
 }
 
-export async function clearTranslationConfig(): Promise<void> {
-  await deleteStoredGroup(TRANSLATION_GROUP);
+export async function clearTranslationConfig(expectedRevision = 0): Promise<number> {
+  return deleteStoredGroup(TRANSLATION_GROUP, expectedRevision);
 }

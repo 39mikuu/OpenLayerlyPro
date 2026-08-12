@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/client";
 
 export type UploadAdminView = {
+  revision: number;
   maxUploadSizeMb: number;
   paymentProofMaxSizeMb: number;
   paymentProofConfiguredMb: number;
@@ -30,6 +31,7 @@ export function UploadConfigForm({ initial }: { initial: UploadAdminView }) {
     String(initial.paymentProofConfiguredMb),
   );
   const [loading, setLoading] = useState(false);
+  const [revision, setRevision] = useState(initial.revision);
   const [message, setMessage] = useState<string | null>(null);
   const [paymentProofEffectiveMb, setPaymentProofEffectiveMb] = useState(
     initial.paymentProofMaxSizeMb,
@@ -65,8 +67,9 @@ export function UploadConfigForm({ initial }: { initial: UploadAdminView }) {
     return run(async () => {
       const fresh = await api<UploadAdminView>("/api/admin/config/upload", {
         method: "PUT",
-        body: { maxUploadSizeMb: max, paymentProofMaxSizeMb: proof },
+        body: { revision, maxUploadSizeMb: max, paymentProofMaxSizeMb: proof },
       });
+      setRevision(fresh.revision);
       setMaxUploadSizeMb(String(fresh.maxUploadSizeMb));
       setPaymentProofMaxSizeMb(String(fresh.paymentProofConfiguredMb));
       setPaymentProofEffectiveMb(fresh.paymentProofMaxSizeMb);
@@ -76,7 +79,11 @@ export function UploadConfigForm({ initial }: { initial: UploadAdminView }) {
 
   function restoreToEnv() {
     return run(async () => {
-      await api("/api/admin/config/upload", { method: "DELETE" });
+      const fresh = await api<UploadAdminView>("/api/admin/config/upload", {
+        method: "DELETE",
+        body: { revision },
+      });
+      setRevision(fresh.revision);
       setMaxUploadSizeMb(String(initial.envDefaults.maxUploadSizeMb));
       setPaymentProofMaxSizeMb(String(initial.envDefaults.paymentProofMaxSizeMb));
       setPaymentProofEffectiveMb(initial.envDefaults.paymentProofMaxSizeMb);

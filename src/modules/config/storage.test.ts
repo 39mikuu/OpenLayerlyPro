@@ -1,16 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 vi.mock("./store", () => ({
   getStoredGroup: vi.fn(),
+  getStoredGroupSnapshot: vi.fn(),
   setStoredGroup: vi.fn(),
   deleteStoredGroup: vi.fn(),
 }));
 
 const mockedGet = vi.mocked(getStoredGroup);
+const mockedSnapshot = vi.mocked(getStoredGroupSnapshot);
 const mockedSet = vi.mocked(setStoredGroup);
 const mockedDelete = vi.mocked(deleteStoredGroup);
+
+mockedSnapshot.mockImplementation(async (group) => ({
+  value: await mockedGet(group),
+  revision: 0,
+}));
 
 describe("getStorageConfig", () => {
   beforeEach(() => {
@@ -132,7 +139,7 @@ describe("Storage 后台读写", () => {
       accessKeyId: "",
       secretAccessKey: "",
     });
-    expect(mockedSet).toHaveBeenCalledWith("storage", { driver: "local" });
+    expect(mockedSet).toHaveBeenCalledWith("storage", { driver: "local" }, 0);
   });
 
   it("普通字段 trim，region 显式 auto 会落库", async () => {
@@ -147,15 +154,19 @@ describe("Storage 后台读写", () => {
       secretAccessKey: "  db-secret  ",
       forcePathStyle: false,
     });
-    expect(mockedSet).toHaveBeenCalledWith("storage", {
-      driver: "s3",
-      endpoint: "https://db.example.com",
-      region: "auto",
-      bucket: "db-bucket",
-      accessKeyId: "db-access",
-      secretAccessKey: "db-secret",
-      forcePathStyle: false,
-    });
+    expect(mockedSet).toHaveBeenCalledWith(
+      "storage",
+      {
+        driver: "s3",
+        endpoint: "https://db.example.com",
+        region: "auto",
+        bucket: "db-bucket",
+        accessKeyId: "db-access",
+        secretAccessKey: "db-secret",
+        forcePathStyle: false,
+      },
+      0,
+    );
   });
 
   it("普通字段空值回落 env，两个凭据空值保留旧 DB 值", async () => {
@@ -179,16 +190,20 @@ describe("Storage 后台读写", () => {
       accessKeyId: " ",
       secretAccessKey: " ",
     });
-    expect(mockedSet).toHaveBeenCalledWith("storage", {
-      driver: "s3",
-      accessKeyId: "old-access",
-      secretAccessKey: "old-secret",
-    });
+    expect(mockedSet).toHaveBeenCalledWith(
+      "storage",
+      {
+        driver: "s3",
+        accessKeyId: "old-access",
+        secretAccessKey: "old-secret",
+      },
+      0,
+    );
   });
 
   it("清除配置组后回落环境变量", async () => {
     const { clearStorageConfig } = await import("./storage");
     await clearStorageConfig();
-    expect(mockedDelete).toHaveBeenCalledWith("storage");
+    expect(mockedDelete).toHaveBeenCalledWith("storage", 0);
   });
 });

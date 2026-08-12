@@ -22,6 +22,7 @@ type SmtpEnvDefaults = {
 };
 
 export type SmtpAdminView = {
+  revision: number;
   host?: string;
   port: number;
   secure: boolean;
@@ -41,6 +42,7 @@ export function SmtpConfigForm({ initial }: { initial: SmtpAdminView }) {
   const [user, setUser] = useState(initial.user ?? "");
   const [from, setFrom] = useState(initial.from ?? "");
   const [password, setPassword] = useState("");
+  const [revision, setRevision] = useState(initial.revision);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -62,21 +64,21 @@ export function SmtpConfigForm({ initial }: { initial: SmtpAdminView }) {
   }
 
   function save() {
-    return run(
-      () =>
-        api("/api/admin/config/smtp", {
-          method: "PUT",
-          body: {
-            host,
-            port: Number(port),
-            secure,
-            user,
-            from,
-            password: password || undefined,
-          },
-        }),
-      t("admin.common.saved"),
-    );
+    return run(async () => {
+      const fresh = await api<SmtpAdminView>("/api/admin/config/smtp", {
+        method: "PUT",
+        body: {
+          revision,
+          host,
+          port: Number(port),
+          secure,
+          user,
+          from,
+          password: password || undefined,
+        },
+      });
+      setRevision(fresh.revision);
+    }, t("admin.common.saved"));
   }
 
   function importFromEnv() {
@@ -91,10 +93,13 @@ export function SmtpConfigForm({ initial }: { initial: SmtpAdminView }) {
   }
 
   function restoreToEnv() {
-    return run(
-      () => api("/api/admin/config/smtp", { method: "DELETE" }),
-      t("admin.common.restoredEnv"),
-    );
+    return run(async () => {
+      const fresh = await api<SmtpAdminView>("/api/admin/config/smtp", {
+        method: "DELETE",
+        body: { revision },
+      });
+      setRevision(fresh.revision);
+    }, t("admin.common.restoredEnv"));
   }
 
   return (

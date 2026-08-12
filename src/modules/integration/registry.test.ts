@@ -76,6 +76,7 @@ function mockPublicIntegrations(value: unknown = null) {
 function mockSmtp(input?: { configured?: boolean; hasDbOverride?: boolean }) {
   const configured = input?.configured ?? true;
   mockedGetSmtpAdminView.mockResolvedValue({
+    revision: 0,
     host: configured ? "smtp.example.com" : undefined,
     port: 587,
     secure: false,
@@ -96,6 +97,7 @@ function mockStorage(input?: {
   hasDbOverride?: boolean;
 }) {
   mockedGetStorageAdminView.mockResolvedValue({
+    revision: 0,
     driver: input?.driver ?? "local",
     region: "auto",
     forcePathStyle: true,
@@ -120,6 +122,7 @@ function mockTurnstile(input?: {
 }) {
   const configured = input?.configured ?? true;
   mockedGetTurnstileAdminView.mockResolvedValue({
+    revision: 0,
     enabled: input?.enabled ?? true,
     siteKey: configured ? "site-key" : undefined,
     secretKeySet: configured,
@@ -134,6 +137,7 @@ function mockTurnstile(input?: {
 function mockStripe(input?: { enabled?: boolean; configured?: boolean; hasDbOverride?: boolean }) {
   const configured = input?.configured ?? true;
   mockedGetStripeAdminView.mockResolvedValue({
+    revision: 0,
     enabled: input?.enabled ?? true,
     publishableKey: undefined,
     currency: "usd",
@@ -150,6 +154,7 @@ function mockTranslation(input?: {
   hasDbOverride?: boolean;
 }) {
   mockedGetTranslationAdminView.mockResolvedValue({
+    revision: 0,
     enabled: input?.enabled ?? false,
     provider: "openai-compatible",
     model: input?.configured ? "translation-model" : undefined,

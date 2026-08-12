@@ -1,16 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 vi.mock("./store", () => ({
   getStoredGroup: vi.fn(),
+  getStoredGroupSnapshot: vi.fn(),
   setStoredGroup: vi.fn(),
   deleteStoredGroup: vi.fn(),
 }));
 
 const mockedGet = vi.mocked(getStoredGroup);
+const mockedSnapshot = vi.mocked(getStoredGroupSnapshot);
 const mockedSet = vi.mocked(setStoredGroup);
 const mockedDelete = vi.mocked(deleteStoredGroup);
+
+mockedSnapshot.mockImplementation(async (group) => ({
+  value: await mockedGet(group),
+  revision: 0,
+}));
 
 describe("getUploadConfig", () => {
   beforeEach(() => {
@@ -80,6 +87,7 @@ describe("Upload 后台读写", () => {
     const { getUploadAdminView } = await import("./upload");
     const view = await getUploadAdminView();
     expect(view).toEqual({
+      revision: 0,
       maxUploadSizeMb: 200,
       paymentProofMaxSizeMb: 10,
       paymentProofConfiguredMb: 10,
@@ -111,22 +119,26 @@ describe("Upload 后台读写", () => {
     mockedGet.mockResolvedValue({ maxUploadSizeMb: 200, paymentProofMaxSizeMb: 5 });
     const { saveUploadConfig } = await import("./upload");
     await saveUploadConfig({ maxUploadSizeMb: 300 });
-    expect(mockedSet).toHaveBeenCalledWith("upload", {
-      maxUploadSizeMb: 300,
-      paymentProofMaxSizeMb: 5,
-    });
+    expect(mockedSet).toHaveBeenCalledWith(
+      "upload",
+      {
+        maxUploadSizeMb: 300,
+        paymentProofMaxSizeMb: 5,
+      },
+      0,
+    );
   });
 
   it("save 删除两者均缺失时不写入 undefined", async () => {
     mockedGet.mockResolvedValue(null);
     const { saveUploadConfig } = await import("./upload");
     await saveUploadConfig({});
-    expect(mockedSet).toHaveBeenCalledWith("upload", {});
+    expect(mockedSet).toHaveBeenCalledWith("upload", {}, 0);
   });
 
   it("清除配置组后回落环境变量", async () => {
     const { clearUploadConfig } = await import("./upload");
     await clearUploadConfig();
-    expect(mockedDelete).toHaveBeenCalledWith("upload");
+    expect(mockedDelete).toHaveBeenCalledWith("upload", 0);
   });
 });

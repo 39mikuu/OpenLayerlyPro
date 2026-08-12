@@ -1,6 +1,8 @@
 import type { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/lib/api";
+
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
   getTranslationAdminView: vi.fn(),
@@ -36,7 +38,9 @@ describe("admin translation config API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.requireAdmin.mockResolvedValue({ id: "admin", role: "admin" });
+    mocks.saveTranslationConfig.mockResolvedValue(4);
     mocks.getTranslationAdminView.mockResolvedValue({
+      revision: 4,
       enabled: false,
       provider: "openai-compatible",
       model: "translation-model",
@@ -66,6 +70,7 @@ describe("admin translation config API", () => {
   it("saves provider configuration and returns only the safe admin view", async () => {
     const response = await PUT(
       request({
+        revision: 4,
         enabled: true,
         provider: "openai-compatible",
         apiKey: "provider-secret",
@@ -78,17 +83,31 @@ describe("admin translation config API", () => {
     );
     const body = await response.json();
 
-    expect(mocks.saveTranslationConfig).toHaveBeenCalledWith({
-      enabled: true,
-      provider: "openai-compatible",
-      apiKey: "provider-secret",
-      model: "translation-model",
-      endpoint: "https://api.example.com/v1",
-      monthlyCharLimit: 100_000,
-      directPublishEnabled: true,
-      showMachineTranslationLabel: true,
-    });
+    expect(mocks.saveTranslationConfig).toHaveBeenCalledWith(
+      {
+        enabled: true,
+        provider: "openai-compatible",
+        apiKey: "provider-secret",
+        model: "translation-model",
+        endpoint: "https://api.example.com/v1",
+        monthlyCharLimit: 100_000,
+        directPublishEnabled: true,
+        showMachineTranslationLabel: true,
+      },
+      4,
+    );
     expect(body.data).not.toHaveProperty("apiKey");
     expect(JSON.stringify(body)).not.toContain("provider-secret");
+  });
+
+  it("requires a revision and returns 409 for a stale save", async () => {
+    const missing = await PUT(request({ enabled: false }));
+    expect(missing.status).toBe(400);
+    expect(mocks.saveTranslationConfig).not.toHaveBeenCalled();
+
+    mocks.saveTranslationConfig.mockRejectedValueOnce(new ApiError(409, "configConflict"));
+    const stale = await PUT(request({ revision: 3, enabled: false }));
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ ok: false, code: "configConflict" });
   });
 });

@@ -3,7 +3,8 @@ import { z } from "zod";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { requireExpectedRevision } from "./revision";
+import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 export const TURNSTILE_GROUP = "turnstile";
 
@@ -21,6 +22,7 @@ export type ResolvedTurnstileConfig = {
 };
 
 export type TurnstileAdminView = {
+  revision: number;
   enabled: boolean;
   siteKey?: string;
   secretKeySet: boolean;
@@ -37,9 +39,8 @@ function nonEmpty(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-export async function getTurnstileConfig(): Promise<ResolvedTurnstileConfig> {
+function resolveTurnstileConfig(stored: TurnstileConfigInput): ResolvedTurnstileConfig {
   const env = getEnv();
-  const stored = (await getStoredGroup<TurnstileConfigInput>(TURNSTILE_GROUP)) ?? {};
 
   return {
     enabled: stored.enabled ?? env.TURNSTILE_ENABLED,
@@ -48,14 +49,19 @@ export async function getTurnstileConfig(): Promise<ResolvedTurnstileConfig> {
   };
 }
 
+export async function getTurnstileConfig(): Promise<ResolvedTurnstileConfig> {
+  const stored = (await getStoredGroup<TurnstileConfigInput>(TURNSTILE_GROUP)) ?? {};
+  return resolveTurnstileConfig(stored);
+}
+
 export async function getTurnstileAdminView(): Promise<TurnstileAdminView> {
   const env = getEnv();
-  const [effective, stored] = await Promise.all([
-    getTurnstileConfig(),
-    getStoredGroup<TurnstileConfigInput>(TURNSTILE_GROUP),
-  ]);
+  const snapshot = await getStoredGroupSnapshot<TurnstileConfigInput>(TURNSTILE_GROUP);
+  const stored = snapshot.value;
+  const effective = resolveTurnstileConfig(stored ?? {});
 
   return {
+    revision: snapshot.revision,
     enabled: effective.enabled,
     siteKey: effective.siteKey,
     secretKeySet: Boolean(effective.secretKey),
@@ -68,9 +74,14 @@ export async function getTurnstileAdminView(): Promise<TurnstileAdminView> {
   };
 }
 
-export async function saveTurnstileConfig(input: TurnstileConfigInput): Promise<void> {
+export async function saveTurnstileConfig(
+  input: TurnstileConfigInput,
+  expectedRevision = 0,
+): Promise<number> {
   const env = getEnv();
-  const existing = (await getStoredGroup<TurnstileConfigInput>(TURNSTILE_GROUP)) ?? {};
+  const snapshot = await getStoredGroupSnapshot<TurnstileConfigInput>(TURNSTILE_GROUP);
+  requireExpectedRevision(snapshot.revision, expectedRevision);
+  const existing = snapshot.value ?? {};
   const next: TurnstileConfigInput = {};
 
   if (input.enabled !== undefined) {
@@ -104,9 +115,9 @@ export async function saveTurnstileConfig(input: TurnstileConfigInput): Promise<
     throw new ApiError(400, "turnstileKeysRequired");
   }
 
-  await setStoredGroup<TurnstileConfigInput>(TURNSTILE_GROUP, next);
+  return setStoredGroup<TurnstileConfigInput>(TURNSTILE_GROUP, next, expectedRevision);
 }
 
-export async function clearTurnstileConfig(): Promise<void> {
-  await deleteStoredGroup(TURNSTILE_GROUP);
+export async function clearTurnstileConfig(expectedRevision = 0): Promise<number> {
+  return deleteStoredGroup(TURNSTILE_GROUP, expectedRevision);
 }

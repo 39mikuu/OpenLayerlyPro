@@ -6,7 +6,10 @@ import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import {
   clearStorageConfig,
+  configClearSchema,
+  expectedRevisionSchema,
   getStorageAdminView,
+  requireWrittenRevision,
   saveStorageConfig,
   storageConfigSchema,
 } from "@/modules/config";
@@ -28,20 +31,26 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      storageConfigSchema,
+      storageConfigSchema.extend({ revision: expectedRevisionSchema }),
     );
-    await saveStorageConfig(input);
-    return jsonOk(await getStorageAdminView());
+    const { revision, ...config } = input;
+    const writtenRevision = await saveStorageConfig(config, revision);
+    return jsonOk(requireWrittenRevision(await getStorageAdminView(), writtenRevision));
   } catch (err) {
     return handleApiError(err);
   }
 }
 
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
   try {
     await requireAdmin();
-    await clearStorageConfig();
-    return jsonOk(await getStorageAdminView());
+    const { revision } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      configClearSchema,
+    );
+    const writtenRevision = await clearStorageConfig(revision);
+    return jsonOk(requireWrittenRevision(await getStorageAdminView(), writtenRevision));
   } catch (err) {
     return handleApiError(err);
   }

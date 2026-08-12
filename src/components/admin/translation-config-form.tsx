@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { api } from "@/lib/client";
 
 export type TranslationAdminView = {
+  revision: number;
   enabled: boolean;
   provider: "openai-compatible";
   model?: string;
@@ -39,6 +40,7 @@ export function TranslationConfigForm({ initial }: { initial: TranslationAdminVi
     initial.showMachineTranslationLabel,
   );
   const [loading, setLoading] = useState(false);
+  const [revision, setRevision] = useState(initial.revision);
   const [message, setMessage] = useState<string | null>(null);
 
   async function save() {
@@ -51,9 +53,10 @@ export function TranslationConfigForm({ initial }: { initial: TranslationAdminVi
     setLoading(true);
     setMessage(null);
     try {
-      await api("/api/admin/config/translation", {
+      const fresh = await api<TranslationAdminView>("/api/admin/config/translation", {
         method: "PUT",
         body: {
+          revision,
           enabled,
           provider: "openai-compatible",
           apiKey,
@@ -64,6 +67,7 @@ export function TranslationConfigForm({ initial }: { initial: TranslationAdminVi
           showMachineTranslationLabel,
         },
       });
+      setRevision(fresh.revision);
       setApiKey("");
       setMessage(t("admin.common.saved"));
       router.refresh();

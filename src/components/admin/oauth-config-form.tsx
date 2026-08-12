@@ -23,6 +23,7 @@ export function OAuthProviderConfigForm({
   const [enabled, setEnabled] = useState(initial.enabled);
   const [clientId, setClientId] = useState(initial.clientId ?? "");
   const [clientSecret, setClientSecret] = useState("");
+  const [revision, setRevision] = useState(initial.revision);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const endpoint = `/api/admin/config/oauth/${provider}`;
@@ -81,14 +82,13 @@ export function OAuthProviderConfigForm({
         <LoadingButton
           loading={loading}
           onClick={() =>
-            void run(
-              () =>
-                api(endpoint, {
-                  method: "PUT",
-                  body: { enabled, clientId, clientSecret },
-                }),
-              t("admin.common.saved"),
-            )
+            void run(async () => {
+              const fresh = await api<OAuthProviderAdminView>(endpoint, {
+                method: "PUT",
+                body: { revision, enabled, clientId, clientSecret },
+              });
+              setRevision(fresh.revision);
+            }, t("admin.common.saved"))
           }
         >
           {t("admin.common.save")}
@@ -97,7 +97,13 @@ export function OAuthProviderConfigForm({
           loading={loading}
           variant="outline"
           onClick={() =>
-            void run(() => api(endpoint, { method: "DELETE" }), t("admin.common.cleared"))
+            void run(async () => {
+              const fresh = await api<OAuthProviderAdminView>(endpoint, {
+                method: "DELETE",
+                body: { revision },
+              });
+              setRevision(fresh.revision);
+            }, t("admin.common.cleared"))
           }
         >
           {t("admin.common.clear")}

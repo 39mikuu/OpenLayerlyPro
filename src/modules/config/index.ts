@@ -11,6 +11,12 @@ export {
   saveOAuthProviderConfig,
 } from "./oauth";
 export {
+  configClearSchema,
+  expectedRevisionSchema,
+  requireExpectedRevision,
+  requireWrittenRevision,
+} from "./revision";
+export {
   getSmtpConfig,
   type ResolvedSmtpConfig,
   SMTP_GROUP,

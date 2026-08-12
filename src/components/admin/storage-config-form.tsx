@@ -24,6 +24,7 @@ type StorageEnvDefaults = {
 };
 
 export type StorageAdminView = {
+  revision: number;
   driver: StorageDriver;
   endpoint?: string;
   region: string;
@@ -46,6 +47,7 @@ export function StorageConfigForm({ initial }: { initial: StorageAdminView }) {
   const [accessKeyId, setAccessKeyId] = useState("");
   const [secretAccessKey, setSecretAccessKey] = useState("");
   const [forcePathStyle, setForcePathStyle] = useState(initial.forcePathStyle);
+  const [revision, setRevision] = useState(initial.revision);
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -67,22 +69,22 @@ export function StorageConfigForm({ initial }: { initial: StorageAdminView }) {
   }
 
   function save() {
-    return run(
-      () =>
-        api("/api/admin/config/storage", {
-          method: "PUT",
-          body: {
-            driver,
-            endpoint,
-            region,
-            bucket,
-            accessKeyId,
-            secretAccessKey,
-            forcePathStyle,
-          },
-        }),
-      t("admin.storage.saved"),
-    );
+    return run(async () => {
+      const fresh = await api<StorageAdminView>("/api/admin/config/storage", {
+        method: "PUT",
+        body: {
+          revision,
+          driver,
+          endpoint,
+          region,
+          bucket,
+          accessKeyId,
+          secretAccessKey,
+          forcePathStyle,
+        },
+      });
+      setRevision(fresh.revision);
+    }, t("admin.storage.saved"));
   }
 
   function importFromEnv() {
@@ -102,10 +104,13 @@ export function StorageConfigForm({ initial }: { initial: StorageAdminView }) {
   }
 
   function restoreToEnv() {
-    return run(
-      () => api("/api/admin/config/storage", { method: "DELETE" }),
-      t("admin.common.restoredEnv"),
-    );
+    return run(async () => {
+      const fresh = await api<StorageAdminView>("/api/admin/config/storage", {
+        method: "DELETE",
+        body: { revision },
+      });
+      setRevision(fresh.revision);
+    }, t("admin.common.restoredEnv"));
   }
 
   async function testConnection() {

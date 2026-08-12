@@ -28,14 +28,8 @@ export type ResolvedSmtpConfig = {
   configured: boolean;
 };
 
-/**
- * 解析最终生效的 SMTP 配置,优先级:DB(后台保存)＞ 环境变量 ＞ schema 默认。
- * app_settings 无 smtp 行时全程回落环境变量,与配置中心落地前行为一致。
- */
-export async function getSmtpConfig(): Promise<ResolvedSmtpConfig> {
+export function resolveSmtpConfig(stored: SmtpConfigInput): ResolvedSmtpConfig {
   const env = getEnv();
-  const stored = (await getStoredGroup<SmtpConfigInput>(SMTP_GROUP)) ?? {};
-
   const host = stored.host ?? env.SMTP_HOST;
   const from = stored.from ?? env.SMTP_FROM;
 
@@ -48,4 +42,13 @@ export async function getSmtpConfig(): Promise<ResolvedSmtpConfig> {
     from,
     configured: Boolean(host && from),
   };
+}
+
+/**
+ * 解析最终生效的 SMTP 配置,优先级:DB(后台保存)＞ 环境变量 ＞ schema 默认。
+ * app_settings 无 smtp 行时全程回落环境变量,与配置中心落地前行为一致。
+ */
+export async function getSmtpConfig(): Promise<ResolvedSmtpConfig> {
+  const stored = (await getStoredGroup<SmtpConfigInput>(SMTP_GROUP)) ?? {};
+  return resolveSmtpConfig(stored);
 }

@@ -10,6 +10,11 @@ import {
   oauthProviderConfigSchema,
   saveOAuthProviderConfig,
 } from "@/modules/config/oauth";
+import {
+  configClearSchema,
+  expectedRevisionSchema,
+  requireWrittenRevision,
+} from "@/modules/config/revision";
 
 export const runtime = "nodejs";
 
@@ -28,20 +33,30 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      oauthProviderConfigSchema,
+      oauthProviderConfigSchema.extend({ revision: expectedRevisionSchema }),
     );
-    await saveOAuthProviderConfig("github", input);
-    return jsonOk(await getOAuthProviderAdminView("github"));
+    const { revision, ...config } = input;
+    const writtenRevision = await saveOAuthProviderConfig("github", config, revision);
+    return jsonOk(
+      requireWrittenRevision(await getOAuthProviderAdminView("github"), writtenRevision),
+    );
   } catch (error) {
     return handleApiError(error);
   }
 }
 
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
   try {
     await requireAdmin();
-    await clearOAuthProviderConfig("github");
-    return jsonOk(await getOAuthProviderAdminView("github"));
+    const { revision } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      configClearSchema,
+    );
+    const writtenRevision = await clearOAuthProviderConfig("github", revision);
+    return jsonOk(
+      requireWrittenRevision(await getOAuthProviderAdminView("github"), writtenRevision),
+    );
   } catch (error) {
     return handleApiError(error);
   }

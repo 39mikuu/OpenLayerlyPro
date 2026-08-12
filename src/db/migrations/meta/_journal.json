@@ -246,6 +246,13 @@
       "when": 1786008053841,
       "tag": "0034_issue_184_magic_link_payload_strictness",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1786507302997,
+      "tag": "0035_solid_stepford_cuckoos",
+      "breakpoints": true
     }
   ]
 }

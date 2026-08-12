@@ -6,7 +6,10 @@ import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import {
   clearTurnstileConfig,
+  configClearSchema,
+  expectedRevisionSchema,
   getTurnstileAdminView,
+  requireWrittenRevision,
   saveTurnstileConfig,
   turnstileConfigSchema,
 } from "@/modules/config";
@@ -28,20 +31,26 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      turnstileConfigSchema,
+      turnstileConfigSchema.extend({ revision: expectedRevisionSchema }),
     );
-    await saveTurnstileConfig(input);
-    return jsonOk(await getTurnstileAdminView());
+    const { revision, ...config } = input;
+    const writtenRevision = await saveTurnstileConfig(config, revision);
+    return jsonOk(requireWrittenRevision(await getTurnstileAdminView(), writtenRevision));
   } catch (err) {
     return handleApiError(err);
   }
 }
 
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
   try {
     await requireAdmin();
-    await clearTurnstileConfig();
-    return jsonOk(await getTurnstileAdminView());
+    const { revision } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      configClearSchema,
+    );
+    const writtenRevision = await clearTurnstileConfig(revision);
+    return jsonOk(requireWrittenRevision(await getTurnstileAdminView(), writtenRevision));
   } catch (err) {
     return handleApiError(err);
   }
