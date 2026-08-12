@@ -1,16 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 vi.mock("./store", () => ({
   getStoredGroup: vi.fn(),
+  getStoredGroupSnapshot: vi.fn(),
   setStoredGroup: vi.fn(),
   deleteStoredGroup: vi.fn(),
 }));
 
 const mockedGet = vi.mocked(getStoredGroup);
+const mockedSnapshot = vi.mocked(getStoredGroupSnapshot);
 const mockedSet = vi.mocked(setStoredGroup);
 const mockedDelete = vi.mocked(deleteStoredGroup);
+
+mockedSnapshot.mockImplementation(async (group) => ({
+  value: await mockedGet(group),
+  revision: 0,
+}));
 
 describe("Stripe configuration", () => {
   beforeEach(() => {
@@ -65,13 +72,17 @@ describe("Stripe configuration", () => {
       webhookSecret: "",
       currency: "JPY",
     });
-    expect(mockedSet).toHaveBeenCalledWith("stripe", {
-      enabled: true,
-      secretKey: "old-secret",
-      webhookSecret: "old-webhook",
-      publishableKey: undefined,
-      currency: "jpy",
-    });
+    expect(mockedSet).toHaveBeenCalledWith(
+      "stripe",
+      {
+        enabled: true,
+        secretKey: "old-secret",
+        webhookSecret: "old-webhook",
+        publishableKey: undefined,
+        currency: "jpy",
+      },
+      0,
+    );
 
     mockedGet.mockResolvedValue(null);
     await expect(saveStripeConfig({ enabled: true, currency: "usd" })).rejects.toMatchObject({
@@ -83,6 +94,6 @@ describe("Stripe configuration", () => {
   it("clears the encrypted configuration group", async () => {
     const { clearStripeConfig } = await import("./stripe");
     await clearStripeConfig();
-    expect(mockedDelete).toHaveBeenCalledWith("stripe");
+    expect(mockedDelete).toHaveBeenCalledWith("stripe", 0);
   });
 });

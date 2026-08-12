@@ -18,7 +18,7 @@ try {
   const rows = await sql`
     select key, value_encrypted
     from app_settings
-    -- value_encrypted is NOT NULL today; keep this predicate defensive for old dumps.
+    -- Cleared config groups are revision tombstones with no encrypted payload.
     where value_encrypted is not null
     order by key
   `;

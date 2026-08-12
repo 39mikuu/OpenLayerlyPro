@@ -1,16 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 vi.mock("./store", () => ({
   getStoredGroup: vi.fn(),
+  getStoredGroupSnapshot: vi.fn(),
   setStoredGroup: vi.fn(),
   deleteStoredGroup: vi.fn(),
 }));
 
 const mockedGet = vi.mocked(getStoredGroup);
+const mockedSnapshot = vi.mocked(getStoredGroupSnapshot);
 const mockedSet = vi.mocked(setStoredGroup);
 const mockedDelete = vi.mocked(deleteStoredGroup);
+
+mockedSnapshot.mockImplementation(async (group) => ({
+  value: await mockedGet(group),
+  revision: 0,
+}));
 
 describe("saveSmtpConfig", () => {
   beforeEach(() => {
@@ -28,6 +35,7 @@ describe("saveSmtpConfig", () => {
     expect(mockedSet).toHaveBeenCalledWith(
       "smtp",
       expect.objectContaining({ host: "new-host", from: "a@b.com", password: "old-pass" }),
+      0,
     );
   });
 
@@ -38,6 +46,7 @@ describe("saveSmtpConfig", () => {
     expect(mockedSet).toHaveBeenCalledWith(
       "smtp",
       expect.objectContaining({ password: "new-pass" }),
+      0,
     );
   });
 
@@ -92,6 +101,6 @@ describe("clearSmtpConfig", () => {
     vi.clearAllMocks();
     const { clearSmtpConfig } = await import("./smtp-admin");
     await clearSmtpConfig();
-    expect(mockedDelete).toHaveBeenCalledWith("smtp");
+    expect(mockedDelete).toHaveBeenCalledWith("smtp", 0);
   });
 });

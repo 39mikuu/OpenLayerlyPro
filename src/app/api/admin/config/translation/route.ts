@@ -6,8 +6,13 @@ import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import {
   clearTranslationConfig,
+  configClearSchema,
+  configWriteEnvelopeSchema,
   getTranslationAdminView,
+  requireCurrentConfigRevision,
+  requireWrittenRevision,
   saveTranslationConfig,
+  TRANSLATION_GROUP,
   translationConfigSchema,
 } from "@/modules/config";
 
@@ -28,20 +33,28 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      translationConfigSchema,
+      configWriteEnvelopeSchema,
     );
-    await saveTranslationConfig(input);
-    return jsonOk(await getTranslationAdminView());
+    const { revision } = input;
+    await requireCurrentConfigRevision(TRANSLATION_GROUP, revision);
+    const config = translationConfigSchema.parse(input);
+    const writtenRevision = await saveTranslationConfig(config, revision);
+    return jsonOk(requireWrittenRevision(await getTranslationAdminView(), writtenRevision));
   } catch (err) {
     return handleApiError(err);
   }
 }
 
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
   try {
     await requireAdmin();
-    await clearTranslationConfig();
-    return jsonOk(await getTranslationAdminView());
+    const { revision } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      configClearSchema,
+    );
+    const writtenRevision = await clearTranslationConfig(revision);
+    return jsonOk(requireWrittenRevision(await getTranslationAdminView(), writtenRevision));
   } catch (err) {
     return handleApiError(err);
   }

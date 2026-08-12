@@ -1,16 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 vi.mock("./store", () => ({
   getStoredGroup: vi.fn(),
+  getStoredGroupSnapshot: vi.fn(),
   setStoredGroup: vi.fn(),
   deleteStoredGroup: vi.fn(),
 }));
 
 const mockedGet = vi.mocked(getStoredGroup);
+const mockedSnapshot = vi.mocked(getStoredGroupSnapshot);
 const mockedSet = vi.mocked(setStoredGroup);
 const mockedDelete = vi.mocked(deleteStoredGroup);
+
+mockedSnapshot.mockImplementation(async (group) => ({
+  value: await mockedGet(group),
+  revision: 0,
+}));
 
 describe("getTurnstileConfig", () => {
   beforeEach(() => {
@@ -113,7 +120,7 @@ describe("Turnstile 后台读写", () => {
     mockedGet.mockResolvedValue(null);
     const { saveTurnstileConfig } = await import("./turnstile");
     await saveTurnstileConfig({ enabled: false, siteKey: "", secretKey: "" });
-    expect(mockedSet).toHaveBeenCalledWith("turnstile", { enabled: false });
+    expect(mockedSet).toHaveBeenCalledWith("turnstile", { enabled: false }, 0);
   });
 
   it("siteKey 与新 secretKey 保存前 trim", async () => {
@@ -124,11 +131,15 @@ describe("Turnstile 后台读写", () => {
       siteKey: "  db-site  ",
       secretKey: "  db-secret  ",
     });
-    expect(mockedSet).toHaveBeenCalledWith("turnstile", {
-      enabled: true,
-      siteKey: "db-site",
-      secretKey: "db-secret",
-    });
+    expect(mockedSet).toHaveBeenCalledWith(
+      "turnstile",
+      {
+        enabled: true,
+        siteKey: "db-site",
+        secretKey: "db-secret",
+      },
+      0,
+    );
   });
 
   it("siteKey 空字符串不落库并回退 env,secretKey 空字符串保留旧值", async () => {
@@ -140,15 +151,19 @@ describe("Turnstile 后台读写", () => {
     });
     const { saveTurnstileConfig } = await import("./turnstile");
     await saveTurnstileConfig({ enabled: true, siteKey: " ", secretKey: " " });
-    expect(mockedSet).toHaveBeenCalledWith("turnstile", {
-      enabled: true,
-      secretKey: "old-secret",
-    });
+    expect(mockedSet).toHaveBeenCalledWith(
+      "turnstile",
+      {
+        enabled: true,
+        secretKey: "old-secret",
+      },
+      0,
+    );
   });
 
   it("清除配置组后回落环境变量", async () => {
     const { clearTurnstileConfig } = await import("./turnstile");
     await clearTurnstileConfig();
-    expect(mockedDelete).toHaveBeenCalledWith("turnstile");
+    expect(mockedDelete).toHaveBeenCalledWith("turnstile", 0);
   });
 });

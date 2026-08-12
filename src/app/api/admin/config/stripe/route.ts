@@ -6,8 +6,13 @@ import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import {
   clearStripeConfig,
+  configClearSchema,
+  configWriteEnvelopeSchema,
   getStripeAdminView,
+  requireCurrentConfigRevision,
+  requireWrittenRevision,
   saveStripeConfig,
+  STRIPE_GROUP,
   stripeConfigSchema,
 } from "@/modules/config";
 
@@ -25,19 +30,31 @@ export async function GET() {
 export async function PUT(req: NextRequest) {
   try {
     await requireAdmin();
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, stripeConfigSchema);
-    await saveStripeConfig(input);
-    return jsonOk(await getStripeAdminView());
+    const input = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      configWriteEnvelopeSchema,
+    );
+    const { revision } = input;
+    await requireCurrentConfigRevision(STRIPE_GROUP, revision);
+    const config = stripeConfigSchema.parse(input);
+    const writtenRevision = await saveStripeConfig(config, revision);
+    return jsonOk(requireWrittenRevision(await getStripeAdminView(), writtenRevision));
   } catch (error) {
     return handleApiError(error);
   }
 }
 
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
   try {
     await requireAdmin();
-    await clearStripeConfig();
-    return jsonOk(await getStripeAdminView());
+    const { revision } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      configClearSchema,
+    );
+    const writtenRevision = await clearStripeConfig(revision);
+    return jsonOk(requireWrittenRevision(await getStripeAdminView(), writtenRevision));
   } catch (error) {
     return handleApiError(error);
   }

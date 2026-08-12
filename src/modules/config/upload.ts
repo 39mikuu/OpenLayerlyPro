@@ -2,7 +2,8 @@ import { z } from "zod";
 
 import { getEnv } from "@/lib/env";
 
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { requireExpectedRevision } from "./revision";
+import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 export const UPLOAD_GROUP = "upload";
 
@@ -18,6 +19,7 @@ export type ResolvedUploadConfig = {
 };
 
 export type UploadAdminView = {
+  revision: number;
   maxUploadSizeMb: number;
   paymentProofMaxSizeMb: number;
   paymentProofConfiguredMb: number;
@@ -50,12 +52,12 @@ export async function getUploadConfig(): Promise<ResolvedUploadConfig> {
 
 export async function getUploadAdminView(): Promise<UploadAdminView> {
   const env = getEnv();
-  const [effective, stored] = await Promise.all([
-    getUploadConfig(),
-    getStoredGroup<UploadConfigInput>(UPLOAD_GROUP),
-  ]);
+  const snapshot = await getStoredGroupSnapshot<UploadConfigInput>(UPLOAD_GROUP);
+  const stored = snapshot.value;
+  const effective = resolveUploadConfig(stored ?? {});
 
   return {
+    revision: snapshot.revision,
     maxUploadSizeMb: effective.maxUploadSizeMb,
     paymentProofMaxSizeMb: effective.paymentProofMaxSizeMb,
     paymentProofConfiguredMb: stored?.paymentProofMaxSizeMb ?? env.PAYMENT_PROOF_MAX_SIZE_MB,
@@ -70,8 +72,13 @@ export async function getUploadAdminView(): Promise<UploadAdminView> {
   };
 }
 
-export async function saveUploadConfig(input: UploadConfigInput): Promise<void> {
-  const existing = (await getStoredGroup<UploadConfigInput>(UPLOAD_GROUP)) ?? {};
+export async function saveUploadConfig(
+  input: UploadConfigInput,
+  expectedRevision = 0,
+): Promise<number> {
+  const snapshot = await getStoredGroupSnapshot<UploadConfigInput>(UPLOAD_GROUP);
+  requireExpectedRevision(snapshot.revision, expectedRevision);
+  const existing = snapshot.value ?? {};
   const next: UploadConfigInput = {};
 
   next.maxUploadSizeMb = input.maxUploadSizeMb ?? existing.maxUploadSizeMb;
@@ -81,9 +88,9 @@ export async function saveUploadConfig(input: UploadConfigInput): Promise<void> 
     if (next[key] === undefined) delete next[key];
   }
 
-  await setStoredGroup<UploadConfigInput>(UPLOAD_GROUP, next);
+  return setStoredGroup<UploadConfigInput>(UPLOAD_GROUP, next, expectedRevision);
 }
 
-export async function clearUploadConfig(): Promise<void> {
-  await deleteStoredGroup(UPLOAD_GROUP);
+export async function clearUploadConfig(expectedRevision = 0): Promise<number> {
+  return deleteStoredGroup(UPLOAD_GROUP, expectedRevision);
 }

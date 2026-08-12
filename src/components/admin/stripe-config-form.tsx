@@ -20,6 +20,7 @@ export function StripeConfigForm({ initial }: { initial: StripeAdminView }) {
   const [publishableKey, setPublishableKey] = useState(initial.publishableKey ?? "");
   const [secretKey, setSecretKey] = useState("");
   const [webhookSecret, setWebhookSecret] = useState("");
+  const [revision, setRevision] = useState(initial.revision);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -106,20 +107,20 @@ export function StripeConfigForm({ initial }: { initial: StripeAdminView }) {
         <LoadingButton
           loading={loading}
           onClick={() =>
-            void run(
-              () =>
-                api("/api/admin/config/stripe", {
-                  method: "PUT",
-                  body: {
-                    enabled,
-                    currency,
-                    publishableKey,
-                    secretKey,
-                    webhookSecret,
-                  },
-                }),
-              t("admin.common.saved"),
-            )
+            void run(async () => {
+              const fresh = await api<StripeAdminView>("/api/admin/config/stripe", {
+                method: "PUT",
+                body: {
+                  revision,
+                  enabled,
+                  currency,
+                  publishableKey,
+                  secretKey,
+                  webhookSecret,
+                },
+              });
+              setRevision(fresh.revision);
+            }, t("admin.common.saved"))
           }
         >
           {t("admin.common.save")}
@@ -129,10 +130,13 @@ export function StripeConfigForm({ initial }: { initial: StripeAdminView }) {
           loading={loading}
           disabled={!initial.hasDbOverride}
           onClick={() =>
-            void run(
-              () => api("/api/admin/config/stripe", { method: "DELETE" }),
-              t("admin.stripe.cleared"),
-            )
+            void run(async () => {
+              const fresh = await api<StripeAdminView>("/api/admin/config/stripe", {
+                method: "DELETE",
+                body: { revision },
+              });
+              setRevision(fresh.revision);
+            }, t("admin.stripe.cleared"))
           }
         >
           {t("admin.stripe.clear")}

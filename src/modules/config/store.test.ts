@@ -21,9 +21,11 @@ import { setStoredGroup } from "./store";
 describe("encrypted config store", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    const returning = vi.fn(async () => [{ revision: 1 }]);
+    const onConflictDoNothing = vi.fn(() => ({ returning }));
     mocks.insert.mockReturnValue({
       values: vi.fn(() => ({
-        onConflictDoUpdate: vi.fn(async () => undefined),
+        onConflictDoNothing,
       })),
     });
   });
@@ -41,6 +43,7 @@ describe("encrypted config store", () => {
     expect(values).toHaveBeenCalledWith({
       key: "translation",
       valueEncrypted: "encrypted-payload",
+      revision: 1,
     });
     expect(JSON.stringify(values.mock.calls)).not.toContain("plain-secret");
   });

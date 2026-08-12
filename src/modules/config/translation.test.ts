@@ -1,16 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 vi.mock("./store", () => ({
   getStoredGroup: vi.fn(),
+  getStoredGroupSnapshot: vi.fn(),
   setStoredGroup: vi.fn(),
   deleteStoredGroup: vi.fn(),
 }));
 
 const mockedGet = vi.mocked(getStoredGroup);
+const mockedSnapshot = vi.mocked(getStoredGroupSnapshot);
 const mockedSet = vi.mocked(setStoredGroup);
 const mockedDelete = vi.mocked(deleteStoredGroup);
+
+mockedSnapshot.mockImplementation(async (group) => ({
+  value: await mockedGet(group),
+  revision: 0,
+}));
 
 describe("translation config", () => {
   beforeEach(() => {
@@ -72,16 +79,20 @@ describe("translation config", () => {
       showMachineTranslationLabel: true,
     });
 
-    expect(mockedSet).toHaveBeenCalledWith("translation", {
-      enabled: true,
-      provider: "openai-compatible",
-      apiKey: "old-secret",
-      model: "test-model",
-      endpoint: "https://example.com/v1",
-      monthlyCharLimit: 100_000,
-      directPublishEnabled: true,
-      showMachineTranslationLabel: true,
-    });
+    expect(mockedSet).toHaveBeenCalledWith(
+      "translation",
+      {
+        enabled: true,
+        provider: "openai-compatible",
+        apiKey: "old-secret",
+        model: "test-model",
+        endpoint: "https://example.com/v1",
+        monthlyCharLimit: 100_000,
+        directPublishEnabled: true,
+        showMachineTranslationLabel: true,
+      },
+      0,
+    );
   });
 
   it.each([
@@ -134,6 +145,7 @@ describe("translation config", () => {
     expect(mockedSet).toHaveBeenCalledWith(
       "translation",
       expect.objectContaining({ endpoint: "http://api.example.com/v1" }),
+      0,
     );
     warn.mockRestore();
   });
@@ -157,6 +169,7 @@ describe("translation config", () => {
     expect(mockedSet).toHaveBeenCalledWith(
       "translation",
       expect.objectContaining({ endpoint: "not a url", enabled: true }),
+      0,
     );
   });
 
@@ -174,6 +187,6 @@ describe("translation config", () => {
   it("clears the database override", async () => {
     const { clearTranslationConfig } = await import("./translation");
     await clearTranslationConfig();
-    expect(mockedDelete).toHaveBeenCalledWith("translation");
+    expect(mockedDelete).toHaveBeenCalledWith("translation", 0);
   });
 });

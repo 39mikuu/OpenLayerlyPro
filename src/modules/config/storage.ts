@@ -1,6 +1,7 @@
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 
+import { requireExpectedRevision } from "./revision";
 import {
   getStorageConfig,
   type ResolvedStorageConfig,
@@ -9,7 +10,7 @@ import {
   type StorageConfigInput,
   storageConfigSchema,
 } from "./storageResolve";
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { deleteStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 export {
   getStorageConfig,
@@ -21,6 +22,7 @@ export {
 };
 
 export type StorageAdminView = {
+  revision: number;
   driver: "local" | "s3";
   endpoint?: string;
   region: string;
@@ -48,12 +50,12 @@ function nonEmpty(value: string | undefined): string | undefined {
 
 export async function getStorageAdminView(): Promise<StorageAdminView> {
   const env = getEnv();
-  const [effective, stored] = await Promise.all([
-    getStorageConfig(),
-    getStoredGroup<StorageConfigInput>(STORAGE_GROUP),
-  ]);
+  const snapshot = await getStoredGroupSnapshot<StorageConfigInput>(STORAGE_GROUP);
+  const stored = snapshot.value;
+  const effective = resolveStorageConfig(stored ?? {});
 
   return {
+    revision: snapshot.revision,
     driver: effective.driver,
     endpoint: effective.endpoint,
     region: effective.region,
@@ -89,8 +91,13 @@ function preserveSensitive(
   return nonEmpty(input) ?? nonEmpty(existing);
 }
 
-export async function saveStorageConfig(input: StorageConfigInput): Promise<void> {
-  const existing = (await getStoredGroup<StorageConfigInput>(STORAGE_GROUP)) ?? {};
+export async function saveStorageConfig(
+  input: StorageConfigInput,
+  expectedRevision = 0,
+): Promise<number> {
+  const snapshot = await getStoredGroupSnapshot<StorageConfigInput>(STORAGE_GROUP);
+  requireExpectedRevision(snapshot.revision, expectedRevision);
+  const existing = snapshot.value ?? {};
   const next: StorageConfigInput = {};
 
   next.driver = input.driver ?? existing.driver;
@@ -110,9 +117,9 @@ export async function saveStorageConfig(input: StorageConfigInput): Promise<void
     throw new ApiError(400, "storageConfigIncomplete");
   }
 
-  await setStoredGroup<StorageConfigInput>(STORAGE_GROUP, next);
+  return setStoredGroup<StorageConfigInput>(STORAGE_GROUP, next, expectedRevision);
 }
 
-export async function clearStorageConfig(): Promise<void> {
-  await deleteStoredGroup(STORAGE_GROUP);
+export async function clearStorageConfig(expectedRevision = 0): Promise<number> {
+  return deleteStoredGroup(STORAGE_GROUP, expectedRevision);
 }

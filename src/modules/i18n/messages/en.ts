@@ -1126,6 +1126,7 @@ export const en: Messages = {
     submit: "Finish setup",
   },
   errors: {
+    configConflict: "Configuration was changed in another session. Refresh and review it again.",
     oauthConfigIncomplete: "The configuration for this OAuth provider is incomplete.",
     slugTaken: "This slug is already in use",
     taxonomyNameRequired: "Name is required",

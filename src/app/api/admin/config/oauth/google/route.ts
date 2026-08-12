@@ -8,8 +8,15 @@ import {
   clearOAuthProviderConfig,
   getOAuthProviderAdminView,
   oauthProviderConfigSchema,
+  oauthProviderGroupKey,
   saveOAuthProviderConfig,
 } from "@/modules/config/oauth";
+import {
+  configClearSchema,
+  configWriteEnvelopeSchema,
+  requireCurrentConfigRevision,
+  requireWrittenRevision,
+} from "@/modules/config/revision";
 
 export const runtime = "nodejs";
 
@@ -28,20 +35,32 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      oauthProviderConfigSchema,
+      configWriteEnvelopeSchema,
     );
-    await saveOAuthProviderConfig("google", input);
-    return jsonOk(await getOAuthProviderAdminView("google"));
+    const { revision } = input;
+    await requireCurrentConfigRevision(oauthProviderGroupKey("google"), revision);
+    const config = oauthProviderConfigSchema.parse(input);
+    const writtenRevision = await saveOAuthProviderConfig("google", config, revision);
+    return jsonOk(
+      requireWrittenRevision(await getOAuthProviderAdminView("google"), writtenRevision),
+    );
   } catch (error) {
     return handleApiError(error);
   }
 }
 
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
   try {
     await requireAdmin();
-    await clearOAuthProviderConfig("google");
-    return jsonOk(await getOAuthProviderAdminView("google"));
+    const { revision } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      configClearSchema,
+    );
+    const writtenRevision = await clearOAuthProviderConfig("google", revision);
+    return jsonOk(
+      requireWrittenRevision(await getOAuthProviderAdminView("google"), writtenRevision),
+    );
   } catch (error) {
     return handleApiError(error);
   }

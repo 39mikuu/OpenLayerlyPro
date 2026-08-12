@@ -283,7 +283,10 @@ export const siteSettings = pgTable("site_settings", {
 // value_encrypted 为整组配置 JSON 的 AES-256-GCM 密文，key 为配置组名（如 "smtp"）。
 export const appSettings = pgTable("app_settings", {
   key: text("key").primaryKey(),
-  valueEncrypted: text("value_encrypted").notNull(),
+  // A null value is a durable tombstone. Keeping the row means a clear cannot
+  // reset the optimistic-concurrency token and accidentally permit an ABA write.
+  valueEncrypted: text("value_encrypted"),
+  revision: integer("revision").notNull().default(1),
   updatedAt: updatedAt(),
 });
 

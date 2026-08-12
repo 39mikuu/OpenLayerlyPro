@@ -6,8 +6,13 @@ import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
 import {
   clearUploadConfig,
+  configClearSchema,
+  configWriteEnvelopeSchema,
   getUploadAdminView,
+  requireCurrentConfigRevision,
+  requireWrittenRevision,
   saveUploadConfig,
+  UPLOAD_GROUP,
   uploadConfigSchema,
 } from "@/modules/config";
 
@@ -25,19 +30,31 @@ export async function GET() {
 export async function PUT(req: NextRequest) {
   try {
     await requireAdmin();
-    const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, uploadConfigSchema);
-    await saveUploadConfig(input);
-    return jsonOk(await getUploadAdminView());
+    const input = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      configWriteEnvelopeSchema,
+    );
+    const { revision } = input;
+    await requireCurrentConfigRevision(UPLOAD_GROUP, revision);
+    const config = uploadConfigSchema.parse(input);
+    const writtenRevision = await saveUploadConfig(config, revision);
+    return jsonOk(requireWrittenRevision(await getUploadAdminView(), writtenRevision));
   } catch (err) {
     return handleApiError(err);
   }
 }
 
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
   try {
     await requireAdmin();
-    await clearUploadConfig();
-    return jsonOk(await getUploadAdminView());
+    const { revision } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      configClearSchema,
+    );
+    const writtenRevision = await clearUploadConfig(revision);
+    return jsonOk(requireWrittenRevision(await getUploadAdminView(), writtenRevision));
   } catch (err) {
     return handleApiError(err);
   }

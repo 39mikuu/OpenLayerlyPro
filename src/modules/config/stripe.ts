@@ -2,7 +2,8 @@ import { z } from "zod";
 
 import { ApiError } from "@/lib/api";
 
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { requireExpectedRevision } from "./revision";
+import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 export const STRIPE_GROUP = "stripe";
 
@@ -30,6 +31,7 @@ export type ResolvedStripeConfig = {
 };
 
 export type StripeAdminView = {
+  revision: number;
   enabled: boolean;
   publishableKey?: string;
   currency: string;
@@ -44,8 +46,7 @@ function nonEmpty(value: string | undefined): string | undefined {
   return trimmed || undefined;
 }
 
-export async function getStripeConfig(): Promise<ResolvedStripeConfig> {
-  const stored = (await getStoredGroup<StripeConfigInput>(STRIPE_GROUP)) ?? {};
+function resolveStripeConfig(stored: StripeConfigInput): ResolvedStripeConfig {
   const secretKey = nonEmpty(stored.secretKey);
   const webhookSecret = nonEmpty(stored.webhookSecret);
   return {
@@ -58,12 +59,17 @@ export async function getStripeConfig(): Promise<ResolvedStripeConfig> {
   };
 }
 
+export async function getStripeConfig(): Promise<ResolvedStripeConfig> {
+  const stored = (await getStoredGroup<StripeConfigInput>(STRIPE_GROUP)) ?? {};
+  return resolveStripeConfig(stored);
+}
+
 export async function getStripeAdminView(): Promise<StripeAdminView> {
-  const [effective, stored] = await Promise.all([
-    getStripeConfig(),
-    getStoredGroup<StripeConfigInput>(STRIPE_GROUP),
-  ]);
+  const snapshot = await getStoredGroupSnapshot<StripeConfigInput>(STRIPE_GROUP);
+  const stored = snapshot.value;
+  const effective = resolveStripeConfig(stored ?? {});
   return {
+    revision: snapshot.revision,
     enabled: effective.enabled,
     publishableKey: effective.publishableKey,
     currency: effective.currency,
@@ -74,8 +80,13 @@ export async function getStripeAdminView(): Promise<StripeAdminView> {
   };
 }
 
-export async function saveStripeConfig(input: StripeConfigInput): Promise<void> {
-  const existing = (await getStoredGroup<StripeConfigInput>(STRIPE_GROUP)) ?? {};
+export async function saveStripeConfig(
+  input: StripeConfigInput,
+  expectedRevision = 0,
+): Promise<number> {
+  const snapshot = await getStoredGroupSnapshot<StripeConfigInput>(STRIPE_GROUP);
+  requireExpectedRevision(snapshot.revision, expectedRevision);
+  const existing = snapshot.value ?? {};
   const next: StripeConfigInput = {
     enabled: input.enabled ?? existing.enabled ?? false,
     secretKey: nonEmpty(input.secretKey) ?? nonEmpty(existing.secretKey),
@@ -93,9 +104,9 @@ export async function saveStripeConfig(input: StripeConfigInput): Promise<void> 
   if (next.enabled && (!next.secretKey || !next.webhookSecret)) {
     throw new ApiError(400, "stripeConfigIncomplete");
   }
-  await setStoredGroup<StripeConfigInput>(STRIPE_GROUP, next);
+  return setStoredGroup<StripeConfigInput>(STRIPE_GROUP, next, expectedRevision);
 }
 
-export async function clearStripeConfig(): Promise<void> {
-  await deleteStoredGroup(STRIPE_GROUP);
+export async function clearStripeConfig(expectedRevision = 0): Promise<number> {
+  return deleteStoredGroup(STRIPE_GROUP, expectedRevision);
 }

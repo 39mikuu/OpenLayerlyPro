@@ -3,7 +3,8 @@ import { z } from "zod";
 import { ApiError } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { requireExpectedRevision } from "./revision";
+import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 export type OAuthProviderId = "google" | "github";
 
@@ -22,6 +23,7 @@ export type ResolvedOAuthProviderConfig = {
 };
 
 export type OAuthProviderAdminView = {
+  revision: number;
   enabled: boolean;
   clientId?: string;
   configured: boolean;
@@ -29,7 +31,7 @@ export type OAuthProviderAdminView = {
   hasDbOverride: boolean;
 };
 
-function groupKey(provider: OAuthProviderId): string {
+export function oauthProviderGroupKey(provider: OAuthProviderId): string {
   return provider === "google" ? "oauth_google" : "oauth_github";
 }
 
@@ -38,10 +40,7 @@ function nonEmpty(value: string | undefined): string | undefined {
   return trimmed || undefined;
 }
 
-export async function getOAuthProviderConfig(
-  provider: OAuthProviderId,
-): Promise<ResolvedOAuthProviderConfig> {
-  const stored = (await getStoredGroup<OAuthProviderConfigInput>(groupKey(provider))) ?? {};
+function resolveOAuthProviderConfig(stored: OAuthProviderConfigInput): ResolvedOAuthProviderConfig {
   const clientId = nonEmpty(stored.clientId);
   const clientSecret = nonEmpty(stored.clientSecret);
   return {
@@ -52,14 +51,24 @@ export async function getOAuthProviderConfig(
   };
 }
 
+export async function getOAuthProviderConfig(
+  provider: OAuthProviderId,
+): Promise<ResolvedOAuthProviderConfig> {
+  const stored =
+    (await getStoredGroup<OAuthProviderConfigInput>(oauthProviderGroupKey(provider))) ?? {};
+  return resolveOAuthProviderConfig(stored);
+}
+
 export async function getOAuthProviderAdminView(
   provider: OAuthProviderId,
 ): Promise<OAuthProviderAdminView> {
-  const [effective, stored] = await Promise.all([
-    getOAuthProviderConfig(provider),
-    getStoredGroup<OAuthProviderConfigInput>(groupKey(provider)),
-  ]);
+  const snapshot = await getStoredGroupSnapshot<OAuthProviderConfigInput>(
+    oauthProviderGroupKey(provider),
+  );
+  const stored = snapshot.value;
+  const effective = resolveOAuthProviderConfig(stored ?? {});
   return {
+    revision: snapshot.revision,
     enabled: effective.enabled,
     clientId: effective.clientId,
     configured: effective.configured,
@@ -71,9 +80,12 @@ export async function getOAuthProviderAdminView(
 export async function saveOAuthProviderConfig(
   provider: OAuthProviderId,
   input: OAuthProviderConfigInput,
-): Promise<void> {
-  const key = groupKey(provider);
-  const existing = (await getStoredGroup<OAuthProviderConfigInput>(key)) ?? {};
+  expectedRevision = 0,
+): Promise<number> {
+  const key = oauthProviderGroupKey(provider);
+  const snapshot = await getStoredGroupSnapshot<OAuthProviderConfigInput>(key);
+  requireExpectedRevision(snapshot.revision, expectedRevision);
+  const existing = snapshot.value ?? {};
   const next: OAuthProviderConfigInput = {
     enabled: input.enabled ?? existing.enabled ?? false,
     clientId: input.clientId === undefined ? nonEmpty(existing.clientId) : nonEmpty(input.clientId),
@@ -82,11 +94,14 @@ export async function saveOAuthProviderConfig(
   if (next.enabled && (!next.clientId || !next.clientSecret)) {
     throw new ApiError(400, "oauthConfigIncomplete");
   }
-  await setStoredGroup<OAuthProviderConfigInput>(key, next);
+  return setStoredGroup<OAuthProviderConfigInput>(key, next, expectedRevision);
 }
 
-export async function clearOAuthProviderConfig(provider: OAuthProviderId): Promise<void> {
-  await deleteStoredGroup(groupKey(provider));
+export async function clearOAuthProviderConfig(
+  provider: OAuthProviderId,
+  expectedRevision = 0,
+): Promise<number> {
+  return deleteStoredGroup(oauthProviderGroupKey(provider), expectedRevision);
 }
 
 export async function isOAuthProviderLoginEnabled(provider: OAuthProviderId): Promise<boolean> {

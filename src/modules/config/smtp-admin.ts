@@ -1,10 +1,12 @@
 import { getEnv } from "@/lib/env";
 
-import { getSmtpConfig, SMTP_GROUP, type SmtpConfigInput } from "./smtp";
-import { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+import { requireExpectedRevision } from "./revision";
+import { resolveSmtpConfig, SMTP_GROUP, type SmtpConfigInput } from "./smtp";
+import { deleteStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
 
 /** 后台展示用的 SMTP 视图。password 永不外泄,只给 passwordSet 标志。 */
 export type SmtpAdminView = {
+  revision: number;
   host?: string;
   port: number;
   secure: boolean;
@@ -26,11 +28,11 @@ export type SmtpAdminView = {
 
 export async function getSmtpAdminView(): Promise<SmtpAdminView> {
   const env = getEnv();
-  const [effective, stored] = await Promise.all([
-    getSmtpConfig(),
-    getStoredGroup<SmtpConfigInput>(SMTP_GROUP),
-  ]);
+  const snapshot = await getStoredGroupSnapshot<SmtpConfigInput>(SMTP_GROUP);
+  const stored = snapshot.value;
+  const effective = resolveSmtpConfig(stored ?? {});
   return {
+    revision: snapshot.revision,
     host: effective.host,
     port: effective.port,
     secure: effective.secure,
@@ -53,8 +55,13 @@ export async function getSmtpAdminView(): Promise<SmtpAdminView> {
  * 保存 SMTP 配置到 app_settings。空字符串字段不落库(回落环境变量);
  * 密码留空表示不修改、保留原有 DB 密码(配合掩码,避免被清空)。
  */
-export async function saveSmtpConfig(input: SmtpConfigInput): Promise<void> {
-  const existing = (await getStoredGroup<SmtpConfigInput>(SMTP_GROUP)) ?? {};
+export async function saveSmtpConfig(
+  input: SmtpConfigInput,
+  expectedRevision = 0,
+): Promise<number> {
+  const snapshot = await getStoredGroupSnapshot<SmtpConfigInput>(SMTP_GROUP);
+  requireExpectedRevision(snapshot.revision, expectedRevision);
+  const existing = snapshot.value ?? {};
   const next: SmtpConfigInput = {};
   if (input.host) next.host = input.host;
   if (input.from) next.from = input.from;
@@ -62,10 +69,10 @@ export async function saveSmtpConfig(input: SmtpConfigInput): Promise<void> {
   if (input.port !== undefined) next.port = input.port;
   if (input.secure !== undefined) next.secure = input.secure;
   next.password = input.password ? input.password : existing.password;
-  await setStoredGroup<SmtpConfigInput>(SMTP_GROUP, next);
+  return setStoredGroup<SmtpConfigInput>(SMTP_GROUP, next, expectedRevision);
 }
 
 /** 清除后台 SMTP 配置,整体回落到环境变量。 */
-export async function clearSmtpConfig(): Promise<void> {
-  await deleteStoredGroup(SMTP_GROUP);
+export async function clearSmtpConfig(expectedRevision = 0): Promise<number> {
+  return deleteStoredGroup(SMTP_GROUP, expectedRevision);
 }

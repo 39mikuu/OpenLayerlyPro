@@ -14,6 +14,7 @@ import { api } from "@/lib/client";
 type TurnstileEnvDefaults = { enabled: boolean; siteKey?: string; secretKeySet: boolean };
 
 export type TurnstileAdminView = {
+  revision: number;
   enabled: boolean;
   siteKey?: string;
   secretKeySet: boolean;
@@ -27,6 +28,7 @@ export function TurnstileConfigForm({ initial }: { initial: TurnstileAdminView }
   const [enabled, setEnabled] = useState(initial.enabled);
   const [siteKey, setSiteKey] = useState(initial.siteKey ?? "");
   const [secretKey, setSecretKey] = useState("");
+  const [revision, setRevision] = useState(initial.revision);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -46,14 +48,13 @@ export function TurnstileConfigForm({ initial }: { initial: TurnstileAdminView }
   }
 
   function save() {
-    return run(
-      () =>
-        api("/api/admin/config/turnstile", {
-          method: "PUT",
-          body: { enabled, siteKey, secretKey },
-        }),
-      t("admin.common.saved"),
-    );
+    return run(async () => {
+      const fresh = await api<TurnstileAdminView>("/api/admin/config/turnstile", {
+        method: "PUT",
+        body: { revision, enabled, siteKey, secretKey },
+      });
+      setRevision(fresh.revision);
+    }, t("admin.common.saved"));
   }
 
   function importFromEnv() {
@@ -68,10 +69,13 @@ export function TurnstileConfigForm({ initial }: { initial: TurnstileAdminView }
   }
 
   function restoreToEnv() {
-    return run(
-      () => api("/api/admin/config/turnstile", { method: "DELETE" }),
-      t("admin.common.restoredEnv"),
-    );
+    return run(async () => {
+      const fresh = await api<TurnstileAdminView>("/api/admin/config/turnstile", {
+        method: "DELETE",
+        body: { revision },
+      });
+      setRevision(fresh.revision);
+    }, t("admin.common.restoredEnv"));
   }
 
   return (

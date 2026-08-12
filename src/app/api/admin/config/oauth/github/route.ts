@@ -8,8 +8,15 @@ import {
   clearOAuthProviderConfig,
   getOAuthProviderAdminView,
   oauthProviderConfigSchema,
+  oauthProviderGroupKey,
   saveOAuthProviderConfig,
 } from "@/modules/config/oauth";
+import {
+  configClearSchema,
+  configWriteEnvelopeSchema,
+  requireCurrentConfigRevision,
+  requireWrittenRevision,
+} from "@/modules/config/revision";
 
 export const runtime = "nodejs";
 
@@ -28,20 +35,32 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      oauthProviderConfigSchema,
+      configWriteEnvelopeSchema,
     );
-    await saveOAuthProviderConfig("github", input);
-    return jsonOk(await getOAuthProviderAdminView("github"));
+    const { revision } = input;
+    await requireCurrentConfigRevision(oauthProviderGroupKey("github"), revision);
+    const config = oauthProviderConfigSchema.parse(input);
+    const writtenRevision = await saveOAuthProviderConfig("github", config, revision);
+    return jsonOk(
+      requireWrittenRevision(await getOAuthProviderAdminView("github"), writtenRevision),
+    );
   } catch (error) {
     return handleApiError(error);
   }
 }
 
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
   try {
     await requireAdmin();
-    await clearOAuthProviderConfig("github");
-    return jsonOk(await getOAuthProviderAdminView("github"));
+    const { revision } = await readJsonWithLimit(
+      req,
+      getEnv().REQUEST_JSON_MAX_BYTES,
+      configClearSchema,
+    );
+    const writtenRevision = await clearOAuthProviderConfig("github", revision);
+    return jsonOk(
+      requireWrittenRevision(await getOAuthProviderAdminView("github"), writtenRevision),
+    );
   } catch (error) {
     return handleApiError(error);
   }

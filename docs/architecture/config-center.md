@@ -4,9 +4,18 @@
 
 ## 数据模型
 
-- `app_settings`：`key`（配置组名）主键、`value_encrypted`（整组 JSON 密文）、`updated_at`。
+- `app_settings`：`key`（配置组名）主键、可空 `value_encrypted`（整组 JSON 密文）、单调递增 `revision`、`updated_at`。
 - 与公开的 `site_settings` 分表，避免 secret 与可公开站点资料混存。
 - 整组 AES-256-GCM 加密；掩码与“是否已设置”属于 admin view，不改变密文存储。
+- clear 将 `value_encrypted` 置空但保留行作为 tombstone；这使 revision 不会在删除并重建后复用。
+
+## 管理端并发写
+
+- 每个 GET admin view 都返回与该视图同一次读取对应的 `revision`。
+- PUT 与 DELETE 必须回传该 revision；数据库写入使用 `WHERE revision = expected` 的 CAS，成功后 revision 加一。
+- 同一配置组被其他会话修改后，旧标签页的保存、清除以及留空的 masked secret 保存均返回 `409 configConflict`，不会自动 merge 或 last-write-wins。
+- 写后返回的 admin view 必须仍与本次写入后的 revision 一致；若写入与响应读取之间又发生更新，同样返回 409，避免旧表单获得不属于其内容的新 revision。
+- tombstone 防止 `save → clear → recreate` 后出现 ABA；旧 revision 永远不能重新匹配。
 
 ## 加密
 
@@ -21,7 +30,7 @@
 
 `src/modules/config/` 是唯一最终配置入口：
 
-- `store.ts`：读取、加密 upsert、删除配置组。
+- `store.ts`：读取、加密 revision/CAS 写入，以及保留 tombstone 的 CAS clear。
 - `smtp.ts`：DB ＞ env ＞ default；配置完整性由 host/from 判断。
 - `turnstile.ts`：逐字段 DB ＞ env；DB `enabled=false` 可覆盖 env `true`。
 - `storage.ts`：DB ＞ env ＞ default，支持 local / S3；历史文件仍按行内 driver/bucket。
