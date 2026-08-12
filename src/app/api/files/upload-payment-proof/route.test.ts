@@ -165,16 +165,23 @@ describe("payment proof multipart upload", () => {
   });
 
   it("counts multipart text fields and protocol overhead in the total transfer ceiling", async () => {
-    const form = new FormData();
-    form.set("file", new File(["x"], "proof.png", { type: "image/png" }));
-    form.set("note", "x".repeat(transferLimit()));
-
-    const response = await POST(
-      new Request("http://localhost/api/files/upload-payment-proof", {
-        method: "POST",
-        body: form,
-      }) as NextRequest,
+    const boundary = "bounded-test";
+    // Keep the direct-handler harness finite and deterministic. Node 24's lazy FormData encoder
+    // can continue enqueueing after the bounded reader cancels, which is not the socket lifecycle.
+    const rawMultipart = new TextEncoder().encode(
+      [
+        `--${boundary}\r\n`,
+        'Content-Disposition: form-data; name="file"; filename="proof.png"\r\n',
+        "Content-Type: image/png\r\n\r\n",
+        "x\r\n",
+        `--${boundary}\r\n`,
+        'Content-Disposition: form-data; name="note"\r\n\r\n',
+        "x".repeat(transferLimit()),
+        `\r\n--${boundary}--\r\n`,
+      ].join(""),
     );
+
+    const response = await POST(streamRequest([rawMultipart]));
 
     expect(response.status).toBe(413);
     expect(mocks.requireUser).toHaveBeenCalledOnce();
