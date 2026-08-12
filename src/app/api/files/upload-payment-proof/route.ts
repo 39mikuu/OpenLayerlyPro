@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 
 import { getClientIp, handleApiError, jsonError, jsonOk } from "@/lib/api";
+import { compensateAndPreserveError } from "@/lib/compensation";
 import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
 import {
@@ -60,8 +61,16 @@ export async function POST(req: NextRequest) {
       });
       return jsonOk({ id: record.id, originalName: record.originalName });
     } catch (error) {
-      await completePaymentProofUploadReservation(reservationId, false);
-      throw error;
+      throw await compensateAndPreserveError(
+        error,
+        [
+          {
+            operation: "payment_proof_reservation.fail",
+            run: () => completePaymentProofUploadReservation(reservationId, false),
+          },
+        ],
+        { reservationId },
+      );
     }
   } catch (err) {
     return handleApiError(err);

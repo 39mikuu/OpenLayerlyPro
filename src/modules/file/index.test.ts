@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getDb: vi.fn(),
   getStorage: vi.fn(),
   insert: vi.fn(),
+  loggerError: vi.fn(),
   putObject: vi.fn(),
   putObjectStream: vi.fn(),
   recordEvent: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("@/modules/config", () => ({
     paymentProofMaxSizeMb: 10,
   })),
 }));
+vi.mock("@/lib/logger", () => ({ logger: { error: mocks.loggerError } }));
 vi.mock("@/modules/site", () => ({ getSetting: vi.fn() }));
 vi.mock("@/modules/storage", () => ({
   getStorage: mocks.getStorage,
@@ -117,6 +119,36 @@ describe("streamed file persistence", () => {
     });
   });
 
+  it("preserves the database error when object cleanup also fails", async () => {
+    const primary = Object.assign(new Error("database unavailable"), { code: "57P01" });
+    mocks.returning.mockRejectedValue(primary);
+    mocks.deleteObject.mockRejectedValue(
+      Object.assign(new Error("object delete denied"), { code: "AccessDenied" }),
+    );
+
+    let thrown: unknown;
+    try {
+      await saveStreamedFile({
+        body: Readable.from([Buffer.from("attachment")]),
+        fileName: "archive.zip",
+        purpose: "content_attachment",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(primary);
+    expect(mocks.deleteObject).toHaveBeenCalledOnce();
+    expect(mocks.loggerError).toHaveBeenCalledWith(
+      "Compensation step failed",
+      expect.objectContaining({
+        operation: "storage.delete_object",
+        primaryError: { name: "Error", identifier: "57P01" },
+        cleanupError: { name: "Error", identifier: "AccessDenied" },
+      }),
+    );
+  });
+
   it("deletes an empty uploaded object before returning fileEmpty", async () => {
     mocks.putObjectStream.mockResolvedValue({
       stored: { objectKey: "content/empty.txt", bucket: null },
@@ -136,6 +168,63 @@ describe("streamed file persistence", () => {
       bucket: null,
     });
     expect(mocks.insert).not.toHaveBeenCalled();
+  });
+
+  it("preserves fileEmpty when deleting the empty object also fails", async () => {
+    mocks.putObjectStream.mockResolvedValue({
+      stored: { objectKey: "content/empty.txt", bucket: null },
+      sizeBytes: 0,
+      sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    });
+    mocks.deleteObject.mockRejectedValue(new Error("delete failed"));
+
+    await expect(
+      saveStreamedFile({
+        body: Readable.from([]),
+        fileName: "empty.txt",
+        purpose: "content_attachment",
+      }),
+    ).rejects.toMatchObject({ status: 400, code: "fileEmpty" });
+    expect(mocks.insert).not.toHaveBeenCalled();
+  });
+
+  it("compensates an uncertain buffered upload failure without replacing it", async () => {
+    const png = await (
+      await import("sharp")
+    )
+      .default({ create: { width: 1, height: 1, channels: 4, background: "white" } })
+      .png()
+      .toBuffer();
+    const file = new File([new Uint8Array(png)], "partial.png", { type: "image/png" });
+    const primary = Object.assign(new Error("put response lost"), { code: "TimeoutError" });
+    mocks.putObject.mockRejectedValue(primary);
+    mocks.deleteObject.mockRejectedValue(
+      Object.assign(new Error("delete denied"), { code: "AccessDenied" }),
+    );
+
+    let thrown: unknown;
+    try {
+      await saveUploadedFile({ file, purpose: "content_image" });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(primary);
+    expect(mocks.deleteObject).toHaveBeenCalledWith({
+      objectKey: expect.stringMatching(/^content\/\d{4}\/\d{2}\/.+-partial\.png$/),
+    });
+    expect(mocks.insert).not.toHaveBeenCalled();
+    expect(mocks.loggerError).toHaveBeenCalledWith(
+      "Compensation step failed",
+      expect.objectContaining({
+        storageDriver: "local",
+        objectRef: expect.stringMatching(/^[a-f0-9]{64}$/),
+        operation: "storage.delete_object",
+        primaryError: { name: "Error", identifier: "TimeoutError" },
+        cleanupError: { name: "Error", identifier: "AccessDenied" },
+      }),
+    );
+    expect(mocks.loggerError.mock.calls[0]?.[1]).not.toHaveProperty("objectKey");
   });
 
   it("keeps the buffered image validation path working", async () => {

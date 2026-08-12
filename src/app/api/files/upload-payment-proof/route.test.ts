@@ -12,10 +12,12 @@ const mocks = vi.hoisted(() => ({
   saveUploadedFile: vi.fn(),
   reservePaymentProofUpload: vi.fn(),
   completePaymentProofUploadReservation: vi.fn(),
+  loggerError: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/session", () => ({ requireUser: mocks.requireUser }));
 vi.mock("@/lib/rate-limit", () => ({ rateLimit: mocks.rateLimit }));
+vi.mock("@/lib/logger", () => ({ logger: { error: mocks.loggerError } }));
 vi.mock("@/modules/file", () => ({ saveUploadedFile: mocks.saveUploadedFile }));
 vi.mock("@/modules/payment/proof-upload-quota", () => ({
   reservePaymentProofUpload: mocks.reservePaymentProofUpload,
@@ -127,6 +129,33 @@ describe("payment proof multipart upload", () => {
       ["reservation-1", true, { transaction: "tx" }],
       ["reservation-1", false],
     ]);
+  });
+
+  it("preserves the upload error when reservation rollback also fails", async () => {
+    const form = new FormData();
+    form.set("file", new File(["image"], "proof.png", { type: "image/png" }));
+    mocks.saveUploadedFile.mockRejectedValue(new ApiError(400, "imageInvalid"));
+    mocks.completePaymentProofUploadReservation.mockRejectedValue(
+      Object.assign(new Error("database unavailable"), { code: "57P01" }),
+    );
+
+    const response = await POST(
+      new Request("http://localhost/api/files/upload-payment-proof", {
+        method: "POST",
+        body: form,
+      }) as NextRequest,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code: "imageInvalid" });
+    expect(mocks.loggerError).toHaveBeenCalledWith(
+      "Compensation step failed",
+      expect.objectContaining({
+        operation: "payment_proof_reservation.fail",
+        primaryError: { name: "Error", identifier: "imageInvalid" },
+        cleanupError: { name: "Error", identifier: "57P01" },
+      }),
+    );
   });
 
   it("rejects an oversized Content-Length after auth but before image handling, storage, or DB", async () => {

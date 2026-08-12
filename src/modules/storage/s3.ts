@@ -10,6 +10,8 @@ import { randomUUID } from "crypto";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 
+import { compensateAndPreserveError, opaqueCompensationResourceId } from "@/lib/compensation";
+
 import { createMeasuredStream } from "./stream";
 import type {
   DeleteObjectInput,
@@ -149,12 +151,29 @@ export class S3StorageAdapter implements StorageAdapter {
         ...measured.result(),
       };
     } catch (err) {
-      input.body.destroy(err instanceof Error ? err : undefined);
-      await upload.abort().catch(() => undefined);
-      await this.client
-        .send(new DeleteObjectCommand({ Bucket: this.bucket, Key: input.objectKey }))
-        .catch(() => undefined);
-      throw err;
+      throw await compensateAndPreserveError(
+        err,
+        [
+          {
+            operation: "s3_upload_body.destroy",
+            run: () => {
+              input.body.destroy(err instanceof Error ? err : undefined);
+            },
+          },
+          { operation: "s3_multipart.abort", run: () => upload.abort() },
+          {
+            operation: "storage.delete_object",
+            run: () =>
+              this.client.send(
+                new DeleteObjectCommand({ Bucket: this.bucket, Key: input.objectKey }),
+              ),
+          },
+        ],
+        {
+          storageDriver: this.driver,
+          objectRef: opaqueCompensationResourceId(this.driver, input.objectKey),
+        },
+      );
     }
   }
 

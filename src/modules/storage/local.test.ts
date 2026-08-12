@@ -40,6 +40,27 @@ describe("LocalStorageAdapter streaming uploads", () => {
     await rm(uploadDir, { recursive: true, force: true });
   });
 
+  it("cleans stale parts before publishing a buffered object", async () => {
+    const directory = path.join(uploadDir, "content");
+    const stalePart = path.join(directory, "crashed.part");
+    await import("fs/promises").then(({ mkdir }) => mkdir(directory, { recursive: true }));
+    await writeFile(stalePart, "orphan");
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await utimes(stalePart, stale, stale);
+
+    const adapter = new LocalStorageAdapter();
+    const result = await adapter.putObject({
+      objectKey: "content/new.png",
+      body: Buffer.from("new image"),
+      contentType: "image/png",
+    });
+
+    await expect(stat(stalePart)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(uploadDir, result.objectKey))).resolves.toEqual(
+      Buffer.from("new image"),
+    );
+  });
+
   it("writes through a same-directory part file and atomically publishes the final object", async () => {
     const adapter = new LocalStorageAdapter();
     const body = Buffer.from("streamed attachment");
@@ -55,6 +76,52 @@ describe("LocalStorageAdapter streaming uploads", () => {
     expect(result.sha256).toBe(createHash("sha256").update(body).digest("hex"));
     expect(await readFile(path.join(uploadDir, result.stored.objectKey))).toEqual(body);
     expect((await listFiles(uploadDir)).some((file) => file.endsWith(".part"))).toBe(false);
+  });
+
+  it("atomically publishes buffered objects without leaving a part file", async () => {
+    const adapter = new LocalStorageAdapter();
+    const body = Buffer.from("buffered image");
+
+    const result = await adapter.putObject({
+      objectKey: "payment-proof/proof.png",
+      body,
+      contentType: "image/png",
+    });
+
+    expect(await readFile(path.join(uploadDir, result.objectKey))).toEqual(body);
+    expect((await listFiles(uploadDir)).some((file) => file.endsWith(".part"))).toBe(false);
+  });
+
+  it("preserves a buffered publish failure and removes its temporary object", async () => {
+    const adapter = new LocalStorageAdapter();
+    const destination = path.join(uploadDir, "payment-proof", "occupied.png");
+    await import("fs/promises").then(({ mkdir }) => mkdir(destination, { recursive: true }));
+
+    let thrown: unknown;
+    try {
+      await adapter.putObject({
+        objectKey: "payment-proof/occupied.png",
+        body: Buffer.from("buffered image"),
+        contentType: "image/png",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ code: expect.stringMatching(/EISDIR|ENOTEMPTY/) });
+    expect((await listFiles(uploadDir)).some((file) => file.endsWith(".part"))).toBe(false);
+  });
+
+  it("makes repeated object deletion idempotent", async () => {
+    const adapter = new LocalStorageAdapter();
+    await adapter.putObject({
+      objectKey: "content/retry.txt",
+      body: Buffer.from("retry"),
+      contentType: "text/plain",
+    });
+
+    await expect(adapter.deleteObject({ objectKey: "content/retry.txt" })).resolves.toBeUndefined();
+    await expect(adapter.deleteObject({ objectKey: "content/retry.txt" })).resolves.toBeUndefined();
   });
 
   it("removes temporary and final files when the measured stream exceeds the limit", async () => {
