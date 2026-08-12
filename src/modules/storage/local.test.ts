@@ -5,7 +5,27 @@ import path from "path";
 import { Readable } from "stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { cleanupStaleLocalUploadParts, LocalStorageAdapter } from "./local";
+const mocks = vi.hoisted(() => ({
+  loggerError: vi.fn(),
+  loggerWarn: vi.fn(),
+  readdir: vi.fn(),
+}));
+
+vi.mock("fs/promises", async () => {
+  const actual = await vi.importActual<typeof import("fs/promises")>("fs/promises");
+  mocks.readdir.mockImplementation(actual.readdir);
+  return { ...actual, readdir: mocks.readdir };
+});
+
+vi.mock("@/lib/logger", () => ({
+  logger: { error: mocks.loggerError, info: vi.fn(), warn: mocks.loggerWarn },
+}));
+
+import {
+  cleanupStaleLocalUploadParts,
+  LocalStorageAdapter,
+  resetLocalUploadPartCleanupStateForTests,
+} from "./local";
 import { StorageObjectTooLargeError } from "./stream";
 
 let uploadDir = "";
@@ -33,10 +53,15 @@ async function listFiles(directory: string): Promise<string[]> {
 
 describe("LocalStorageAdapter streaming uploads", () => {
   beforeEach(async () => {
+    resetLocalUploadPartCleanupStateForTests();
+    mocks.loggerError.mockReset();
+    mocks.loggerWarn.mockReset();
+    mocks.readdir.mockClear();
     uploadDir = await mkdtemp(path.join(tmpdir(), "openlayerly-local-upload-"));
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(uploadDir, { recursive: true, force: true });
   });
 
@@ -59,6 +84,123 @@ describe("LocalStorageAdapter streaming uploads", () => {
     await expect(readFile(path.join(uploadDir, result.objectKey))).resolves.toEqual(
       Buffer.from("new image"),
     );
+  });
+
+  it("publishes a buffered object when opportunistic stale-part cleanup fails", async () => {
+    const cleanupError = Object.assign(new Error(`cannot scan ${uploadDir}`), { code: "EACCES" });
+    mocks.readdir.mockRejectedValueOnce(cleanupError);
+
+    const adapter = new LocalStorageAdapter();
+    const body = Buffer.from("new payment proof");
+    const result = await adapter.putObject({
+      objectKey: "payment-proof/cleanup-failed.png",
+      body,
+      contentType: "image/png",
+    });
+
+    expect(await readFile(path.join(uploadDir, result.objectKey))).toEqual(body);
+    expect(mocks.readdir).toHaveBeenCalledOnce();
+    await adapter.putObject({
+      objectKey: "payment-proof/cleanup-throttled.png",
+      body,
+      contentType: "image/png",
+    });
+    expect(mocks.readdir).toHaveBeenCalledOnce();
+    expect(mocks.loggerWarn).toHaveBeenCalledWith("Stale local upload part cleanup failed", {
+      operation: "local_upload_part.cleanup_stale",
+      cleanupError: { name: "Error", identifier: "EACCES" },
+    });
+    const logged = JSON.stringify(mocks.loggerWarn.mock.calls);
+    expect(logged).not.toContain(uploadDir);
+    expect(logged).not.toContain(cleanupError.message);
+    expect((await listFiles(uploadDir)).some((file) => file.endsWith(".part"))).toBe(false);
+  });
+
+  it("publishes a buffered object when stale-part failure logging also fails", async () => {
+    mocks.readdir.mockRejectedValueOnce(Object.assign(new Error("scan failed"), { code: "EIO" }));
+    mocks.loggerWarn.mockImplementationOnce(() => {
+      throw new Error("logger failed");
+    });
+
+    const adapter = new LocalStorageAdapter();
+    const body = Buffer.from("new cover image");
+    const result = await adapter.putObject({
+      objectKey: "content/cleanup-log-failed.png",
+      body,
+      contentType: "image/png",
+    });
+
+    expect(await readFile(path.join(uploadDir, result.objectKey))).toEqual(body);
+    expect(mocks.loggerWarn).toHaveBeenCalledOnce();
+  });
+
+  it("publishes a streamed object when opportunistic stale-part cleanup fails", async () => {
+    mocks.readdir.mockRejectedValueOnce(Object.assign(new Error("scan failed"), { code: "EIO" }));
+
+    const adapter = new LocalStorageAdapter();
+    const body = Buffer.from("streamed after cleanup failure");
+    const result = await adapter.putObjectStream({
+      objectKey: "content/cleanup-failed.bin",
+      body: Readable.from([body]),
+      contentType: "application/octet-stream",
+      maxBytes: 1024,
+    });
+
+    expect(result.stored.objectKey).toBe("content/cleanup-failed.bin");
+    expect(await readFile(path.join(uploadDir, result.stored.objectKey))).toEqual(body);
+    expect(mocks.loggerWarn).toHaveBeenCalledOnce();
+  });
+
+  it("coalesces concurrent cleanup attempts without an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown) => unhandled.push(error);
+    process.on("unhandledRejection", onUnhandled);
+    let rejectCleanup!: (error: unknown) => void;
+    const blockedCleanup = new Promise<never>((_resolve, reject) => {
+      rejectCleanup = reject;
+    });
+    mocks.readdir.mockReturnValueOnce(blockedCleanup);
+
+    try {
+      const adapter = new LocalStorageAdapter();
+      const buffered = adapter.putObject({
+        objectKey: "payment-proof/concurrent.png",
+        body: Buffer.from("buffered"),
+        contentType: "image/png",
+      });
+      const streamed = adapter.putObjectStream({
+        objectKey: "content/concurrent.bin",
+        body: Readable.from([Buffer.from("streamed")]),
+        contentType: "application/octet-stream",
+        maxBytes: 1024,
+      });
+      await vi.waitFor(() => expect(mocks.readdir).toHaveBeenCalledOnce());
+      rejectCleanup(Object.assign(new Error(`cannot scan ${uploadDir}`), { code: "EACCES" }));
+
+      await expect(buffered).resolves.toMatchObject({ objectKey: "payment-proof/concurrent.png" });
+      await expect(streamed).resolves.toMatchObject({
+        stored: { objectKey: "content/concurrent.bin" },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(mocks.loggerWarn).toHaveBeenCalledOnce();
+      await expect(readFile(path.join(uploadDir, "payment-proof/concurrent.png"))).resolves.toEqual(
+        Buffer.from("buffered"),
+      );
+      await expect(readFile(path.join(uploadDir, "content/concurrent.bin"))).resolves.toEqual(
+        Buffer.from("streamed"),
+      );
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("keeps explicit stale-part cleanup failures strict", async () => {
+    const cleanupError = Object.assign(new Error(`cannot scan ${uploadDir}`), { code: "EACCES" });
+    mocks.readdir.mockRejectedValueOnce(cleanupError);
+
+    await expect(cleanupStaleLocalUploadParts()).rejects.toBe(cleanupError);
+    expect(mocks.loggerWarn).not.toHaveBeenCalled();
   });
 
   it("writes through a same-directory part file and atomically publishes the final object", async () => {
