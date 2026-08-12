@@ -70,7 +70,10 @@ describeWithDatabase("upload compensation integration", () => {
       thrown = error;
     }
 
-    expect(thrown).toMatchObject({ code: "22012" });
+    expect(thrown).toMatchObject({
+      name: "DrizzleQueryError",
+      cause: expect.objectContaining({ code: "22012" }),
+    });
     await expect(db.select().from(files)).resolves.toHaveLength(0);
     expect(mocks.deleteObject).toHaveBeenCalledOnce();
     expect(mocks.loggerError).toHaveBeenCalledWith(
@@ -79,7 +82,7 @@ describeWithDatabase("upload compensation integration", () => {
         storageDriver: "s3",
         objectRef: expect.stringMatching(/^[a-f0-9]{64}$/),
         operation: "storage.delete_object",
-        primaryError: { name: "PostgresError", identifier: "22012" },
+        primaryError: { name: "DrizzleQueryError", identifier: "22012" },
         cleanupError: { name: "Error", identifier: "AccessDenied" },
       }),
     );

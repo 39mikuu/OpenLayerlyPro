@@ -35,4 +35,32 @@ describe("compensation logging", () => {
     expect(line).not.toContain("provider leaked a private name");
     output.mockRestore();
   });
+
+  it("classifies a wrapped error by its safe cause identifier", async () => {
+    const output = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const cause = Object.assign(new Error("database contains private detail"), { code: "22012" });
+    const primary = new Error("query wrapper contains private SQL", { cause });
+    primary.name = "DrizzleQueryError";
+
+    await compensateAndPreserveError(
+      primary,
+      [
+        {
+          operation: "storage.delete_object",
+          run: async () => {
+            throw new Error("cleanup contains private detail");
+          },
+        },
+      ],
+      { objectRef: "b".repeat(64) },
+    );
+
+    const line = String(output.mock.calls[0]?.[0]);
+    expect(JSON.parse(line)).toMatchObject({
+      primaryError: { name: "DrizzleQueryError", identifier: "22012" },
+    });
+    expect(line).not.toContain("database contains private detail");
+    expect(line).not.toContain("query wrapper contains private SQL");
+    output.mockRestore();
+  });
 });

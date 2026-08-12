@@ -12,13 +12,29 @@ type ErrorSummary = {
   identifier?: string | number;
 };
 
+function findErrorIdentifier(error: Error): string | number | undefined {
+  const seen = new Set<Error>();
+  let current: Error | undefined = error;
+
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    const code = (current as Error & { code?: unknown }).code;
+    if (typeof code === "string" || typeof code === "number") return code;
+
+    const cause: unknown = (current as Error & { cause?: unknown }).cause;
+    current = cause instanceof Error ? cause : undefined;
+  }
+
+  return undefined;
+}
+
 function summarizeError(error: unknown): ErrorSummary {
   if (!(error instanceof Error)) return { name: typeof error };
 
-  const code = (error as Error & { code?: unknown }).code;
+  const identifier = findErrorIdentifier(error);
   return {
     name: error.name,
-    ...(typeof code === "string" || typeof code === "number" ? { identifier: code } : {}),
+    ...(identifier === undefined ? {} : { identifier }),
   };
 }
 
