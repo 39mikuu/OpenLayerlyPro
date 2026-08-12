@@ -152,7 +152,7 @@ describe("payment proof multipart upload", () => {
       "Compensation step failed",
       expect.objectContaining({
         operation: "payment_proof_reservation.fail",
-        primaryError: { name: "Error", identifier: "imageInvalid" },
+        primaryError: { name: "ApiError", identifier: "imageInvalid" },
         cleanupError: { name: "Error", identifier: "57P01" },
       }),
     );
