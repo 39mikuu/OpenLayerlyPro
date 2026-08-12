@@ -6,13 +6,16 @@ export {
   type OAuthProviderAdminView,
   type OAuthProviderConfigInput,
   oauthProviderConfigSchema,
+  oauthProviderGroupKey,
   type OAuthProviderId,
   type ResolvedOAuthProviderConfig,
   saveOAuthProviderConfig,
 } from "./oauth";
 export {
   configClearSchema,
+  configWriteEnvelopeSchema,
   expectedRevisionSchema,
+  requireCurrentConfigRevision,
   requireExpectedRevision,
   requireWrittenRevision,
 } from "./revision";
@@ -40,7 +43,7 @@ export {
   type StorageConfigInput,
   storageConfigSchema,
 } from "./storage";
-export { deleteStoredGroup, getStoredGroup, setStoredGroup } from "./store";
+export { deleteStoredGroup, getStoredGroup, getStoredGroupRevision, setStoredGroup } from "./store";
 export {
   clearStripeConfig,
   getStripeAdminView,

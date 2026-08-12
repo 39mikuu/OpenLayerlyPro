@@ -7,10 +7,12 @@ import { requireAdmin } from "@/modules/auth/session";
 import {
   clearSmtpConfig,
   configClearSchema,
-  expectedRevisionSchema,
+  configWriteEnvelopeSchema,
   getSmtpAdminView,
+  requireCurrentConfigRevision,
   requireWrittenRevision,
   saveSmtpConfig,
+  SMTP_GROUP,
   smtpConfigSchema,
 } from "@/modules/config";
 
@@ -31,9 +33,11 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      smtpConfigSchema.extend({ revision: expectedRevisionSchema }),
+      configWriteEnvelopeSchema,
     );
-    const { revision, ...config } = input;
+    const { revision } = input;
+    await requireCurrentConfigRevision(SMTP_GROUP, revision);
+    const config = smtpConfigSchema.parse(input);
     const writtenRevision = await saveSmtpConfig(config, revision);
     return jsonOk(requireWrittenRevision(await getSmtpAdminView(), writtenRevision));
   } catch (err) {

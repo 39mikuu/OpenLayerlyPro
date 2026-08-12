@@ -7,10 +7,12 @@ import { requireAdmin } from "@/modules/auth/session";
 import {
   clearUploadConfig,
   configClearSchema,
-  expectedRevisionSchema,
+  configWriteEnvelopeSchema,
   getUploadAdminView,
+  requireCurrentConfigRevision,
   requireWrittenRevision,
   saveUploadConfig,
+  UPLOAD_GROUP,
   uploadConfigSchema,
 } from "@/modules/config";
 
@@ -31,9 +33,11 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      uploadConfigSchema.extend({ revision: expectedRevisionSchema }),
+      configWriteEnvelopeSchema,
     );
-    const { revision, ...config } = input;
+    const { revision } = input;
+    await requireCurrentConfigRevision(UPLOAD_GROUP, revision);
+    const config = uploadConfigSchema.parse(input);
     const writtenRevision = await saveUploadConfig(config, revision);
     return jsonOk(requireWrittenRevision(await getUploadAdminView(), writtenRevision));
   } catch (err) {

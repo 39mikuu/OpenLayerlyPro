@@ -7,10 +7,12 @@ import { requireAdmin } from "@/modules/auth/session";
 import {
   clearStorageConfig,
   configClearSchema,
-  expectedRevisionSchema,
+  configWriteEnvelopeSchema,
   getStorageAdminView,
+  requireCurrentConfigRevision,
   requireWrittenRevision,
   saveStorageConfig,
+  STORAGE_GROUP,
   storageConfigSchema,
 } from "@/modules/config";
 
@@ -31,9 +33,11 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      storageConfigSchema.extend({ revision: expectedRevisionSchema }),
+      configWriteEnvelopeSchema,
     );
-    const { revision, ...config } = input;
+    const { revision } = input;
+    await requireCurrentConfigRevision(STORAGE_GROUP, revision);
+    const config = storageConfigSchema.parse(input);
     const writtenRevision = await saveStorageConfig(config, revision);
     return jsonOk(requireWrittenRevision(await getStorageAdminView(), writtenRevision));
   } catch (err) {

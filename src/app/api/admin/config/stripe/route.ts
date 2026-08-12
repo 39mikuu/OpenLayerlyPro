@@ -7,10 +7,12 @@ import { requireAdmin } from "@/modules/auth/session";
 import {
   clearStripeConfig,
   configClearSchema,
-  expectedRevisionSchema,
+  configWriteEnvelopeSchema,
   getStripeAdminView,
+  requireCurrentConfigRevision,
   requireWrittenRevision,
   saveStripeConfig,
+  STRIPE_GROUP,
   stripeConfigSchema,
 } from "@/modules/config";
 
@@ -31,9 +33,11 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      stripeConfigSchema.extend({ revision: expectedRevisionSchema }),
+      configWriteEnvelopeSchema,
     );
-    const { revision, ...config } = input;
+    const { revision } = input;
+    await requireCurrentConfigRevision(STRIPE_GROUP, revision);
+    const config = stripeConfigSchema.parse(input);
     const writtenRevision = await saveStripeConfig(config, revision);
     return jsonOk(requireWrittenRevision(await getStripeAdminView(), writtenRevision));
   } catch (error) {

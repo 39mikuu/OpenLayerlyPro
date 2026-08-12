@@ -14,6 +14,18 @@ function conflict(): never {
   throw new ApiError(409, "configConflict");
 }
 
+export async function getStoredGroupRevision(
+  group: string,
+  db: DbClient = getDb(),
+): Promise<number> {
+  const [row] = await db
+    .select({ revision: appSettings.revision })
+    .from(appSettings)
+    .where(eq(appSettings.key, group))
+    .limit(1);
+  return row?.revision ?? 0;
+}
+
 export async function getStoredGroupSnapshot<T>(
   group: string,
   db: DbClient = getDb(),

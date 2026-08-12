@@ -7,10 +7,12 @@ import { requireAdmin } from "@/modules/auth/session";
 import {
   clearTurnstileConfig,
   configClearSchema,
-  expectedRevisionSchema,
+  configWriteEnvelopeSchema,
   getTurnstileAdminView,
+  requireCurrentConfigRevision,
   requireWrittenRevision,
   saveTurnstileConfig,
+  TURNSTILE_GROUP,
   turnstileConfigSchema,
 } from "@/modules/config";
 
@@ -31,9 +33,11 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      turnstileConfigSchema.extend({ revision: expectedRevisionSchema }),
+      configWriteEnvelopeSchema,
     );
-    const { revision, ...config } = input;
+    const { revision } = input;
+    await requireCurrentConfigRevision(TURNSTILE_GROUP, revision);
+    const config = turnstileConfigSchema.parse(input);
     const writtenRevision = await saveTurnstileConfig(config, revision);
     return jsonOk(requireWrittenRevision(await getTurnstileAdminView(), writtenRevision));
   } catch (err) {

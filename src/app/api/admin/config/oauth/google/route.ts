@@ -8,11 +8,13 @@ import {
   clearOAuthProviderConfig,
   getOAuthProviderAdminView,
   oauthProviderConfigSchema,
+  oauthProviderGroupKey,
   saveOAuthProviderConfig,
 } from "@/modules/config/oauth";
 import {
   configClearSchema,
-  expectedRevisionSchema,
+  configWriteEnvelopeSchema,
+  requireCurrentConfigRevision,
   requireWrittenRevision,
 } from "@/modules/config/revision";
 
@@ -33,9 +35,11 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      oauthProviderConfigSchema.extend({ revision: expectedRevisionSchema }),
+      configWriteEnvelopeSchema,
     );
-    const { revision, ...config } = input;
+    const { revision } = input;
+    await requireCurrentConfigRevision(oauthProviderGroupKey("google"), revision);
+    const config = oauthProviderConfigSchema.parse(input);
     const writtenRevision = await saveOAuthProviderConfig("google", config, revision);
     return jsonOk(
       requireWrittenRevision(await getOAuthProviderAdminView("google"), writtenRevision),

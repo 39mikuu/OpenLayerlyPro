@@ -6,6 +6,7 @@ import { ApiError } from "@/lib/api";
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
   getTranslationAdminView: vi.fn(),
+  requireCurrentConfigRevision: vi.fn(),
   saveTranslationConfig: vi.fn(),
   clearTranslationConfig: vi.fn(),
 }));
@@ -19,6 +20,7 @@ vi.mock("@/modules/config", async (importOriginal) => {
   return {
     ...original,
     getTranslationAdminView: mocks.getTranslationAdminView,
+    requireCurrentConfigRevision: mocks.requireCurrentConfigRevision,
     saveTranslationConfig: mocks.saveTranslationConfig,
     clearTranslationConfig: mocks.clearTranslationConfig,
   };
@@ -38,6 +40,7 @@ describe("admin translation config API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.requireAdmin.mockResolvedValue({ id: "admin", role: "admin" });
+    mocks.requireCurrentConfigRevision.mockResolvedValue(undefined);
     mocks.saveTranslationConfig.mockResolvedValue(4);
     mocks.getTranslationAdminView.mockResolvedValue({
       revision: 4,
@@ -105,9 +108,10 @@ describe("admin translation config API", () => {
     expect(missing.status).toBe(400);
     expect(mocks.saveTranslationConfig).not.toHaveBeenCalled();
 
-    mocks.saveTranslationConfig.mockRejectedValueOnce(new ApiError(409, "configConflict"));
+    mocks.requireCurrentConfigRevision.mockRejectedValueOnce(new ApiError(409, "configConflict"));
     const stale = await PUT(request({ revision: 3, enabled: false }));
     expect(stale.status).toBe(409);
     await expect(stale.json()).resolves.toMatchObject({ ok: false, code: "configConflict" });
+    expect(mocks.saveTranslationConfig).not.toHaveBeenCalled();
   });
 });

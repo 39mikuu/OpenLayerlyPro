@@ -7,10 +7,12 @@ import { requireAdmin } from "@/modules/auth/session";
 import {
   clearTranslationConfig,
   configClearSchema,
-  expectedRevisionSchema,
+  configWriteEnvelopeSchema,
   getTranslationAdminView,
+  requireCurrentConfigRevision,
   requireWrittenRevision,
   saveTranslationConfig,
+  TRANSLATION_GROUP,
   translationConfigSchema,
 } from "@/modules/config";
 
@@ -31,9 +33,11 @@ export async function PUT(req: NextRequest) {
     const input = await readJsonWithLimit(
       req,
       getEnv().REQUEST_JSON_MAX_BYTES,
-      translationConfigSchema.extend({ revision: expectedRevisionSchema }),
+      configWriteEnvelopeSchema,
     );
-    const { revision, ...config } = input;
+    const { revision } = input;
+    await requireCurrentConfigRevision(TRANSLATION_GROUP, revision);
+    const config = translationConfigSchema.parse(input);
     const writtenRevision = await saveTranslationConfig(config, revision);
     return jsonOk(requireWrittenRevision(await getTranslationAdminView(), writtenRevision));
   } catch (err) {

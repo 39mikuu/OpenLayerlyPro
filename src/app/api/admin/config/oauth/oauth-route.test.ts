@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   saveOAuthProviderConfig: vi.fn(),
   getOAuthProviderAdminView: vi.fn(),
   clearOAuthProviderConfig: vi.fn(),
+  requireCurrentConfigRevision: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/oauth", async (importOriginal) => {
@@ -31,7 +32,18 @@ vi.mock("@/modules/config/oauth", () => ({
   saveOAuthProviderConfig: mocks.saveOAuthProviderConfig,
   getOAuthProviderAdminView: mocks.getOAuthProviderAdminView,
   clearOAuthProviderConfig: mocks.clearOAuthProviderConfig,
-  oauthProviderConfigSchema: { extend: () => ({ parse: (x: unknown) => x }) },
+  oauthProviderConfigSchema: {
+    parse: (input: Record<string, unknown>) => {
+      const config = { ...input };
+      delete config.revision;
+      return config;
+    },
+  },
+  oauthProviderGroupKey: (provider: "google" | "github") => `oauth_${provider}`,
+}));
+vi.mock("@/modules/config/revision", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/modules/config/revision")>()),
+  requireCurrentConfigRevision: mocks.requireCurrentConfigRevision,
 }));
 
 import {
@@ -45,6 +57,7 @@ import { GET as startGoogleGET } from "@/app/api/auth/oauth/google/start/route";
 describe("OAuth routing & config endpoints", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.requireCurrentConfigRevision.mockResolvedValue(undefined);
     mocks.saveOAuthProviderConfig.mockResolvedValue(7);
     mocks.clearOAuthProviderConfig.mockResolvedValue(8);
   });
