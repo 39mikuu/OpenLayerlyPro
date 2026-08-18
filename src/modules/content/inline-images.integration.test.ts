@@ -10,12 +10,14 @@ const storageMocks = vi.hoisted(() => ({
 vi.mock("@/modules/storage", () => ({
   getStorage: vi.fn(async () => ({
     driver: "local" as const,
+    objectLocation: (objectKey: string) => ({ objectKey, bucket: null }),
     putObject: storageMocks.putObject,
     getObject: vi.fn(),
     deleteObject: storageMocks.deleteObject,
   })),
   getStorageForDriver: vi.fn(async () => ({
     driver: "local" as const,
+    objectLocation: (objectKey: string) => ({ objectKey, bucket: null }),
     putObject: storageMocks.putObject,
     getObject: vi.fn(),
     deleteObject: storageMocks.deleteObject,

@@ -44,6 +44,7 @@ export type SignedUrlInput = {
 
 export interface StorageAdapter {
   driver: "local" | "s3";
+  objectLocation(objectKey: string): StoredObject;
   putObject(input: PutObjectInput): Promise<StoredObject>;
   putObjectStream(input: PutObjectStreamInput): Promise<{
     stored: StoredObject;

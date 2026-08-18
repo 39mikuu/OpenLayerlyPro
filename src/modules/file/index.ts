@@ -35,6 +35,11 @@ import {
   UnsafeRasterImageError,
   UnsupportedRasterImageError,
 } from "./normalizeRasterImage";
+import {
+  consumeStorageUploadJournal,
+  createStorageUploadJournal,
+  reconcileStorageUploadJournal,
+} from "./uploadJournal";
 
 export type FilePurpose = FileRecord["purpose"];
 
@@ -224,6 +229,12 @@ export async function saveUploadedFile(input: {
   const downloadName = withAuthoritativeExtension(originalName, normalized.ext);
 
   const storage = await getStorage();
+  const objectLocation = storage.objectLocation(objectKey);
+  const uploadJournal = await createStorageUploadJournal({
+    storageDriver: storage.driver,
+    bucket: objectLocation.bucket,
+    objectKey: objectLocation.objectKey,
+  });
   let stored: Awaited<ReturnType<typeof storage.putObject>>;
   try {
     stored = await storage.putObject({
@@ -240,13 +251,23 @@ export async function saveUploadedFile(input: {
       error,
       [
         {
-          operation: "storage.delete_object",
-          run: () => storage.deleteObject({ objectKey }),
+          operation: "storage.reconcile_upload",
+          run: async () => {
+            await reconcileStorageUploadJournal(uploadJournal.id, {
+              force: true,
+              deleteObject: (payload) => storage.deleteObject(payload),
+            });
+          },
         },
       ],
       {
         storageDriver: storage.driver,
-        objectRef: opaqueCompensationResourceId(storage.driver, objectKey),
+        objectRef: opaqueCompensationResourceId(
+          storage.driver,
+          objectLocation.bucket,
+          objectLocation.objectKey,
+        ),
+        uploadJournalId: uploadJournal.id,
       },
     );
   }
@@ -254,6 +275,7 @@ export async function saveUploadedFile(input: {
   let record: FileRecord;
   try {
     record = await getDb().transaction(async (tx) => {
+      await consumeStorageUploadJournal(tx, uploadJournal.id);
       const [inserted] = await tx
         .insert(files)
         .values({
@@ -286,10 +308,21 @@ export async function saveUploadedFile(input: {
   } catch (error) {
     throw await compensateAndPreserveError(
       error,
-      [{ operation: "storage.delete_object", run: () => storage.deleteObject(stored) }],
+      [
+        {
+          operation: "storage.reconcile_upload",
+          run: async () => {
+            await reconcileStorageUploadJournal(uploadJournal.id, {
+              force: true,
+              deleteObject: (payload) => storage.deleteObject(payload),
+            });
+          },
+        },
+      ],
       {
         storageDriver: storage.driver,
-        objectRef: opaqueCompensationResourceId(storage.driver, stored.objectKey),
+        objectRef: opaqueCompensationResourceId(storage.driver, stored.bucket, stored.objectKey),
+        uploadJournalId: uploadJournal.id,
       },
     );
   }
@@ -327,6 +360,12 @@ export async function saveStreamedFile(input: {
   const { maxMb, maxBytes } = await getPurposeLimit("content_attachment");
   const objectKey = createObjectKey("content_attachment", fileName);
   const storage = await getStorage();
+  const objectLocation = storage.objectLocation(objectKey);
+  const uploadJournal = await createStorageUploadJournal({
+    storageDriver: storage.driver,
+    bucket: objectLocation.bucket,
+    objectKey: objectLocation.objectKey,
+  });
   let streamed;
   try {
     streamed = await storage.putObjectStream({
@@ -338,10 +377,33 @@ export async function saveStreamedFile(input: {
       signal: input.signal,
     });
   } catch (err) {
-    if (err instanceof StorageObjectTooLargeError) {
-      throw new ApiError(413, "fileTooLarge", { maxMb });
-    }
-    throw err;
+    const primaryError =
+      err instanceof StorageObjectTooLargeError
+        ? new ApiError(413, "fileTooLarge", { maxMb })
+        : err;
+    throw await compensateAndPreserveError(
+      primaryError,
+      [
+        {
+          operation: "storage.reconcile_upload",
+          run: async () => {
+            await reconcileStorageUploadJournal(uploadJournal.id, {
+              force: true,
+              deleteObject: (payload) => storage.deleteObject(payload),
+            });
+          },
+        },
+      ],
+      {
+        storageDriver: storage.driver,
+        objectRef: opaqueCompensationResourceId(
+          storage.driver,
+          objectLocation.bucket,
+          objectLocation.objectKey,
+        ),
+        uploadJournalId: uploadJournal.id,
+      },
+    );
   }
 
   if (streamed.sizeBytes === 0) {
@@ -349,49 +411,64 @@ export async function saveStreamedFile(input: {
       new ApiError(400, "fileEmpty"),
       [
         {
-          operation: "storage.delete_object",
-          run: () => storage.deleteObject(streamed.stored),
+          operation: "storage.reconcile_upload",
+          run: async () => {
+            await reconcileStorageUploadJournal(uploadJournal.id, {
+              force: true,
+              deleteObject: (payload) => storage.deleteObject(payload),
+            });
+          },
         },
       ],
       {
         storageDriver: storage.driver,
         objectRef: opaqueCompensationResourceId(storage.driver, streamed.stored.objectKey),
+        uploadJournalId: uploadJournal.id,
       },
     );
   }
 
   let record: FileRecord;
   try {
-    const [inserted] = await getDb()
-      .insert(files)
-      .values({
-        storageDriver: storage.driver,
-        bucket: streamed.stored.bucket,
-        objectKey: streamed.stored.objectKey,
-        originalName: fileName,
-        mimeType: normalizedContentType(fileName),
-        sizeBytes: streamed.sizeBytes,
-        sha256: streamed.sha256,
-        width: null,
-        height: null,
-        purpose: "content_attachment",
-        createdBy: input.createdBy ?? null,
-      })
-      .returning();
-    if (!inserted) throw new Error("文件记录写入失败");
-    record = inserted;
+    record = await getDb().transaction(async (tx) => {
+      await consumeStorageUploadJournal(tx, uploadJournal.id);
+      const [inserted] = await tx
+        .insert(files)
+        .values({
+          storageDriver: storage.driver,
+          bucket: streamed.stored.bucket,
+          objectKey: streamed.stored.objectKey,
+          originalName: fileName,
+          mimeType: normalizedContentType(fileName),
+          sizeBytes: streamed.sizeBytes,
+          sha256: streamed.sha256,
+          width: null,
+          height: null,
+          purpose: "content_attachment",
+          createdBy: input.createdBy ?? null,
+        })
+        .returning();
+      if (!inserted) throw new Error("文件记录写入失败");
+      return inserted;
+    });
   } catch (err) {
     throw await compensateAndPreserveError(
       err,
       [
         {
-          operation: "storage.delete_object",
-          run: () => storage.deleteObject(streamed.stored),
+          operation: "storage.reconcile_upload",
+          run: async () => {
+            await reconcileStorageUploadJournal(uploadJournal.id, {
+              force: true,
+              deleteObject: (payload) => storage.deleteObject(payload),
+            });
+          },
         },
       ],
       {
         storageDriver: storage.driver,
         objectRef: opaqueCompensationResourceId(storage.driver, streamed.stored.objectKey),
+        uploadJournalId: uploadJournal.id,
       },
     );
   }

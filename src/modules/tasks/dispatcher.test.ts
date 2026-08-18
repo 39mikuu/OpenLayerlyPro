@@ -44,6 +44,7 @@ describe("task dispatcher", () => {
       defer: vi.fn(),
       renew: vi.fn().mockResolvedValue(true),
       sweep: vi.fn().mockResolvedValue([]),
+      maintainStorageUploadJournals: vi.fn().mockResolvedValue(0),
     };
   }
 
@@ -60,6 +61,7 @@ describe("task dispatcher", () => {
 
     await expect(dispatchTaskBatch(deps)).resolves.toBe(2);
     expect(deps.sweep).toHaveBeenCalledTimes(1);
+    expect(deps.maintainStorageUploadJournals).toHaveBeenCalledTimes(1);
     expect(deps.claimClass).toHaveBeenCalledTimes(7);
     expect(deps.claimClass).toHaveBeenNthCalledWith(1, "transactional", { includeStale: true });
     expect(deps.claimClass).toHaveBeenNthCalledWith(2, "transactional", { includeStale: true });
@@ -86,6 +88,10 @@ describe("task dispatcher", () => {
       calls.push("sweep");
       return [];
     });
+    deps.maintainStorageUploadJournals.mockImplementation(async () => {
+      calls.push("rearm");
+      return 0;
+    });
     deps.claimClass.mockImplementation(async () => {
       calls.push("claim");
       if (deps.claimClass.mock.calls.length === 1) return { ...first, reclaimedStale: false };
@@ -102,7 +108,7 @@ describe("task dispatcher", () => {
 
     expect(deps.sweep).toHaveBeenCalledTimes(1);
     expect(deps.claimClass).toHaveBeenCalledTimes(7);
-    expect(calls.slice(0, 2)).toEqual(["sweep", "claim"]);
+    expect(calls.slice(0, 3)).toEqual(["sweep", "rearm", "claim"]);
   });
 
   it("processes at most the configured batch size", async () => {

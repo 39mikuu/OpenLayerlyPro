@@ -1,6 +1,7 @@
 import { getEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { maintainMagicLinkDeliveryState } from "@/modules/auth/magic-link-maintenance";
+import { rearmExhaustedStorageUploadReconciliationTasks } from "@/modules/file/uploadJournal";
 import {
   claimDueTasks,
   claimOneTaskForClass,
@@ -32,6 +33,7 @@ type DispatcherDependencies = {
   renew: typeof renewTaskLease;
   sweep: typeof sweepExpiredFinalAttemptTasks;
   maintainMagicLinkDelivery?: typeof maintainMagicLinkDeliveryState;
+  maintainStorageUploadJournals?: typeof rearmExhaustedStorageUploadReconciliationTasks;
 };
 
 const defaultDependencies: DispatcherDependencies = {
@@ -46,6 +48,7 @@ const defaultDependencies: DispatcherDependencies = {
   renew: renewTaskLease,
   sweep: sweepExpiredFinalAttemptTasks,
   maintainMagicLinkDelivery: maintainMagicLinkDeliveryState,
+  maintainStorageUploadJournals: rearmExhaustedStorageUploadReconciliationTasks,
 };
 
 export async function dispatchClaimedTask(
@@ -149,6 +152,7 @@ export async function dispatchTaskBatch(
   dependencies: DispatcherDependencies = defaultDependencies,
 ): Promise<number> {
   await dependencies.sweep();
+  await dependencies.maintainStorageUploadJournals?.();
   await dependencies.maintainMagicLinkDelivery?.();
 
   const env = getEnv();

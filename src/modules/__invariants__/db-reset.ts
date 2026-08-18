@@ -17,6 +17,7 @@ export async function resetDatabase(db: DbClient = getDb()): Promise<void> {
       notification_preferences,
       audit_events,
       tasks,
+      storage_upload_journal,
       app_events,
       payment_provider_events,
       payment_proof_upload_reservations,

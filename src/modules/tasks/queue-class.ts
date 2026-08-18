@@ -22,6 +22,7 @@ const QUEUE_DEFAULTS: Record<string, { queueClass: TaskQueueClass; priority: num
   "notification.deliver": { queueClass: "notification", priority: 90 },
   "notification.campaign_finalize": { queueClass: "notification", priority: 95 },
   "file.cleanup_orphan": { queueClass: "maintenance", priority: 120 },
+  "storage.reconcile_upload": { queueClass: "maintenance", priority: 120 },
   "storage.delete_object": { queueClass: "maintenance", priority: 120 },
   "payment_proof.cleanup": { queueClass: "maintenance", priority: 120 },
 };

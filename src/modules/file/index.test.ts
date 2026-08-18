@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   deleteObject: vi.fn(),
+  consumeUploadJournal: vi.fn(),
+  createUploadJournal: vi.fn(),
   enqueueTask: vi.fn(),
   getDb: vi.fn(),
   getStorage: vi.fn(),
@@ -10,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   loggerError: vi.fn(),
   putObject: vi.fn(),
   putObjectStream: vi.fn(),
+  reconcileUploadJournal: vi.fn(),
   recordEvent: vi.fn(),
   returning: vi.fn(),
   values: vi.fn(),
@@ -38,6 +41,11 @@ vi.mock("@/modules/storage", () => ({
 }));
 vi.mock("@/modules/system/events", () => ({ recordEvent: mocks.recordEvent }));
 vi.mock("@/modules/tasks", () => ({ enqueueTask: mocks.enqueueTask }));
+vi.mock("./uploadJournal", () => ({
+  consumeStorageUploadJournal: mocks.consumeUploadJournal,
+  createStorageUploadJournal: mocks.createUploadJournal,
+  reconcileStorageUploadJournal: mocks.reconcileUploadJournal,
+}));
 
 import { ApiError } from "@/lib/api";
 
@@ -47,6 +55,7 @@ const storage = {
   driver: "local" as const,
   deleteObject: mocks.deleteObject,
   getObject: vi.fn(),
+  objectLocation: (objectKey: string) => ({ objectKey, bucket: null }),
   putObject: mocks.putObject,
   putObjectStream: mocks.putObjectStream,
 };
@@ -66,13 +75,34 @@ describe("streamed file persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getStorage.mockResolvedValue(storage);
-    mocks.putObjectStream.mockResolvedValue({
-      stored: { objectKey: "content/2026/06/video.mp4", bucket: null },
+    mocks.putObjectStream.mockImplementation(async ({ objectKey }: { objectKey: string }) => ({
+      stored: { objectKey, bucket: null },
       sizeBytes: 123,
       sha256: "a".repeat(64),
-    });
+    }));
     mocks.deleteObject.mockResolvedValue(undefined);
-    mocks.putObject.mockResolvedValue({ objectKey: "content/image.png", bucket: null });
+    mocks.putObject.mockImplementation(async ({ objectKey }: { objectKey: string }) => ({
+      objectKey,
+      bucket: null,
+    }));
+    mocks.createUploadJournal.mockImplementation(async (payload) => ({
+      id: "11111111-1111-4111-8111-111111111111",
+      reconcileAfter: new Date("2026-06-25T00:00:00.000Z"),
+      payload,
+    }));
+    mocks.consumeUploadJournal.mockResolvedValue(undefined);
+    mocks.reconcileUploadJournal.mockImplementation(async (_journalId, options) => {
+      const payload = mocks.createUploadJournal.mock.calls.at(-1)?.[0];
+      try {
+        await options.deleteObject(payload);
+      } catch (cause) {
+        class StorageUploadReconciliationError extends Error {}
+        throw new StorageUploadReconciliationError("Storage upload reconciliation failed", {
+          cause,
+        });
+      }
+      return { outcome: "deleted" };
+    });
     setInsertResult([{ id: "file-1" }]);
   });
 
@@ -113,10 +143,12 @@ describe("streamed file persistence", () => {
       }),
     ).rejects.toThrow("database unavailable");
 
-    expect(mocks.deleteObject).toHaveBeenCalledWith({
-      objectKey: "content/2026/06/video.mp4",
-      bucket: null,
-    });
+    expect(mocks.deleteObject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objectKey: expect.stringMatching(/^content\/\d{4}\/\d{2}\/.+-archive\.zip$/),
+        bucket: null,
+      }),
+    );
   });
 
   it("preserves the database error when object cleanup also fails", async () => {
@@ -142,19 +174,19 @@ describe("streamed file persistence", () => {
     expect(mocks.loggerError).toHaveBeenCalledWith(
       "Compensation step failed",
       expect.objectContaining({
-        operation: "storage.delete_object",
+        operation: "storage.reconcile_upload",
         primaryError: { name: "Error", identifier: "57P01" },
-        cleanupError: { name: "Error", identifier: "AccessDenied" },
+        cleanupError: { name: "StorageUploadReconciliationError", identifier: "AccessDenied" },
       }),
     );
   });
 
   it("deletes an empty uploaded object before returning fileEmpty", async () => {
-    mocks.putObjectStream.mockResolvedValue({
-      stored: { objectKey: "content/empty.txt", bucket: null },
+    mocks.putObjectStream.mockImplementationOnce(async ({ objectKey }: { objectKey: string }) => ({
+      stored: { objectKey, bucket: null },
       sizeBytes: 0,
       sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    });
+    }));
 
     await expect(
       saveStreamedFile({
@@ -163,19 +195,21 @@ describe("streamed file persistence", () => {
         purpose: "content_attachment",
       }),
     ).rejects.toMatchObject({ code: "fileEmpty" });
-    expect(mocks.deleteObject).toHaveBeenCalledWith({
-      objectKey: "content/empty.txt",
-      bucket: null,
-    });
+    expect(mocks.deleteObject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objectKey: expect.stringMatching(/^content\/\d{4}\/\d{2}\/.+-empty\.txt$/),
+        bucket: null,
+      }),
+    );
     expect(mocks.insert).not.toHaveBeenCalled();
   });
 
   it("preserves fileEmpty when deleting the empty object also fails", async () => {
-    mocks.putObjectStream.mockResolvedValue({
-      stored: { objectKey: "content/empty.txt", bucket: null },
+    mocks.putObjectStream.mockImplementationOnce(async ({ objectKey }: { objectKey: string }) => ({
+      stored: { objectKey, bucket: null },
       sizeBytes: 0,
       sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    });
+    }));
     mocks.deleteObject.mockRejectedValue(new Error("delete failed"));
 
     await expect(
@@ -210,18 +244,21 @@ describe("streamed file persistence", () => {
     }
 
     expect(thrown).toBe(primary);
-    expect(mocks.deleteObject).toHaveBeenCalledWith({
-      objectKey: expect.stringMatching(/^content\/\d{4}\/\d{2}\/.+-partial\.png$/),
-    });
+    expect(mocks.deleteObject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objectKey: expect.stringMatching(/^content\/\d{4}\/\d{2}\/.+-partial\.png$/),
+        bucket: null,
+      }),
+    );
     expect(mocks.insert).not.toHaveBeenCalled();
     expect(mocks.loggerError).toHaveBeenCalledWith(
       "Compensation step failed",
       expect.objectContaining({
         storageDriver: "local",
         objectRef: expect.stringMatching(/^[a-f0-9]{64}$/),
-        operation: "storage.delete_object",
+        operation: "storage.reconcile_upload",
         primaryError: { name: "Error", identifier: "TimeoutError" },
-        cleanupError: { name: "Error", identifier: "AccessDenied" },
+        cleanupError: { name: "StorageUploadReconciliationError", identifier: "AccessDenied" },
       }),
     );
     expect(mocks.loggerError.mock.calls[0]?.[1]).not.toHaveProperty("objectKey");
@@ -286,10 +323,12 @@ describe("streamed file persistence", () => {
       expect.anything(),
       expect.objectContaining({ id: "file-1" }),
     );
-    expect(mocks.deleteObject).toHaveBeenCalledWith({
-      objectKey: "content/image.png",
-      bucket: null,
-    });
+    expect(mocks.deleteObject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objectKey: expect.stringMatching(/^payment-proof\/\d{4}\/\d{2}\/.+-proof\.png$/),
+        bucket: null,
+      }),
+    );
   });
 
   it("uses sniffed output type instead of the client MIME or extension", async () => {
