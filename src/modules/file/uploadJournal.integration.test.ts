@@ -1,4 +1,7 @@
 import { and, eq, lte, sql } from "drizzle-orm";
+import { mkdtemp, readFile, rename, rm, unlink, writeFile } from "fs/promises";
+import { tmpdir } from "os";
+import path from "path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getDb } from "@/db";
@@ -9,8 +12,10 @@ import {
   consumeStorageUploadJournal,
   createStorageUploadJournal,
   rearmExhaustedStorageUploadReconciliationTasks,
+  rearmStorageUploadJournalsAfterRestore,
   reconcileStorageUploadJournal,
   STORAGE_UPLOAD_RECONCILE_REARM_DELAY_MS,
+  STORAGE_UPLOAD_TOMBSTONE_RECHECK_MS,
   StorageUploadJournalOwnershipLostError,
   StorageUploadReconciliationError,
 } from "./uploadJournal";
@@ -87,7 +92,7 @@ describeWithDatabase("durable storage upload journal", () => {
     ).resolves.toHaveLength(1);
   });
 
-  it("keeps failed deletion durable, expedites retry, then reconciles idempotently", async () => {
+  it("keeps failed deletion durable, expedites retry, then retains the cleanup tombstone", async () => {
     const journal = await createStorageUploadJournal(object);
     const deleteObject = vi
       .fn()
@@ -108,16 +113,19 @@ describeWithDatabase("durable storage upload journal", () => {
         .where(and(eq(tasks.id, journal.id), lte(tasks.runAfter, sql`now()`))),
     ).resolves.toHaveLength(1);
 
+    await db
+      .update(storageUploadJournal)
+      .set({ reconcileAfter: sql`now()` })
+      .where(eq(storageUploadJournal.id, journal.id));
+
     await expect(reconcileStorageUploadJournal(journal.id, { deleteObject })).resolves.toEqual({
-      outcome: "deleted",
-    });
-    await expect(reconcileStorageUploadJournal(journal.id, { deleteObject })).resolves.toEqual({
-      outcome: "missing",
+      outcome: "defer",
+      deferUntil: expect.any(Date),
     });
     expect(deleteObject).toHaveBeenCalledTimes(2);
     await expect(
       db.select().from(storageUploadJournal).where(eq(storageUploadJournal.id, journal.id)),
-    ).resolves.toHaveLength(0);
+    ).resolves.toMatchObject([{ id: journal.id, status: "deleting" }]);
   });
 
   it("re-arms an exhausted cleanup task after a cooldown until its journal converges", async () => {
@@ -189,7 +197,139 @@ describeWithDatabase("durable storage upload journal", () => {
     ).rejects.toBeInstanceOf(StorageUploadJournalOwnershipLostError);
 
     releaseDelete();
-    await expect(cleanup).resolves.toEqual({ outcome: "deleted" });
+    await expect(cleanup).resolves.toEqual({
+      outcome: "defer",
+      deferUntil: expect.any(Date),
+    });
+    await expect(
+      db.select().from(storageUploadJournal).where(eq(storageUploadJournal.id, journal.id)),
+    ).resolves.toMatchObject([{ id: journal.id, status: "deleting" }]);
+  });
+
+  it("retains a tombstone and deletes an S3-compatible late publication", async () => {
+    const journal = await createStorageUploadJournal(object);
+    let objectPresent = false;
+    const deleteObject = vi.fn(async () => {
+      objectPresent = false;
+    });
+
+    await expect(
+      reconcileStorageUploadJournal(journal.id, { force: true, deleteObject }),
+    ).resolves.toEqual({ outcome: "defer", deferUntil: expect.any(Date) });
+
+    // The original write publishes only after cleanup's first delete completed.
+    objectPresent = true;
+    await db
+      .update(storageUploadJournal)
+      .set({ reconcileAfter: sql`now()` })
+      .where(eq(storageUploadJournal.id, journal.id));
+
+    await expect(reconcileStorageUploadJournal(journal.id, { deleteObject })).resolves.toEqual({
+      outcome: "defer",
+      deferUntil: expect.any(Date),
+    });
+    expect(objectPresent).toBe(false);
+    expect(deleteObject).toHaveBeenCalledTimes(2);
+    await expect(
+      db.select().from(storageUploadJournal).where(eq(storageUploadJournal.id, journal.id)),
+    ).resolves.toMatchObject([{ id: journal.id, status: "deleting" }]);
+  });
+
+  it("deletes a Local object renamed into place after an earlier cleanup", async () => {
+    const journal = await createStorageUploadJournal({
+      storageDriver: "local",
+      bucket: null,
+      objectKey: "content/2026/08/late-rename.png",
+    });
+    const directory = await mkdtemp(path.join(tmpdir(), "olp-upload-journal-late-rename-"));
+    const partPath = path.join(directory, "late-rename.part");
+    const finalPath = path.join(directory, "late-rename.png");
+    const deleteObject = vi.fn(async () => {
+      await unlink(finalPath).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      });
+    });
+
+    try {
+      await writeFile(partPath, "late local upload");
+      await reconcileStorageUploadJournal(journal.id, { force: true, deleteObject });
+
+      await rename(partPath, finalPath);
+      await expect(readFile(finalPath, "utf8")).resolves.toBe("late local upload");
+      await db
+        .update(storageUploadJournal)
+        .set({ reconcileAfter: sql`now()` })
+        .where(eq(storageUploadJournal.id, journal.id));
+      await reconcileStorageUploadJournal(journal.id, { deleteObject });
+
+      await expect(readFile(finalPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(deleteObject).toHaveBeenCalledTimes(2);
+      await expect(
+        db.select().from(storageUploadJournal).where(eq(storageUploadJournal.id, journal.id)),
+      ).resolves.toMatchObject([{ id: journal.id, status: "deleting" }]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the tombstone durable across restore and a later publication", async () => {
+    const journal = await createStorageUploadJournal(object);
+    let objectPresent = false;
+    const deleteObject = vi.fn(async () => {
+      objectPresent = false;
+    });
+
+    await db.transaction((tx) => rearmStorageUploadJournalsAfterRestore(tx));
+    await expect(reconcileStorageUploadJournal(journal.id, { deleteObject })).resolves.toEqual({
+      outcome: "defer",
+      deferUntil: expect.any(Date),
+    });
+
+    objectPresent = true;
+    await db
+      .update(storageUploadJournal)
+      .set({ reconcileAfter: sql`now()` })
+      .where(eq(storageUploadJournal.id, journal.id));
+    await reconcileStorageUploadJournal(journal.id, { deleteObject });
+
+    expect(objectPresent).toBe(false);
+    expect(deleteObject).toHaveBeenCalledTimes(2);
+    await expect(
+      db.select().from(storageUploadJournal).where(eq(storageUploadJournal.id, journal.id)),
+    ).resolves.toMatchObject([{ id: journal.id, status: "deleting" }]);
+  });
+
+  it("keeps retrying after a publisher crashes without finalizing the upload", async () => {
+    const journal = await createStorageUploadJournal(object);
+    let objectPresent = false;
+    const deleteObject = vi.fn(async () => {
+      objectPresent = false;
+    });
+
+    await reconcileStorageUploadJournal(journal.id, { force: true, deleteObject });
+    objectPresent = true;
+    await db
+      .update(storageUploadJournal)
+      .set({ reconcileAfter: sql`now()` })
+      .where(eq(storageUploadJournal.id, journal.id));
+
+    await expect(reconcileStorageUploadJournal(journal.id, { deleteObject })).resolves.toEqual({
+      outcome: "defer",
+      deferUntil: expect.any(Date),
+    });
+    expect(objectPresent).toBe(false);
+    await expect(
+      db.select().from(storageUploadJournal).where(eq(storageUploadJournal.id, journal.id)),
+    ).resolves.toMatchObject([{ id: journal.id, status: "deleting" }]);
+    const [retained] = await db
+      .select({
+        delayIsBounded: sql<boolean>`${storageUploadJournal.reconcileAfter} between
+          now() + (${STORAGE_UPLOAD_TOMBSTONE_RECHECK_MS - 1_000} * interval '1 millisecond')
+          and now() + (${STORAGE_UPLOAD_TOMBSTONE_RECHECK_MS + 1_000} * interval '1 millisecond')`,
+      })
+      .from(storageUploadJournal)
+      .where(eq(storageUploadJournal.id, journal.id));
+    expect(retained?.delayIsBounded).toBe(true);
   });
 
   it("releases the database transaction before external object deletion", async () => {
@@ -207,7 +347,7 @@ describeWithDatabase("durable storage upload journal", () => {
 
     await expect(
       reconcileStorageUploadJournal(journal.id, { force: true, deleteObject }),
-    ).resolves.toEqual({ outcome: "deleted" });
+    ).resolves.toEqual({ outcome: "defer", deferUntil: expect.any(Date) });
   });
 
   it("defers before the PostgreSQL-authored grace deadline", async () => {
