@@ -206,8 +206,11 @@ describe("task handlers", () => {
       bucket: null,
       objectKey: "content/2026/06/image.png",
     } as const;
-    await runTaskHandler(task(payload, "storage.delete_object"));
-    expect(mocks.deleteStorageObject).toHaveBeenCalledWith(payload);
+    const execution = ownedTaskExecutionContext();
+    await runTaskHandlerWithOwnership(task(payload, "storage.delete_object"), execution);
+    expect(mocks.deleteStorageObject).toHaveBeenCalledWith(payload, {
+      assertOwnership: execution.assertOwnership,
+    });
   });
 
   it("does not start storage deletion after task ownership is lost", async () => {
@@ -308,6 +311,7 @@ describe("task handlers", () => {
     expect(mocks.deliverMagicLinkEmailTask).toHaveBeenCalledWith(payload, {
       taskId: "11111111-1111-4111-8111-111111111111",
       lockToken: "worker",
+      assertTaskOwnership: expect.any(Function),
     });
   });
 

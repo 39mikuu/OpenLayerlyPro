@@ -24,7 +24,12 @@ vi.mock("@/lib/logger", () => ({
   logger: { info: mocks.loggerInfo, warn: vi.fn(), error: vi.fn() },
 }));
 
-import { sendLoginCodeEmail, sendNewPostNotificationEmail, sendTestEmail } from "./index";
+import {
+  sendLoginCodeEmail,
+  sendMagicLinkEmail,
+  sendNewPostNotificationEmail,
+  sendTestEmail,
+} from "./index";
 
 describe("SMTP transport", () => {
   beforeEach(() => {
@@ -52,6 +57,40 @@ describe("SMTP transport", () => {
         socketTimeout: 45_000,
       }),
     );
+  });
+
+  it("revalidates Magic Link task ownership after config resolution and before SMTP", async () => {
+    let finishConfigResolution!: (config: Awaited<ReturnType<typeof mocks.getSmtpConfig>>) => void;
+    const configBlocked = new Promise<Awaited<ReturnType<typeof mocks.getSmtpConfig>>>(
+      (resolve) => {
+        finishConfigResolution = resolve;
+      },
+    );
+    mocks.getSmtpConfig.mockReturnValueOnce(configBlocked);
+    const ownershipLost = new Error("task ownership lost");
+    const assertTaskOwnership = vi.fn().mockRejectedValue(ownershipLost);
+
+    const delivery = sendMagicLinkEmail(
+      "fan@example.com",
+      "https://example.test/login/magic/token",
+      "en",
+      { assertTaskOwnership },
+    );
+    await vi.waitFor(() => expect(mocks.getSmtpConfig).toHaveBeenCalledOnce());
+    expect(assertTaskOwnership).not.toHaveBeenCalled();
+
+    finishConfigResolution({
+      configured: true,
+      host: "smtp.example.com",
+      port: 587,
+      secure: false,
+      user: "mailer",
+      password: "secret",
+      from: "noreply@example.com",
+    });
+    await expect(delivery).rejects.toBe(ownershipLost);
+    expect(assertTaskOwnership).toHaveBeenCalledOnce();
+    expect(mocks.sendMail).not.toHaveBeenCalled();
   });
 
   it("classifies the raw provider error before discarding sensitive transport details", async () => {

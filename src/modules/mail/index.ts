@@ -25,6 +25,7 @@ type SendMailInput = {
   text: string;
   headers?: Record<string, string>;
   safeLog?: MailSafeLog;
+  assertTaskOwnership?: () => Promise<void>;
 };
 
 // 按解析后配置缓存 transporter;配置变更(后台保存)后缓存键变化会自动重建,
@@ -52,6 +53,7 @@ async function sendMail(input: SendMailInput): Promise<void> {
   if (!cfg.configured) {
     throw new ApiError(500, "mailNotConfigured");
   }
+  await input.assertTaskOwnership?.();
   try {
     await getTransporter(cfg).sendMail({
       from: cfg.from,
@@ -126,9 +128,15 @@ export async function sendMagicLinkEmail(
   to: string,
   confirmUrl: string,
   locale?: Locale,
+  options: { assertTaskOwnership?: () => Promise<void> } = {},
 ): Promise<void> {
   const message = renderMagicLinkEmail(confirmUrl, locale);
-  await sendMail({ to, subject: message.subject, text: message.text });
+  await sendMail({
+    to,
+    subject: message.subject,
+    text: message.text,
+    assertTaskOwnership: options.assertTaskOwnership,
+  });
 }
 
 /**

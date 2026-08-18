@@ -43,6 +43,7 @@ import { type MagicLinkKey, tryGetMagicLinkKeys } from "@/modules/security/magic
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask, enqueueTaskReturningId } from "@/modules/tasks";
 import { PermanentTaskError } from "@/modules/tasks/errors";
+import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
 import { findOrCreateUserByEmail, touchLastLogin } from "@/modules/user";
 
 export const MAGIC_LINK_TTL_MINUTES = 15;
@@ -79,6 +80,8 @@ export type MagicLinkRequestTaskPayload = {
 export type MagicLinkEmailTaskFence = {
   taskId: string;
   lockToken: string | null;
+  /** Required by the legacy delivery path at its last safe point before SMTP. */
+  assertTaskOwnership?: () => Promise<void>;
 };
 
 export type MagicLinkRejectionReason = "invalid" | "expired" | "replayed";
@@ -496,6 +499,10 @@ async function deliverLegacyMagicLinkEmailTask(
 
   if ("note" in delivery) return delivery.note;
 
+  if (!fence.assertTaskOwnership) {
+    throw new PermanentTaskError("Magic link task ownership fence is missing");
+  }
+
   // SMTP and config lookup intentionally happen after Tx1 commits, so neither a
   // database connection nor the per-email advisory lock is held during network I/O.
   try {
@@ -503,8 +510,10 @@ async function deliverLegacyMagicLinkEmailTask(
       delivery.email,
       buildMagicLinkConfirmUrl(delivery.token),
       payload.locale,
+      { assertTaskOwnership: fence.assertTaskOwnership },
     );
   } catch (error) {
+    if (error instanceof TaskOwnershipLostError) throw error;
     const classification = classifyMailError(error);
     if (classification === "transient") {
       throw new MailDeliveryError("transient");

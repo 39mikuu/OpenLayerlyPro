@@ -60,7 +60,7 @@ Mail tasks that can become obsolete must re-check their current business state i
 - restored or retried work must not send a notification whose state can no longer be verified.
 - restore neutralization dead-letters nonterminal payment/membership transactional email tasks and bulk notification task kinds when the delivery outcome is unknown; renewal reminders may re-arm only with a v2 subscription/period reference and still revalidate freshness.
 
-These checks occur outside long database transactions. The task claim/fence is captured in a short transaction, SMTP runs afterward, and only the current claim may commit the final task/delivery state.
+These checks occur outside long database transactions. The task claim/fence is captured in a short transaction and task ownership is revalidated after that transaction at the last safe point before SMTP; only the current claim may start delivery or commit the final task/delivery state.
 
 ## At-Least-Once Residual
 

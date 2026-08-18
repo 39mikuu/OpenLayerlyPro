@@ -353,7 +353,7 @@ async function runStorageDeleteTask(
   const parsed = storageDeletePayloadSchema.safeParse(task.payloadJson);
   if (!parsed.success) throw new PermanentTaskError("Invalid storage.delete_object payload");
   await execution.assertOwnership();
-  await deleteStorageObject(parsed.data);
+  await deleteStorageObject(parsed.data, { assertOwnership: execution.assertOwnership });
   return {};
 }
 
@@ -406,6 +406,7 @@ export async function runTaskHandler(
       const note = await deliverMagicLinkEmailTask(parsed.data, {
         taskId: task.id,
         lockToken: task.lockedBy,
+        assertTaskOwnership: execution.assertOwnership,
       });
       return note ? { note } : {};
     }

@@ -217,7 +217,10 @@ export async function reconcileStorageUploadJournal(
 
   await options.assertOwnership?.();
   try {
-    await (options.deleteObject ?? deleteStorageObject)(phase.payload);
+    await (
+      options.deleteObject ??
+      ((payload) => deleteStorageObject(payload, { assertOwnership: options.assertOwnership }))
+    )(phase.payload);
   } catch (error) {
     throw new StorageUploadReconciliationError(error);
   }
