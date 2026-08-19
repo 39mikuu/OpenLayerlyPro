@@ -60,7 +60,7 @@ src/
 5. **配置契约单一来源**：消费者只调用 `src/modules/config/*`；不得在 UI、Integration 与业务模块各维护一份启用/来源判断。
 6. **存储位置按文件记录**：历史文件按 `storageDriver` 与 bucket 读取；切换当前 driver 不迁移旧文件。
 7. **事务外不做外部 I/O**：SMTP、Stripe/S3 网络调用不得占用数据库事务或 advisory lock；使用 claim/fence 分阶段提交。
-   文件上传在对象写入前原子创建 `storage_upload_journal` 与 cleanup task；成功时 `files` 行与 journal 消费同事务提交，失败/崩溃后由 maintenance task 在事务外幂等删除对象；耗尽单轮重试的 journal task 会在冷却后自动重新武装，直到收敛。
+   文件上传在对象写入前原子创建 `storage_upload_journal` 与 cleanup task；成功时 `files` 行与 journal 消费同事务提交。cleanup 删除无精确引用的对象后仍保留 tombstone 并低频重复幂等删除，因为 S3-compatible provider 没有统一可证明的最晚提交上界；只有正常上传事务消费 journal 或发现精确 `files` 引用时才移除。删除失败耗尽单轮重试的 task 会在冷却后自动重新武装。失败上传会因此永久占用一行 journal/task 并周期性调用 provider DELETE，运维需监控 maintenance backlog 与存储 API 配额。
 8. **敏感信息边界明确**：secret、token、验证码明文和原始 provider 错误不得进入日志、非授权管理响应或可公开输出；邮件任务 `payload_json` 属于敏感数据库数据，当前仍保存收件人地址，必须按用户数据保护其数据库访问、备份与留存。
 9. **单实例边界明确**：当前限流与 dispatcher 以单 app 实例为目标；多实例共享 limiter/调度属于 Phase 10。
 

@@ -722,8 +722,9 @@ export const files = pgTable(
 );
 
 // Row existence means an object write has not yet been atomically paired with
-// a files row or durably reconciled. The cleanup task is created in the same
-// transaction as this row, before storage I/O begins.
+// a files row, or remains a durable cleanup tombstone for possible late
+// publication. The cleanup task is created in the same transaction as this row,
+// before storage I/O begins.
 export const storageUploadJournal = pgTable(
   "storage_upload_journal",
   {
