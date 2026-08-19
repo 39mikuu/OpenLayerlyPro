@@ -101,7 +101,7 @@ describe("streamed file persistence", () => {
           cause,
         });
       }
-      return { outcome: "deleted" };
+      return { outcome: "defer", deferUntil: new Date("2026-06-26T00:00:00.000Z") };
     });
     setInsertResult([{ id: "file-1" }]);
   });

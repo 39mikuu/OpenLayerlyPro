@@ -8,6 +8,7 @@ import type { StorageDeletePayload } from "@/modules/file/storageDeleteTask";
 import { enqueueTask } from "@/modules/tasks/enqueue";
 
 const STORAGE_UPLOAD_RECONCILE_GRACE_MS = 24 * 60 * 60 * 1_000;
+export const STORAGE_UPLOAD_TOMBSTONE_RECHECK_MS = 24 * 60 * 60 * 1_000;
 export const STORAGE_UPLOAD_RECONCILE_MAX_ATTEMPTS = 10;
 export const STORAGE_UPLOAD_RECONCILE_REARM_DELAY_MS = 6 * 60 * 60 * 1_000;
 
@@ -26,7 +27,7 @@ export class StorageUploadReconciliationError extends Error {
 }
 
 export type StorageUploadReconcileResult =
-  | { outcome: "missing" | "referenced" | "deleted" }
+  | { outcome: "missing" | "referenced" }
   | { outcome: "defer"; deferUntil: Date };
 
 function cleanupTaskDedupeKey(journalId: string): string {
@@ -178,7 +179,7 @@ export async function reconcileStorageUploadJournal(
     if (!selected) return { outcome: "missing" } as const;
     const { journal, due } = selected;
 
-    if (journal.status === "pending" && options.force !== true && !due) {
+    if (options.force !== true && !due) {
       return { outcome: "defer", deferUntil: journal.reconcileAfter } as const;
     }
 
@@ -223,9 +224,14 @@ export async function reconcileStorageUploadJournal(
   }
   await options.assertOwnership?.();
 
-  await getDb().transaction(async (tx) => {
-    await tx.delete(storageUploadJournal).where(eq(storageUploadJournal.id, journalId));
-    await removeUnclaimedCleanupTask(tx, journalId);
-  });
-  return { outcome: "deleted" };
+  const [retained] = await getDb()
+    .update(storageUploadJournal)
+    .set({
+      reconcileAfter: sql`now() + (${STORAGE_UPLOAD_TOMBSTONE_RECHECK_MS} * interval '1 millisecond')`,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(storageUploadJournal.id, journalId))
+    .returning({ reconcileAfter: storageUploadJournal.reconcileAfter });
+  if (!retained) return { outcome: "missing" };
+  return { outcome: "defer", deferUntil: retained.reconcileAfter };
 }

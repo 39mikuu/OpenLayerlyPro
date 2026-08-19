@@ -106,7 +106,7 @@ describe("task handlers", () => {
     mocks.sendRenewalReminderEmail.mockResolvedValue(undefined);
     mocks.cleanupOrphanFile.mockResolvedValue("deleted");
     mocks.deleteStorageObject.mockResolvedValue(undefined);
-    mocks.reconcileStorageUploadJournal.mockResolvedValue({ outcome: "deleted" });
+    mocks.reconcileStorageUploadJournal.mockResolvedValue({ outcome: "referenced" });
     mocks.dispatchPaymentProviderEvent.mockResolvedValue(undefined);
     mocks.deliverLoginCodeEmailTask.mockResolvedValue(undefined);
     mocks.deliverMagicLinkEmailTask.mockResolvedValue(undefined);
@@ -237,7 +237,7 @@ describe("task handlers", () => {
     expect(mocks.reconcileStorageUploadJournal).toHaveBeenCalledWith(journalId, {
       assertOwnership: execution.assertOwnership,
     });
-    expect(result.note).toContain("deleted");
+    expect(result.note).toContain("referenced");
   });
 
   it("defers an upload journal when its authoritative grace period has not elapsed", async () => {

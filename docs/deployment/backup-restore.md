@@ -213,7 +213,7 @@ Key invariants:
 
 - compatibility must pass before the official DB is dropped;
 - all restored `storage.delete_object` rows, including terminal rows, are removed so stale dedupe keys cannot block convergence;
-- every restored upload journal is fenced into `deleting` state and paired with a fresh `storage.reconcile_upload` task; reconciliation still preserves any exact `files` reference before deleting storage;
+- every restored upload journal is fenced into `deleting` state and paired with a fresh `storage.reconcile_upload` task; reconciliation still preserves any exact `files` reference before deleting storage, and unreferenced journals remain as retryable tombstones after every successful delete so a resumed or provider-delayed write cannot become a permanent orphan;
 - provider-event rows and dispatch tasks are restored as a pair;
 - restored nonterminal v2 transactional payment/membership emails are neutralized to prevent unsafe replay; v2 renewal reminders are only re-armed when they carry a subscription/period reference and must revalidate freshness before sending;
 - restored nonterminal `notification.deliver`, `notification.campaign_expand`, and `notification.campaign_finalize` tasks are dead-lettered, and resolvable notification deliveries/campaigns are marked dead so no notification email is replayed after restore with unknown delivery outcome;
