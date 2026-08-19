@@ -51,7 +51,7 @@ import {
 } from "@/modules/payment/subscriptions";
 
 import { PermanentTaskError } from "./errors";
-import type { TaskExecutionContext } from "./ownership";
+import { type TaskExecutionContext, TaskOwnershipLostError } from "./ownership";
 import { paymentProviderEventPayloadSchema } from "./payloads";
 
 const emailPayloadSchema = z.discriminatedUnion("template", [
@@ -260,21 +260,28 @@ async function runEmailTask(
       expectedStatus: "approved",
     });
     deliver = () =>
-      sendMembershipActivatedEmail(email.to, email.tierName, email.endsAt, email.locale);
+      sendMembershipActivatedEmail(email.to, email.tierName, email.endsAt, email.locale, {
+        assertTaskOwnership: execution.assertOwnership,
+      });
   } else if (payload.template === "membership_revoked") {
     const email = await resolveMembershipEmail({
       paymentRequestId: payload.paymentRequestId,
       membershipId: payload.membershipId,
       expectedStatus: "reversed",
     });
-    deliver = () => sendMembershipRevokedEmail(email.to, email.tierName, email.locale);
+    deliver = () =>
+      sendMembershipRevokedEmail(email.to, email.tierName, email.locale, {
+        assertTaskOwnership: execution.assertOwnership,
+      });
   } else if (payload.template === "payment_rejected") {
     const email = await resolvePaymentRejectedEmail({
       paymentRequestId: payload.paymentRequestId,
       reviewedAt: new Date(payload.reviewedAt),
     });
     deliver = () =>
-      sendPaymentRejectedEmail(email.to, email.tierName, email.reviewNote, email.locale);
+      sendPaymentRejectedEmail(email.to, email.tierName, email.reviewNote, email.locale, {
+        assertTaskOwnership: execution.assertOwnership,
+      });
   } else {
     const periodEndsAt = new Date(payload.periodEndsAt);
     const email = await resolveRenewalReminderEmail({
@@ -284,7 +291,10 @@ async function runEmailTask(
     if (email.kind === "skip")
       return { note: "Renewal reminder became inactive or stale; delivery skipped" };
 
-    deliver = () => sendRenewalReminderEmail(email.to, email.tierName, email.endsAt, email.locale);
+    deliver = () =>
+      sendRenewalReminderEmail(email.to, email.tierName, email.endsAt, email.locale, {
+        assertTaskOwnership: execution.assertOwnership,
+      });
   }
 
   await execution.assertOwnership();
@@ -292,6 +302,7 @@ async function runEmailTask(
     await deliver();
     return {};
   } catch (error) {
+    if (error instanceof TaskOwnershipLostError) throw error;
     const classification = classifyMailError(error);
     if (classification === "permanent") {
       throw new PermanentTaskError("Email delivery failed permanently", {

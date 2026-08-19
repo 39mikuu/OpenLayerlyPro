@@ -42,7 +42,7 @@ import {
 import { getNotificationUnsubscribeKeys } from "@/modules/security/notification-unsubscribe-key";
 import { PermanentTaskError } from "@/modules/tasks/errors";
 import type { TaskHandlerResult } from "@/modules/tasks/handlers";
-import type { TaskExecutionContext } from "@/modules/tasks/ownership";
+import { type TaskExecutionContext, TaskOwnershipLostError } from "@/modules/tasks/ownership";
 
 const notificationDeliveryPayloadSchema = z.object({
   version: z.literal(1),
@@ -504,6 +504,27 @@ async function recordNeedsOperatorDeferTx(
   });
 }
 
+async function expireOpenStartedAttemptsTx(tx: DbClient, deliveryId: string): Promise<void> {
+  // The caller already owns the task -> delivery -> campaign locks. Close any
+  // indeterminate attempt from a prior claim before recording this claim's
+  // preflight or send attempt. Keep smtpAttempted as-is because a crashed
+  // worker may already have crossed the transport boundary.
+  await tx
+    .update(notificationDeliveryAttempts)
+    .set({
+      outcome: "lease_expired",
+      errorKind: "lease_expired",
+      completedAt: sql`now()`,
+    })
+    .where(
+      and(
+        eq(notificationDeliveryAttempts.deliveryId, deliveryId),
+        eq(notificationDeliveryAttempts.outcome, "started"),
+        isNull(notificationDeliveryAttempts.completedAt),
+      ),
+    );
+}
+
 async function preflightNeedsOperatorTx(
   task: Task,
   userId: string,
@@ -520,6 +541,7 @@ async function preflightNeedsOperatorTx(
       )
     )
       return { kind: "done" };
+    await expireOpenStartedAttemptsTx(tx, delivery.id);
     const terminal = expired(delivery.createdAt, now);
     const deferUntil = operatorDeferUntil(now);
     await recordNeedsOperatorDeferTx(tx, {
@@ -550,6 +572,8 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
       )
     )
       return { kind: "done" };
+
+    await expireOpenStartedAttemptsTx(tx, delivery.id);
 
     async function terminalSkip(
       outcome: DeliveryOutcome,
@@ -720,6 +744,44 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
         siteName,
       },
     };
+  });
+}
+
+async function finishOwnershipLostBeforeNotificationSmtp(message: PreparedMessage): Promise<void> {
+  await getDb().transaction(async (tx) => {
+    // Preserve the task -> delivery -> attempt lock order used by prepare,
+    // finish, and the final-attempt sweep. The exact attempt update is safe
+    // after reclaim because this callback failed before Nodemailer started.
+    const [task] = await tx
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(eq(tasks.id, message.taskId))
+      .limit(1)
+      .for("update");
+    if (!task) return;
+    const [delivery] = await tx
+      .select({ id: notificationDeliveries.id })
+      .from(notificationDeliveries)
+      .where(eq(notificationDeliveries.id, message.deliveryId))
+      .limit(1)
+      .for("update");
+    if (!delivery) return;
+
+    await tx
+      .update(notificationDeliveryAttempts)
+      .set({
+        outcome: "lease_expired",
+        errorKind: "lease_expired",
+        smtpAttempted: false,
+        completedAt: sql`now()`,
+      })
+      .where(
+        and(
+          eq(notificationDeliveryAttempts.id, message.attemptId),
+          eq(notificationDeliveryAttempts.outcome, "started"),
+          isNull(notificationDeliveryAttempts.completedAt),
+        ),
+      );
   });
 }
 
@@ -1105,8 +1167,8 @@ export async function handleNotificationDeliveryTask(
   if (prepared.kind === "done") return {};
 
   const message = prepared.message;
-  await execution.assertOwnership();
   try {
+    await execution.assertOwnership();
     // SMTP accepted is at-least-once, not exactly-once. If the worker crashes
     // after the SMTP server accepts but before the post-SMTP transaction or task
     // success, a stale lease retry may send a duplicate and record a new attempt.
@@ -1130,8 +1192,15 @@ export async function handleNotificationDeliveryTask(
         attemptId: message.attemptId,
         recipientDigest: message.recipientDigest,
       },
+      { assertTaskOwnership: execution.assertOwnership },
     );
   } catch (error) {
+    if (error instanceof TaskOwnershipLostError) {
+      // Preserve the ownership error even if best-effort ledger convergence
+      // fails; the reclaiming worker closes any remaining open started row.
+      await finishOwnershipLostBeforeNotificationSmtp(message).catch(() => undefined);
+      throw error;
+    }
     return finishFailureTx(message, classifyMailError(error));
   }
   await finishAcceptedWithFinalAttemptFallback(message);

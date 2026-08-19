@@ -19,6 +19,10 @@ export type MailSafeLog = {
   recipientDigest?: string;
 };
 
+export type MailTaskOwnershipOptions = {
+  assertTaskOwnership?: () => Promise<void>;
+};
+
 type SendMailInput = {
   to: string;
   subject: string;
@@ -103,9 +107,19 @@ export function renderLoginCodeEmail(code: string, locale?: Locale) {
   };
 }
 
-export async function sendLoginCodeEmail(to: string, code: string, locale?: Locale): Promise<void> {
+export async function sendLoginCodeEmail(
+  to: string,
+  code: string,
+  locale?: Locale,
+  options: MailTaskOwnershipOptions = {},
+): Promise<void> {
   const message = renderLoginCodeEmail(code, locale);
-  await sendMail({ to, subject: message.subject, text: message.text });
+  await sendMail({
+    to,
+    subject: message.subject,
+    text: message.text,
+    assertTaskOwnership: options.assertTaskOwnership,
+  });
 }
 
 export function renderMagicLinkEmail(confirmUrl: string, locale?: Locale) {
@@ -242,9 +256,15 @@ export async function sendMembershipActivatedEmail(
   tierName: string,
   endsAt: Date,
   locale?: Locale,
+  options: MailTaskOwnershipOptions = {},
 ): Promise<void> {
   const message = renderMembershipActivatedEmail(tierName, endsAt, locale);
-  await sendMail({ to, subject: message.subject, text: message.text });
+  await sendMail({
+    to,
+    subject: message.subject,
+    text: message.text,
+    assertTaskOwnership: options.assertTaskOwnership,
+  });
 }
 
 export function renderMembershipRevokedEmail(tierName: string, locale?: Locale) {
@@ -265,9 +285,15 @@ export async function sendMembershipRevokedEmail(
   to: string,
   tierName: string,
   locale?: Locale,
+  options: MailTaskOwnershipOptions = {},
 ): Promise<void> {
   const message = renderMembershipRevokedEmail(tierName, locale);
-  await sendMail({ to, subject: message.subject, text: message.text });
+  await sendMail({
+    to,
+    subject: message.subject,
+    text: message.text,
+    assertTaskOwnership: options.assertTaskOwnership,
+  });
 }
 
 export function renderRenewalReminderEmail(tierName: string, endsAt: Date, locale?: Locale) {
@@ -290,9 +316,15 @@ export async function sendRenewalReminderEmail(
   tierName: string,
   endsAt: Date,
   locale?: Locale,
+  options: MailTaskOwnershipOptions = {},
 ): Promise<void> {
   const message = renderRenewalReminderEmail(tierName, endsAt, locale);
-  await sendMail({ to, subject: message.subject, text: message.text });
+  await sendMail({
+    to,
+    subject: message.subject,
+    text: message.text,
+    assertTaskOwnership: options.assertTaskOwnership,
+  });
 }
 
 export function renderPaymentRejectedEmail(
@@ -318,9 +350,15 @@ export async function sendPaymentRejectedEmail(
   tierName: string,
   reviewNote?: string | null,
   locale?: Locale,
+  options: MailTaskOwnershipOptions = {},
 ): Promise<void> {
   const message = renderPaymentRejectedEmail(tierName, reviewNote, locale);
-  await sendMail({ to, subject: message.subject, text: message.text });
+  await sendMail({
+    to,
+    subject: message.subject,
+    text: message.text,
+    assertTaskOwnership: options.assertTaskOwnership,
+  });
 }
 
 export function renderTestEmail(locale?: Locale) {
@@ -380,6 +418,7 @@ export async function sendNewPostNotificationEmail(
   locale: Locale,
   headers: Record<string, string>,
   safeLog: MailSafeLog,
+  options: MailTaskOwnershipOptions = {},
 ): Promise<void> {
   const message = renderNewPostNotificationEmail(
     {
@@ -403,5 +442,6 @@ export async function sendNewPostNotificationEmail(
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     },
     safeLog: { ...safeLog, template: "new_post_notification", category: "notification" },
+    assertTaskOwnership: options.assertTaskOwnership,
   });
 }

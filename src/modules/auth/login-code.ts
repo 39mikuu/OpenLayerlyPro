@@ -27,6 +27,7 @@ import { classifyMailError, MailDeliveryError } from "@/modules/mail/delivery";
 import { recordEvent } from "@/modules/system/events";
 import { enqueueTask } from "@/modules/tasks";
 import { PermanentTaskError } from "@/modules/tasks/errors";
+import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
 import { findOrCreateUserByEmail, touchLastLogin } from "@/modules/user";
 
 const CODE_TTL_MINUTES = 10;
@@ -320,8 +321,11 @@ export async function deliverLoginCodeEmailTask(
   // database connection nor the per-email advisory lock is held during network I/O.
   await fence.assertTaskOwnership();
   try {
-    await sendLoginCodeEmail(delivery.email, delivery.code, payload.locale);
+    await sendLoginCodeEmail(delivery.email, delivery.code, payload.locale, {
+      assertTaskOwnership: fence.assertTaskOwnership,
+    });
   } catch (error) {
+    if (error instanceof TaskOwnershipLostError) throw error;
     const classification = classifyMailError(error);
     if (classification === "transient") {
       throw new MailDeliveryError("transient");

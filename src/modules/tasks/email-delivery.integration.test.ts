@@ -38,8 +38,11 @@ import { membershipTiers, paymentRequests, tasks, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { MailDeliveryError } from "@/modules/mail/delivery";
-import { claimDueTasks } from "@/modules/tasks";
+import { claimDueTasks, renewTaskLease } from "@/modules/tasks";
 import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
+import { runTaskHandler } from "@/modules/tasks/handlers";
+import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
+import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -119,8 +122,56 @@ describeWithDatabase("business email delivery policy", () => {
       "Supporter",
       "Proof unclear",
       "ja",
+      { assertTaskOwnership: expect.any(Function) },
     );
     expect(JSON.stringify(claimed.payloadJson)).not.toContain(latestUser!.email);
+  });
+
+  it("does not start business SMTP after another worker reclaims the task", async () => {
+    const { claimed } = await insertAndClaim();
+    let assertionCount = 0;
+    let reachLastSafePoint!: () => void;
+    let resumeWorkerA!: () => void;
+    let smtpStarted = false;
+    const lastSafePointReached = new Promise<void>((resolve) => {
+      reachLastSafePoint = resolve;
+    });
+    const workerAPaused = new Promise<void>((resolve) => {
+      resumeWorkerA = resolve;
+    });
+    const execution = ownedTaskExecutionContext();
+    execution.assertOwnership = vi.fn(async () => {
+      assertionCount += 1;
+      if (assertionCount === 1) return;
+      reachLastSafePoint();
+      await workerAPaused;
+      const renewed = await renewTaskLease(claimed.id, claimed.lockedBy!);
+      if (!renewed) throw new TaskOwnershipLostError();
+    });
+    mocks.sendPaymentRejectedEmail.mockImplementation(
+      async (_to, _tierName, _reviewNote, _locale, options) => {
+        await options?.assertTaskOwnership?.();
+        smtpStarted = true;
+      },
+    );
+
+    const delivery = runTaskHandler(claimed, execution);
+    await lastSafePointReached;
+    await db
+      .update(tasks)
+      .set({ leaseUntil: sql`now() - interval '1 second'` })
+      .where(eq(tasks.id, claimed.id));
+    const [claimedByB] = await claimDueTasks(1, {
+      lockToken: "business-email-worker-b",
+      leaseMs: 60_000,
+    });
+    expect(claimedByB).toMatchObject({ id: claimed.id, lockedBy: "business-email-worker-b" });
+
+    resumeWorkerA();
+    await expect(delivery).rejects.toBeInstanceOf(TaskOwnershipLostError);
+    expect(execution.assertOwnership).toHaveBeenCalledTimes(2);
+    expect(mocks.sendPaymentRejectedEmail).toHaveBeenCalledOnce();
+    expect(smtpStarted).toBe(false);
   });
 
   it("defers missing SMTP without consuming the claimed attempt", async () => {

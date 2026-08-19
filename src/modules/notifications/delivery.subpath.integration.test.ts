@@ -131,6 +131,7 @@ describeWithDatabase("notification delivery under an APP_URL path prefix", () =>
       "en",
       {},
       expect.anything(),
+      { assertTaskOwnership: expect.any(Function) },
     );
   });
 });

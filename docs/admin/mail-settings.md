@@ -66,6 +66,8 @@ These checks occur outside long database transactions. The task claim/fence is c
 
 SMTP does not provide exactly-once delivery. If the provider accepts a message and the worker crashes before the database records success, lease recovery may send the same logical message again. Stable Message-ID and the delivery ledger improve traceability but cannot eliminate mailbox/provider duplicates.
 
+Notification quota reservations are not refunded when a worker loses ownership after preparation but before SMTP starts. When the losing worker persists its exact pre-SMTP cleanup, the abandoned attempt is recorded as `lease_expired` with `smtpAttempted=false`. If that worker crashes or cleanup cannot be persisted, the reclaiming worker still closes the attempt as `lease_expired` but conservatively preserves `smtpAttempted=true`. In both cases, the consumed reservation may defer the reclaiming worker to a later pacing or budget window.
+
 Bulk post notifications are opt-in by default off. They render in the recipient's current locale, skip archived/unpublished posts at send time, and write suppression records only for synchronous permanent SMTP rejection from notification delivery. Suppression does not affect login codes, payment emails, membership emails, or renewal reminders.
 
 Operators should monitor the task dashboard, deferred/dead counts, and delivery ledger rather than treating task enqueue as proof of inbox arrival.
