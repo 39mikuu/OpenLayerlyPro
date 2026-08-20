@@ -39,7 +39,8 @@
    - 默认 `max_attempts=5` 表示总共最多执行 5 次：第 1/2/3/4 次失败分别退避 1m/2m/4m/8m，第 5 次失败进入 `dead`。
    - 完成、失败与续租更新都必须匹配 `id + status='processing' + locked_by=<claim token>`；旧 worker 的迟到结果不能覆盖重新领取后的状态。
    - **租约是必须的**：`skip locked` 只保护「领取那一刻」。若任务进入 `processing` 后进程崩溃，没有租约它会永久卡住；`lease_until` 让超时任务可被重新领取。长任务需在执行中续租。
-   - 派发器每次只领取一条并立即执行，每个 tick 最多处理 20 条，避免批量预领取导致后排任务在执行前 lease 已过期。
+   - 派发器的每个空闲执行槽每次只领取一条并立即启动执行；默认最多 4 个并发槽（`TASK_DISPATCH_CONCURRENCY`，范围 1–4），每个 tick 最多处理 20 条。禁止先批量预领取再排队，避免后排任务在执行前 lease 已过期。
+   - 同一 tick 内，某 queue class 已确认没有可领取任务后不再重复探测；并发入队的新任务最迟由下一个约 10 秒 tick 领取。该负缓存只减少空查询，不跨 tick，也不改变 quota、stale reclaim 或 fencing 语义。
    - 首版跑在应用进程内的定时器即可，符合 #7「single-instance」。
 4. **`kind` 区分处理器**：`email` 处理器发信；`publish_post` 处理器执行定时发布（见第 5 点）。两者共用领取/租约/重试/幂等骨架。
 5. **定时发布不给 post 增加 `scheduled` 状态**：保持 `posts.status` 为 `draft / published / archived`，新增 `posts.scheduled_at` 时间戳。`publish_post` 处理器做条件更新 `where status='draft' and scheduled_at <= now` → 置 `published`、`published_at=now`、清空 `scheduled_at`。这样**不扩展翻译状态机**，也不触及 `post_translations` 的「每语言一条 published」唯一索引。

@@ -36,6 +36,8 @@ type DispatcherDependencies = {
   maintainStorageUploadJournals?: typeof rearmExhaustedStorageUploadReconciliationTasks;
 };
 
+type ClaimedTask = Awaited<ReturnType<typeof claimDueTasks>>[number];
+
 const defaultDependencies: DispatcherDependencies = {
   claim: claimDueTasks,
   claimClass: claimOneTaskForClass,
@@ -52,7 +54,7 @@ const defaultDependencies: DispatcherDependencies = {
 };
 
 export async function dispatchClaimedTask(
-  task: Awaited<ReturnType<typeof claimDueTasks>>[number],
+  task: ClaimedTask,
   dependencies: DispatcherDependencies = defaultDependencies,
 ): Promise<void> {
   const lockToken = task.lockedBy;
@@ -164,6 +166,7 @@ export async function dispatchTaskBatch(
   let notificationStaleClaimed = 0;
   let maintenanceClaimed = 0;
   let authIntakeClaimed = 0;
+  const emptyQueueClasses = new Set<TaskQueueClass>();
 
   const claimClass = async (queueClass: TaskQueueClass) => {
     if (queueClass === "maintenance" && maintenanceClaimed >= env.TASK_MAINTENANCE_MAX_PER_BATCH) {
@@ -172,6 +175,7 @@ export async function dispatchTaskBatch(
     if (queueClass === "auth_intake" && authIntakeClaimed >= env.TASK_AUTH_INTAKE_MAX_PER_BATCH) {
       return null;
     }
+    if (emptyQueueClasses.has(queueClass)) return null;
     const includeStale =
       queueClass !== "notification" ||
       notificationStaleClaimed < env.TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH;
@@ -179,7 +183,10 @@ export async function dispatchTaskBatch(
       queueClass === "transactional" && dependencies.claimGroup
         ? await dependencies.claimGroup(["transactional", "auth_delivery_v2"], { includeStale })
         : await claimOneForClass(queueClass, { includeStale });
-    if (!task) return null;
+    if (!task) {
+      emptyQueueClasses.add(queueClass);
+      return null;
+    }
     if (task.queueClass === "transactional" || task.queueClass === "auth_delivery_v2") {
       transactionalClaimed += 1;
     }
@@ -201,7 +208,8 @@ export async function dispatchTaskBatch(
     return null;
   };
 
-  for (; processed < TASK_BATCH_SIZE; processed += 1) {
+  const claimNextTask = async () => {
+    if (processed >= TASK_BATCH_SIZE) return null;
     const remainingSlots = TASK_BATCH_SIZE - processed;
     const notificationDeficit = env.TASK_NOTIFICATION_MIN_PER_BATCH - notificationClaimed;
     const defaultDeficit = env.TASK_DEFAULT_MIN_PER_BATCH - defaultClaimed;
@@ -249,9 +257,51 @@ export async function dispatchTaskBatch(
                         "maintenance",
                         "auth_intake",
                       ]);
-    if (!task) break;
-    await dispatchClaimedTask(task, dependencies);
+    if (task) processed += 1;
+    return task;
+  };
+
+  let hasDispatchError = false;
+  let dispatchError: unknown;
+  const inFlight = new Set<Promise<void>>();
+  const startClaimedTask = (task: ClaimedTask) => {
+    const work = dispatchClaimedTask(task, dependencies)
+      .catch((error: unknown) => {
+        if (!hasDispatchError) {
+          hasDispatchError = true;
+          dispatchError = error;
+        }
+      })
+      .finally(() => {
+        inFlight.delete(work);
+      });
+    inFlight.add(work);
+  };
+
+  try {
+    while (processed < TASK_BATCH_SIZE && !hasDispatchError) {
+      if (inFlight.size >= env.TASK_DISPATCH_CONCURRENCY) {
+        await Promise.race(inFlight);
+        continue;
+      }
+
+      const task = await claimNextTask();
+      if (!task) break;
+      // Do not batch-preclaim: start the heartbeat and handler before another
+      // slot is allowed to claim its next task.
+      startClaimedTask(task);
+    }
+  } catch (error) {
+    if (!hasDispatchError) {
+      hasDispatchError = true;
+      dispatchError = error;
+    }
   }
+
+  // A claim or finalize failure must not release the outer tick's reentrancy
+  // guard while another claimed task is still executing.
+  await Promise.all(inFlight);
+  if (hasDispatchError) throw dispatchError;
   return processed;
 }
 

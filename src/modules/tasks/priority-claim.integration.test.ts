@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getDb } from "@/db";
 import { tasks } from "@/db/schema";
+import { __resetEnvForTests } from "@/lib/env";
 
 import { dispatchTaskBatch } from "./dispatcher";
 import { enqueueTask } from "./enqueue";
@@ -303,6 +304,79 @@ describeWithDatabase("priority task class claims", () => {
       expect(tick.filter((kind) => kind === "default")).toHaveLength(2);
       expect(tick.filter((kind) => kind === "transactional")).toHaveLength(16);
       expect(tick.slice(0, 8)).toEqual(Array<TaskQueueClass>(8).fill("transactional"));
+    }
+  });
+
+  it("runs claim-one handlers concurrently without duplicate execution", async () => {
+    const previousConcurrency = process.env.TASK_DISPATCH_CONCURRENCY;
+    process.env.TASK_DISPATCH_CONCURRENCY = "4";
+    __resetEnvForTests();
+    try {
+      await db.execute(sql`
+        INSERT INTO tasks(kind, payload_json, run_after, status, attempts, max_attempts, priority, queue_class)
+        SELECT 'publish_post', '{}'::jsonb, now() - interval '1 second', 'pending', 0, 5, 20, 'default'
+        FROM generate_series(1, 12);
+      `);
+
+      const seen = new Set<string>();
+      let active = 0;
+      let maxActive = 0;
+      let releaseInitial: (() => void) | undefined;
+      let initialSlotsStarted: (() => void) | undefined;
+      const initialGate = new Promise<void>((resolve) => {
+        releaseInitial = resolve;
+      });
+      const fourRunning = new Promise<void>((resolve) => {
+        initialSlotsStarted = resolve;
+      });
+      const deps = {
+        claim: claimDueTasks,
+        run: vi.fn(async (task: { id: string }) => {
+          expect(seen.has(task.id)).toBe(false);
+          seen.add(task.id);
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          if (seen.size <= 4) {
+            if (seen.size === 4) initialSlotsStarted?.();
+            await initialGate;
+          }
+          active -= 1;
+          return {};
+        }),
+        succeed: markTaskSucceeded,
+        fail: markTaskFailed,
+        dead: markTaskDead,
+        defer: deferTask,
+        renew: renewTaskLease,
+        sweep: sweepExpiredFinalAttemptTasks,
+      };
+
+      const dispatching = dispatchTaskBatch(deps);
+      await fourRunning;
+      expect(active).toBe(4);
+      releaseInitial?.();
+      await expect(dispatching).resolves.toBe(12);
+
+      expect(maxActive).toBe(4);
+      expect(seen.size).toBe(12);
+      const finalRows = await db.execute<{
+        status: string;
+        attempts: number;
+        locked_by: string | null;
+      }>(sql`
+        SELECT status, attempts, locked_by
+        FROM tasks
+      `);
+      expect(finalRows).toHaveLength(12);
+      expect(
+        finalRows.every(
+          (row) => row.status === "succeeded" && row.attempts === 1 && row.locked_by === null,
+        ),
+      ).toBe(true);
+    } finally {
+      if (previousConcurrency === undefined) delete process.env.TASK_DISPATCH_CONCURRENCY;
+      else process.env.TASK_DISPATCH_CONCURRENCY = previousConcurrency;
+      __resetEnvForTests();
     }
   });
 

@@ -3,9 +3,16 @@
 > **Historical audit record** pinned to the baseline below; written pre-v1.0.
 > `v1.0.0` has since been released — "before v1.0" phrasing reflects the
 > decision context at audit time, not a current gate.
+>
+> **2026-08 OPT-06 follow-up:** bounded parallel execution uses independent
+> claim-one slots that start their handler immediately. It does not batch-preclaim
+> or queue leased work, so the lease-before-start risk described in §4.1 is not
+> introduced. Per-tick empty-class caching removes repeated empty probes and is
+> discarded before the next poll.
 
 - **Baseline:** `e08363ab988785cc510ea1900f7e2c178bf14cf8` (validated on the current `main`).
-- **Type:** design + benchmark. **No production code is changed in this branch.**
+- **Original artifact type:** design + benchmark. The issue-101 audit branch changed no production
+  code; the later OPT-06 follow-up recorded above is a separate implementation.
 - **Classification result:** **Confirmed P2 scalability issue; not a v1.0 correctness blocker.** The
   two low-risk query-path optimizations in §4 may be tracked and landed independently, while batch
   execution (§4.1) remains a separate guarded design task. The correctness/fencing invariants (§1)
