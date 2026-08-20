@@ -3,7 +3,13 @@ import { z } from "zod";
 import { ApiError } from "@/lib/api";
 
 import { requireExpectedRevision } from "./revision";
-import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
+import {
+  deleteStoredGroup,
+  getStoredGroup,
+  getStoredGroupSnapshot,
+  setStoredGroup,
+  type StoredGroupSnapshot,
+} from "./store";
 
 export const TRANSLATION_GROUP = "translation";
 
@@ -116,8 +122,11 @@ export async function getTranslationConfig(): Promise<ResolvedTranslationConfig>
   return resolveTranslationConfig(stored);
 }
 
-export async function getTranslationAdminView(): Promise<TranslationAdminView> {
-  const snapshot = await getStoredGroupSnapshot<TranslationConfigInput>(TRANSLATION_GROUP);
+export async function getTranslationAdminView(
+  prefetched?: StoredGroupSnapshot<TranslationConfigInput>,
+): Promise<TranslationAdminView> {
+  const snapshot =
+    prefetched ?? (await getStoredGroupSnapshot<TranslationConfigInput>(TRANSLATION_GROUP));
   const config = resolveTranslationConfig(snapshot.value);
   const { apiKey, ...safe } = config;
   return {

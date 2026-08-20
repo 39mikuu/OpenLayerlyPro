@@ -41,10 +41,15 @@ export type IntegrationTestContext = {
   locale: Locale;
 };
 
+export type IntegrationStatusContext = {
+  getStoredGroupSnapshot<T>(group: string): Promise<{ value: Partial<T> | null; revision: number }>;
+  getSetting<T>(key: string): Promise<T | null>;
+};
+
 export type Integration = {
   id: IntegrationId;
   kind: IntegrationKind;
-  getStatus(): Promise<IntegrationStatus>;
+  getStatus(context?: IntegrationStatusContext): Promise<IntegrationStatus>;
   /**
    * Optional connectivity test. Resolves on success; throws (ApiError/Error with a
    * message) on failure. Absent means the integration is not testable.

@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import { appSettings } from "@/db/schema";
@@ -9,6 +9,10 @@ export type StoredGroupSnapshot<T> = {
   value: Partial<T> | null;
   revision: number;
 };
+
+export type StoredGroupSnapshotResult =
+  | { ok: true; snapshot: StoredGroupSnapshot<unknown> }
+  | { ok: false; error: unknown };
 
 function conflict(): never {
   throw new ApiError(409, "configConflict");
@@ -36,11 +40,57 @@ export async function getStoredGroupSnapshot<T>(
     .where(eq(appSettings.key, group))
     .limit(1);
   if (!row) return { value: null, revision: 0 };
-  if (row.valueEncrypted === null) return { value: null, revision: row.revision };
+  return decodeStoredGroupSnapshot<T>(row.valueEncrypted, row.revision);
+}
+
+function decodeStoredGroupSnapshot<T>(
+  valueEncrypted: string | null,
+  revision: number,
+): StoredGroupSnapshot<T> {
+  if (valueEncrypted === null) return { value: null, revision };
   return {
-    value: JSON.parse(decryptSecret(row.valueEncrypted)) as Partial<T>,
-    revision: row.revision,
+    value: JSON.parse(decryptSecret(valueEncrypted)) as Partial<T>,
+    revision,
   };
+}
+
+/**
+ * Read multiple encrypted config groups in one query while preserving per-row
+ * decrypt/parse failure isolation. Missing groups are successful null snapshots.
+ */
+export async function getStoredGroupSnapshots(
+  groups: readonly string[],
+  db: DbClient = getDb(),
+): Promise<Map<string, StoredGroupSnapshotResult>> {
+  const uniqueGroups = Array.from(new Set(groups));
+  if (uniqueGroups.length === 0) return new Map();
+  const rows = await db
+    .select({
+      key: appSettings.key,
+      valueEncrypted: appSettings.valueEncrypted,
+      revision: appSettings.revision,
+    })
+    .from(appSettings)
+    .where(inArray(appSettings.key, uniqueGroups));
+  const byKey = new Map(rows.map((row) => [row.key, row]));
+
+  const snapshots = new Map<string, StoredGroupSnapshotResult>();
+  for (const group of uniqueGroups) {
+    const row = byKey.get(group);
+    if (!row) {
+      snapshots.set(group, { ok: true, snapshot: { value: null, revision: 0 } });
+      continue;
+    }
+    try {
+      snapshots.set(group, {
+        ok: true,
+        snapshot: decodeStoredGroupSnapshot<unknown>(row.valueEncrypted, row.revision),
+      });
+    } catch (error) {
+      snapshots.set(group, { ok: false, error });
+    }
+  }
+  return snapshots;
 }
 
 /**

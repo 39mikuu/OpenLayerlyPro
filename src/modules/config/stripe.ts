@@ -3,7 +3,13 @@ import { z } from "zod";
 import { ApiError } from "@/lib/api";
 
 import { requireExpectedRevision } from "./revision";
-import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
+import {
+  deleteStoredGroup,
+  getStoredGroup,
+  getStoredGroupSnapshot,
+  setStoredGroup,
+  type StoredGroupSnapshot,
+} from "./store";
 
 export const STRIPE_GROUP = "stripe";
 
@@ -64,8 +70,10 @@ export async function getStripeConfig(): Promise<ResolvedStripeConfig> {
   return resolveStripeConfig(stored);
 }
 
-export async function getStripeAdminView(): Promise<StripeAdminView> {
-  const snapshot = await getStoredGroupSnapshot<StripeConfigInput>(STRIPE_GROUP);
+export async function getStripeAdminView(
+  prefetched?: StoredGroupSnapshot<StripeConfigInput>,
+): Promise<StripeAdminView> {
+  const snapshot = prefetched ?? (await getStoredGroupSnapshot<StripeConfigInput>(STRIPE_GROUP));
   const stored = snapshot.value;
   const effective = resolveStripeConfig(stored ?? {});
   return {

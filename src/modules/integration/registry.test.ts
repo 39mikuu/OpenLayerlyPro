@@ -3,16 +3,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getEnv } from "@/lib/env";
 import {
+  getOAuthProviderAdminView,
   getSmtpAdminView,
   getStorageAdminView,
   getStorageConfig,
+  getStoredGroupSnapshots,
   getStripeAdminView,
   getTranslationAdminView,
   getTurnstileAdminView,
 } from "@/modules/config";
 import { sendTestEmail } from "@/modules/mail";
 import { testStripeConnection } from "@/modules/payment/providers";
-import { getSetting } from "@/modules/site";
+import { getSetting, getSettings } from "@/modules/site";
+import { PUBLIC_INTEGRATIONS_KEY } from "@/modules/site/public-security";
 import { testS3Connection } from "@/modules/storage";
 
 vi.mock("fs/promises", () => ({
@@ -24,12 +27,20 @@ vi.mock("@/lib/env", () => ({
 }));
 
 vi.mock("@/modules/config", () => ({
+  getOAuthProviderAdminView: vi.fn(),
   getSmtpAdminView: vi.fn(),
+  getStoredGroupSnapshots: vi.fn(),
   getStorageAdminView: vi.fn(),
   getStorageConfig: vi.fn(),
   getStripeAdminView: vi.fn(),
   getTranslationAdminView: vi.fn(),
   getTurnstileAdminView: vi.fn(),
+  oauthProviderGroupKey: (provider: string) => `oauth_${provider}`,
+  SMTP_GROUP: "smtp",
+  STORAGE_GROUP: "storage",
+  STRIPE_GROUP: "stripe",
+  TRANSLATION_GROUP: "translation",
+  TURNSTILE_GROUP: "turnstile",
 }));
 
 vi.mock("@/modules/mail", () => ({
@@ -42,6 +53,7 @@ vi.mock("@/modules/payment/providers", () => ({
 
 vi.mock("@/modules/site", () => ({
   getSetting: vi.fn(),
+  getSettings: vi.fn(),
 }));
 
 vi.mock("@/modules/storage", () => ({
@@ -50,7 +62,9 @@ vi.mock("@/modules/storage", () => ({
 
 const mockedAccess = vi.mocked(access);
 const mockedGetEnv = vi.mocked(getEnv);
+const mockedGetOAuthProviderAdminView = vi.mocked(getOAuthProviderAdminView);
 const mockedGetSmtpAdminView = vi.mocked(getSmtpAdminView);
+const mockedGetStoredGroupSnapshots = vi.mocked(getStoredGroupSnapshots);
 const mockedGetStorageAdminView = vi.mocked(getStorageAdminView);
 const mockedGetStorageConfig = vi.mocked(getStorageConfig);
 const mockedGetStripeAdminView = vi.mocked(getStripeAdminView);
@@ -58,6 +72,7 @@ const mockedGetTranslationAdminView = vi.mocked(getTranslationAdminView);
 const mockedGetTurnstileAdminView = vi.mocked(getTurnstileAdminView);
 const mockedSendTestEmail = vi.mocked(sendTestEmail);
 const mockedGetSetting = vi.mocked(getSetting);
+const mockedGetSettings = vi.mocked(getSettings);
 const mockedTestStripeConnection = vi.mocked(testStripeConnection);
 const mockedTestS3Connection = vi.mocked(testS3Connection);
 
@@ -71,6 +86,18 @@ function mockEnv(tunnelToken?: string) {
 
 function mockPublicIntegrations(value: unknown = null) {
   mockedGetSetting.mockResolvedValue(value);
+  mockedGetSettings.mockResolvedValue(value === null ? {} : { [PUBLIC_INTEGRATIONS_KEY]: value });
+}
+
+function mockOAuth() {
+  mockedGetOAuthProviderAdminView.mockResolvedValue({
+    revision: 0,
+    enabled: false,
+    configured: false,
+    clientId: undefined,
+    clientSecretSet: false,
+    hasDbOverride: false,
+  });
 }
 
 function mockSmtp(input?: { configured?: boolean; hasDbOverride?: boolean }) {
@@ -177,7 +204,9 @@ describe("integration registry", () => {
     mockStripe();
     mockTurnstile();
     mockTranslation();
+    mockOAuth();
     mockPublicIntegrations();
+    mockedGetStoredGroupSnapshots.mockResolvedValue(new Map());
     mockedGetStorageConfig.mockResolvedValue({ s3Configured: false } as never);
     mockedAccess.mockResolvedValue(undefined);
   });
@@ -202,6 +231,28 @@ describe("integration registry", () => {
       "oauth_github",
       "tunnel",
     ]);
+  });
+
+  it("loads config and public settings once for the whole status collection", async () => {
+    const { getIntegrationStatuses } = await import("./registry");
+
+    await getIntegrationStatuses();
+
+    expect(mockedGetStoredGroupSnapshots).toHaveBeenCalledOnce();
+    expect(mockedGetSettings).toHaveBeenCalledOnce();
+    expect(mockedGetSetting).not.toHaveBeenCalled();
+  });
+
+  it("keeps direct descriptor status reads backward compatible", async () => {
+    const { integrations } = await import("./registry");
+
+    await integrations.find((integration) => integration.id === "smtp")!.getStatus();
+    await integrations.find((integration) => integration.id === "plausible")!.getStatus();
+
+    expect(mockedGetSmtpAdminView).toHaveBeenCalledWith(undefined);
+    expect(mockedGetSetting).toHaveBeenCalledWith(PUBLIC_INTEGRATIONS_KEY);
+    expect(mockedGetStoredGroupSnapshots).not.toHaveBeenCalled();
+    expect(mockedGetSettings).not.toHaveBeenCalled();
   });
 
   it("derives SMTP configured, enabled and source from one admin view", async () => {
@@ -455,7 +506,9 @@ describe("integration registry", () => {
   });
 
   it("isolates one integration failure and keeps remaining statuses", async () => {
-    mockedGetTurnstileAdminView.mockRejectedValue(new Error("decrypt failed"));
+    mockedGetStoredGroupSnapshots.mockResolvedValue(
+      new Map([["turnstile", { ok: false, error: new Error("decrypt failed") }]]),
+    );
     const { getIntegrationStatuses } = await import("./registry");
     const statuses = await getIntegrationStatuses();
 
@@ -469,6 +522,7 @@ describe("integration registry", () => {
       source: "none",
       error: true,
     });
+    expect(mockedGetTurnstileAdminView).not.toHaveBeenCalled();
     expect(statuses[9].id).toBe("tunnel");
   });
 

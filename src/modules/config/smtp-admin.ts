@@ -2,7 +2,12 @@ import { getEnv } from "@/lib/env";
 
 import { requireExpectedRevision } from "./revision";
 import { resolveSmtpConfig, SMTP_GROUP, type SmtpConfigInput } from "./smtp";
-import { deleteStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
+import {
+  deleteStoredGroup,
+  getStoredGroupSnapshot,
+  setStoredGroup,
+  type StoredGroupSnapshot,
+} from "./store";
 
 /** 后台展示用的 SMTP 视图。password 永不外泄,只给 passwordSet 标志。 */
 export type SmtpAdminView = {
@@ -26,9 +31,11 @@ export type SmtpAdminView = {
   };
 };
 
-export async function getSmtpAdminView(): Promise<SmtpAdminView> {
+export async function getSmtpAdminView(
+  prefetched?: StoredGroupSnapshot<SmtpConfigInput>,
+): Promise<SmtpAdminView> {
   const env = getEnv();
-  const snapshot = await getStoredGroupSnapshot<SmtpConfigInput>(SMTP_GROUP);
+  const snapshot = prefetched ?? (await getStoredGroupSnapshot<SmtpConfigInput>(SMTP_GROUP));
   const stored = snapshot.value;
   const effective = resolveSmtpConfig(stored ?? {});
   return {

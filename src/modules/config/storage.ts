@@ -10,7 +10,12 @@ import {
   type StorageConfigInput,
   storageConfigSchema,
 } from "./storageResolve";
-import { deleteStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
+import {
+  deleteStoredGroup,
+  getStoredGroupSnapshot,
+  setStoredGroup,
+  type StoredGroupSnapshot,
+} from "./store";
 
 export {
   getStorageConfig,
@@ -48,9 +53,11 @@ function nonEmpty(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-export async function getStorageAdminView(): Promise<StorageAdminView> {
+export async function getStorageAdminView(
+  prefetched?: StoredGroupSnapshot<StorageConfigInput>,
+): Promise<StorageAdminView> {
   const env = getEnv();
-  const snapshot = await getStoredGroupSnapshot<StorageConfigInput>(STORAGE_GROUP);
+  const snapshot = prefetched ?? (await getStoredGroupSnapshot<StorageConfigInput>(STORAGE_GROUP));
   const stored = snapshot.value;
   const effective = resolveStorageConfig(stored ?? {});
 
