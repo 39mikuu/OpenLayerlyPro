@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   listPaymentRequestsPage: vi.fn(),
   listFilesPage: vi.fn(),
   listQuarantinedFilesPage: vi.fn(),
+  listUsersPage: vi.fn(),
 }));
 
 vi.mock("@/modules/membership", () => ({
@@ -23,6 +24,9 @@ vi.mock("@/modules/payment", () => ({
 vi.mock("@/modules/file", () => ({
   listFilesPage: mocks.listFilesPage,
   listQuarantinedFilesPage: mocks.listQuarantinedFilesPage,
+}));
+vi.mock("@/modules/user", () => ({
+  listUsersPage: mocks.listUsersPage,
 }));
 vi.mock("@/modules/i18n/server", () => ({
   getT: async () => (key: string) => {
@@ -38,6 +42,7 @@ vi.mock("@/components/admin/membership-grant-form", () => ({
 import AdminFilesPage, { filesPageHref } from "./(dashboard)/files/page";
 import AdminMembershipsPage from "./(dashboard)/memberships/page";
 import AdminPaymentReviewsPage, { paymentPageHref } from "./(dashboard)/payments/reviews/page";
+import AdminUsersPage from "./(dashboard)/users/page";
 
 const emptyPage = { items: [], nextCursor: null };
 
@@ -49,6 +54,7 @@ describe("admin pagination pages", () => {
     mocks.listPaymentRequestsPage.mockResolvedValue(emptyPage);
     mocks.listFilesPage.mockResolvedValue(emptyPage);
     mocks.listQuarantinedFilesPage.mockResolvedValue(emptyPage);
+    mocks.listUsersPage.mockResolvedValue(emptyPage);
   });
 
   it("does not describe the current pending page size as a total", () => {
@@ -124,5 +130,17 @@ describe("admin pagination pages", () => {
       await AdminFilesPage({ searchParams: Promise.resolve({}) }),
     );
     expect(firstPage).not.toContain("First page");
+  });
+
+  it("shows bounded user-list next and first-page links", async () => {
+    mocks.listUsersPage.mockResolvedValueOnce({ items: [], nextCursor: "next value&" });
+    const html = renderToStaticMarkup(
+      await AdminUsersPage({ searchParams: Promise.resolve({ cursor: "current" }) }),
+    );
+
+    expect(mocks.listUsersPage).toHaveBeenCalledWith({ cursor: "current" });
+    expect(html).toContain('href="/admin/users?cursor=next%20value%26"');
+    expect(html).toContain('href="/admin/users"');
+    expect(html).toContain("First page");
   });
 });

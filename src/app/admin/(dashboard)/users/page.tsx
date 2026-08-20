@@ -10,14 +10,18 @@ import {
 } from "@/components/ui/table";
 import { formatDateTime } from "@/lib/dates";
 import { getT } from "@/modules/i18n/server";
-import { getActiveMembership } from "@/modules/membership";
-import { listUsers } from "@/modules/user";
+import { listUsersPage } from "@/modules/user";
 
 export const dynamic = "force-dynamic";
 
-export default async function AdminUsersPage() {
-  const users = await listUsers();
-  const memberships = await Promise.all(users.map((u) => getActiveMembership(u.id)));
+export default async function AdminUsersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ cursor?: string }>;
+}) {
+  const filters = await searchParams;
+  const usersPage = await listUsersPage({ cursor: filters.cursor });
+  const users = usersPage.items;
   const t = await getT();
 
   return (
@@ -36,8 +40,7 @@ export default async function AdminUsersPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {users.map((user, i) => {
-                const active = memberships[i];
+              {users.map(({ user, activeMembership }) => {
                 return (
                   <TableRow key={user.id}>
                     <TableCell className="max-w-72 whitespace-normal break-all font-medium">
@@ -51,11 +54,11 @@ export default async function AdminUsersPage() {
                       )}
                     </TableCell>
                     <TableCell className="max-w-80 whitespace-normal break-words">
-                      {active ? (
+                      {activeMembership ? (
                         <span>
                           {t("admin.users.memberUntil", {
-                            tier: active.tier.name,
-                            date: active.membership.endsAt.toISOString().slice(0, 10),
+                            tier: activeMembership.tierName,
+                            date: activeMembership.endsAt.toISOString().slice(0, 10),
                           })}
                         </span>
                       ) : (
@@ -74,8 +77,7 @@ export default async function AdminUsersPage() {
             </TableBody>
           </Table>
         }
-        cards={users.map((user, i) => {
-          const active = memberships[i];
+        cards={users.map(({ user, activeMembership }) => {
           return (
             <MobileDataCard
               key={user.id}
@@ -89,11 +91,11 @@ export default async function AdminUsersPage() {
               }
             >
               <MobileDataField label={t("admin.users.membership")}>
-                {active ? (
+                {activeMembership ? (
                   <span>
                     {t("admin.users.memberUntil", {
-                      tier: active.tier.name,
-                      date: active.membership.endsAt.toISOString().slice(0, 10),
+                      tier: activeMembership.tierName,
+                      date: activeMembership.endsAt.toISOString().slice(0, 10),
                     })}
                   </span>
                 ) : (
@@ -118,6 +120,19 @@ export default async function AdminUsersPage() {
           );
         })}
       />
+      {usersPage.nextCursor && (
+        <a
+          href={`/admin/users?cursor=${encodeURIComponent(usersPage.nextCursor)}`}
+          className="text-primary text-sm font-medium hover:underline"
+        >
+          {t("admin.common.nextPage")}
+        </a>
+      )}
+      {filters.cursor && (
+        <a href="/admin/users" className="text-primary text-sm font-medium hover:underline">
+          {t("admin.common.firstPage")}
+        </a>
+      )}
     </div>
   );
 }

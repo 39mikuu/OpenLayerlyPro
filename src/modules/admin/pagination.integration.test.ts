@@ -1,20 +1,37 @@
 import { randomUUID } from "crypto";
 import { sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { getDb } from "@/db";
+import * as schema from "@/db/schema";
 import { files, memberships, membershipTiers, paymentRequests, users } from "@/db/schema";
+import { getEnv } from "@/lib/env";
 import { listFilesPage, listQuarantinedFilesPage } from "@/modules/file";
 import { listMembershipsPage } from "@/modules/membership";
 import { listPaymentRequestsPage } from "@/modules/payment";
+import { listUsersPage } from "@/modules/user";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
 
 describeWithDatabase("admin keyset pagination integration", () => {
   const db = getDb();
+  const countedRaw = postgres(getEnv().DATABASE_URL, { max: 1, onnotice: () => {} });
+  const queryCounter = {
+    count: 0,
+    logQuery: () => {
+      queryCounter.count += 1;
+    },
+  };
+  const countedDb = drizzle(countedRaw, { schema, logger: queryCounter });
   let userId: string;
   let tierId: string;
+
+  afterAll(async () => {
+    await countedRaw.end({ timeout: 5 });
+  });
 
   beforeEach(async () => {
     await db.delete(paymentRequests);
@@ -49,6 +66,68 @@ describeWithDatabase("admin keyset pagination integration", () => {
       )
     `);
   }
+
+  it("paginates users at microsecond boundaries and resolves membership in one query", async () => {
+    await db.delete(memberships);
+    await db.delete(users);
+    const high = "ffffffff-ffff-4fff-bfff-ffffffffffff";
+    const low = "00000000-0000-4000-8000-000000000001";
+    const oldest = randomUUID();
+    await db.execute(sql`
+      insert into users (id, email, password_hash, created_at) values
+        (${high}::uuid, ${`high-${randomUUID()}@example.com`}, 'secret-hash',
+         '2026-07-02T00:00:00.000500Z'::timestamptz),
+        (${low}::uuid, ${`low-${randomUUID()}@example.com`}, 'secret-hash',
+         '2026-07-02T00:00:00.000500Z'::timestamptz),
+        (${oldest}::uuid, ${`oldest-${randomUUID()}@example.com`}, 'secret-hash',
+         '2026-07-02T00:00:00.000100Z'::timestamptz)
+    `);
+    const [higherTier] = await db
+      .insert(membershipTiers)
+      .values({
+        name: "Higher pagination tier",
+        slug: `higher-pagination-${randomUUID()}`,
+        priceLabel: "200",
+        level: 10,
+      })
+      .returning();
+    await db.insert(memberships).values([
+      {
+        userId: high,
+        tierId,
+        source: "manual",
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 60_000),
+      },
+      {
+        userId: high,
+        tierId: higherTier!.id,
+        source: "manual",
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 120_000),
+      },
+    ]);
+
+    queryCounter.count = 0;
+    const first = await listUsersPage({ limit: 2 }, countedDb);
+    expect(queryCounter.count).toBe(1);
+    expect(first.items.map((item) => item.user.id)).toEqual([high, low]);
+    expect(first.items[0]?.activeMembership).toMatchObject({
+      tierName: "Higher pagination tier",
+    });
+    expect(first.items[1]?.activeMembership).toBeNull();
+    expect(first.items[0]?.user).not.toHaveProperty("passwordHash");
+
+    await db.execute(sql`
+      insert into users (email, created_at)
+      values (${`new-${randomUUID()}@example.com`}, '2026-07-02T00:00:01.000000Z'::timestamptz)
+    `);
+    queryCounter.count = 0;
+    const second = await listUsersPage({ limit: 2, cursor: first.nextCursor }, countedDb);
+    expect(queryCounter.count).toBe(1);
+    expect(second.items.map((item) => item.user.id)).toEqual([oldest]);
+    expect(second.nextCursor).toBeNull();
+  });
 
   it("uses microseconds and UUID as membership boundaries without repeats", async () => {
     const high = "ffffffff-ffff-4fff-bfff-ffffffffffff";
