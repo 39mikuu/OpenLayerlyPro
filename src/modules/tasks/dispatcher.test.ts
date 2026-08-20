@@ -124,6 +124,196 @@ describe("task dispatcher", () => {
     expect(deps.claimClass).toHaveBeenCalledTimes(TASK_BATCH_SIZE);
   });
 
+  it("starts each claim immediately while bounding concurrent handlers", async () => {
+    const previousConcurrency = process.env.TASK_DISPATCH_CONCURRENCY;
+    process.env.TASK_DISPATCH_CONCURRENCY = "2";
+    __resetEnvForTests();
+    try {
+      const deps = dependencies();
+      const claimed = [
+        task("11111111-1111-4111-8111-111111111111"),
+        task("22222222-2222-4222-8222-222222222222"),
+        task("33333333-3333-4333-8333-333333333333"),
+      ];
+      const events: string[] = [];
+      const releases = new Map<string, () => void>();
+      let active = 0;
+      let maxActive = 0;
+      let thirdStarted: (() => void) | undefined;
+      const thirdRunning = new Promise<void>((resolve) => {
+        thirdStarted = resolve;
+      });
+      deps.claimClass.mockImplementation(async (queueClass: string) => {
+        if (queueClass !== "transactional") return null;
+        const next = claimed.shift();
+        if (!next) return null;
+        events.push(`claim:${next.id}`);
+        return { ...next, reclaimedStale: false };
+      });
+      deps.run.mockImplementation(async (current: Task) => {
+        events.push(`run:${current.id}`);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        if (current.id === "33333333-3333-4333-8333-333333333333") thirdStarted?.();
+        await new Promise<void>((resolve) => {
+          releases.set(current.id, resolve);
+        });
+        active -= 1;
+        return {};
+      });
+      deps.succeed.mockResolvedValue(true);
+
+      const dispatching = dispatchTaskBatch(deps);
+      await vi.waitFor(() => expect(deps.run).toHaveBeenCalledTimes(2));
+      expect(events.slice(0, 4)).toEqual([
+        `claim:11111111-1111-4111-8111-111111111111`,
+        `run:11111111-1111-4111-8111-111111111111`,
+        `claim:22222222-2222-4222-8222-222222222222`,
+        `run:22222222-2222-4222-8222-222222222222`,
+      ]);
+      expect(maxActive).toBe(2);
+      expect(deps.claimClass).toHaveBeenCalledTimes(2);
+
+      releases.get("11111111-1111-4111-8111-111111111111")?.();
+      await thirdRunning;
+      expect(maxActive).toBe(2);
+      releases.get("22222222-2222-4222-8222-222222222222")?.();
+      releases.get("33333333-3333-4333-8333-333333333333")?.();
+
+      await expect(dispatching).resolves.toBe(3);
+    } finally {
+      if (previousConcurrency === undefined) delete process.env.TASK_DISPATCH_CONCURRENCY;
+      else process.env.TASK_DISPATCH_CONCURRENCY = previousConcurrency;
+      __resetEnvForTests();
+    }
+  });
+
+  it("probes an empty queue class only once per tick", async () => {
+    const previousConcurrency = process.env.TASK_DISPATCH_CONCURRENCY;
+    process.env.TASK_DISPATCH_CONCURRENCY = "1";
+    __resetEnvForTests();
+    try {
+      const deps = dependencies();
+      let defaultTask = 0;
+      deps.claimClass.mockImplementation(async (queueClass: string) => {
+        if (queueClass !== "default") return null;
+        defaultTask += 1;
+        return {
+          ...task(`default-${defaultTask}`),
+          queueClass: "default",
+          reclaimedStale: false,
+        };
+      });
+      deps.run.mockResolvedValue({});
+      deps.succeed.mockResolvedValue(true);
+
+      await expect(dispatchTaskBatch(deps)).resolves.toBe(TASK_BATCH_SIZE);
+      await expect(dispatchTaskBatch(deps)).resolves.toBe(TASK_BATCH_SIZE);
+
+      const claimedClasses = deps.claimClass.mock.calls.map(([queueClass]) => queueClass);
+      expect(claimedClasses.filter((queueClass) => queueClass === "transactional")).toHaveLength(2);
+      expect(claimedClasses.filter((queueClass) => queueClass === "notification")).toHaveLength(2);
+      expect(claimedClasses.filter((queueClass) => queueClass === "default")).toHaveLength(
+        TASK_BATCH_SIZE * 2,
+      );
+    } finally {
+      if (previousConcurrency === undefined) delete process.env.TASK_DISPATCH_CONCURRENCY;
+      else process.env.TASK_DISPATCH_CONCURRENCY = previousConcurrency;
+      __resetEnvForTests();
+    }
+  });
+
+  it("waits for other in-flight handlers before surfacing a dispatcher error", async () => {
+    const previousConcurrency = process.env.TASK_DISPATCH_CONCURRENCY;
+    process.env.TASK_DISPATCH_CONCURRENCY = "2";
+    __resetEnvForTests();
+    try {
+      const deps = dependencies();
+      const first = task("11111111-1111-4111-8111-111111111111");
+      const second = task("22222222-2222-4222-8222-222222222222");
+      deps.claimClass
+        .mockResolvedValueOnce({ ...first, reclaimedStale: false })
+        .mockResolvedValueOnce({ ...second, reclaimedStale: false })
+        .mockResolvedValue(null);
+      let releaseSecond: (() => void) | undefined;
+      let secondStarted: (() => void) | undefined;
+      const secondRunning = new Promise<void>((resolve) => {
+        secondStarted = resolve;
+      });
+      deps.run.mockImplementation(async (current: Task) => {
+        if (current.id !== second.id) return {};
+        secondStarted?.();
+        await new Promise<void>((resolve) => {
+          releaseSecond = resolve;
+        });
+        return {};
+      });
+      const finalizeError = new Error("database unavailable during finalize");
+      deps.succeed.mockImplementation(async (id: string) => {
+        if (id === first.id) throw finalizeError;
+        return true;
+      });
+
+      let settled = false;
+      const dispatching = dispatchTaskBatch(deps).finally(() => {
+        settled = true;
+      });
+      await secondRunning;
+      await vi.waitFor(() =>
+        expect(deps.succeed).toHaveBeenCalledWith(first.id, first.lockedBy, undefined),
+      );
+      expect(settled).toBe(false);
+
+      releaseSecond?.();
+      await expect(dispatching).rejects.toBe(finalizeError);
+      expect(deps.claimClass).toHaveBeenCalledTimes(2);
+    } finally {
+      if (previousConcurrency === undefined) delete process.env.TASK_DISPATCH_CONCURRENCY;
+      else process.env.TASK_DISPATCH_CONCURRENCY = previousConcurrency;
+      __resetEnvForTests();
+    }
+  });
+
+  it("waits for in-flight handlers before surfacing a claim error", async () => {
+    const previousConcurrency = process.env.TASK_DISPATCH_CONCURRENCY;
+    process.env.TASK_DISPATCH_CONCURRENCY = "2";
+    __resetEnvForTests();
+    try {
+      const deps = dependencies();
+      const first = task("11111111-1111-4111-8111-111111111111");
+      const second = task("22222222-2222-4222-8222-222222222222");
+      const claimError = new Error("database unavailable during claim");
+      deps.claimClass
+        .mockResolvedValueOnce({ ...first, reclaimedStale: false })
+        .mockResolvedValueOnce({ ...second, reclaimedStale: false })
+        .mockRejectedValueOnce(claimError);
+      let releaseSecond: (() => void) | undefined;
+      deps.run.mockImplementation(async (current: Task) => {
+        if (current.id !== second.id) return {};
+        await new Promise<void>((resolve) => {
+          releaseSecond = resolve;
+        });
+        return {};
+      });
+      deps.succeed.mockResolvedValue(true);
+
+      let settled = false;
+      const dispatching = dispatchTaskBatch(deps).finally(() => {
+        settled = true;
+      });
+      await vi.waitFor(() => expect(deps.claimClass).toHaveBeenCalledTimes(3));
+      expect(settled).toBe(false);
+
+      releaseSecond?.();
+      await expect(dispatching).rejects.toBe(claimError);
+      expect(deps.succeed).toHaveBeenCalledWith(second.id, second.lockedBy, undefined);
+    } finally {
+      if (previousConcurrency === undefined) delete process.env.TASK_DISPATCH_CONCURRENCY;
+      else process.env.TASK_DISPATCH_CONCURRENCY = previousConcurrency;
+      __resetEnvForTests();
+    }
+  });
+
   it("uses the stale-first transactional/v2 claim group for protocol-v2 delivery", async () => {
     const deps = dependencies();
     const v2Task = {

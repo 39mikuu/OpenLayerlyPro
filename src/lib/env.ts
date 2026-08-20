@@ -46,6 +46,7 @@ const envSchema = z.object({
   SMTP_FROM: z.string().optional(),
   EMAIL_RETRY_RECHECK_MINUTES: z.coerce.number().finite().int().min(1).max(1_440).default(15),
   EMAIL_DELIVERY_MAX_AGE_HOURS: z.coerce.number().finite().int().min(1).max(168).default(24),
+  TASK_DISPATCH_CONCURRENCY: z.coerce.number().finite().int().min(1).max(4).default(4),
   TASK_TRANSACTIONAL_RESERVED_PER_BATCH: z.coerce.number().finite().int().min(0).max(20).default(8),
   TASK_NOTIFICATION_MIN_PER_BATCH: z.coerce.number().finite().int().min(0).max(20).default(2),
   TASK_DEFAULT_MIN_PER_BATCH: z.coerce.number().finite().int().min(0).max(20).default(2),

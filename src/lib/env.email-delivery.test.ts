@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 const keys = [
   "EMAIL_RETRY_RECHECK_MINUTES",
   "EMAIL_DELIVERY_MAX_AGE_HOURS",
+  "TASK_DISPATCH_CONCURRENCY",
   "TASK_TRANSACTIONAL_RESERVED_PER_BATCH",
   "TASK_NOTIFICATION_MIN_PER_BATCH",
   "TASK_DEFAULT_MIN_PER_BATCH",
@@ -66,6 +67,7 @@ describe("email delivery retry environment", () => {
     await expect(load()).resolves.toMatchObject({
       EMAIL_RETRY_RECHECK_MINUTES: 15,
       EMAIL_DELIVERY_MAX_AGE_HOURS: 24,
+      TASK_DISPATCH_CONCURRENCY: 4,
       TASK_TRANSACTIONAL_RESERVED_PER_BATCH: 8,
       TASK_NOTIFICATION_MIN_PER_BATCH: 2,
       TASK_DEFAULT_MIN_PER_BATCH: 2,
@@ -84,6 +86,8 @@ describe("email delivery retry environment", () => {
     ["EMAIL_RETRY_RECHECK_MINUTES", "1440", 1440],
     ["EMAIL_DELIVERY_MAX_AGE_HOURS", "1", 1],
     ["EMAIL_DELIVERY_MAX_AGE_HOURS", "168", 168],
+    ["TASK_DISPATCH_CONCURRENCY", "1", 1],
+    ["TASK_DISPATCH_CONCURRENCY", "4", 4],
     ["TASK_TRANSACTIONAL_RESERVED_PER_BATCH", "0", 0],
     ["TASK_TRANSACTIONAL_RESERVED_PER_BATCH", "20", 20],
     ["TASK_NOTIFICATION_MIN_PER_BATCH", "0", 0],
@@ -125,6 +129,8 @@ describe("email delivery retry environment", () => {
     ["EMAIL_DELIVERY_MAX_AGE_HOURS", "0"],
     ["EMAIL_DELIVERY_MAX_AGE_HOURS", "169"],
     ["EMAIL_DELIVERY_MAX_AGE_HOURS", "1.5"],
+    ["TASK_DISPATCH_CONCURRENCY", "0"],
+    ["TASK_DISPATCH_CONCURRENCY", "5"],
     ["TASK_TRANSACTIONAL_RESERVED_PER_BATCH", "-1"],
     ["TASK_TRANSACTIONAL_RESERVED_PER_BATCH", "21"],
     ["TASK_NOTIFICATION_MIN_PER_BATCH", "-1"],

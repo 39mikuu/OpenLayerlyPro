@@ -99,6 +99,7 @@ These values are read from runtime environment and validated by `src/lib/env.ts`
 
 | Variable | Default | Bounds | Operational meaning |
 |---|---:|---:|---|
+| `TASK_DISPATCH_CONCURRENCY` | `4` | `1`-`4` | Maximum handlers running in one dispatcher tick. Each slot claims one task and starts it immediately; tasks are never batch-preclaimed. |
 | `TASK_TRANSACTIONAL_RESERVED_PER_BATCH` | `8` | `0`-`20` | Slots preserved for login/payment/membership/renewal transactional work in each dispatcher batch. |
 | `TASK_NOTIFICATION_MIN_PER_BATCH` | `2` | `0`-`20` | Minimum notification progress target per dispatcher batch. |
 | `TASK_NOTIFICATION_STALE_RECLAIM_MAX_PER_BATCH` | `2` | `0`-`20` | Maximum stale notification leases reclaimed per dispatcher batch; due notification work remains eligible. |
