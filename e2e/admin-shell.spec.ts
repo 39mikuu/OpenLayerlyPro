@@ -7,6 +7,7 @@ import {
   files,
   memberships,
   membershipTiers,
+  notificationCampaigns,
   paymentRequests,
   posts,
   sessions,
@@ -131,14 +132,28 @@ async function seedFixtures() {
     })
     .returning({ id: membershipTiers.id });
 
-  await getDb().insert(posts).values({
-    title: "Admin Shell E2E Long Post Title For Responsive Checks",
-    slug: POST_SLUG,
-    summary: "Admin shell responsive post summary.",
-    body: "Admin shell responsive post body.",
-    originalLocale: "en",
-    visibility: "public",
-    status: "draft",
+  const [post] = await getDb()
+    .insert(posts)
+    .values({
+      title: "Admin Shell E2E Long Post Title For Responsive Checks",
+      slug: POST_SLUG,
+      summary: "Admin shell responsive post summary.",
+      body: "Admin shell responsive post body.",
+      originalLocale: "en",
+      visibility: "public",
+      status: "draft",
+    })
+    .returning({ id: posts.id });
+  if (!post) throw new Error("failed to seed admin shell post");
+  await getDb().insert(notificationCampaigns).values({
+    postId: post.id,
+    source: "scheduled_publish",
+    status: "dead",
+    publishedAt: new Date(),
+    cursorUserId: member.id,
+    expansionCompletedAt: new Date(),
+    lastError:
+      "Admin-shell-notification-error-with-a-very-long-unbroken-diagnostic-value-for-mobile-wrapping",
   });
   await getDb()
     .insert(memberships)
@@ -496,6 +511,7 @@ test("representative admin tables switch to mobile cards below md", async ({ pag
     "/admin/users",
     "/admin/memberships",
     "/admin/downloads",
+    "/admin/notifications",
   ];
 
   for (const route of routes) {
@@ -515,4 +531,43 @@ test("representative admin tables switch to mobile cards below md", async ({ pag
     await expectNoDocumentOverflow(page);
     await expect(page.locator('[data-slot="table-container"]').first()).toBeVisible();
   }
+});
+
+test("notification campaigns remain usable at narrow widths and expose diagnostics by keyboard", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+
+  for (const width of [320, 375, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/admin/notifications");
+    await expectNoDocumentOverflow(page);
+
+    const card = page.locator('[data-slot="admin-mobile-data-card"]').first();
+    await expect(card).toBeVisible();
+    await expect(page.locator('[data-slot="table-container"]').first()).toBeHidden();
+    await expect(card.getByText("已终止", { exact: true })).toBeVisible();
+    await expect(card.getByText("定时发布", { exact: true })).toBeVisible();
+    await expect(card).not.toContainText("scheduled_publish");
+  }
+
+  const diagnostics = page.locator('[data-slot="admin-mobile-data-card"] details').first();
+  const summary = diagnostics.locator("summary");
+  await summary.focus();
+  await expect(summary).toBeFocused();
+  await summary.press("Enter");
+  await expect(diagnostics).toHaveAttribute("open", "");
+  await expect(diagnostics).toContainText("扩展游标用户 ID");
+
+  const errorDetails = page.locator('[data-slot="admin-mobile-data-card"] details').nth(1);
+  await errorDetails.locator("summary").press("Enter");
+  await expect(errorDetails).toHaveAttribute("open", "");
+  await expect(errorDetails).toContainText("Admin-shell-notification-error-with-a-very-long");
+  await expectNoDocumentOverflow(page);
+
+  await page.setViewportSize({ width: 768, height: 900 });
+  await page.goto("/admin/notifications");
+  await expect(page.locator('[data-slot="table-container"]').first()).toBeVisible();
+  await expect(page.locator('[data-slot="admin-mobile-data-card"]').first()).toBeHidden();
+  await expectNoDocumentOverflow(page);
 });
