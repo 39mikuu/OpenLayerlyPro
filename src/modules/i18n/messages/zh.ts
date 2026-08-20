@@ -893,6 +893,7 @@ export const zh = {
         "设为 0 表示永久保留；设为 1–3650 时，仅对之后进入已批准或已撤销状态的申请安排延迟清理。",
       socialLinks: "社交链接",
       platformName: "平台名称",
+      linkUrl: "链接地址",
       addLink: "添加链接",
       saveSettings: "保存设置",
       appearance: "外观",

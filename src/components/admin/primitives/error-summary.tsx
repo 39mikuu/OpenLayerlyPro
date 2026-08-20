@@ -5,7 +5,7 @@ export function ErrorSummary({ errors, title }: { errors: string[]; title: strin
   return (
     <Alert aria-live="assertive" role="alert" variant="destructive">
       <AlertTitle>{title}</AlertTitle>
-      <AlertDescription className="text-destructive">
+      <AlertDescription className="break-words text-destructive [overflow-wrap:anywhere]">
         {errors.length === 1 ? (
           errors[0]
         ) : (
