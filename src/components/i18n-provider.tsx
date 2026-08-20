@@ -1,20 +1,43 @@
 "use client";
 
-import { createContext, type ReactNode, useContext, useMemo } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useMemo } from "react";
 
-import { DEFAULT_LOCALE, type Locale, type Translate, translate } from "@/modules/i18n";
+import { installClientMessages } from "@/modules/i18n/client";
+import { DEFAULT_LOCALE, type Locale } from "@/modules/i18n/config";
+import type { Messages } from "@/modules/i18n/messages/zh";
+import { type Translate, translateMessages } from "@/modules/i18n/runtime";
 
-const LocaleContext = createContext<Locale>(DEFAULT_LOCALE);
+type I18nContextValue = { locale: Locale; messages: Messages | null };
+const I18nContext = createContext<I18nContextValue>({
+  locale: DEFAULT_LOCALE,
+  messages: null,
+});
 
-export function I18nProvider({ locale, children }: { locale: Locale; children: ReactNode }) {
-  return <LocaleContext.Provider value={locale}>{children}</LocaleContext.Provider>;
+export function I18nProvider({
+  locale,
+  messages,
+  children,
+}: {
+  locale: Locale;
+  messages: Messages;
+  children: ReactNode;
+}) {
+  const value = useMemo(() => ({ locale, messages }), [locale, messages]);
+  useEffect(() => {
+    installClientMessages(messages);
+    return () => installClientMessages(null);
+  }, [messages]);
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
 
 export function useLocale(): Locale {
-  return useContext(LocaleContext);
+  return useContext(I18nContext).locale;
 }
 
 export function useT(): Translate {
-  const locale = useLocale();
-  return useMemo<Translate>(() => (key, params) => translate(locale, key, params), [locale]);
+  const messages = useContext(I18nContext).messages;
+  return useMemo<Translate>(
+    () => (key, params) => (messages ? translateMessages(messages, key, params) : key),
+    [messages],
+  );
 }

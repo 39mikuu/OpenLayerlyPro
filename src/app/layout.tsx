@@ -9,7 +9,7 @@ import {
   VerificationMetaElements,
 } from "@/components/public-security-elements";
 import { buildRootMetadataFromSite, ROOT_DEFAULT_METADATA } from "@/modules/content/root-metadata";
-import { resolveLocale } from "@/modules/i18n/server";
+import { getClientMessages, resolveLocale } from "@/modules/i18n/server";
 import { getPublicSiteInfo } from "@/modules/site";
 import {
   canRenderIntegrationRevision,
@@ -41,6 +41,7 @@ export default async function RootLayout({
   const [cookieStore, requestHeaders] = await Promise.all([cookies(), headers()]);
   const htmlClass = darkClassFromMode(cookieStore.get(THEME_MODE_COOKIE)?.value);
   const locale = await resolveLocale();
+  const messages = getClientMessages(locale);
   const nonce = requestHeaders.get("x-nonce");
   const requestRevision = requestHeaders.get("x-csp-config-revision");
   const renderPublicSecurity = requestHeaders.get("x-public-security-render") === "1";
@@ -89,7 +90,9 @@ export default async function RootLayout({
         {nonce ? (
           <IntegrationScriptElements nonce={nonce} plans={integrationPlans} placement="body" />
         ) : null}
-        <I18nProvider locale={locale}>{children}</I18nProvider>
+        <I18nProvider locale={locale} messages={messages}>
+          {children}
+        </I18nProvider>
       </body>
     </html>
   );

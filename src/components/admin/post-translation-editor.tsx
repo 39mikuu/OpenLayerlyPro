@@ -19,7 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, uploadFile } from "@/lib/client";
-import { type Locale, LOCALE_NAMES, SUPPORTED_LOCALES } from "@/modules/i18n";
+import { type Locale, LOCALE_NAMES, SUPPORTED_LOCALES } from "@/modules/i18n/config";
 
 type TranslationOverview = {
   post: {

@@ -7,6 +7,11 @@ import {
 } from "@/components/admin/config-source-summary";
 import { I18nProvider } from "@/components/i18n-provider";
 import type { Locale } from "@/modules/i18n";
+import { en } from "@/modules/i18n/messages/en";
+import { ja } from "@/modules/i18n/messages/ja";
+import { zh } from "@/modules/i18n/messages/zh";
+
+const MESSAGES = { zh, en, ja };
 
 function renderSummary(
   locale: Locale,
@@ -19,7 +24,7 @@ function renderSummary(
   },
 ) {
   return renderToStaticMarkup(
-    <I18nProvider locale={locale}>
+    <I18nProvider locale={locale} messages={MESSAGES[locale]}>
       <ConfigSourceSummary {...props} />
     </I18nProvider>,
   );

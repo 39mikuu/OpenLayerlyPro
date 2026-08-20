@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/client";
-import { type Locale, LOCALE_NAMES } from "@/modules/i18n";
+import { type Locale, LOCALE_NAMES } from "@/modules/i18n/config";
 
 type ReviewItem = {
   postId: string;

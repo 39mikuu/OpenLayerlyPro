@@ -8,6 +8,7 @@
 
 - 支持语言：中文（`zh`）、英文（`en`）和日文（`ja`），默认语言为 `zh`。
 - `src/modules/i18n/` 提供最小自研字典，无新增运行时 i18n 依赖；三套语言包保持同构，并支持点路径、默认语言回落和参数插值。
+- 三套完整语言包只进入服务端模块图；Root Layout 在 RSC 边界前把默认语言缺失回退合并进当前 locale，只向 Client Provider 传一份有效字典。客户端组件与 API 错误本地化只依赖无字典静态导入的轻量 runtime，避免把 zh/en/ja 同时打入共享首屏 JS。
 - 服务端语言解析顺序：`locale` cookie → `Accept-Language` → 默认 `zh`。
 - 服务端通过 `resolveLocale()` / `getT()`；客户端通过 `I18nProvider` / `useT()`。
 - client/server split 保证客户端模块不引入 `next/headers`。

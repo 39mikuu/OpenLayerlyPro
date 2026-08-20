@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { en } from "./messages/en";
 import { ja } from "./messages/ja";
-import { zh } from "./messages/zh";
+import { type Messages, zh } from "./messages/zh";
+import { mergeMessages, translateMessages } from "./runtime";
 import { negotiateLocale, translate } from "./translate";
 
 function leafKeys(value: unknown, prefix = ""): string[] {
@@ -81,6 +82,19 @@ describe("translate", () => {
 
   it("leaves placeholders intact when params are absent", () => {
     expect(translate("en", "post.memberVisible")).toBe("Visible to {tier} and above");
+  });
+
+  it("merges default-locale gaps before crossing the client boundary", () => {
+    const fallback = {
+      nav: { home: "fallback home", posts: "fallback posts" },
+    } as unknown as Messages;
+    const active = {
+      nav: { posts: "active posts" },
+    } as unknown as Messages;
+    const effective = mergeMessages(fallback, active);
+
+    expect(translateMessages(effective, "nav.posts")).toBe("active posts");
+    expect(translateMessages(effective, "nav.home")).toBe("fallback home");
   });
 });
 

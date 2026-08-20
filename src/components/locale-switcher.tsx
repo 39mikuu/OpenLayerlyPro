@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 
 import { useLocale, useT } from "@/components/i18n-provider";
-import { type Locale, LOCALE_COOKIE, LOCALE_NAMES, SUPPORTED_LOCALES } from "@/modules/i18n";
+import { type Locale, LOCALE_COOKIE, LOCALE_NAMES, SUPPORTED_LOCALES } from "@/modules/i18n/config";
 
 export function LocaleSwitcher() {
   const router = useRouter();

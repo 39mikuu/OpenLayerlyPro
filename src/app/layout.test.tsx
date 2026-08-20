@@ -19,6 +19,7 @@ vi.mock("@/components/i18n-provider", () => ({
   I18nProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 vi.mock("@/modules/i18n/server", () => ({
+  getClientMessages: () => ({}),
   resolveLocale: async () => "en",
 }));
 vi.mock("@/modules/site", () => ({
