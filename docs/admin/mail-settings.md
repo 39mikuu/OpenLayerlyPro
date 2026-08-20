@@ -60,11 +60,13 @@ Mail tasks that can become obsolete must re-check their current business state i
 - restored or retried work must not send a notification whose state can no longer be verified.
 - restore neutralization dead-letters nonterminal payment/membership transactional email tasks and bulk notification task kinds when the delivery outcome is unknown; renewal reminders may re-arm only with a v2 subscription/period reference and still revalidate freshness.
 
-These checks occur outside long database transactions. The task claim/fence is captured in a short transaction, SMTP runs afterward, and only the current claim may commit the final task/delivery state.
+These checks occur outside long database transactions. The task claim/fence is captured in a short transaction and task ownership is revalidated after that transaction at the last safe point before SMTP; only the current claim may start delivery or commit the final task/delivery state.
 
 ## At-Least-Once Residual
 
 SMTP does not provide exactly-once delivery. If the provider accepts a message and the worker crashes before the database records success, lease recovery may send the same logical message again. Stable Message-ID and the delivery ledger improve traceability but cannot eliminate mailbox/provider duplicates.
+
+Notification quota reservations are not refunded when a worker loses ownership after preparation but before SMTP starts. When the losing worker persists its exact pre-SMTP cleanup, the abandoned attempt is recorded as `lease_expired` with `smtpAttempted=false`. If that worker crashes or cleanup cannot be persisted, the reclaiming worker still closes the attempt as `lease_expired` but conservatively preserves `smtpAttempted=true`. In both cases, the consumed reservation may defer the reclaiming worker to a later pacing or budget window.
 
 Bulk post notifications are opt-in by default off. They render in the recipient's current locale, skip archived/unpublished posts at send time, and write suppression records only for synchronous permanent SMTP rejection from notification delivery. Suppression does not affect login codes, payment emails, membership emails, or renewal reminders.
 

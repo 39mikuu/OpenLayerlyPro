@@ -53,7 +53,12 @@ import {
 } from "@/modules/notifications/delivery";
 import { handleCampaignFinalizeTask } from "@/modules/notifications/expansion";
 import { createNotificationSuppressionDigest } from "@/modules/security/notification-suppression-key";
-import { PermanentTaskError, sweepExpiredFinalAttemptTasksAt } from "@/modules/tasks";
+import {
+  claimDueTasks,
+  PermanentTaskError,
+  renewTaskLease,
+  sweepExpiredFinalAttemptTasksAt,
+} from "@/modules/tasks";
 import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
 import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
 
@@ -318,6 +323,7 @@ describeWithDatabase("notification delivery", () => {
         deliveryId: delivery.id,
         recipientDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
+      { assertTaskOwnership: expect.any(Function) },
     );
 
     const [stored] = await db
@@ -448,17 +454,130 @@ describeWithDatabase("notification delivery", () => {
     });
   });
 
-  it("does not start notification SMTP after task ownership is lost", async () => {
-    const { task } = await seedDelivery();
+  it("does not start notification SMTP after another worker reclaims the task", async () => {
+    const { delivery: seededDelivery, task } = await seedDelivery();
     const execution = ownedTaskExecutionContext();
-    execution.assertOwnership = async () => {
-      throw new TaskOwnershipLostError();
-    };
+    let assertionCount = 0;
+    let reachLastSafePoint!: () => void;
+    let resumeWorkerA!: () => void;
+    let smtpStartCount = 0;
+    const lastSafePointReached = new Promise<void>((resolve) => {
+      reachLastSafePoint = resolve;
+    });
+    const workerAPaused = new Promise<void>((resolve) => {
+      resumeWorkerA = resolve;
+    });
+    execution.assertOwnership = vi.fn(async () => {
+      assertionCount += 1;
+      if (assertionCount === 1) return;
+      reachLastSafePoint();
+      await workerAPaused;
+      const renewed = await renewTaskLease(task.id, task.lockedBy!);
+      if (!renewed) throw new TaskOwnershipLostError();
+    });
+    mocks.sendNewPostNotificationEmail.mockImplementation(
+      async (_to, _input, _locale, _headers, _safeLog, options) => {
+        await options?.assertTaskOwnership?.();
+        smtpStartCount += 1;
+      },
+    );
+
+    const delivery = handleNotificationDeliveryTaskWithOwnership(task, execution);
+    await lastSafePointReached;
+    await db
+      .update(tasks)
+      .set({ leaseUntil: sql`now() - interval '1 second'` })
+      .where(eq(tasks.id, task.id));
+    const [claimedByB] = await claimDueTasks(1, {
+      lockToken: "notification-worker-b",
+      leaseMs: 60_000,
+    });
+    expect(claimedByB).toMatchObject({ id: task.id, lockedBy: "notification-worker-b" });
+
+    resumeWorkerA();
+    await expect(delivery).rejects.toBeInstanceOf(TaskOwnershipLostError);
+    expect(execution.assertOwnership).toHaveBeenCalledTimes(2);
+    expect(mocks.sendNewPostNotificationEmail).toHaveBeenCalledOnce();
+    expect(smtpStartCount).toBe(0);
+
+    await expect(handleNotificationDeliveryTask(claimedByB!)).resolves.toEqual({});
+    expect(smtpStartCount).toBe(1);
+    const attempts = await deliveryAttempts(seededDelivery.id);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toMatchObject({
+      outcome: "lease_expired",
+      errorKind: "lease_expired",
+      smtpAttempted: false,
+    });
+    expect(attempts[0]!.completedAt).toBeInstanceOf(Date);
+    expect(attempts[1]).toMatchObject({ outcome: "accepted", smtpAttempted: true });
+    expect(attempts[1]!.completedAt).toBeInstanceOf(Date);
+    expect(attempts.filter((attempt) => attempt.completedAt === null)).toHaveLength(0);
+    expect(await storedDelivery(seededDelivery.id)).toMatchObject({
+      status: "accepted",
+      lastOutcome: "accepted",
+      attemptCount: 2,
+    });
+  });
+
+  it("closes the prepared attempt when ownership is lost before entering the mail helper", async () => {
+    const { delivery, task } = await seedDelivery();
+    const execution = ownedTaskExecutionContext();
+    execution.assertOwnership = vi.fn().mockRejectedValue(new TaskOwnershipLostError());
 
     await expect(
       handleNotificationDeliveryTaskWithOwnership(task, execution),
     ).rejects.toBeInstanceOf(TaskOwnershipLostError);
+
     expect(mocks.sendNewPostNotificationEmail).not.toHaveBeenCalled();
+    const [attempt] = await deliveryAttempts(delivery.id);
+    expect(attempt).toMatchObject({
+      outcome: "lease_expired",
+      errorKind: "lease_expired",
+      smtpAttempted: false,
+    });
+    expect(attempt!.completedAt).toBeInstanceOf(Date);
+    const quota = await db.select().from(notificationQuotaWindows);
+    expect(quota.map((row) => [row.windowKind, row.attemptedCount]).sort()).toEqual([
+      ["utc_day", 1],
+      ["utc_minute", 1],
+    ]);
+  });
+
+  it("closes a reclaimed started attempt during SMTP-unconfigured preflight", async () => {
+    mocks.getSmtpConfig.mockResolvedValue({ configured: false });
+    const { campaign, delivery, task, user } = await seedDelivery();
+    await db
+      .update(notificationDeliveries)
+      .set({ status: "sending", attemptCount: 1, lastOutcome: "started" })
+      .where(eq(notificationDeliveries.id, delivery.id));
+    await db.insert(notificationDeliveryAttempts).values({
+      deliveryId: delivery.id,
+      campaignId: campaign.id,
+      userId: user.id,
+      taskId: task.id,
+      attemptNumber: 1,
+      attemptUtcDay: sql`(now() at time zone 'utc')::date`,
+      attemptMinute: sql`date_trunc('minute', now())`,
+      smtpAttempted: true,
+      outcome: "started",
+    });
+
+    await expect(handleNotificationDeliveryTask(task)).resolves.toMatchObject({
+      deferUntil: expect.any(Date),
+    });
+
+    const attempts = await deliveryAttempts(delivery.id);
+    expect(attempts.map((attempt) => attempt.outcome)).toEqual([
+      "lease_expired",
+      "needs_operator_defer",
+    ]);
+    expect(attempts[0]!.completedAt).toBeInstanceOf(Date);
+    expect(attempts[1]).toMatchObject({
+      smtpAttempted: false,
+      completedAt: null,
+    });
+    expect(attempts.filter((attempt) => attempt.outcome === "started")).toHaveLength(0);
   });
 
   it("keeps transient SMTP failures retryable with a failed delivery status", async () => {
@@ -747,7 +866,7 @@ describeWithDatabase("notification delivery", () => {
       .where(eq(notificationDeliveries.id, first.delivery.id));
     expect(stored).toMatchObject({ status: "accepted", lastOutcome: "accepted", attemptCount: 2 });
     const attempts = await deliveryAttempts(first.delivery.id);
-    expect(attempts.map((attempt) => attempt.outcome)).toEqual(["permanent_failure", "accepted"]);
+    expect(attempts.map((attempt) => attempt.outcome)).toEqual(["lease_expired", "accepted"]);
     await expect(db.select().from(notificationSuppressions)).resolves.toHaveLength(0);
   });
 
@@ -789,7 +908,10 @@ describeWithDatabase("notification delivery", () => {
       attemptCount: 2,
     });
     const attempts = await deliveryAttempts(first.delivery.id);
-    expect(attempts.map((attempt) => attempt.outcome)).toEqual(["accepted", "permanent_failure"]);
+    expect(attempts.map((attempt) => attempt.outcome)).toEqual([
+      "lease_expired",
+      "permanent_failure",
+    ]);
     await expect(db.select().from(notificationSuppressions)).resolves.toHaveLength(1);
   });
 

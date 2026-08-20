@@ -184,16 +184,27 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
     const [claimed] = await claimDueTasks(1, { lockToken: "worker-a" });
     expect(claimed).toBeDefined();
 
+    let assertionCount = 0;
+    let smtpStarted = false;
+    const assertTaskOwnership = vi.fn(async () => {
+      assertionCount += 1;
+      if (assertionCount === 2) throw new TaskOwnershipLostError();
+    });
+    mocks.sendLoginCodeEmail.mockImplementation(async (_to, _code, _locale, options) => {
+      await options?.assertTaskOwnership?.();
+      smtpStarted = true;
+    });
+
     await expect(
       deliverLoginCodeEmailTask(payloadOf(claimed!), {
         taskId: claimed!.id,
         lockToken: "worker-a",
-        assertTaskOwnership: async () => {
-          throw new TaskOwnershipLostError();
-        },
+        assertTaskOwnership,
       }),
     ).rejects.toBeInstanceOf(TaskOwnershipLostError);
-    expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();
+    expect(assertTaskOwnership).toHaveBeenCalledTimes(2);
+    expect(mocks.sendLoginCodeEmail).toHaveBeenCalledOnce();
+    expect(smtpStarted).toBe(false);
   });
 
   it("successfully no-ops a manually retried old task after a newer active code exists", async () => {

@@ -1,8 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createStorageDeleteDedupeKeyForTests } from "./cleanup";
+const mocks = vi.hoisted(() => ({
+  deleteObject: vi.fn(),
+  getStorageForDriver: vi.fn(),
+}));
+
+vi.mock("@/modules/storage", () => ({
+  getStorageForDriver: mocks.getStorageForDriver,
+}));
+
+import { createStorageDeleteDedupeKeyForTests, deleteStorageObject } from "./cleanup";
 
 describe("storage.delete_object dedupe keys", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getStorageForDriver.mockResolvedValue({ deleteObject: mocks.deleteObject });
+    mocks.deleteObject.mockResolvedValue(undefined);
+  });
+
   it("uses a stable bounded hash of the full storage identity", () => {
     const payload = {
       storageDriver: "s3" as const,
@@ -32,5 +47,38 @@ describe("storage.delete_object dedupe keys", () => {
     ]);
 
     expect(keys.size).toBe(4);
+  });
+
+  it("revalidates task ownership after asynchronous config resolution", async () => {
+    const ownershipLost = new Error("task ownership lost");
+    const assertOwnership = vi.fn().mockRejectedValue(ownershipLost);
+    let finishConfigResolution!: () => void;
+    let markConfigStarted!: () => void;
+    const configStarted = new Promise<void>((resolve) => {
+      markConfigStarted = resolve;
+    });
+    const configBlocked = new Promise<void>((resolve) => {
+      finishConfigResolution = resolve;
+    });
+    mocks.getStorageForDriver.mockImplementationOnce(async () => {
+      markConfigStarted();
+      await configBlocked;
+      return { deleteObject: mocks.deleteObject };
+    });
+    const payload = {
+      storageDriver: "s3" as const,
+      bucket: "private",
+      objectKey: "content/2026/08/image.png",
+    };
+
+    const deletion = deleteStorageObject(payload, { assertOwnership });
+    await configStarted;
+    expect(assertOwnership).not.toHaveBeenCalled();
+    finishConfigResolution();
+    await expect(deletion).rejects.toBe(ownershipLost);
+
+    expect(mocks.getStorageForDriver).toHaveBeenCalledWith("s3");
+    expect(assertOwnership).toHaveBeenCalledOnce();
+    expect(mocks.deleteObject).not.toHaveBeenCalled();
   });
 });

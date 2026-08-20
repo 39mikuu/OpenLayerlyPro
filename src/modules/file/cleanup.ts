@@ -101,8 +101,12 @@ export async function deleteFileRowWithStorageTask(
   await tx.delete(files).where(eq(files.id, file.id));
 }
 
-export async function deleteStorageObject(payload: StorageDeletePayload): Promise<void> {
+export async function deleteStorageObject(
+  payload: StorageDeletePayload,
+  options: { assertOwnership?: () => Promise<void> } = {},
+): Promise<void> {
   const storage = await getStorageForDriver(payload.storageDriver);
+  await options.assertOwnership?.();
   await storage.deleteObject({ objectKey: payload.objectKey, bucket: payload.bucket });
 }
 

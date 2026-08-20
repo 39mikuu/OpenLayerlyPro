@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getSmtpConfig: vi.fn(),
+  legacySmtpStarted: vi.fn(),
   sendMagicLinkEmail: vi.fn(),
   sendMagicLinkEmailWithDeadline: vi.fn(),
 }));
@@ -33,8 +34,9 @@ import { getEnv } from "@/lib/env";
 import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { getMagicLinkKeys } from "@/modules/security/magic-link-key";
-import { claimDueTasks } from "@/modules/tasks";
+import { claimDueTasks, renewTaskLease } from "@/modules/tasks";
 import { runTaskHandler as runTaskHandlerWithOwnership } from "@/modules/tasks/handlers";
+import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
 import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
 
 const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
@@ -145,7 +147,18 @@ describeWithDatabase("WP1 magic link integration", () => {
       secure: false,
       from: "noreply@example.test",
     });
-    mocks.sendMagicLinkEmail.mockResolvedValue(undefined);
+    mocks.sendMagicLinkEmail.mockImplementation(
+      async (
+        _to,
+        _confirmUrl,
+        _locale,
+        options?: { assertTaskOwnership?: () => Promise<void> },
+      ) => {
+        await mocks.getSmtpConfig();
+        await options?.assertTaskOwnership?.();
+        mocks.legacySmtpStarted();
+      },
+    );
     mocks.sendMagicLinkEmailWithDeadline.mockResolvedValue(undefined);
     await removeSessionInsertFailure();
     await removeSessionHandoffConstraint();
@@ -397,6 +410,52 @@ describeWithDatabase("WP1 magic link integration", () => {
     // Replay after consumption fails closed, and the row stays consumed once.
     await expect(consumeMagicLinkToken(token)).resolves.toEqual({ status: "replayed" });
     await expect(verifyMagicLinkToken(token)).resolves.toEqual({ status: "replayed" });
+  });
+
+  it("does not start legacy SMTP after another worker reclaims the task", async () => {
+    await requestMagicLink("stale-worker@example.com", { identity, ip: identity.value });
+    const [claimedByA] = await claimDueTasks(1, {
+      lockToken: "magic-worker-a",
+      leaseMs: 60_000,
+    });
+    if (!claimedByA?.lockedBy) throw new Error("worker A failed to claim Magic Link task");
+
+    let assertionCount = 0;
+    let reachLastSafePoint!: () => void;
+    let resumeWorkerA!: () => void;
+    const lastSafePointReached = new Promise<void>((resolve) => {
+      reachLastSafePoint = resolve;
+    });
+    const workerAPaused = new Promise<void>((resolve) => {
+      resumeWorkerA = resolve;
+    });
+    const execution = ownedTaskExecutionContext();
+    execution.assertOwnership = vi.fn(async () => {
+      assertionCount += 1;
+      if (assertionCount === 1) return;
+      reachLastSafePoint();
+      await workerAPaused;
+      const renewed = await renewTaskLease(claimedByA.id, claimedByA.lockedBy!);
+      if (!renewed) throw new TaskOwnershipLostError();
+    });
+
+    const delivery = runTaskHandlerWithOwnership(claimedByA, execution);
+    await lastSafePointReached;
+    await db
+      .update(tasks)
+      .set({ leaseUntil: sql`now() - interval '1 second'` })
+      .where(eq(tasks.id, claimedByA.id));
+    const [claimedByB] = await claimDueTasks(1, {
+      lockToken: "magic-worker-b",
+      leaseMs: 60_000,
+    });
+    expect(claimedByB).toMatchObject({ id: claimedByA.id, lockedBy: "magic-worker-b" });
+
+    resumeWorkerA();
+    await expect(delivery).rejects.toBeInstanceOf(TaskOwnershipLostError);
+    expect(execution.assertOwnership).toHaveBeenCalledTimes(2);
+    expect(mocks.sendMagicLinkEmail).toHaveBeenCalledOnce();
+    expect(mocks.legacySmtpStarted).not.toHaveBeenCalled();
   });
 
   it("burns the link without creating a session when the member was promoted after issuance", async () => {
