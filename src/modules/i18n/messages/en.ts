@@ -928,6 +928,7 @@ export const en: Messages = {
         "Use 0 to retain approved and reversed proofs permanently; 1–3650 enables delayed cleanup for future terminal transitions.",
       socialLinks: "Social links",
       platformName: "Platform name",
+      linkUrl: "Link URL",
       addLink: "Add link",
       saveSettings: "Save settings",
       appearance: "Appearance",

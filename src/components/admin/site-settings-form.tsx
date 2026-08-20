@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { ErrorSummary } from "@/components/admin/primitives";
+import { ErrorSummary, FormField, Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,9 @@ import { api, uploadFile } from "@/lib/client";
 import type { LegacyFooterStatus, SiteVerification } from "@/modules/site/public-security";
 
 type SocialLink = { name: string; url: string; enabled?: boolean };
+
+const SECTION_CLASS = "min-w-0 space-y-4 rounded-lg border p-4 sm:p-5";
+const FILE_INPUT_CLASS = "h-auto min-h-8 max-w-full py-1 file:mr-2 file:max-w-full";
 
 export function SiteSettingsForm({
   initial,
@@ -172,26 +175,27 @@ export function SiteSettingsForm({
   }
 
   return (
-    <div className="max-w-2xl space-y-8">
-      <section className="space-y-4">
+    <div className="min-w-0 max-w-2xl space-y-6" data-testid="site-settings-form">
+      <section className={SECTION_CLASS} aria-labelledby="site-basic-info-heading">
         <div>
-          <h2 className="text-base font-semibold">{t("admin.site.basicInfo")}</h2>
-          <p className="text-sm text-muted-foreground">{t("admin.site.basicInfoDescription")}</p>
+          <h2 id="site-basic-info-heading" className="text-base font-semibold">
+            {t("admin.site.basicInfo")}
+          </h2>
+          <p className="break-words text-sm text-muted-foreground">
+            {t("admin.site.basicInfoDescription")}
+          </p>
         </div>
-        <div className="space-y-2">
-          <Label>{t("admin.site.siteName")}</Label>
+        <FormField id="site-name" label={t("admin.site.siteName")}>
           <Input value={siteName} onChange={(e) => setSiteName(e.target.value)} />
-        </div>
-        <div className="space-y-2">
-          <Label>{t("admin.site.artistName")}</Label>
+        </FormField>
+        <FormField id="artist-name" label={t("admin.site.artistName")}>
           <Input value={artistName} onChange={(e) => setArtistName(e.target.value)} />
-        </div>
-        <div className="space-y-2">
-          <Label>{t("admin.site.artistBio")}</Label>
+        </FormField>
+        <FormField id="artist-bio" label={t("admin.site.artistBio")}>
           <Textarea rows={4} value={artistBio} onChange={(e) => setArtistBio(e.target.value)} />
-        </div>
-        <div className="space-y-2">
-          <Label>{t("admin.site.avatar")}</Label>
+        </FormField>
+        <div className="min-w-0 space-y-2">
+          <Label htmlFor="artist-avatar">{t("admin.site.avatar")}</Label>
           {avatarFileId && (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -201,73 +205,112 @@ export function SiteSettingsForm({
             />
           )}
           <Input
+            id="artist-avatar"
             type="file"
+            className={FILE_INPUT_CLASS}
             accept=".jpg,.jpeg,.png,.webp"
             onChange={(e) => onAvatarChange(e.target.files?.[0] ?? null)}
           />
         </div>
       </section>
 
-      <section className="space-y-4 rounded-lg border p-4">
+      <section className={SECTION_CLASS} aria-labelledby="site-branding-heading">
         <div>
-          <h2 className="text-base font-semibold">{t("admin.site.branding")}</h2>
-          <p className="text-sm text-muted-foreground">{t("admin.site.brandingDescription")}</p>
+          <h2 id="site-branding-heading" className="text-base font-semibold">
+            {t("admin.site.branding")}
+          </h2>
+          <p className="break-words text-sm text-muted-foreground">
+            {t("admin.site.brandingDescription")}
+          </p>
         </div>
-        <div className="space-y-2">
-          <Label>{t("admin.site.logo")}</Label>
+        <div className="min-w-0 space-y-2">
+          <Label htmlFor="site-logo">{t("admin.site.logo")}</Label>
           {logoFileId && (
-            <div className="flex items-center gap-3 rounded-md border bg-muted/30 p-3">
+            <div
+              className="flex min-w-0 flex-col items-start gap-3 rounded-md border bg-muted/30 p-3 sm:flex-row sm:items-center"
+              data-testid="site-logo-preview"
+            >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={`/api/files/${logoFileId}/download`}
                 alt={t("admin.site.logoAlt")}
-                className="max-h-16 max-w-48 object-contain"
+                className="max-h-16 max-w-full object-contain sm:max-w-48"
               />
-              <Button variant="outline" size="sm" onClick={() => setLogoFileId(null)}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full sm:w-auto"
+                onClick={() => setLogoFileId(null)}
+              >
                 {t("admin.site.clearLogo")}
               </Button>
             </div>
           )}
           <Input
+            id="site-logo"
             type="file"
+            className={FILE_INPUT_CLASS}
             accept=".jpg,.jpeg,.png,.webp"
+            aria-describedby="site-logo-description"
             onChange={(e) => uploadBrandAsset(e.target.files?.[0] ?? null, "logo")}
           />
-          <p className="text-xs text-muted-foreground">{t("admin.site.logoHelp")}</p>
+          <p id="site-logo-description" className="text-xs text-muted-foreground">
+            {t("admin.site.logoHelp")}
+          </p>
         </div>
-        <div className="space-y-2">
-          <Label>{t("admin.site.icon")}</Label>
+        <div className="min-w-0 space-y-2">
+          <Label htmlFor="site-icon">{t("admin.site.icon")}</Label>
           {iconFileId && (
-            <div className="flex items-center gap-3 rounded-md border bg-muted/30 p-3">
+            <div
+              className="flex min-w-0 flex-col items-start gap-3 rounded-md border bg-muted/30 p-3 sm:flex-row sm:items-center"
+              data-testid="site-icon-preview"
+            >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={`/api/files/${iconFileId}/download`}
                 alt={t("admin.site.iconAlt")}
                 className="size-16 rounded-xl border object-cover"
               />
-              <Button variant="outline" size="sm" onClick={() => setIconFileId(null)}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full sm:w-auto"
+                onClick={() => setIconFileId(null)}
+              >
                 {t("admin.site.clearIcon")}
               </Button>
             </div>
           )}
           <Input
+            id="site-icon"
             type="file"
+            className={FILE_INPUT_CLASS}
             accept=".jpg,.jpeg,.png,.webp"
+            aria-describedby="site-icon-description"
             onChange={(e) => uploadBrandAsset(e.target.files?.[0] ?? null, "icon")}
           />
-          <p className="text-xs text-muted-foreground">{t("admin.site.iconHelp")}</p>
+          <p id="site-icon-description" className="text-xs text-muted-foreground">
+            {t("admin.site.iconHelp")}
+          </p>
         </div>
       </section>
 
-      <section className="space-y-4 rounded-lg border p-4">
+      <section className={SECTION_CLASS} aria-labelledby="site-payment-retention-heading">
         <div>
-          <h2 className="text-base font-semibold">{t("admin.site.paymentProofRetention")}</h2>
-          <p className="text-sm text-muted-foreground">
+          <h2 id="site-payment-retention-heading" className="text-base font-semibold">
+            {t("admin.site.paymentProofRetention")}
+          </h2>
+          <p className="break-words text-sm text-muted-foreground">
             {t("admin.site.paymentProofRetentionDescription")}
           </p>
         </div>
-        <div className="space-y-2">
-          <Label>{t("admin.site.paymentProofApprovedRetentionDays")}</Label>
+        <FormField
+          id="payment-proof-retention-days"
+          label={t("admin.site.paymentProofApprovedRetentionDays")}
+          description={t("admin.site.paymentProofApprovedRetentionHelp")}
+        >
           <Input
             type="number"
             min={0}
@@ -276,27 +319,26 @@ export function SiteSettingsForm({
             value={paymentProofApprovedRetentionDays}
             onChange={(e) => setPaymentProofApprovedRetentionDays(Number(e.target.value))}
           />
-          <p className="text-xs text-muted-foreground">
-            {t("admin.site.paymentProofApprovedRetentionHelp")}
-          </p>
-        </div>
+        </FormField>
       </section>
 
-      <section className="space-y-4 rounded-lg border p-4">
+      <section className={SECTION_CLASS} aria-labelledby="site-public-security-heading">
         <div>
-          <h2 className="text-base font-semibold">{t("admin.site.publicSecurity")}</h2>
-          <p className="text-sm text-muted-foreground">
+          <h2 id="site-public-security-heading" className="text-base font-semibold">
+            {t("admin.site.publicSecurity")}
+          </h2>
+          <p className="break-words text-sm text-muted-foreground">
             {t("admin.site.publicSecurityDescription")}
           </p>
         </div>
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+        <div className="break-words rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 [overflow-wrap:anywhere]">
           {t("admin.site.cspStatus", {
             configured: initial.cspMode,
             effective: initial.effectiveCspMode,
           })}
         </div>
         {initial.legacyFooterStatus === "needs_migration" ? (
-          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+          <div className="break-words rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 [overflow-wrap:anywhere]">
             {t(
               initial.effectiveCspMode === "report-only"
                 ? "admin.site.legacyFooterReportOnlyWarning"
@@ -308,46 +350,73 @@ export function SiteSettingsForm({
           errors={initial.publicSecurityConfigurationErrors}
           title={t("admin.site.publicSecurityConfigurationErrors")}
         />
-        <div className="space-y-2">
-          <Label>{t("admin.site.customFooterMarkup")}</Label>
+        <FormField
+          id="custom-footer-markup"
+          label={t("admin.site.customFooterMarkup")}
+          description={t("admin.site.safeMarkupHelp")}
+        >
           <Textarea
             rows={8}
+            className="font-mono text-xs [overflow-wrap:anywhere]"
             value={customFooterMarkup}
             onChange={(e) => setCustomFooterMarkup(e.target.value)}
             placeholder="<p>...</p>"
           />
-          <p className="text-xs text-muted-foreground">{t("admin.site.safeMarkupHelp")}</p>
-        </div>
-        <div className="space-y-2">
-          <Label>{t("admin.site.siteVerification")}</Label>
+        </FormField>
+        <FormField
+          id="site-verification-json"
+          label={t("admin.site.siteVerification")}
+          description={t("admin.site.siteVerificationHelp")}
+        >
           <Textarea
             rows={6}
+            className="font-mono text-xs [overflow-wrap:anywhere]"
             value={siteVerificationJson}
             onChange={(e) => setSiteVerificationJson(e.target.value)}
           />
-          <p className="text-xs text-muted-foreground">{t("admin.site.siteVerificationHelp")}</p>
-        </div>
-        <div className="space-y-2">
-          <Label>{t("admin.site.publicIntegrations")}</Label>
+        </FormField>
+        <FormField
+          id="public-integrations-json"
+          label={t("admin.site.publicIntegrations")}
+          description={t("admin.site.publicIntegrationsHelp")}
+        >
           <Textarea
             rows={10}
+            className="font-mono text-xs [overflow-wrap:anywhere]"
             value={publicIntegrationsJson}
             onChange={(e) => setPublicIntegrationsJson(e.target.value)}
           />
-          <p className="text-xs text-muted-foreground">{t("admin.site.publicIntegrationsHelp")}</p>
-        </div>
+        </FormField>
         {legacyFooterHtml ? (
           <div className="space-y-2 rounded-md border border-amber-300 p-3">
-            <Label>{t("admin.site.legacyFooter")}</Label>
+            <Label htmlFor="legacy-footer-html">{t("admin.site.legacyFooter")}</Label>
             <p className="text-xs text-muted-foreground">
               {t("admin.site.legacyFooterStatus", { status: initial.legacyFooterStatus })}
             </p>
-            <Textarea rows={8} value={legacyFooterHtml} readOnly />
+            <Textarea
+              id="legacy-footer-html"
+              rows={8}
+              className="font-mono text-xs [overflow-wrap:anywhere]"
+              value={legacyFooterHtml}
+              readOnly
+            />
             <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="outline" size="sm" onClick={copyLegacyFooter}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full sm:w-auto"
+                onClick={copyLegacyFooter}
+              >
                 {t("admin.site.copyLegacyFooter")}
               </Button>
-              <Button type="button" variant="outline" size="sm" onClick={downloadLegacyFooter}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full sm:w-auto"
+                onClick={downloadLegacyFooter}
+              >
                 {t("admin.site.downloadLegacyFooter")}
               </Button>
               {initial.legacyFooterStatus === "safe_markup" ? (
@@ -355,6 +424,7 @@ export function SiteSettingsForm({
                   type="button"
                   variant="outline"
                   size="sm"
+                  className="w-full sm:w-auto"
                   disabled={loading}
                   onClick={() => updateLegacyFooter("migrate-safe")}
                 >
@@ -365,6 +435,7 @@ export function SiteSettingsForm({
                 type="button"
                 variant="destructive"
                 size="sm"
+                className="w-full sm:w-auto"
                 disabled={loading}
                 onClick={() => updateLegacyFooter("clear")}
               >
@@ -375,29 +446,43 @@ export function SiteSettingsForm({
         ) : null}
       </section>
 
-      <section className="space-y-4">
-        <div className="space-y-2">
-          <Label>{t("admin.site.socialLinks")}</Label>
+      <section className={SECTION_CLASS} aria-labelledby="site-social-links-heading">
+        <div>
+          <h2 id="site-social-links-heading" className="text-base font-semibold">
+            {t("admin.site.socialLinks")}
+          </h2>
+        </div>
+        <div className="min-w-0 space-y-3">
           {links.map((link, i) => (
-            <div key={i} className="flex gap-2">
-              <Input
-                placeholder={t("admin.site.platformName")}
-                className="w-32"
-                value={link.name}
-                onChange={(e) =>
-                  setLinks(links.map((l, j) => (j === i ? { ...l, name: e.target.value } : l)))
-                }
-              />
-              <Input
-                placeholder="https://..."
-                value={link.url}
-                onChange={(e) =>
-                  setLinks(links.map((l, j) => (j === i ? { ...l, url: e.target.value } : l)))
-                }
-              />
+            <div
+              key={i}
+              className="grid min-w-0 gap-3 rounded-lg border p-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-end"
+              data-testid="site-social-link-row"
+            >
+              <FormField id={`social-link-name-${i}`} label={t("admin.site.platformName")}>
+                <Input
+                  placeholder={t("admin.site.platformName")}
+                  value={link.name}
+                  onChange={(e) =>
+                    setLinks(links.map((l, j) => (j === i ? { ...l, name: e.target.value } : l)))
+                  }
+                />
+              </FormField>
+              <FormField id={`social-link-url-${i}`} label={t("admin.site.linkUrl")}>
+                <Input
+                  type="url"
+                  placeholder="https://..."
+                  value={link.url}
+                  onChange={(e) =>
+                    setLinks(links.map((l, j) => (j === i ? { ...l, url: e.target.value } : l)))
+                  }
+                />
+              </FormField>
               <Button
+                type="button"
                 variant="outline"
                 size="sm"
+                className="w-full sm:w-auto"
                 onClick={() => setLinks(links.filter((_, j) => j !== i))}
               >
                 {t("admin.common.delete")}
@@ -405,16 +490,18 @@ export function SiteSettingsForm({
             </div>
           ))}
           <Button
+            type="button"
             variant="outline"
             size="sm"
+            className="w-full sm:w-auto"
             onClick={() => setLinks([...links, { name: "", url: "" }])}
           >
             {t("admin.site.addLink")}
           </Button>
         </div>
       </section>
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
-      <Button disabled={loading} onClick={save}>
+      {message && <Notice className="break-words [overflow-wrap:anywhere]">{message}</Notice>}
+      <Button type="button" className="w-full sm:w-auto" disabled={loading} onClick={save}>
         {t("admin.site.saveSettings")}
       </Button>
     </div>
