@@ -38,6 +38,13 @@ describe("admin list cursor contract", () => {
     expect(decodeAdminListCursor(encodeAdminListCursor(cursor), "memberships")).toEqual(cursor);
   });
 
+  it("keeps user-list cursors scoped away from other admin lists", () => {
+    const userCursor = { ...cursor, scope: "users" as const };
+    const encoded = encodeAdminListCursor(userCursor);
+    expect(decodeAdminListCursor(encoded, "users")).toEqual(userCursor);
+    expectInvalidCursor(encoded, "memberships");
+  });
+
   it.each([null, undefined, ""])("treats a missing cursor as page one", (value) => {
     expect(decodeAdminListCursor(value, "memberships")).toBeNull();
   });

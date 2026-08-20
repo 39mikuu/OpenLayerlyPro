@@ -19,21 +19,25 @@ import {
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 const updatedAt = () => timestamp("updated_at", { withTimezone: true }).notNull().defaultNow();
 
-export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  email: text("email").unique().notNull(),
-  passwordHash: text("password_hash"),
-  displayName: text("display_name"),
-  role: text("role", { enum: ["admin", "member"] })
-    .notNull()
-    .default("member"),
-  locale: text("locale", { enum: ["zh", "en", "ja"] })
-    .notNull()
-    .default("zh"),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
-  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").unique().notNull(),
+    passwordHash: text("password_hash"),
+    displayName: text("display_name"),
+    role: text("role", { enum: ["admin", "member"] })
+      .notNull()
+      .default("member"),
+    locale: text("locale", { enum: ["zh", "en", "ja"] })
+      .notNull()
+      .default("zh"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+  },
+  (table) => [index("users_created_id_idx").on(table.createdAt.desc(), table.id.desc())],
+);
 
 export const sessions = pgTable(
   "sessions",

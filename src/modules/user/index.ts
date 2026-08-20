@@ -1,8 +1,14 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, gt, lte, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
-import { type User, users } from "@/db/schema";
+import { memberships, membershipTiers, type User, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import {
+  type AdminListPage,
+  decodeAdminListCursor,
+  encodeAdminListCursor,
+  normalizeAdminPageSize,
+} from "@/modules/admin/pagination";
 import type { Locale } from "@/modules/i18n";
 
 export async function findUserByEmail(
@@ -65,6 +71,87 @@ export async function updateUserDisplayName(
     .where(eq(users.id, userId));
 }
 
-export async function listUsers(): Promise<User[]> {
-  return getDb().select().from(users).orderBy(desc(users.createdAt));
+export type AdminUserListItem = {
+  user: Pick<User, "id" | "email" | "role" | "createdAt" | "lastLoginAt">;
+  activeMembership: {
+    id: string;
+    tierName: string;
+    endsAt: Date;
+  } | null;
+};
+
+export async function listUsersPage(
+  opts: { cursor?: string | null; limit?: number } = {},
+  dbc: DbClient = getDb(),
+): Promise<AdminListPage<AdminUserListItem>> {
+  const limit = normalizeAdminPageSize(opts.limit);
+  const cursor = decodeAdminListCursor(opts.cursor, "users");
+  const now = new Date();
+  const activeMembership = dbc
+    .select({
+      id: memberships.id,
+      tierName: membershipTiers.name,
+      endsAt: memberships.endsAt,
+    })
+    .from(memberships)
+    .innerJoin(membershipTiers, eq(memberships.tierId, membershipTiers.id))
+    .where(
+      and(
+        eq(memberships.userId, users.id),
+        eq(memberships.status, "active"),
+        lte(memberships.startsAt, now),
+        gt(memberships.endsAt, now),
+      ),
+    )
+    .orderBy(desc(membershipTiers.level), desc(memberships.endsAt), desc(memberships.id))
+    .limit(1)
+    .as("active_membership");
+  const cursorCreatedAt = sql<string>`to_char(
+    ${users.createdAt} at time zone 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+  )`;
+  const rows = await dbc
+    .select({
+      user: {
+        id: users.id,
+        email: users.email,
+        role: users.role,
+        createdAt: users.createdAt,
+        lastLoginAt: users.lastLoginAt,
+      },
+      activeMembership: {
+        id: activeMembership.id,
+        tierName: activeMembership.tierName,
+        endsAt: activeMembership.endsAt,
+      },
+      cursorCreatedAt,
+    })
+    .from(users)
+    .leftJoinLateral(activeMembership, sql`true`)
+    .where(
+      cursor
+        ? sql`(${users.createdAt}, ${users.id}) <
+            (${cursor.timestamp}::timestamptz, ${cursor.id}::uuid)`
+        : undefined,
+    )
+    .orderBy(desc(users.createdAt), desc(users.id))
+    .limit(limit + 1);
+  const pageRows = rows.slice(0, limit);
+  const last = pageRows.at(-1);
+
+  return {
+    items: pageRows.map(({ user, activeMembership: active }) => ({
+      user,
+      activeMembership: active?.id ? active : null,
+    })),
+    nextCursor:
+      rows.length > limit && last
+        ? encodeAdminListCursor({
+            version: 1,
+            scope: "users",
+            timestamp: last.cursorCreatedAt,
+            id: last.user.id,
+          })
+        : null,
+  };
 }

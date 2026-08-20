@@ -5,6 +5,7 @@ export const ADMIN_LIST_MAX_PAGE_SIZE = 100;
 export const ADMIN_LIST_CURSOR_MAX_LENGTH = 512;
 
 export type AdminListCursorScope =
+  | "users"
   | "memberships"
   | "supporter-wall"
   | "payments:pending"
@@ -28,6 +29,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const CURSOR_KEYS = ["id", "scope", "timestamp", "version"];
 const CURSOR_SCOPES = new Set<AdminListCursorScope>([
+  "users",
   "memberships",
   "supporter-wall",
   "payments:pending",
