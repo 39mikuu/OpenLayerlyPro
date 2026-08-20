@@ -1,25 +1,44 @@
 import { access } from "fs/promises";
 import path from "path";
 
+import { type DbClient, getDb } from "@/db";
 import { getEnv } from "@/lib/env";
 import {
   getOAuthProviderAdminView,
   getSmtpAdminView,
   getStorageAdminView,
+  getStoredGroupSnapshots,
   getStripeAdminView,
   getTranslationAdminView,
   getTurnstileAdminView,
+  type OAuthProviderConfigInput,
+  oauthProviderGroupKey,
+  SMTP_GROUP,
+  type SmtpConfigInput,
+  STORAGE_GROUP,
+  type StorageConfigInput,
+  STRIPE_GROUP,
+  type StripeConfigInput,
+  TRANSLATION_GROUP,
+  type TranslationConfigInput,
+  TURNSTILE_GROUP,
+  type TurnstileConfigInput,
 } from "@/modules/config";
 import { sendTestEmail } from "@/modules/mail";
 import { testStripeConnection } from "@/modules/payment/providers";
-import { getSetting } from "@/modules/site";
+import { getSetting, getSettings } from "@/modules/site";
 import {
   parsePublicSecuritySettings,
   PUBLIC_INTEGRATIONS_KEY,
 } from "@/modules/site/public-security";
 import { testS3Connection } from "@/modules/storage";
 
-import type { Integration, IntegrationId, IntegrationStatus } from "./types";
+import type {
+  Integration,
+  IntegrationId,
+  IntegrationStatus,
+  IntegrationStatusContext,
+} from "./types";
 
 function configSource(hasDbOverride: boolean): "database" | "environment" {
   return hasDbOverride ? "database" : "environment";
@@ -41,8 +60,11 @@ function hasStoredPublicIntegrationProvider(value: unknown, provider: string): b
 const smtpIntegration: Integration = {
   id: "smtp",
   kind: "service",
-  async getStatus() {
-    const view = await getSmtpAdminView();
+  async getStatus(context) {
+    const snapshot = context
+      ? await context.getStoredGroupSnapshot<SmtpConfigInput>(SMTP_GROUP)
+      : undefined;
+    const view = await getSmtpAdminView(snapshot);
     const configured = Boolean(view.host && view.from);
     return {
       id: "smtp",
@@ -61,8 +83,11 @@ const smtpIntegration: Integration = {
 const storageIntegration: Integration = {
   id: "storage",
   kind: "service",
-  async getStatus() {
-    const view = await getStorageAdminView();
+  async getStatus(context) {
+    const snapshot = context
+      ? await context.getStoredGroupSnapshot<StorageConfigInput>(STORAGE_GROUP)
+      : undefined;
+    const view = await getStorageAdminView(snapshot);
     let configured = view.s3Configured;
     if (view.driver === "local") {
       try {
@@ -91,8 +116,11 @@ const storageIntegration: Integration = {
 const stripeIntegration: Integration = {
   id: "stripe",
   kind: "service",
-  async getStatus() {
-    const view = await getStripeAdminView();
+  async getStatus(context) {
+    const snapshot = context
+      ? await context.getStoredGroupSnapshot<StripeConfigInput>(STRIPE_GROUP)
+      : undefined;
+    const view = await getStripeAdminView(snapshot);
     return {
       id: "stripe",
       kind: "service",
@@ -109,8 +137,11 @@ const stripeIntegration: Integration = {
 const turnstileIntegration: Integration = {
   id: "turnstile",
   kind: "service",
-  async getStatus() {
-    const view = await getTurnstileAdminView();
+  async getStatus(context) {
+    const snapshot = context
+      ? await context.getStoredGroupSnapshot<TurnstileConfigInput>(TURNSTILE_GROUP)
+      : undefined;
+    const view = await getTurnstileAdminView(snapshot);
     return {
       id: "turnstile",
       kind: "service",
@@ -124,8 +155,11 @@ const turnstileIntegration: Integration = {
 const translationIntegration: Integration = {
   id: "translation",
   kind: "service",
-  async getStatus() {
-    const view = await getTranslationAdminView();
+  async getStatus(context) {
+    const snapshot = context
+      ? await context.getStoredGroupSnapshot<TranslationConfigInput>(TRANSLATION_GROUP)
+      : undefined;
+    const view = await getTranslationAdminView(snapshot);
     return {
       id: "translation",
       kind: "service",
@@ -140,8 +174,10 @@ function publicAnalyticsIntegration(provider: "plausible" | "umami"): Integratio
   return {
     id: provider,
     kind: "service",
-    async getStatus() {
-      const storedPublicIntegrations = await getSetting<unknown>(PUBLIC_INTEGRATIONS_KEY);
+    async getStatus(context) {
+      const storedPublicIntegrations = context
+        ? await context.getSetting<unknown>(PUBLIC_INTEGRATIONS_KEY)
+        : await getSetting<unknown>(PUBLIC_INTEGRATIONS_KEY);
       const hasStoredProvider = hasStoredPublicIntegrationProvider(
         storedPublicIntegrations,
         provider,
@@ -190,8 +226,13 @@ const umamiIntegration = publicAnalyticsIntegration("umami");
 const oauthGoogleIntegration: Integration = {
   id: "oauth_google",
   kind: "service",
-  async getStatus() {
-    const view = await getOAuthProviderAdminView("google");
+  async getStatus(context) {
+    const snapshot = context
+      ? await context.getStoredGroupSnapshot<OAuthProviderConfigInput>(
+          oauthProviderGroupKey("google"),
+        )
+      : undefined;
+    const view = await getOAuthProviderAdminView("google", snapshot);
     return {
       id: "oauth_google",
       kind: "service",
@@ -205,8 +246,13 @@ const oauthGoogleIntegration: Integration = {
 const oauthGithubIntegration: Integration = {
   id: "oauth_github",
   kind: "service",
-  async getStatus() {
-    const view = await getOAuthProviderAdminView("github");
+  async getStatus(context) {
+    const snapshot = context
+      ? await context.getStoredGroupSnapshot<OAuthProviderConfigInput>(
+          oauthProviderGroupKey("github"),
+        )
+      : undefined;
+    const view = await getOAuthProviderAdminView("github", snapshot);
     return {
       id: "oauth_github",
       kind: "service",
@@ -253,11 +299,40 @@ export const testableIntegrationIds: IntegrationId[] = integrations
   .filter((integration) => integration.test)
   .map((integration) => integration.id);
 
-export async function getIntegrationStatuses(): Promise<IntegrationStatus[]> {
+const STATUS_CONFIG_GROUPS = [
+  SMTP_GROUP,
+  STORAGE_GROUP,
+  STRIPE_GROUP,
+  TURNSTILE_GROUP,
+  TRANSLATION_GROUP,
+  oauthProviderGroupKey("google"),
+  oauthProviderGroupKey("github"),
+] as const;
+
+function createIntegrationStatusContext(db: DbClient): IntegrationStatusContext {
+  const configSnapshotsPromise = getStoredGroupSnapshots(STATUS_CONFIG_GROUPS, db);
+  const siteSettingsPromise = getSettings([PUBLIC_INTEGRATIONS_KEY], db);
+
+  return {
+    async getStoredGroupSnapshot<T>(group: string) {
+      const result = (await configSnapshotsPromise).get(group);
+      if (!result) return { value: null, revision: 0 };
+      if (!result.ok) throw result.error;
+      return result.snapshot as { value: Partial<T> | null; revision: number };
+    },
+    async getSetting<T>(key: string) {
+      const settings = await siteSettingsPromise;
+      return Object.prototype.hasOwnProperty.call(settings, key) ? (settings[key] as T) : null;
+    },
+  };
+}
+
+export async function getIntegrationStatuses(db: DbClient = getDb()): Promise<IntegrationStatus[]> {
+  const context = createIntegrationStatusContext(db);
   return Promise.all(
     integrations.map(async (integration) => {
       try {
-        return await integration.getStatus();
+        return await integration.getStatus(context);
       } catch {
         return {
           id: integration.id,

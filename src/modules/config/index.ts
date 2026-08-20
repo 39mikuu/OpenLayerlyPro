@@ -43,7 +43,15 @@ export {
   type StorageConfigInput,
   storageConfigSchema,
 } from "./storage";
-export { deleteStoredGroup, getStoredGroup, getStoredGroupRevision, setStoredGroup } from "./store";
+export {
+  deleteStoredGroup,
+  getStoredGroup,
+  getStoredGroupRevision,
+  getStoredGroupSnapshots,
+  setStoredGroup,
+  type StoredGroupSnapshot,
+  type StoredGroupSnapshotResult,
+} from "./store";
 export {
   clearStripeConfig,
   getStripeAdminView,

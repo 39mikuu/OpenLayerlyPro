@@ -4,7 +4,13 @@ import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 
 import { requireExpectedRevision } from "./revision";
-import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
+import {
+  deleteStoredGroup,
+  getStoredGroup,
+  getStoredGroupSnapshot,
+  setStoredGroup,
+  type StoredGroupSnapshot,
+} from "./store";
 
 export const TURNSTILE_GROUP = "turnstile";
 
@@ -54,9 +60,12 @@ export async function getTurnstileConfig(): Promise<ResolvedTurnstileConfig> {
   return resolveTurnstileConfig(stored);
 }
 
-export async function getTurnstileAdminView(): Promise<TurnstileAdminView> {
+export async function getTurnstileAdminView(
+  prefetched?: StoredGroupSnapshot<TurnstileConfigInput>,
+): Promise<TurnstileAdminView> {
   const env = getEnv();
-  const snapshot = await getStoredGroupSnapshot<TurnstileConfigInput>(TURNSTILE_GROUP);
+  const snapshot =
+    prefetched ?? (await getStoredGroupSnapshot<TurnstileConfigInput>(TURNSTILE_GROUP));
   const stored = snapshot.value;
   const effective = resolveTurnstileConfig(stored ?? {});
 

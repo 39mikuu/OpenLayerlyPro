@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { eq, inArray } from "drizzle-orm";
 import { cache } from "react";
 
-import { getDb } from "@/db";
+import { type DbClient, getDb } from "@/db";
 import { membershipTiers, siteSettings, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { hashPassword, hmacSha256WithPurpose } from "@/lib/crypto";
@@ -58,9 +58,12 @@ export async function getSetting<T>(key: string): Promise<T | null> {
   return row ? (row.valueJson as T) : null;
 }
 
-export async function getSettings(keys: string[]): Promise<Record<string, unknown>> {
+export async function getSettings(keys: string[], db?: DbClient): Promise<Record<string, unknown>> {
   if (keys.length === 0) return {};
-  const rows = await getDb().select().from(siteSettings).where(inArray(siteSettings.key, keys));
+  const rows = await (db ?? getDb())
+    .select()
+    .from(siteSettings)
+    .where(inArray(siteSettings.key, keys));
   return Object.fromEntries(rows.map((row) => [row.key, row.valueJson]));
 }
 

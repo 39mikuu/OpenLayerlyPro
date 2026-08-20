@@ -4,7 +4,13 @@ import { ApiError } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
 import { requireExpectedRevision } from "./revision";
-import { deleteStoredGroup, getStoredGroup, getStoredGroupSnapshot, setStoredGroup } from "./store";
+import {
+  deleteStoredGroup,
+  getStoredGroup,
+  getStoredGroupSnapshot,
+  setStoredGroup,
+  type StoredGroupSnapshot,
+} from "./store";
 
 export type OAuthProviderId = "google" | "github";
 
@@ -61,10 +67,11 @@ export async function getOAuthProviderConfig(
 
 export async function getOAuthProviderAdminView(
   provider: OAuthProviderId,
+  prefetched?: StoredGroupSnapshot<OAuthProviderConfigInput>,
 ): Promise<OAuthProviderAdminView> {
-  const snapshot = await getStoredGroupSnapshot<OAuthProviderConfigInput>(
-    oauthProviderGroupKey(provider),
-  );
+  const snapshot =
+    prefetched ??
+    (await getStoredGroupSnapshot<OAuthProviderConfigInput>(oauthProviderGroupKey(provider)));
   const stored = snapshot.value;
   const effective = resolveOAuthProviderConfig(stored ?? {});
   return {
