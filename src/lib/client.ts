@@ -1,6 +1,6 @@
 "use client";
 
-import { DEFAULT_LOCALE, isLocale, LOCALE_COOKIE, translate } from "@/modules/i18n";
+import { translateClient } from "@/modules/i18n/client";
 
 type ApiResponse<T> =
   | { ok: true; data: T }
@@ -11,17 +11,10 @@ type ApiResponse<T> =
       error: string;
     };
 
-function currentLocale() {
-  if (typeof document === "undefined") return DEFAULT_LOCALE;
-  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${LOCALE_COOKIE}=([^;]+)`));
-  const locale = match ? decodeURIComponent(match[1]) : null;
-  return isLocale(locale) ? locale : DEFAULT_LOCALE;
-}
-
 function errorMessage(response: Extract<ApiResponse<unknown>, { ok: false }>): string {
   if (!response.code) return response.error;
   const key = `errors.${response.code}`;
-  const localized = translate(currentLocale(), key, response.params);
+  const localized = translateClient(key, response.params);
   return localized === key ? response.error : localized;
 }
 
@@ -36,7 +29,9 @@ export async function api<T = unknown>(
   });
   const json = (await res.json().catch(() => null)) as ApiResponse<T> | null;
   if (!json) {
-    throw new Error(translate(currentLocale(), "common.requestFailed", { status: res.status }));
+    const key = "common.requestFailed";
+    const localized = translateClient(key, { status: res.status });
+    throw new Error(localized === key ? `Request failed (${res.status})` : localized);
   }
   if (!json.ok) throw new Error(errorMessage(json) || `Request failed (${res.status})`);
   return json.data;
@@ -53,7 +48,9 @@ export async function uploadFile<T = unknown>(
   const res = await fetch(path, { method: "POST", body: form });
   const json = (await res.json().catch(() => null)) as ApiResponse<T> | null;
   if (!json) {
-    throw new Error(translate(currentLocale(), "common.uploadFailed", { status: res.status }));
+    const key = "common.uploadFailed";
+    const localized = translateClient(key, { status: res.status });
+    throw new Error(localized === key ? `Upload failed (${res.status})` : localized);
   }
   if (!json.ok) throw new Error(errorMessage(json) || `Upload failed (${res.status})`);
   return json.data;
@@ -71,7 +68,9 @@ export async function uploadStreamFile<T = unknown>(path: string, file: File): P
   });
   const json = (await res.json().catch(() => null)) as ApiResponse<T> | null;
   if (!json) {
-    throw new Error(translate(currentLocale(), "common.uploadFailed", { status: res.status }));
+    const key = "common.uploadFailed";
+    const localized = translateClient(key, { status: res.status });
+    throw new Error(localized === key ? `Upload failed (${res.status})` : localized);
   }
   if (!json.ok) throw new Error(errorMessage(json) || `Upload failed (${res.status})`);
   return json.data;

@@ -1,4 +1,4 @@
-import type { Locale } from "@/modules/i18n";
+import type { Locale } from "@/modules/i18n/config";
 
 export type TranslationVersion = {
   id: string;
