@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("postgres", () => ({ default: mocks.postgres }));
 vi.mock("drizzle-orm/postgres-js", () => ({ drizzle: mocks.drizzle }));
-vi.mock("@/lib/env", () => ({ getEnv: () => ({ DATABASE_URL: "postgresql://example" }) }));
+vi.mock("@/lib/database-url", () => ({ getDatabaseUrl: () => "postgresql://example" }));
 
 describe("database pool lifecycle", () => {
   beforeEach(() => {
@@ -31,6 +31,10 @@ describe("database pool lifecycle", () => {
     const second = getDb();
     expect(second).not.toBe(first);
     expect(mocks.postgres).toHaveBeenCalledTimes(2);
+    expect(mocks.postgres).toHaveBeenCalledWith("postgresql://example", {
+      max: 10,
+      onnotice: expect.any(Function),
+    });
   });
 
   it("is a no-op before initialization", async () => {

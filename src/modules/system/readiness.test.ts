@@ -9,6 +9,7 @@ import {
 } from "@/modules/security/config-key";
 
 import { getReadiness } from "./readiness";
+import { isRuntimeSchemaCurrent } from "./schema-readiness";
 
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
 vi.mock("@/lib/env", () => ({ getEnv: vi.fn(), isProduction: vi.fn() }));
@@ -17,6 +18,7 @@ vi.mock("@/modules/security/config-key", () => ({
   isConfigEncryptionKeyConfigured: vi.fn(),
 }));
 vi.mock("@/modules/integration", () => ({ getIntegrationStatuses: vi.fn() }));
+vi.mock("./schema-readiness", () => ({ isRuntimeSchemaCurrent: vi.fn() }));
 
 const mockedGetDb = vi.mocked(getDb);
 const mockedGetEnv = vi.mocked(getEnv);
@@ -24,6 +26,7 @@ const mockedIsProduction = vi.mocked(isProduction);
 const mockedGetConfigEncryptionKey = vi.mocked(getConfigEncryptionKey);
 const mockedIsConfigEncryptionKeyConfigured = vi.mocked(isConfigEncryptionKeyConfigured);
 const mockedGetIntegrationStatuses = vi.mocked(getIntegrationStatuses);
+const mockedIsRuntimeSchemaCurrent = vi.mocked(isRuntimeSchemaCurrent);
 
 function mockDbOk(ok = true) {
   mockedGetDb.mockReturnValue({
@@ -41,6 +44,7 @@ describe("getReadiness", () => {
     mockedIsConfigEncryptionKeyConfigured.mockReturnValue(true);
     mockedGetConfigEncryptionKey.mockReturnValue("key");
     mockDbOk(true);
+    mockedIsRuntimeSchemaCurrent.mockResolvedValue(true);
     mockedGetIntegrationStatuses.mockResolvedValue([
       { id: "smtp", kind: "service", configured: true, enabled: true, source: "database" },
       {
@@ -63,7 +67,12 @@ describe("getReadiness", () => {
   it("is ready when core checks pass and omits integrations by default", async () => {
     const result = await getReadiness();
     expect(result.ready).toBe(true);
-    expect(result.checks).toEqual({ database: true, config: true, encryptionKey: true });
+    expect(result.checks).toEqual({
+      database: true,
+      schema: true,
+      config: true,
+      encryptionKey: true,
+    });
     expect(result.integrations).toBeUndefined();
     expect(mockedGetIntegrationStatuses).not.toHaveBeenCalled();
   });
@@ -123,7 +132,38 @@ describe("getReadiness", () => {
     mockDbOk(false);
     const result = await getReadiness({ includeIntegrations: true });
     expect(result.ready).toBe(false);
-    expect(result.checks.database).toBe(false);
+    expect(result.checks).toMatchObject({ database: false, schema: false });
+    expect(mockedIsRuntimeSchemaCurrent).not.toHaveBeenCalled();
+  });
+
+  it("is not ready when the runtime schema is behind or mismatched", async () => {
+    mockedIsRuntimeSchemaCurrent.mockResolvedValue(false);
+
+    const result = await getReadiness();
+
+    expect(result.ready).toBe(false);
+    expect(result.checks).toMatchObject({ database: true, schema: false });
+  });
+
+  it("fails the schema check closed without hiding database connectivity", async () => {
+    mockedIsRuntimeSchemaCurrent.mockRejectedValue(new Error("migration table unavailable"));
+
+    const result = await getReadiness();
+
+    expect(result.ready).toBe(false);
+    expect(result.checks).toMatchObject({ database: true, schema: false });
+  });
+
+  it("reports database connectivity independently from invalid application config", async () => {
+    mockedGetEnv.mockImplementation(() => {
+      throw new Error("unrelated config is invalid");
+    });
+
+    const result = await getReadiness();
+
+    expect(result.ready).toBe(false);
+    expect(result.checks).toMatchObject({ database: true, schema: true, config: false });
+    expect(mockedIsRuntimeSchemaCurrent).toHaveBeenCalledOnce();
   });
 
   it("is not ready when a configured encryption key source fails loudly", async () => {

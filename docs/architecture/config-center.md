@@ -43,7 +43,7 @@
 ## 密钥依赖与备份
 
 - 读写 `app_settings` 需要配置加密根密钥；env-only fallback 组在没有 DB override 时仍可读取环境变量。
-- `/api/ready` 要求配置读取和根密钥可用。
+- `/api/ready` 要求数据库连接、当前镜像的完整有序迁移身份、配置读取和根密钥均可用；任一历史迁移缺失、重排、哈希/时间戳漂移或数据库超前都会失败关闭，且只暴露 `schema=false`，不返回内部详情。
 - 迁移/恢复必须备份 secrets volume 或外部 `CONFIG_ENCRYPTION_KEY`；丢失后已加密设置无法恢复。
 - `SESSION_SECRET` 不是配置加密根密钥，必须独立备份；它影响会话和在途登录码任务。
 

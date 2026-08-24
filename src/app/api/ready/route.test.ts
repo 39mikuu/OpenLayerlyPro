@@ -15,8 +15,7 @@ describe("readiness response security", () => {
   it("returns nosniff without changing the readiness shape or status", async () => {
     mocks.getReadiness.mockResolvedValue({
       ready: false,
-      checks: { database: false },
-      warnings: ["database unavailable"],
+      checks: { database: true, schema: false, config: true, encryptionKey: true },
     });
 
     const response = await GET(new Request("http://localhost/api/ready") as unknown as NextRequest);
@@ -26,7 +25,7 @@ describe("readiness response security", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: false,
       status: "not_ready",
-      checks: { database: false },
+      checks: { database: true, schema: false, config: true, encryptionKey: true },
     });
   });
 });

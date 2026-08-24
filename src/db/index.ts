@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
-import { getEnv } from "@/lib/env";
+import { getDatabaseUrl } from "@/lib/database-url";
 
 import * as schema from "./schema";
 
@@ -12,7 +12,7 @@ export type TxClient = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export type DbClient = Db | TxClient;
 
 function createDb() {
-  const client = postgres(getEnv().DATABASE_URL, {
+  const client = postgres(getDatabaseUrl(), {
     max: 10,
     onnotice: () => {},
   });

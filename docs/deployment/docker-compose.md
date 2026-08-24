@@ -57,7 +57,9 @@ curl http://localhost:3000/api/health
 curl http://localhost:3000/api/ready
 ```
 
-`/api/ready` checks database connectivity, settings reads, and the config encryption key.
+`/api/ready` checks database connectivity, the complete ordered migration identity expected by
+the application image, settings reads, and the config encryption key. Missing, reordered,
+modified, older, or newer migration history fails readiness without exposing schema details.
 
 ## Volumes to Back Up
 
