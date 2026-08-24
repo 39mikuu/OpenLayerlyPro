@@ -63,6 +63,50 @@ New archives use `FORMAT_VERSION=4` and are named like:
 openlayerly-backup-20260627-134500.tar.gz
 ```
 
+After the archive is moved into place, `backup.sh` reopens it with `tar`, records its
+SHA-256 digest and byte size, and publishes two `0600` evidence files:
+
+```text
+openlayerly-backup-20260627-134500.tar.gz.evidence.env
+last-successful-backup.env
+```
+
+The per-archive file is matching evidence for that named capture. The second file is
+atomically replaced only after a later archive passes the same post-publication check, so
+a failed or interrupted backup leaves the previous successful baseline intact. Copy the
+archive and its per-archive evidence off-host together. Monitoring can read
+`last-successful-backup.env` to alert on capture age and verify `ARCHIVE_SHA256` against
+`ARCHIVE_BASENAME` before scheduling a restore drill.
+
+Archive and per-archive evidence publication is no-clobber. Concurrent runs or a
+same-second filename collision fail instead of replacing an artifact that an earlier
+success marker may reference. The short publication/rollback phase is serialized by
+`.openlayerly-backup-publication.lock` in the output directory. A process killed with
+`SIGKILL`, or a cleanup filesystem failure, can leave this fail-closed lock file behind;
+confirm no backup process is active and inspect the archive, sidecar, latest pointer, and
+any retained `.previous-last-successful-backup.*` file before removing a stale lock
+manually. The matching hidden `.openlayerly-backup-publication.owner.*` file is the
+lock-ownership inode; inspect and remove it together with a confirmed stale lock. An
+owner file can also remain after a partial lock-release failure even when the fixed lock
+is absent, and a later process that reuses the same PID will fail closed on that path;
+apply the same no-active-process and artifact checks before removing that stale owner.
+If the filesystem cannot determine whether an atomic link completed, the script also
+retains the hidden `.openlayerly-backup-*` or `.backup-evidence.*` source together with
+any target and the lock/owner pair; compare inodes and contents before resolving these
+ambiguous artifacts manually.
+
+This evidence deliberately says `RESTORE_DRILL_VERIFIED=false` and
+`RECOVERABILITY_STATUS=unverified`: archive readability and a matching digest do not prove
+that every external recovery component exists or that restore succeeds. For an `s3`
+fallback it marks object recovery as required; for a `local` fallback it remains `unknown`
+because mixed historical S3 rows are outside the script's environment-only inventory.
+Externally managed session or notification secrets are also flagged as required without
+recording their values. The dedicated Magic Link current/previous keyring is not archived
+or fingerprinted by `backup.sh`, so `MAGIC_LINK_SECRET_RECOVERY_STATUS=required` keeps the
+aggregate external-secret warning true even for otherwise file-backed deployments. Only
+an isolated restore drill using the archive, matching external secrets, and matching
+provider recovery points can supply recoverability evidence.
+
 Archive members:
 
 ```text

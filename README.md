@@ -197,6 +197,12 @@ Docker 用户可以留空 `CONFIG_ENCRYPTION_KEY`。首次启动时 entrypoint �
 ./scripts/restore.sh ./backups/openlayerly-backup-<timestamp>.tar.gz
 ```
 
+Successful backups also write a per-archive `.evidence.env` file plus an atomically updated
+`last-successful-backup.env` containing the archive digest, size, provenance, consistency
+mode, and external-component warnings. These files prove only that the capture was
+published and readable; they explicitly do not claim that an isolated restore drill or
+external S3/secret recovery has succeeded.
+
 备份脚本按 app 容器的 `STORAGE_DRIVER` 环境变量决定归档 local uploads 或写入 S3 skip marker；它不会把后台 Storage DB override 或混合 local/S3 历史对象复制成单一归档。恢复流程会在启动 app 前按 DB 引用执行 local/S3 收敛，但 S3/R2 对象字节仍必须由 provider snapshot/versioning 单独恢复。完整恢复集和外部 secret 要求见[备份与恢复](docs/deployment/backup-restore.md)，升级步骤见[升级指南](docs/deployment/upgrade.md)。
 
 ## 文件存储
