@@ -97,8 +97,11 @@ that every external recovery component exists or that restore succeeds. For an `
 fallback it marks object recovery as required; for a `local` fallback it remains `unknown`
 because mixed historical S3 rows are outside the script's environment-only inventory.
 Externally managed session or notification secrets are also flagged as required without
-recording their values. Only an isolated restore drill using the archive, matching external
-secrets, and matching provider recovery points can supply recoverability evidence.
+recording their values. The dedicated Magic Link current/previous keyring is not archived
+or fingerprinted by `backup.sh`, so `MAGIC_LINK_SECRET_RECOVERY_STATUS=required` keeps the
+aggregate external-secret warning true even for otherwise file-backed deployments. Only
+an isolated restore drill using the archive, matching external secrets, and matching
+provider recovery points can supply recoverability evidence.
 
 Archive members:
 

@@ -222,8 +222,10 @@ grep -Fx "CAPTURE_CONSISTENCY=stopped" "$LATEST_EVIDENCE" >/dev/null \
   || fail "consistency mode is incorrect"
 grep -Fx "OBJECT_STORAGE_RECOVERY_STATUS=unknown" "$LATEST_EVIDENCE" >/dev/null \
   || fail "local fallback overstated object-storage recoverability"
-grep -Fx "EXTERNAL_SECRET_RECOVERY_REQUIRED=false" "$LATEST_EVIDENCE" >/dev/null \
-  || fail "file-backed secret status is incorrect"
+grep -Fx "MAGIC_LINK_SECRET_RECOVERY_STATUS=required" "$LATEST_EVIDENCE" >/dev/null \
+  || fail "Magic Link recovery requirement is missing"
+grep -Fx "EXTERNAL_SECRET_RECOVERY_REQUIRED=true" "$LATEST_EVIDENCE" >/dev/null \
+  || fail "aggregate secret status omitted the external Magic Link keyring"
 grep -Fx "RESTORE_DRILL_VERIFIED=false" "$LATEST_EVIDENCE" >/dev/null \
   || fail "backup capture overstated restore-drill evidence"
 grep -Fx "RECOVERABILITY_STATUS=unverified" "$LATEST_EVIDENCE" >/dev/null \

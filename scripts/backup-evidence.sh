@@ -260,19 +260,6 @@ finalize_backup_evidence_commit() {
   BACKUP_EVIDENCE_LATEST_COMMITTING=false
 }
 
-backup_external_notification_secret_required() {
-  for backup_evidence_source in \
-    "$NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE" \
-    "$NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE" \
-    "$NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE" \
-    "$NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE"; do
-    if [ "$backup_evidence_source" = external ]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
 publish_backup_evidence() {
   backup_evidence_archive_path=$1
   backup_evidence_output_dir=$2
@@ -311,11 +298,13 @@ publish_backup_evidence() {
     backup_evidence_object_recovery_status=unknown
   fi
 
-  backup_evidence_external_secret_required=false
-  if [ "$SESSION_SECRET_SOURCE" = external ] \
-    || backup_external_notification_secret_required; then
-    backup_evidence_external_secret_required=true
-  fi
+  # The current backup format does not archive or fingerprint the dedicated
+  # Magic Link current/previous keyring. The Compose entrypoint provisions the
+  # current key even when intake is gated off. Every recovery set must therefore
+  # carry the matching Magic Link material separately, and this aggregate warning
+  # cannot be false even when archived session/notification sources are file-backed.
+  backup_evidence_magic_link_secret_recovery_status=required
+  backup_evidence_external_secret_required=true
 
   BACKUP_EVIDENCE_ARCHIVE_PATH="$backup_evidence_archive_path.evidence.env"
   BACKUP_EVIDENCE_LATEST_PATH="$backup_evidence_output_dir/last-successful-backup.env"
@@ -340,6 +329,7 @@ publish_backup_evidence() {
     echo "STORAGE_DRIVER_FALLBACK=$STORAGE_DRIVER"
     echo "UPLOADS_INCLUDED=$UPLOADS_INCLUDED"
     echo "OBJECT_STORAGE_RECOVERY_STATUS=$backup_evidence_object_recovery_status"
+    echo "MAGIC_LINK_SECRET_RECOVERY_STATUS=$backup_evidence_magic_link_secret_recovery_status"
     echo "EXTERNAL_SECRET_RECOVERY_REQUIRED=$backup_evidence_external_secret_required"
     echo "ARCHIVE_SELF_CHECK=passed"
     echo "RESTORE_DRILL_VERIFIED=false"

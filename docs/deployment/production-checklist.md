@@ -75,6 +75,7 @@
 - [ ] Every referenced S3/R2 object has a matching version/snapshot recovery point even when the env fallback is `local`.
 - [ ] File-backed `SESSION_SECRET` is present in the checksummed archive, or the external value matches the recorded fingerprint.
 - [ ] File-backed notification unsubscribe/suppression keys, including configured previous keys, are present in the v4 archive with `0600` mode, or external values match the recorded fingerprints.
+- [ ] The matching Magic Link current key and any configured previous key are restored from the external recovery set; `backup.sh` does not archive or fingerprint this keyring.
 - [ ] Restore drills verify notification task neutralization prevents replay of business email or bulk notification sends after restore.
 - [ ] `docker compose down -v` is prohibited unless the secrets volume has a tested recovery point.
 - [ ] An archive plus separately protected storage components has been restored in an isolated Compose project.
