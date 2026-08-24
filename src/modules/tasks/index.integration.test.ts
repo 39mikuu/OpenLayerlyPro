@@ -6,25 +6,23 @@ import { getDb } from "@/db";
 import { tasks } from "@/db/schema";
 import { logger } from "@/lib/logger";
 
+import { countMailTaskFailures, listTasks, retryTask } from "./admin";
 import { dispatchClaimedTask } from "./dispatcher";
+import { enqueueTask } from "./enqueue";
+import { PermanentTaskError } from "./errors";
 import {
   claimDueTasks,
   claimDueTasksAt,
   claimOneTaskForClasses,
-  countMailTaskFailures,
   deferTask,
-  enqueueTask,
-  listTasks,
   markTaskDead,
   markTaskFailed,
   markTaskFailedAt,
   markTaskSucceeded,
-  PermanentTaskError,
   renewTaskLease,
-  retryTask,
   sweepExpiredFinalAttemptTasksAt,
   taskBackoffMs,
-} from "./index";
+} from "./runtime";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;

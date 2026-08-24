@@ -5,7 +5,8 @@ import type { Translate } from "@/modules/i18n";
 import { getT } from "@/modules/i18n/server";
 import type { IntegrationId, IntegrationSource, IntegrationStatus } from "@/modules/integration";
 import { getSystemStatus } from "@/modules/system/status";
-import type { TaskQueueClass, TaskQueueOperationalCounts } from "@/modules/tasks";
+import type { TaskQueueOperationalCounts } from "@/modules/tasks/operational-snapshot";
+import type { TaskQueueClass } from "@/modules/tasks/queue-class";
 
 export const dynamic = "force-dynamic";
 

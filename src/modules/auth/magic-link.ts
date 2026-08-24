@@ -41,7 +41,7 @@ import { sendMagicLinkEmail, sendMagicLinkEmailWithDeadline } from "@/modules/ma
 import { classifyMailError, MailDeliveryError } from "@/modules/mail/delivery";
 import { type MagicLinkKey, tryGetMagicLinkKeys } from "@/modules/security/magic-link-key";
 import { recordEvent } from "@/modules/system/events";
-import { enqueueTask, enqueueTaskReturningId } from "@/modules/tasks";
+import { enqueueTask, enqueueTaskReturningId } from "@/modules/tasks/enqueue";
 import { PermanentTaskError } from "@/modules/tasks/errors";
 import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
 import { findOrCreateUserByEmail, touchLastLogin } from "@/modules/user";

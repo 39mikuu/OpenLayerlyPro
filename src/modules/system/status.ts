@@ -8,7 +8,7 @@ import { getIntegrationStatuses, type IntegrationStatus } from "@/modules/integr
 import {
   getTaskQueueOperationalSnapshot,
   type TaskQueueOperationalSnapshot,
-} from "@/modules/tasks";
+} from "@/modules/tasks/operational-snapshot";
 
 export type SystemStatus = {
   appUrl: string;

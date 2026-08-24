@@ -42,7 +42,7 @@ src/
 │   ├── storage/             # local / S3 adapter
 │   ├── download/            # 授权、Range、日志与签名 URL
 │   ├── mail/                # 模板、可靠投递与 delivery ledger
-│   ├── tasks/               # durable queue、dispatcher、lease/fencing
+│   ├── tasks/               # durable queue；enqueue/runtime/admin/ops 显式入口
 │   ├── config/              # 加密配置组与最终配置解析
 │   ├── integration/         # 官方 adapter 注册表、状态与连接测试
 │   ├── i18n/                # zh/en/ja 字典与 locale
@@ -63,6 +63,7 @@ src/
    文件上传在对象写入前原子创建 `storage_upload_journal` 与 cleanup task；成功时 `files` 行与 journal 消费同事务提交。cleanup 删除无精确引用的对象后仍保留 tombstone 并低频重复幂等删除，因为 S3-compatible provider 没有统一可证明的最晚提交上界；只有正常上传事务消费 journal 或发现精确 `files` 引用时才移除。删除失败耗尽单轮重试的 task 会在冷却后自动重新武装。失败上传会因此永久占用一行 journal/task 并周期性调用 provider DELETE，运维需监控 maintenance backlog 与存储 API 配额。
 8. **敏感信息边界明确**：secret、token、验证码明文和原始 provider 错误不得进入日志、非授权管理响应或可公开输出；邮件任务 `payload_json` 属于敏感数据库数据，当前仍保存收件人地址，必须按用户数据保护其数据库访问、备份与留存。
 9. **单实例边界明确**：当前限流与 dispatcher 以单 app 实例为目标；多实例共享 limiter/调度属于 Phase 10。
+10. **任务模块入口明确**：业务事务只从 `tasks/enqueue` 入队；dispatcher 只从 `tasks/runtime` 领取、续租和终结；管理重试与运维聚合分别使用 `tasks/admin`、`tasks/operational-snapshot`。禁止通过 `tasks/index` 桶入口跨越这些边界，CI 由 `check:task-boundaries` 阻止回退。
 
 ## 登录安全与真实 IP
 

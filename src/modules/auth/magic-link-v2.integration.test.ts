@@ -33,9 +33,9 @@ import { __resetEnvForTests } from "@/lib/env";
 import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { MailDeliveryError } from "@/modules/mail/delivery";
-import { claimOneTaskForClass, markTaskFailed, markTaskSucceeded } from "@/modules/tasks";
 import { runTaskHandler as runTaskHandlerWithOwnership } from "@/modules/tasks/handlers";
 import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+import { claimOneTaskForClass, markTaskFailed, markTaskSucceeded } from "@/modules/tasks/runtime";
 
 const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
   runTaskHandlerWithOwnership(task, ownedTaskExecutionContext());

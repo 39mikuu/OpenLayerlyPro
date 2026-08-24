@@ -14,7 +14,7 @@ import {
   markTaskFailed,
   markTaskSucceeded,
   sweepExpiredFinalAttemptTasks,
-} from "./index";
+} from "./runtime";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;

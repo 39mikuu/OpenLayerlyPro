@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 
 import { handleApiError, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/modules/auth/session";
-import { retryTask } from "@/modules/tasks";
+import { retryTask } from "@/modules/tasks/admin";
 
 export const runtime = "nodejs";
 

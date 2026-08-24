@@ -2,6 +2,10 @@ import { getEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { maintainMagicLinkDeliveryState } from "@/modules/auth/magic-link-maintenance";
 import { rearmExhaustedStorageUploadReconciliationTasks } from "@/modules/file/uploadJournal";
+import { PermanentTaskError } from "@/modules/tasks/errors";
+import { runTaskHandler } from "@/modules/tasks/handlers";
+import { type TaskExecutionContext, TaskOwnershipLostError } from "@/modules/tasks/ownership";
+import type { TaskQueueClass } from "@/modules/tasks/queue-class";
 import {
   claimDueTasks,
   claimOneTaskForClass,
@@ -15,11 +19,7 @@ import {
   TASK_BATCH_SIZE,
   TASK_LEASE_MS,
   TASK_POLL_INTERVAL_MS,
-  type TaskQueueClass,
-} from "@/modules/tasks";
-import { PermanentTaskError } from "@/modules/tasks/errors";
-import { runTaskHandler } from "@/modules/tasks/handlers";
-import { type TaskExecutionContext, TaskOwnershipLostError } from "@/modules/tasks/ownership";
+} from "@/modules/tasks/runtime";
 
 type DispatcherDependencies = {
   claim: typeof claimDueTasks;

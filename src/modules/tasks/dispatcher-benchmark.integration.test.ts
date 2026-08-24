@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "@/db";
 import { tasks } from "@/db/schema";
 
-import { claimDueTasks } from "./index";
+import { claimDueTasks } from "./runtime";
 
 /**
  * Issue #101 — task claim throughput / latency benchmark (evidence only).

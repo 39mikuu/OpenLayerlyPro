@@ -4,7 +4,8 @@ import type { Task } from "@/db/schema";
 import { __resetEnvForTests } from "@/lib/env";
 
 import { dispatchClaimedTask, dispatchTaskBatch } from "./dispatcher";
-import { PermanentTaskError, TASK_BATCH_SIZE, TASK_LEASE_MS } from "./index";
+import { PermanentTaskError } from "./errors";
+import { TASK_BATCH_SIZE, TASK_LEASE_MS } from "./runtime";
 
 function task(id: string, lockToken = `claim-${id}`): Task {
   const now = new Date();

@@ -1,6 +1,6 @@
 import type { DbClient } from "@/db";
 import { notificationCampaigns, type Post } from "@/db/schema";
-import { enqueueTask } from "@/modules/tasks";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 
 export type NotificationCampaignSource = "manual_publish" | "scheduled_publish";
 

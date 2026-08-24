@@ -8,6 +8,7 @@ import { __resetEnvForTests } from "@/lib/env";
 
 import { dispatchTaskBatch } from "./dispatcher";
 import { enqueueTask } from "./enqueue";
+import type { TaskQueueClass } from "./queue-class";
 import {
   claimDueTasks,
   deferTask,
@@ -17,8 +18,7 @@ import {
   renewTaskLease,
   sweepExpiredFinalAttemptTasks,
   TASK_BATCH_SIZE,
-} from "./index";
-import type { TaskQueueClass } from "./queue-class";
+} from "./runtime";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;

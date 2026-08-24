@@ -4,7 +4,7 @@ import { type DbClient, getDb, type TxClient } from "@/db";
 import { memberships, membershipTiers, subscriptions } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
-import { enqueueTask } from "@/modules/tasks";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 
 function periodIso(periodEndsAt: Date): string {
   return periodEndsAt.toISOString();

@@ -34,8 +34,9 @@ import {
 } from "@/db/schema";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { getActiveMembership, grantMembershipForPeriod } from "@/modules/membership";
-import { claimDueTasks, retryTask } from "@/modules/tasks";
+import { retryTask } from "@/modules/tasks/admin";
 import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
+import { claimDueTasks } from "@/modules/tasks/runtime";
 
 import {
   applyPaidInvoice,

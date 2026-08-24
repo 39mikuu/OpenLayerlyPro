@@ -40,7 +40,7 @@ vi.mock("@/modules/storage", () => ({
   getStorageForDriver: vi.fn(),
 }));
 vi.mock("@/modules/system/events", () => ({ recordEvent: mocks.recordEvent }));
-vi.mock("@/modules/tasks", () => ({ enqueueTask: mocks.enqueueTask }));
+vi.mock("@/modules/tasks/enqueue", () => ({ enqueueTask: mocks.enqueueTask }));
 vi.mock("./uploadJournal", () => ({
   consumeStorageUploadJournal: mocks.consumeUploadJournal,
   createStorageUploadJournal: mocks.createUploadJournal,

@@ -16,8 +16,9 @@ import {
 } from "@/db/schema";
 import { recordAudit } from "@/modules/audit";
 import { canAccessFile } from "@/modules/download";
-import { claimDueTasks, enqueueTask } from "@/modules/tasks";
 import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
+import { enqueueTask } from "@/modules/tasks/enqueue";
+import { claimDueTasks } from "@/modules/tasks/runtime";
 import { isTranslationStale } from "@/modules/translation/review";
 
 import {

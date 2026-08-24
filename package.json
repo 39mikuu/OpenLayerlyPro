@@ -12,6 +12,7 @@
     "format:check": "prettier --check .",
     "check:request-bodies": "node scripts/check-bounded-request-bodies.mjs",
     "check:auth-before-body": "node scripts/check-auth-before-body.mjs",
+    "check:task-boundaries": "node scripts/check-task-module-boundaries.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:watch": "vitest",

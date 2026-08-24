@@ -53,14 +53,14 @@ import {
 } from "@/modules/notifications/delivery";
 import { handleCampaignFinalizeTask } from "@/modules/notifications/expansion";
 import { createNotificationSuppressionDigest } from "@/modules/security/notification-suppression-key";
-import {
-  claimDueTasks,
-  PermanentTaskError,
-  renewTaskLease,
-  sweepExpiredFinalAttemptTasksAt,
-} from "@/modules/tasks";
+import { PermanentTaskError } from "@/modules/tasks/errors";
 import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
 import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+import {
+  claimDueTasks,
+  renewTaskLease,
+  sweepExpiredFinalAttemptTasksAt,
+} from "@/modules/tasks/runtime";
 
 const handleNotificationDeliveryTask = (
   task: Parameters<typeof handleNotificationDeliveryTaskWithOwnership>[0],

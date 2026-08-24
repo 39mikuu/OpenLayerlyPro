@@ -46,6 +46,7 @@
 5. **定时发布不给 post 增加 `scheduled` 状态**：保持 `posts.status` 为 `draft / published / archived`，新增 `posts.scheduled_at` 时间戳。`publish_post` 处理器做条件更新 `where status='draft' and scheduled_at <= now` → 置 `published`、`published_at=now`、清空 `scheduled_at`。这样**不扩展翻译状态机**，也不触及 `post_translations` 的「每语言一条 published」唯一索引。
 6. **幂等**：处理器自身也要幂等（发布用上面的条件更新；邮件用 `dedupe_key` + 业务层去重），重试不产生重复副作用。
 7. **后台可视**：#7 要求的「retry view」即 `tasks` 列表 + 手动重试 `failed`/`dead` 行，对所有 `kind` 通用。系统详情页与管理员系统状态 API 按需提供 queue class 聚合的 queue/lease/fence 运维快照；使用单一数据库时钟区分到期、计划中、活动租约、按实际 reclaim 谓词计算的过期可回收租约、最终租约过期待 sweep、已耗尽但不会被 claim/sweep 的 pending/failed、dead 与 fence 元数据异常。诊断维度允许重叠，只暴露计数和最早到期时间，不暴露任务 payload、错误或 claim token；不需要该数据的管理员首页不执行聚合。
+8. **代码入口按能力分离**：业务模块只从 `tasks/enqueue` 写入事务内任务；dispatcher 从 `tasks/runtime` 使用 claim/lease/finalization；管理员列表与重试从 `tasks/admin` 进入；系统状态只从 `tasks/operational-snapshot` 聚合。任务目录不提供 `index.ts` 桶入口，避免 enqueue-only 或只读调用方静态穿过 worker/admin 运行时依赖。
 
 ## Alternatives
 
@@ -60,6 +61,7 @@
 - ✅ 与 ADR 0001/0002 协同：任务执行若改变状态，同样走条件更新 + `recordAudit`。
 - ✅ 租约让任务在进程崩溃后可自动回收，不会永久卡在 `processing`。
 - ✅ 定时发布用 `scheduled_at` 而非新状态，避免污染 post/translation 状态机。
+- ✅ 显式子路径和 CI 边界检查让入队、worker、管理操作、运维观测保持可独立依赖。
 - ⚠️ 显式假设单实例。多实例下 `skip locked` + 租约可并发安全领取，但应用内定时器会重复触发，需到 HA 阶段再处理（已 deferred）。
 - ⚠️ #7 落地时要同时把 `payment/index.ts` 现有内联发信改为入队，属于行为变更，需测试。
 - ⚠️ 命名按通用任务（`tasks`）而非 `mail_outbox`，#7 的 issue 标题虽叫 outbox，但实现是通用任务表的一个 kind，PR 描述需说明这一取舍。
