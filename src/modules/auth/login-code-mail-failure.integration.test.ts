@@ -34,8 +34,8 @@ import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { requestLoginCode } from "@/modules/auth/login-code";
 import { setStoredGroup } from "@/modules/config/store";
-import { claimDueTasks } from "@/modules/tasks";
 import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
+import { claimDueTasks } from "@/modules/tasks/runtime";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;

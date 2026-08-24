@@ -34,10 +34,10 @@ import { getEnv } from "@/lib/env";
 import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { getMagicLinkKeys } from "@/modules/security/magic-link-key";
-import { claimDueTasks, renewTaskLease } from "@/modules/tasks";
 import { runTaskHandler as runTaskHandlerWithOwnership } from "@/modules/tasks/handlers";
 import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
 import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+import { claimDueTasks, renewTaskLease } from "@/modules/tasks/runtime";
 
 const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
   runTaskHandlerWithOwnership(task, ownedTaskExecutionContext());

@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/modules/auth/session", () => ({ requireAdmin: mocks.requireAdmin }));
-vi.mock("@/modules/tasks", () => ({
+vi.mock("@/modules/tasks/admin", () => ({
   listTasks: mocks.listTasks,
   retryTask: mocks.retryTask,
 }));

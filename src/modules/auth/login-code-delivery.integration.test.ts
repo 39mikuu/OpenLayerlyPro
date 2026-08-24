@@ -23,9 +23,9 @@ import { hmacSha256WithPurpose } from "@/lib/crypto";
 import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { setStoredGroup } from "@/modules/config/store";
-import { claimDueTasks } from "@/modules/tasks";
 import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
 import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
+import { claimDueTasks } from "@/modules/tasks/runtime";
 
 import {
   deliverLoginCodeEmailTask,

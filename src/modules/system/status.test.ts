@@ -4,7 +4,7 @@ import { getDb } from "@/db";
 import { getBuildInfo } from "@/lib/build-info";
 import { getEnv } from "@/lib/env";
 import { getIntegrationStatuses } from "@/modules/integration";
-import { getTaskQueueOperationalSnapshot } from "@/modules/tasks";
+import { getTaskQueueOperationalSnapshot } from "@/modules/tasks/operational-snapshot";
 
 import { getSystemStatus } from "./status";
 
@@ -24,7 +24,7 @@ vi.mock("@/modules/integration", () => ({
   getIntegrationStatuses: vi.fn(),
 }));
 
-vi.mock("@/modules/tasks", () => ({
+vi.mock("@/modules/tasks/operational-snapshot", () => ({
   getTaskQueueOperationalSnapshot: vi.fn(),
 }));
 

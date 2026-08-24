@@ -18,9 +18,9 @@ import { loginCodes, tasks } from "@/db/schema";
 import { hmacSha256WithPurpose } from "@/lib/crypto";
 import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
-import { claimDueTasks } from "@/modules/tasks";
 import { runTaskHandler as runTaskHandlerWithOwnership } from "@/modules/tasks/handlers";
 import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+import { claimDueTasks } from "@/modules/tasks/runtime";
 
 const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
   runTaskHandlerWithOwnership(task, ownedTaskExecutionContext());

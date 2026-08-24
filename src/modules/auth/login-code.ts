@@ -25,7 +25,7 @@ import type { Locale } from "@/modules/i18n";
 import { sendLoginCodeEmail } from "@/modules/mail";
 import { classifyMailError, MailDeliveryError } from "@/modules/mail/delivery";
 import { recordEvent } from "@/modules/system/events";
-import { enqueueTask } from "@/modules/tasks";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 import { PermanentTaskError } from "@/modules/tasks/errors";
 import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
 import { findOrCreateUserByEmail, touchLastLogin } from "@/modules/user";

@@ -6,7 +6,7 @@ import { type Post, posts } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { type AuditActor, pickPostPublishingAudit, recordAudit } from "@/modules/audit";
 import { createCampaignForPublishedPostTx } from "@/modules/notifications";
-import { enqueueTask } from "@/modules/tasks";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 
 export type PublishingActor = AuditActor;
 

@@ -17,7 +17,8 @@ import { getEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { recordAudit } from "@/modules/audit";
 import { grantMembershipForPeriod, revokeMembership } from "@/modules/membership";
-import { enqueueTask, PermanentTaskError } from "@/modules/tasks";
+import { enqueueTask } from "@/modules/tasks/enqueue";
+import { PermanentTaskError } from "@/modules/tasks/errors";
 
 import { confirmAutoPayment, expireAutoPayment, reverseAutoPayment } from ".";
 import {

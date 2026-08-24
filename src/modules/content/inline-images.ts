@@ -4,7 +4,7 @@ import type { DbClient, TxClient } from "@/db";
 import { files, type PostFile, postFiles, posts, postTranslations } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { lockFileReferences } from "@/modules/file/references";
-import { enqueueTask } from "@/modules/tasks";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 
 import { extractInternalImageFileIds } from "./markdown";
 

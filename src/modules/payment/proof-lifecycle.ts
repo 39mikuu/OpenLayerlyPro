@@ -11,7 +11,7 @@ import {
 } from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { deleteFileRowWithStorageTask } from "@/modules/file/cleanup";
-import { enqueueTask } from "@/modules/tasks";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 
 const RETENTION_KEY = "payment_proof_approved_retention_days";
 const FILE_SETTING_KEYS = [

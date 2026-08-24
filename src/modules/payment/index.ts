@@ -30,7 +30,7 @@ import {
   type StructuredPaymentRejection,
 } from "@/modules/payment/rejection-note";
 import { recordEvent } from "@/modules/system/events";
-import { enqueueTask } from "@/modules/tasks";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 
 import {
   type ExpiredPaymentEvent,

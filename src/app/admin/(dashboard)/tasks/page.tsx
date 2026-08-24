@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/table";
 import { formatDateTime } from "@/lib/dates";
 import { getT } from "@/modules/i18n/server";
-import { countMailTaskFailures, listTasks, type TaskStatus } from "@/modules/tasks";
+import { countMailTaskFailures, listTasks, type TaskStatus } from "@/modules/tasks/admin";
 
 export const dynamic = "force-dynamic";
 

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { type DbClient, getDb } from "@/db";
 import { membershipTiers, notificationCampaigns, notificationDeliveries, posts } from "@/db/schema";
 import { getEnv } from "@/lib/env";
-import { enqueueTask, enqueueTaskReturningId } from "@/modules/tasks";
+import { enqueueTask, enqueueTaskReturningId } from "@/modules/tasks/enqueue";
 import { PermanentTaskError } from "@/modules/tasks/errors";
 import type { TaskHandlerResult } from "@/modules/tasks/handlers";
 

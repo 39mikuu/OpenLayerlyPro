@@ -38,11 +38,11 @@ import { membershipTiers, paymentRequests, tasks, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { MailDeliveryError } from "@/modules/mail/delivery";
-import { claimDueTasks, renewTaskLease } from "@/modules/tasks";
 import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
 import { runTaskHandler } from "@/modules/tasks/handlers";
 import { TaskOwnershipLostError } from "@/modules/tasks/ownership";
 import { ownedTaskExecutionContext } from "@/modules/tasks/ownership.test-helper";
+import { claimDueTasks, renewTaskLease } from "@/modules/tasks/runtime";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;

@@ -26,7 +26,7 @@ import { getUploadConfig } from "@/modules/config";
 import { getStorage } from "@/modules/storage";
 import { StorageObjectTooLargeError } from "@/modules/storage/stream";
 import { recordEvent } from "@/modules/system/events";
-import { enqueueTask } from "@/modules/tasks";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 
 import { withAuthoritativeExtension } from "./authoritativeName";
 import { deleteFileRowWithStorageTask } from "./cleanup";

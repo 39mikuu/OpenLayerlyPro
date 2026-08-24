@@ -25,7 +25,7 @@ import { sendMagicLinkEmail } from "@/modules/mail";
 import { classifyMailError, MailDeliveryError } from "@/modules/mail/delivery";
 import { type MagicLinkKey, tryGetMagicLinkKeys } from "@/modules/security/magic-link-key";
 import { recordEvent } from "@/modules/system/events";
-import { enqueueTask } from "@/modules/tasks";
+import { enqueueTask } from "@/modules/tasks/enqueue";
 import { PermanentTaskError } from "@/modules/tasks/errors";
 import { findOrCreateUserByEmail, touchLastLogin } from "@/modules/user";
 
