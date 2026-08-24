@@ -65,6 +65,8 @@ jobs:
           node --check dist/restore-schema-check.mjs
       - name: Test backup app state machine
         run: sh scripts/test-backup-app-state.sh
+      - name: Test backup recovery evidence
+        run: sh scripts/test-backup-evidence.sh
       - name: Test restore shell argument boundaries
         run: sh scripts/test-restore-shell-args.sh
       - name: Test restore PostgreSQL readiness
@@ -78,10 +80,12 @@ jobs:
           shellcheck \
             scripts/restore-common.sh \
             scripts/backup-app-state.sh \
+            scripts/backup-evidence.sh \
             scripts/backup.sh \
             scripts/restore.sh \
             scripts/test-entrypoint-secrets.sh \
             scripts/test-backup-app-state.sh \
+            scripts/test-backup-evidence.sh \
             scripts/test-restore-shell-args.sh \
             scripts/test-restore-postgres-readiness.sh \
             scripts/test-restore-e2e.sh \

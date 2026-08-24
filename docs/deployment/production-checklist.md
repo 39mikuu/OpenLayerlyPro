@@ -69,7 +69,7 @@
 
 ## Backup and recovery
 
-- [ ] Backup failures are monitored and recovery sets are copied off-host.
+- [ ] Backup failures and the age of `last-successful-backup.env` are monitored; each archive and its matching `.evidence.env` are copied off-host together and the recorded SHA-256 is rechecked.
 - [ ] Operators compare the app container's env `STORAGE_DRIVER` fallback with the effective DB-backed Storage setting; current `backup.sh` does not do this automatically.
 - [ ] Every referenced local object is preserved even when the env fallback is `s3`.
 - [ ] Every referenced S3/R2 object has a matching version/snapshot recovery point even when the env fallback is `local`.
@@ -78,6 +78,7 @@
 - [ ] Restore drills verify notification task neutralization prevents replay of business email or bulk notification sends after restore.
 - [ ] `docker compose down -v` is prohibited unless the secrets volume has a tested recovery point.
 - [ ] An archive plus separately protected storage components has been restored in an isolated Compose project.
+- [ ] `RESTORE_DRILL_VERIFIED=false` / `RECOVERABILITY_STATUS=unverified` in capture evidence is not treated as proof of recovery; the latest successful isolated drill is recorded separately with its exact archive digest and external recovery-point identities.
 - [ ] For your deployment, verify the S7 checksums, legacy schema probing, storage inventory/convergence, file-safety backfill and task/payment-event neutralization in isolated local and S3 restore drills.
 
 ## Current hardening status

@@ -9,6 +9,8 @@ ROOT_DIR=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 . "$ROOT_DIR/scripts/restore-common.sh"
 # shellcheck source=scripts/backup-app-state.sh disable=SC1091
 . "$ROOT_DIR/scripts/backup-app-state.sh"
+# shellcheck source=scripts/backup-evidence.sh disable=SC1091
+. "$ROOT_DIR/scripts/backup-evidence.sh"
 
 usage() {
   echo "Usage: $0 [--stop-app] [output-directory]" >&2
@@ -160,11 +162,56 @@ APP_RESTART_NEEDED=false
 APP_WAS_ACTIVE=false
 # shellcheck disable=SC2034 # Read by sourced backup-app-state.sh.
 APP_CONTAINER_IDS_TO_RESTART=""
+BACKUP_EVIDENCE_ARCHIVE_PATH=""
+BACKUP_EVIDENCE_TMP=""
+BACKUP_EVIDENCE_LATEST_PATH=""
+BACKUP_EVIDENCE_LATEST_COMMITTING=false
+BACKUP_EVIDENCE_PREVIOUS_LATEST_TMP=""
+BACKUP_ARCHIVE_PUBLISHED=false
+BACKUP_EVIDENCE_ARCHIVE_PUBLISHED=false
+BACKUP_PUBLICATION_LOCK_PATH=""
+BACKUP_PUBLICATION_LOCK_OWNER_ID=$$
+BACKUP_PUBLICATION_LOCK_OWNER_PATH=""
+BACKUP_PUBLICATION_LOCK_HELD=false
+BACKUP_PUBLICATION_DEFERRED_SIGNAL=0
+ARCHIVE_PENDING_EVIDENCE=false
 
 cleanup() {
   cleanup_status=$?
+  publication_cleanup_safe=true
   rm -rf "$WORK_DIR" || true
   rm -f "$ARCHIVE_TMP" || true
+  [ -z "$BACKUP_EVIDENCE_TMP" ] || rm -f "$BACKUP_EVIDENCE_TMP" || true
+
+  if [ "$ARCHIVE_PENDING_EVIDENCE" = true ]; then
+    if ! cleanup_incomplete_backup_publication; then
+      echo "backup: failed to roll back incomplete publication safely" >&2
+      cleanup_status=1
+      publication_cleanup_safe=false
+    fi
+  fi
+  if [ "$publication_cleanup_safe" = true ]; then
+    [ -z "$BACKUP_EVIDENCE_PREVIOUS_LATEST_TMP" ] \
+      || rm -f "$BACKUP_EVIDENCE_PREVIOUS_LATEST_TMP" || true
+  elif [ -n "$BACKUP_EVIDENCE_PREVIOUS_LATEST_TMP" ]; then
+    echo "backup: retaining previous latest evidence at $BACKUP_EVIDENCE_PREVIOUS_LATEST_TMP" >&2
+  fi
+  if [ "$publication_cleanup_safe" = true ] \
+    && ! release_backup_publication_lock; then
+    echo "backup: failed to release backup publication lock" >&2
+    cleanup_status=1
+  fi
+  if [ "$publication_cleanup_safe" != true ] \
+    && [ "$BACKUP_PUBLICATION_LOCK_HELD" = true ]; then
+    echo "backup: retaining publication lock for operator review after incomplete cleanup" >&2
+  fi
+  if [ "$BACKUP_PUBLICATION_LOCK_HELD" != true ] \
+    && [ -n "$BACKUP_PUBLICATION_LOCK_OWNER_PATH" ]; then
+    if ! rm -f "$BACKUP_PUBLICATION_LOCK_OWNER_PATH"; then
+      echo "backup: failed to remove backup publication lock owner" >&2
+      cleanup_status=1
+    fi
+  fi
 
   if [ "$APP_RESTART_NEEDED" = true ]; then
     echo "backup: restoring app service after interrupted/failed backup..." >&2
@@ -417,9 +464,18 @@ echo "Generating archive checksums..."
 tar -czf "$ARCHIVE_TMP" -C "$WORK_DIR" .
 chmod 600 "$ARCHIVE_TMP"
 [ -s "$ARCHIVE_TMP" ] || fail "archive was not created"
-mv -f "$ARCHIVE_TMP" "$ARCHIVE_PATH"
+acquire_backup_publication_lock "$OUTPUT_DIR"
+publish_backup_archive "$ARCHIVE_TMP" "$ARCHIVE_PATH"
+publish_backup_evidence "$ARCHIVE_PATH" "$OUTPUT_DIR"
+ARCHIVE_PENDING_EVIDENCE=false
+if ! finalize_backup_evidence_commit; then
+  echo "backup: warning: unable to remove previous latest-evidence temporary file" >&2
+fi
+release_backup_publication_lock || fail "unable to release backup publication lock"
 
 echo "Backup created: $ARCHIVE_PATH"
+echo "Backup evidence: $BACKUP_EVIDENCE_ARCHIVE_PATH"
+echo "Latest successful evidence: $OUTPUT_DIR/last-successful-backup.env"
 echo "Included: PostgreSQL database, config encryption key, manifest v4, checksums"
 echo "Runtime image: version=$RUNTIME_APP_VERSION commit=$RUNTIME_SOURCE_COMMIT image=$RUNTIME_IMAGE_ID"
 echo "Backup tool: commit=$BACKUP_TOOL_COMMIT script_sha256=$BACKUP_TOOL_SCRIPT_SHA256"
