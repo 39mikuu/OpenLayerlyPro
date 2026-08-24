@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import {
   getPreviewVideoIframeAttributes,
@@ -26,23 +26,32 @@ import { api } from "@/lib/client";
 type PreviewResponse = { html: string };
 
 type MarkdownEditorProps = {
+  "aria-describedby"?: string;
+  "aria-invalid"?: boolean | "false" | "true";
   value: string;
   onChange: (value: string) => void;
   onUploadImage?: (file: File) => Promise<string>;
   disabled?: boolean;
   rows?: number;
   ariaLabel?: string;
+  id?: string;
 };
 
 export function MarkdownEditor({
+  "aria-describedby": ariaDescribedBy,
+  "aria-invalid": ariaInvalid,
   value,
   onChange,
   onUploadImage,
   disabled = false,
   rows = 12,
   ariaLabel,
+  id,
 }: MarkdownEditorProps) {
   const t = useT();
+  const generatedId = useId();
+  const videoInputId = `${id ?? `markdown-${generatedId}`}-video-url`;
+  const videoErrorId = `${videoInputId}-error`;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
@@ -240,7 +249,7 @@ export function MarkdownEditor({
 
   return (
     <>
-      <div className="overflow-hidden rounded-md border">
+      <div className="min-w-0 overflow-hidden rounded-md border" data-testid="markdown-editor">
         <div className="flex flex-wrap items-center gap-1 border-b bg-muted/40 p-2">
           <Button
             type="button"
@@ -362,7 +371,7 @@ export function MarkdownEditor({
           >
             {t("admin.markdown.insertPublicVideo")}
           </Button>
-          <div className="ml-auto flex gap-1">
+          <div className="ml-0 flex w-full justify-end gap-1 border-t pt-1 sm:ml-auto sm:w-auto sm:border-t-0 sm:pt-0">
             <Button
               type="button"
               size="sm"
@@ -385,8 +394,11 @@ export function MarkdownEditor({
         {mode === "edit" ? (
           <Textarea
             ref={textareaRef}
+            id={id}
+            aria-describedby={ariaDescribedBy}
+            aria-invalid={ariaInvalid}
             aria-label={ariaLabel ?? t("admin.markdown.ariaLabel")}
-            className="field-sizing-fixed min-h-64 max-h-[60vh] resize-y overflow-y-auto rounded-none border-0 font-mono focus-visible:ring-0"
+            className="field-sizing-fixed min-h-64 max-h-[60vh] min-w-0 resize-y overflow-y-auto rounded-none border-0 font-mono focus-visible:ring-0"
             rows={rows}
             value={value}
             disabled={disabled}
@@ -412,7 +424,7 @@ export function MarkdownEditor({
             }}
           />
         ) : (
-          <div className="min-h-64 p-4">
+          <div className="min-h-64 min-w-0 overflow-x-auto p-4">
             {previewLoading ? (
               <p className="text-sm text-muted-foreground">
                 {t("admin.markdown.renderingPreview")}
@@ -430,7 +442,11 @@ export function MarkdownEditor({
             )}
           </div>
         )}
-        {error && <p className="border-t px-3 py-2 text-sm text-destructive">{error}</p>}
+        {error && (
+          <p className="break-words border-t px-3 py-2 text-sm text-destructive [overflow-wrap:anywhere]">
+            {error}
+          </p>
+        )}
       </div>
 
       <Dialog
@@ -453,13 +469,13 @@ export function MarkdownEditor({
               <DialogDescription>{t("admin.markdown.supportedVideoProviders")}</DialogDescription>
             </DialogHeader>
             <div className="grid gap-2">
-              <Label htmlFor="markdown-video-url">{t("admin.markdown.videoUrl")}</Label>
+              <Label htmlFor={videoInputId}>{t("admin.markdown.videoUrl")}</Label>
               <Input
-                id="markdown-video-url"
+                id={videoInputId}
                 type="url"
                 value={videoUrl}
                 placeholder="https://www.youtube.com/watch?v=..."
-                aria-describedby={videoError ? "markdown-video-url-error" : undefined}
+                aria-describedby={videoError ? videoErrorId : undefined}
                 aria-invalid={Boolean(videoError)}
                 autoFocus
                 onChange={(event) => {
@@ -468,7 +484,7 @@ export function MarkdownEditor({
                 }}
               />
               {videoError && (
-                <p id="markdown-video-url-error" role="alert" className="text-sm text-destructive">
+                <p id={videoErrorId} role="alert" className="text-sm text-destructive">
                   {videoError}
                 </p>
               )}

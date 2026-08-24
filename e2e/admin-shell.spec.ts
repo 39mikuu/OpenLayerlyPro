@@ -10,6 +10,7 @@ import {
   membershipTiers,
   notificationCampaigns,
   paymentRequests,
+  postFiles,
   posts,
   sessions,
   siteSettings,
@@ -47,6 +48,7 @@ const SEEDED_SETTING_KEYS = [
 
 type SiteSettingsSnapshot = Map<string, unknown>;
 let originalSiteSettings: SiteSettingsSnapshot | null = null;
+let seededPostId = "";
 
 async function snapshotSiteSettings(): Promise<SiteSettingsSnapshot> {
   const rows = await getDb()
@@ -152,11 +154,13 @@ async function seedFixtures() {
       summary: "Admin shell responsive post summary.",
       body: "Admin shell responsive post body.",
       originalLocale: "en",
-      visibility: "public",
+      visibility: "member",
+      requiredTierId: tier.id,
       status: "draft",
     })
     .returning({ id: posts.id });
   if (!post) throw new Error("failed to seed admin shell post");
+  seededPostId = post.id;
   await getDb().insert(notificationCampaigns).values({
     postId: post.id,
     source: "scheduled_publish",
@@ -189,6 +193,12 @@ async function seedFixtures() {
       createdBy: admin.id,
     })
     .returning({ id: files.id });
+  await getDb().insert(postFiles).values({
+    postId: post.id,
+    fileId: file.id,
+    kind: "attachment",
+    sortOrder: 0,
+  });
   const siteAssetBody = await sharp({
     create: {
       width: 1200,
@@ -470,6 +480,104 @@ test("site settings stack controls and keep every field reachable on narrow scre
         parent: element.parentElement?.getBoundingClientRect().width ?? 0,
       }));
       expect(widths.input).toBeLessThanOrEqual(widths.parent + 1);
+    }
+    await expectNoDocumentOverflow(page);
+  }
+});
+
+test("post editor stacks fields, files, and actions without narrow-screen overflow", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+
+  for (const width of [320, 375, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/admin/posts/${seededPostId}`);
+
+    const editor = page.getByTestId("post-editor");
+    await expect(editor).toBeVisible();
+    await expect(editor.getByLabel("标题", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("slug（URL 标识，小写字母数字连字符）")).toBeVisible();
+    await expect(editor.getByLabel("正文", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("可见性")).toBeVisible();
+    await expect(page.getByLabel("所需会员等级（及以上）")).toBeVisible();
+    await expect(page.getByLabel("封面（公开可见）")).toBeVisible();
+    await expect(page.getByLabel("译文语言")).toBeVisible();
+
+    const titleRow = page.getByTestId("post-editor-title-row");
+    const titleBox = await titleRow.getByLabel("标题").boundingBox();
+    const slugBox = await titleRow.getByLabel("slug（URL 标识，小写字母数字连字符）").boundingBox();
+    expect(titleBox).not.toBeNull();
+    expect(slugBox).not.toBeNull();
+    expect(slugBox!.y).toBeGreaterThan(titleBox!.y + titleBox!.height);
+
+    const actions = page.getByTestId("post-editor-actions");
+    const actionWidth = await actions.evaluate((element) => element.getBoundingClientRect().width);
+    for (const button of await actions.locator(":scope > button").all()) {
+      const buttonWidth = await button.evaluate((element) => element.getBoundingClientRect().width);
+      expect(buttonWidth).toBeGreaterThanOrEqual(actionWidth - 1);
+    }
+
+    const attachedFile = page.getByTestId("post-editor-attached-file").first();
+    await expect(attachedFile).toContainText(
+      "admin-shell-e2e-long-file-name-for-mobile-card-responsive-checks.png",
+    );
+    const removeBox = await attachedFile.getByRole("button", { name: "移除" }).boundingBox();
+    const attachedContentWidth = await attachedFile.evaluate((element) => {
+      const styles = window.getComputedStyle(element);
+      return (
+        element.clientWidth -
+        Number.parseFloat(styles.paddingLeft) -
+        Number.parseFloat(styles.paddingRight)
+      );
+    });
+    expect(removeBox).not.toBeNull();
+    expect(removeBox!.width).toBeGreaterThanOrEqual(attachedContentWidth - 1);
+
+    for (const markdownEditor of await page.getByTestId("markdown-editor").all()) {
+      const widths = await markdownEditor.evaluate((element) => ({
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }));
+      expect(widths.scrollWidth).toBeLessThanOrEqual(widths.clientWidth + 1);
+    }
+    if (width === 320) {
+      const videoInputIds: string[] = [];
+      for (const markdownEditor of await page.getByTestId("markdown-editor").all()) {
+        await markdownEditor.getByRole("button", { name: "插入公开视频" }).click();
+        const dialog = page.getByRole("dialog");
+        const videoInput = dialog.getByLabel("视频 URL");
+        await expect(videoInput).toBeVisible();
+        const videoInputId = await videoInput.getAttribute("id");
+        expect(videoInputId).not.toBeNull();
+        videoInputIds.push(videoInputId!);
+        await page.keyboard.press("Escape");
+        await expect(dialog).toBeHidden();
+      }
+      expect(new Set(videoInputIds).size).toBe(videoInputIds.length);
+    }
+    for (const input of await page.locator('input[type="file"]:visible').all()) {
+      const widths = await input.evaluate((element) => ({
+        input: element.getBoundingClientRect().width,
+        parent: element.parentElement?.getBoundingClientRect().width ?? 0,
+      }));
+      expect(widths.input).toBeLessThanOrEqual(widths.parent + 1);
+    }
+
+    for (const testId of ["post-editor", "admin-main"]) {
+      const metrics = await page.getByTestId(testId).evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          left: bounds.left,
+          right: bounds.right,
+          viewportWidth: window.innerWidth,
+        };
+      });
+      expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 1);
+      expect(metrics.left).toBeGreaterThanOrEqual(-1);
+      expect(metrics.right).toBeLessThanOrEqual(metrics.viewportWidth + 1);
     }
     await expectNoDocumentOverflow(page);
   }

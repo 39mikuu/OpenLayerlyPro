@@ -30,7 +30,7 @@ export default async function EditPostPage({ params }: { params: Promise<{ id: s
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold flex items-center gap-2">
+      <h1 className="flex flex-wrap items-center gap-2 text-xl font-bold">
         {t("admin.posts.editTitle")} <Badge variant="outline">{t(STATUS_KEYS[post.status])}</Badge>
       </h1>
       <PostEditor
