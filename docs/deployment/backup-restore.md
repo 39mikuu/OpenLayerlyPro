@@ -90,6 +90,10 @@ lock-ownership inode; inspect and remove it together with a confirmed stale lock
 owner file can also remain after a partial lock-release failure even when the fixed lock
 is absent, and a later process that reuses the same PID will fail closed on that path;
 apply the same no-active-process and artifact checks before removing that stale owner.
+If the filesystem cannot determine whether an atomic link completed, the script also
+retains the hidden `.openlayerly-backup-*` or `.backup-evidence.*` source together with
+any target and the lock/owner pair; compare inodes and contents before resolving these
+ambiguous artifacts manually.
 
 This evidence deliberately says `RESTORE_DRILL_VERIFIED=false` and
 `RECOVERABILITY_STATUS=unverified`: archive readability and a matching digest do not prove

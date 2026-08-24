@@ -20,8 +20,19 @@ backup_paths_share_inode() {
 
   node -e '
     const fs = require("fs");
-    const source = fs.statSync(process.argv[1], { bigint: true });
-    const target = fs.lstatSync(process.argv[2], { bigint: true });
+    let source;
+    try {
+      source = fs.statSync(process.argv[1], { bigint: true });
+    } catch {
+      process.exit(2);
+    }
+    let target;
+    try {
+      target = fs.lstatSync(process.argv[2], { bigint: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") process.exit(1);
+      process.exit(2);
+    }
     if (!target.isFile() || source.dev !== target.dev || source.ino !== target.ino) {
       process.exit(1);
     }
@@ -38,7 +49,8 @@ backup_atomic_link_file_reconciled() {
 
   # A process-group signal can terminate the Node helper after linkSync(2)
   # succeeds but before it exits 0. Reconcile the unique temp inode before
-  # deciding that this run does not own the target.
+  # deciding that this run does not own the target. Return 0 for owned, 1 for a
+  # confirmed absent/different target, and 2 when ownership cannot be inspected.
   backup_paths_share_inode "$backup_reconcile_source" "$backup_reconcile_target"
 }
 
@@ -95,13 +107,26 @@ acquire_backup_publication_lock() {
     backup_restore_publication_signals
     fail "unable to secure backup publication lock owner"
   fi
-  if ! backup_atomic_link_file_reconciled \
+  if backup_atomic_link_file_reconciled \
     "$BACKUP_PUBLICATION_LOCK_OWNER_PATH" \
     "$BACKUP_PUBLICATION_LOCK_PATH"; then
-    rm -f "$BACKUP_PUBLICATION_LOCK_OWNER_PATH" || true
-    BACKUP_PUBLICATION_LOCK_OWNER_PATH=""
+    backup_lock_link_status=0
+  else
+    backup_lock_link_status=$?
+  fi
+  if [ "$backup_lock_link_status" -eq 1 ]; then
+    if rm -f "$BACKUP_PUBLICATION_LOCK_OWNER_PATH"; then
+      BACKUP_PUBLICATION_LOCK_OWNER_PATH=""
+    fi
     backup_restore_publication_signals
     fail "another backup publication is active or its stale lock requires operator review"
+  elif [ "$backup_lock_link_status" -ne 0 ]; then
+    BACKUP_PUBLICATION_RECONCILIATION_REQUIRED=true
+    # The fixed lock may already be this owner inode. Mark it held so EXIT
+    # cleanup retains both paths instead of deleting unverified evidence.
+    BACKUP_PUBLICATION_LOCK_HELD=true
+    backup_restore_publication_signals
+    fail "unable to reconcile backup publication lock; retaining lock evidence for operator review"
   fi
   BACKUP_PUBLICATION_LOCK_HELD=true
   backup_restore_publication_signals
@@ -156,6 +181,9 @@ backup_unlink_owned_publication_lock() {
 }
 
 release_backup_publication_lock() {
+  if [ "$BACKUP_PUBLICATION_RECONCILIATION_REQUIRED" = true ]; then
+    return 1
+  fi
   if [ "$BACKUP_PUBLICATION_LOCK_HELD" != true ]; then
     return 0
   fi
@@ -200,9 +228,18 @@ publish_backup_archive() {
   # an atomic, no-clobber publication. The publication lock protects the latest
   # pointer's rollback window across concurrent backup processes.
   backup_defer_publication_signals
-  if ! backup_atomic_link_file_reconciled "$backup_publish_source" "$backup_publish_target"; then
+  if backup_atomic_link_file_reconciled "$backup_publish_source" "$backup_publish_target"; then
+    backup_archive_link_status=0
+  else
+    backup_archive_link_status=$?
+  fi
+  if [ "$backup_archive_link_status" -eq 1 ]; then
     backup_restore_publication_signals
     fail "archive path already exists; refusing to overwrite recovery evidence"
+  elif [ "$backup_archive_link_status" -ne 0 ]; then
+    BACKUP_PUBLICATION_RECONCILIATION_REQUIRED=true
+    backup_restore_publication_signals
+    fail "unable to reconcile archive publication; retaining source and target for operator review"
   fi
   BACKUP_ARCHIVE_PUBLISHED=true
   # shellcheck disable=SC2034 # Consumed by backup.sh's EXIT cleanup.
@@ -339,9 +376,18 @@ publish_backup_evidence() {
   } > "$BACKUP_EVIDENCE_TMP"
 
   backup_defer_publication_signals
-  if ! backup_atomic_link_file_reconciled "$BACKUP_EVIDENCE_TMP" "$BACKUP_EVIDENCE_ARCHIVE_PATH"; then
+  if backup_atomic_link_file_reconciled "$BACKUP_EVIDENCE_TMP" "$BACKUP_EVIDENCE_ARCHIVE_PATH"; then
+    backup_evidence_link_status=0
+  else
+    backup_evidence_link_status=$?
+  fi
+  if [ "$backup_evidence_link_status" -eq 1 ]; then
     backup_restore_publication_signals
     fail "unable to publish per-archive backup evidence"
+  elif [ "$backup_evidence_link_status" -ne 0 ]; then
+    BACKUP_PUBLICATION_RECONCILIATION_REQUIRED=true
+    backup_restore_publication_signals
+    fail "unable to reconcile per-archive evidence publication; retaining source and target for operator review"
   fi
   BACKUP_EVIDENCE_ARCHIVE_PUBLISHED=true
   backup_restore_publication_signals

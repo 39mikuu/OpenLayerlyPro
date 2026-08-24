@@ -174,20 +174,32 @@ BACKUP_PUBLICATION_LOCK_OWNER_ID=$$
 BACKUP_PUBLICATION_LOCK_OWNER_PATH=""
 BACKUP_PUBLICATION_LOCK_HELD=false
 BACKUP_PUBLICATION_DEFERRED_SIGNAL=0
+BACKUP_PUBLICATION_RECONCILIATION_REQUIRED=false
 ARCHIVE_PENDING_EVIDENCE=false
 
 cleanup() {
   cleanup_status=$?
   publication_cleanup_safe=true
   rm -rf "$WORK_DIR" || true
-  rm -f "$ARCHIVE_TMP" || true
-  [ -z "$BACKUP_EVIDENCE_TMP" ] || rm -f "$BACKUP_EVIDENCE_TMP" || true
+  if [ "$BACKUP_PUBLICATION_RECONCILIATION_REQUIRED" = true ]; then
+    cleanup_status=1
+    publication_cleanup_safe=false
+    if [ -e "$ARCHIVE_TMP" ]; then
+      echo "backup: retaining ambiguous archive source at $ARCHIVE_TMP" >&2
+    fi
+    if [ -n "$BACKUP_EVIDENCE_TMP" ] && [ -e "$BACKUP_EVIDENCE_TMP" ]; then
+      echo "backup: retaining ambiguous evidence source at $BACKUP_EVIDENCE_TMP" >&2
+    fi
+  else
+    rm -f "$ARCHIVE_TMP" || true
+    [ -z "$BACKUP_EVIDENCE_TMP" ] || rm -f "$BACKUP_EVIDENCE_TMP" || true
 
-  if [ "$ARCHIVE_PENDING_EVIDENCE" = true ]; then
-    if ! cleanup_incomplete_backup_publication; then
-      echo "backup: failed to roll back incomplete publication safely" >&2
-      cleanup_status=1
-      publication_cleanup_safe=false
+    if [ "$ARCHIVE_PENDING_EVIDENCE" = true ]; then
+      if ! cleanup_incomplete_backup_publication; then
+        echo "backup: failed to roll back incomplete publication safely" >&2
+        cleanup_status=1
+        publication_cleanup_safe=false
+      fi
     fi
   fi
   if [ "$publication_cleanup_safe" = true ]; then

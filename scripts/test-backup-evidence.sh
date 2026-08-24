@@ -41,6 +41,7 @@ BACKUP_PUBLICATION_LOCK_OWNER_ID=test-owner
 BACKUP_PUBLICATION_LOCK_OWNER_PATH=""
 BACKUP_PUBLICATION_LOCK_HELD=false
 BACKUP_PUBLICATION_DEFERRED_SIGNAL=0
+BACKUP_PUBLICATION_RECONCILIATION_REQUIRED=false
 
 echo "Verifying a pre-existing same-ID owner remains fail closed..."
 PRESEEDED_OWNER_PATH="$TEST_DIR/.openlayerly-backup-publication.owner.test-preseeded-owner"
@@ -173,6 +174,61 @@ printf '%s\n' 'post-effect archive' > "$DISTINCT_INODE"
 if backup_paths_share_inode "$POST_EFFECT_TARGET" "$DISTINCT_INODE"; then
   fail "equal content on distinct inodes was treated as owned"
 fi
+
+echo "Verifying inconclusive post-link inspection retains archive evidence..."
+INCONCLUSIVE_SOURCE="$TEST_DIR/inconclusive-source"
+INCONCLUSIVE_TARGET="$TEST_DIR/inconclusive-target"
+printf '%s\n' 'ambiguous archive' > "$INCONCLUSIVE_SOURCE"
+chmod 600 "$INCONCLUSIVE_SOURCE"
+set +e
+(
+  fail() { exit 42; }
+  backup_atomic_link_file() {
+    node -e 'require("fs").linkSync(process.argv[1], process.argv[2])' "$1" "$2"
+    return 143
+  }
+  backup_paths_share_inode() { return 2; }
+  # shellcheck disable=SC2030 # Intentional fault-injection subshell state.
+  BACKUP_PUBLICATION_RECONCILIATION_REQUIRED=false
+  publish_backup_archive "$INCONCLUSIVE_SOURCE" "$INCONCLUSIVE_TARGET"
+) >/dev/null 2>&1
+INCONCLUSIVE_ARCHIVE_STATUS=$?
+set -e
+[ "$INCONCLUSIVE_ARCHIVE_STATUS" -eq 42 ] \
+  || fail "inconclusive archive reconciliation did not fail closed"
+[ -f "$INCONCLUSIVE_SOURCE" ] || fail "inconclusive reconciliation removed the archive source"
+[ -f "$INCONCLUSIVE_TARGET" ] || fail "inconclusive reconciliation removed the archive target"
+rm -f "$INCONCLUSIVE_SOURCE" "$INCONCLUSIVE_TARGET"
+
+echo "Verifying inconclusive lock inspection retains both ownership paths..."
+BACKUP_PUBLICATION_LOCK_OWNER_ID=test-inconclusive-lock
+INCONCLUSIVE_LOCK_PATH="$TEST_DIR/.openlayerly-backup-publication.lock"
+set +e
+(
+  fail() { exit 42; }
+  backup_atomic_link_file() {
+    node -e 'require("fs").linkSync(process.argv[1], process.argv[2])' "$1" "$2"
+    return 143
+  }
+  backup_paths_share_inode() { return 2; }
+  # shellcheck disable=SC2030 # Intentional fault-injection subshell state.
+  BACKUP_PUBLICATION_LOCK_OWNER_PATH=""
+  # shellcheck disable=SC2030 # Intentional fault-injection subshell state.
+  BACKUP_PUBLICATION_LOCK_HELD=false
+  # shellcheck disable=SC2030 # Intentional fault-injection subshell state.
+  BACKUP_PUBLICATION_RECONCILIATION_REQUIRED=false
+  acquire_backup_publication_lock "$TEST_DIR"
+) >/dev/null 2>&1
+INCONCLUSIVE_LOCK_STATUS=$?
+set -e
+[ "$INCONCLUSIVE_LOCK_STATUS" -eq 42 ] \
+  || fail "inconclusive lock reconciliation did not fail closed"
+INCONCLUSIVE_OWNER_PATH="$TEST_DIR/.openlayerly-backup-publication.owner.test-inconclusive-lock"
+[ -f "$INCONCLUSIVE_OWNER_PATH" ] || fail "inconclusive lock reconciliation removed owner evidence"
+[ -f "$INCONCLUSIVE_LOCK_PATH" ] || fail "inconclusive lock reconciliation removed fixed lock"
+backup_paths_share_inode "$INCONCLUSIVE_OWNER_PATH" "$INCONCLUSIVE_LOCK_PATH" \
+  || fail "retained lock and owner evidence do not share an inode"
+rm -f "$INCONCLUSIVE_LOCK_PATH" "$INCONCLUSIVE_OWNER_PATH"
 
 echo "Verifying archive publication is atomic and refuses overwrite..."
 PUBLISH_SOURCE="$TEST_DIR/archive.tmp"
