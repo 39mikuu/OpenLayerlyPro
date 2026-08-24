@@ -86,7 +86,10 @@ success marker may reference. The short publication/rollback phase is serialized
 confirm no backup process is active and inspect the archive, sidecar, latest pointer, and
 any retained `.previous-last-successful-backup.*` file before removing a stale lock
 manually. The matching hidden `.openlayerly-backup-publication.owner.*` file is the
-lock-ownership inode; inspect and remove it together with a confirmed stale lock.
+lock-ownership inode; inspect and remove it together with a confirmed stale lock. An
+owner file can also remain after a partial lock-release failure even when the fixed lock
+is absent, and a later process that reuses the same PID will fail closed on that path;
+apply the same no-active-process and artifact checks before removing that stale owner.
 
 This evidence deliberately says `RESTORE_DRILL_VERIFIED=false` and
 `RECOVERABILITY_STATUS=unverified`: archive readability and a matching digest do not prove

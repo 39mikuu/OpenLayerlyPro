@@ -84,6 +84,9 @@ acquire_backup_publication_lock() {
   fi
   if [ "$backup_lock_create_status" -ne 0 ]; then
     [ "$backup_lock_noclobber_was_set" = true ] || set +C
+    # The path may name a stale or live owner created by another run (including
+    # after PID reuse). Do not leave it armed for this run's EXIT cleanup.
+    BACKUP_PUBLICATION_LOCK_OWNER_PATH=""
     backup_restore_publication_signals
     fail "unable to create unique backup publication lock owner"
   fi
@@ -105,10 +108,33 @@ acquire_backup_publication_lock() {
 }
 
 backup_publication_lock_still_owned() {
-  [ -n "$BACKUP_PUBLICATION_LOCK_OWNER_PATH" ] \
-    && backup_paths_share_inode \
-      "$BACKUP_PUBLICATION_LOCK_OWNER_PATH" \
-      "$BACKUP_PUBLICATION_LOCK_PATH"
+  [ -n "$BACKUP_PUBLICATION_LOCK_OWNER_PATH" ] || return 2
+
+  # Three-state reconciliation for a failed unlink helper:
+  #   0: the fixed lock is still our owner inode;
+  #   1: the fixed lock is absent or belongs to a successor;
+  #   2: ownership could not be inspected safely.
+  # Inspection errors must not be folded into "successor" because doing so
+  # would discard the owner evidence while an inaccessible lock may remain.
+  node -e '
+    const fs = require("fs");
+    let owner;
+    try {
+      owner = fs.statSync(process.argv[1], { bigint: true });
+    } catch {
+      process.exit(2);
+    }
+    let lock;
+    try {
+      lock = fs.lstatSync(process.argv[2], { bigint: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") process.exit(1);
+      process.exit(2);
+    }
+    if (!lock.isFile() || owner.dev !== lock.dev || owner.ino !== lock.ino) {
+      process.exit(1);
+    }
+  ' "$BACKUP_PUBLICATION_LOCK_OWNER_PATH" "$BACKUP_PUBLICATION_LOCK_PATH"
 }
 
 backup_unlink_owned_publication_lock() {
@@ -136,6 +162,9 @@ release_backup_publication_lock() {
   if ! backup_unlink_owned_publication_lock; then
     if backup_publication_lock_still_owned; then
       return 1
+    else
+      backup_lock_inspection_status=$?
+      [ "$backup_lock_inspection_status" -eq 1 ] || return 1
     fi
   fi
   BACKUP_PUBLICATION_LOCK_HELD=false

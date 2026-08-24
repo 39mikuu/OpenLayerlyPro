@@ -47,6 +47,26 @@ BACKUP_PUBLICATION_LOCK_OWNER_PATH=""
 BACKUP_PUBLICATION_LOCK_HELD=false
 BACKUP_PUBLICATION_DEFERRED_SIGNAL=0
 
+echo "Verifying a pre-existing same-ID owner remains fail closed..."
+PRESEEDED_OWNER_PATH="$TEST_DIR/.openlayerly-backup-publication.owner.test-preseeded-owner"
+printf '%s\n' pre-existing-owner > "$PRESEEDED_OWNER_PATH"
+chmod 600 "$PRESEEDED_OWNER_PATH"
+set +e
+(
+  fail() { exit 42; }
+  BACKUP_PUBLICATION_LOCK_OWNER_ID=test-preseeded-owner
+  BACKUP_PUBLICATION_LOCK_OWNER_PATH=""
+  BACKUP_PUBLICATION_LOCK_HELD=false
+  acquire_backup_publication_lock "$TEST_DIR"
+) >/dev/null 2>&1
+PRESEEDED_OWNER_STATUS=$?
+set -e
+[ "$PRESEEDED_OWNER_STATUS" -eq 42 ] \
+  || fail "pre-existing owner did not reach the controlled fail path"
+[ "$(cat "$PRESEEDED_OWNER_PATH")" = pre-existing-owner ] \
+  || fail "failed acquisition removed a pre-existing owner"
+rm -f "$PRESEEDED_OWNER_PATH"
+
 echo "Verifying publication locking rejects deterministic concurrent entry..."
 acquire_backup_publication_lock "$TEST_DIR"
 set +e
@@ -82,6 +102,32 @@ release_backup_publication_lock || fail "successor reconciliation reported failu
 [ ! -e "$RELEASE_OWNER_PATH" ] || fail "released owner file remains"
 rm -f "$BACKUP_PUBLICATION_LOCK_PATH"
 # Restore the production helper after the injected release failure.
+# shellcheck source=scripts/backup-evidence.sh disable=SC1091
+. "$ROOT_DIR/scripts/backup-evidence.sh"
+
+echo "Verifying release preserves fail-closed evidence after inspection failure..."
+BACKUP_PUBLICATION_LOCK_OWNER_ID=test-inspection-failure
+acquire_backup_publication_lock "$TEST_DIR"
+INSPECTION_FAILURE_OWNER_PATH="$BACKUP_PUBLICATION_LOCK_OWNER_PATH"
+backup_unlink_owned_publication_lock() {
+  return 1
+}
+backup_publication_lock_still_owned() {
+  return 2
+}
+if release_backup_publication_lock; then
+  fail "lock release ignored an ownership inspection failure"
+fi
+[ "$BACKUP_PUBLICATION_LOCK_HELD" = true ] \
+  || fail "inspection failure cleared the held-lock state"
+[ -f "$BACKUP_PUBLICATION_LOCK_PATH" ] \
+  || fail "inspection failure removed the fixed lock"
+[ -f "$INSPECTION_FAILURE_OWNER_PATH" ] \
+  || fail "inspection failure removed the owner evidence"
+rm -f "$BACKUP_PUBLICATION_LOCK_PATH" "$INSPECTION_FAILURE_OWNER_PATH"
+BACKUP_PUBLICATION_LOCK_HELD=false
+BACKUP_PUBLICATION_LOCK_OWNER_PATH=""
+# Restore both production helpers after the injected inspection failure.
 # shellcheck source=scripts/backup-evidence.sh disable=SC1091
 . "$ROOT_DIR/scripts/backup-evidence.sh"
 
