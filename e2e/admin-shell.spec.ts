@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { eq, inArray, like, sql } from "drizzle-orm";
+import sharp from "sharp";
 
 import { closeDb, getDb } from "../src/db";
 import {
@@ -18,12 +19,14 @@ import {
 import { generateSessionToken, hmacSha256 } from "../src/lib/crypto";
 import { SESSION_COOKIE } from "../src/modules/auth/session";
 import { LOCALE_COOKIE } from "../src/modules/i18n/config";
+import { LocalStorageAdapter } from "../src/modules/storage/local";
 
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001";
 const ADMIN_EMAIL = "admin-shell-e2e@example.com";
 const MEMBER_EMAIL = "admin-shell-member@example.com";
 const POST_SLUG = "admin-shell-e2e-post";
 const TIER_SLUG = "admin-shell-e2e-tier";
+const SITE_ASSET_OBJECT_KEY = "admin-shell-e2e/site-asset.png";
 const PUBLIC_INTEGRATION_SCRIPT_URL = "https://admin-shell-public.example/integration.js";
 const PUBLIC_INTEGRATION_ORIGIN = "https://admin-shell-public.example";
 const SEEDED_SETTING_KEYS = [
@@ -31,6 +34,9 @@ const SEEDED_SETTING_KEYS = [
   "site_name",
   "artist_name",
   "artist_bio",
+  "artist_avatar_file_id",
+  "site_logo_file_id",
+  "site_icon_file_id",
   "social_links",
   "custom_footer_markup",
   "custom_footer_html",
@@ -70,6 +76,7 @@ async function upsertSetting(key: string, valueJson: unknown) {
 async function cleanupFixtures() {
   const db = getDb();
   await db.transaction(async (tx) => {
+    await tx.delete(siteSettings).where(inArray(siteSettings.key, [...SEEDED_SETTING_KEYS]));
     await tx.delete(paymentRequests).where(sql`
       ${paymentRequests.userId} in (select id from users where email like 'admin-shell-%@example.com')
       or ${paymentRequests.tierId} in (select id from membership_tiers where slug = ${TIER_SLUG})
@@ -92,8 +99,8 @@ async function cleanupFixtures() {
     await tx.delete(files).where(like(files.objectKey, "admin-shell-e2e/%"));
     await tx.delete(users).where(like(users.email, "admin-shell-%@example.com"));
     await tx.delete(membershipTiers).where(eq(membershipTiers.slug, TIER_SLUG));
-    await tx.delete(siteSettings).where(inArray(siteSettings.key, [...SEEDED_SETTING_KEYS]));
   });
+  await new LocalStorageAdapter().deleteObject({ objectKey: SITE_ASSET_OBJECT_KEY });
 }
 
 async function seedFixtures() {
@@ -103,7 +110,12 @@ async function seedFixtures() {
   await upsertSetting("site_name", "Admin Shell E2E");
   await upsertSetting("artist_name", "Admin Shell Artist");
   await upsertSetting("artist_bio", "Admin shell responsive fixtures.");
-  await upsertSetting("social_links", []);
+  await upsertSetting("social_links", [
+    {
+      name: "Admin Shell Social Link",
+      url: "https://example.com/admin-shell-social-link-with-a-very-long-unbroken-mobile-value",
+    },
+  ]);
   await upsertSetting("custom_footer_markup", "");
   await upsertSetting("custom_footer_html", "");
   await upsertSetting("site_verification", []);
@@ -177,6 +189,36 @@ async function seedFixtures() {
       createdBy: admin.id,
     })
     .returning({ id: files.id });
+  const siteAssetBody = await sharp({
+    create: {
+      width: 1200,
+      height: 120,
+      channels: 3,
+      background: { r: 20, g: 120, b: 220 },
+    },
+  })
+    .png()
+    .toBuffer();
+  await new LocalStorageAdapter().putObject({
+    objectKey: SITE_ASSET_OBJECT_KEY,
+    body: siteAssetBody,
+    contentType: "image/png",
+  });
+  const [siteAsset] = await getDb()
+    .insert(files)
+    .values({
+      storageDriver: "local",
+      objectKey: SITE_ASSET_OBJECT_KEY,
+      originalName: "admin-shell-site-asset.png",
+      mimeType: "image/png",
+      sizeBytes: siteAssetBody.length,
+      purpose: "artist_avatar",
+      createdBy: admin.id,
+    })
+    .returning({ id: files.id });
+  await upsertSetting("artist_avatar_file_id", siteAsset.id);
+  await upsertSetting("site_logo_file_id", siteAsset.id);
+  await upsertSetting("site_icon_file_id", siteAsset.id);
   await getDb().insert(downloadLogs).values({
     userId: member.id,
     fileId: file.id,
@@ -339,6 +381,100 @@ test("settings page explains configuration source and saved test semantics on mo
   await expectNoDocumentOverflow(page);
 });
 
+test("site settings stack controls and keep every field reachable on narrow screens", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+
+  for (const width of [320, 375, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/admin/site");
+
+    await expect(page.getByTestId("site-settings-form")).toBeVisible();
+    await expect(page.getByLabel("站点名称")).toBeVisible();
+    await expect(page.getByLabel("画师头像")).toBeVisible();
+    await expect(page.getByLabel("链接地址")).toHaveValue(
+      "https://example.com/admin-shell-social-link-with-a-very-long-unbroken-mobile-value",
+    );
+
+    const row = page.getByTestId("site-social-link-row").first();
+    const nameBox = await row.getByLabel("平台名称").boundingBox();
+    const urlBox = await row.getByLabel("链接地址").boundingBox();
+    const deleteBox = await row.getByRole("button", { name: "删除" }).boundingBox();
+    expect(nameBox).not.toBeNull();
+    expect(urlBox).not.toBeNull();
+    expect(deleteBox).not.toBeNull();
+    expect(urlBox!.y).toBeGreaterThan(nameBox!.y + nameBox!.height);
+    expect(deleteBox!.y).toBeGreaterThan(urlBox!.y + urlBox!.height);
+
+    const formWidth = await page
+      .getByTestId("site-settings-form")
+      .evaluate((element) => element.getBoundingClientRect().width);
+    const saveWidth = await page
+      .getByRole("button", { name: "保存设置" })
+      .evaluate((element) => element.getBoundingClientRect().width);
+    expect(saveWidth).toBeGreaterThanOrEqual(formWidth - 1);
+
+    const formMetrics = await page.getByTestId("site-settings-form").evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        left: bounds.left,
+        right: bounds.right,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    expect(formMetrics.scrollWidth).toBeLessThanOrEqual(formMetrics.clientWidth + 1);
+    expect(formMetrics.left).toBeGreaterThanOrEqual(-1);
+    expect(formMetrics.right).toBeLessThanOrEqual(formMetrics.viewportWidth + 1);
+
+    const mainMetrics = await page.getByTestId("admin-main").evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        left: bounds.left,
+        right: bounds.right,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    expect(mainMetrics.scrollWidth).toBeLessThanOrEqual(mainMetrics.clientWidth + 1);
+    expect(mainMetrics.left).toBeGreaterThanOrEqual(-1);
+    expect(mainMetrics.right).toBeLessThanOrEqual(mainMetrics.viewportWidth + 1);
+
+    for (const testId of ["site-logo-preview", "site-icon-preview"]) {
+      const preview = page.getByTestId(testId);
+      await expect(preview).toBeVisible();
+      await expect
+        .poll(() =>
+          preview.locator("img").evaluate((image) => (image as HTMLImageElement).naturalWidth),
+        )
+        .toBeGreaterThan(0);
+      const previewWidths = await preview.evaluate((element) => ({
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }));
+      expect(previewWidths.scrollWidth).toBeLessThanOrEqual(previewWidths.clientWidth + 1);
+    }
+    const clearLogo = page.getByRole("button", { name: "清除 Logo" });
+    const clearIcon = page.getByRole("button", { name: "清除 Icon" });
+    await clearLogo.focus();
+    await expect(clearLogo).toBeFocused();
+    await clearIcon.focus();
+    await expect(clearIcon).toBeFocused();
+
+    for (const input of await page.locator('input[type="file"]').all()) {
+      const widths = await input.evaluate((element) => ({
+        input: element.getBoundingClientRect().width,
+        parent: element.parentElement?.getBoundingClientRect().width ?? 0,
+      }));
+      expect(widths.input).toBeLessThanOrEqual(widths.parent + 1);
+    }
+    await expectNoDocumentOverflow(page);
+  }
+});
+
 test("mobile drawer opens, traps focus, closes with Escape, and restores focus", async ({
   page,
 }) => {
@@ -476,7 +612,7 @@ test("skip link moves focus to the main content", async ({ page }) => {
   await expect(page.getByTestId("admin-main")).toBeFocused();
 });
 
-test("admin shell gives five representative pages full mobile/tablet width without document overflow", async ({
+test("admin shell gives six representative pages full mobile/tablet width without document overflow", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -485,6 +621,7 @@ test("admin shell gives five representative pages full mobile/tablet width witho
     "/admin/posts",
     "/admin/files",
     "/admin/settings",
+    "/admin/site",
     "/admin/tasks",
   ];
   for (const width of [320, 390, 768, 1024, 1440]) {

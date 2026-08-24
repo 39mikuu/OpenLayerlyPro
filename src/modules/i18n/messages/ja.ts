@@ -920,6 +920,7 @@ export const ja: Messages = {
         "0 は永久保持です。1～3650 を指定すると、以後に承認済みまたは取消済みとなる申請へ遅延クリーンアップを設定します。",
       socialLinks: "ソーシャルリンク",
       platformName: "プラットフォーム名",
+      linkUrl: "リンク URL",
       addLink: "リンクを追加",
       saveSettings: "設定を保存",
       appearance: "外観",
