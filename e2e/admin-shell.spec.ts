@@ -496,9 +496,9 @@ test("post editor stacks fields, files, and actions without narrow-screen overfl
 
     const editor = page.getByTestId("post-editor");
     await expect(editor).toBeVisible();
-    await expect(page.getByLabel("标题")).toBeVisible();
+    await expect(editor.getByLabel("标题", { exact: true })).toBeVisible();
     await expect(page.getByLabel("slug（URL 标识，小写字母数字连字符）")).toBeVisible();
-    await expect(page.getByLabel("正文").first()).toBeVisible();
+    await expect(editor.getByLabel("正文", { exact: true })).toBeVisible();
     await expect(page.getByLabel("可见性")).toBeVisible();
     await expect(page.getByLabel("所需会员等级（及以上）")).toBeVisible();
     await expect(page.getByLabel("封面（公开可见）")).toBeVisible();
