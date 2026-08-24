@@ -205,13 +205,15 @@ release_backup_publication_lock() {
 }
 
 remove_owned_backup_publication_artifacts() {
-  if [ "$BACKUP_ARCHIVE_PUBLISHED" = true ]; then
-    rm -f "$ARCHIVE_PATH" || return 1
-    BACKUP_ARCHIVE_PUBLISHED=false
-  fi
+  # Remove derived evidence before the only published archive bytes. If sidecar
+  # removal fails, fail closed while the usable capture is still available.
   if [ "$BACKUP_EVIDENCE_ARCHIVE_PUBLISHED" = true ]; then
     rm -f "$BACKUP_EVIDENCE_ARCHIVE_PATH" || return 1
     BACKUP_EVIDENCE_ARCHIVE_PUBLISHED=false
+  fi
+  if [ "$BACKUP_ARCHIVE_PUBLISHED" = true ]; then
+    rm -f "$ARCHIVE_PATH" || return 1
+    BACKUP_ARCHIVE_PUBLISHED=false
   fi
 }
 

@@ -256,6 +256,40 @@ remove_owned_backup_publication_artifacts || fail "ownership cleanup failed"
 [ "$(cat "$SEEDED_SIDECAR")" = "pre-existing evidence" ] \
   || fail "ownership cleanup removed pre-existing evidence"
 
+echo "Verifying sidecar cleanup failure preserves the published archive..."
+CLEANUP_ORDER_ARCHIVE="$TEST_DIR/cleanup-order.tar.gz"
+CLEANUP_ORDER_SIDECAR="$CLEANUP_ORDER_ARCHIVE.evidence.env"
+printf '%s\n' archive > "$CLEANUP_ORDER_ARCHIVE"
+printf '%s\n' sidecar > "$CLEANUP_ORDER_SIDECAR"
+set +e
+CLEANUP_ORDER_ARCHIVE="$CLEANUP_ORDER_ARCHIVE" \
+  CLEANUP_ORDER_SIDECAR="$CLEANUP_ORDER_SIDECAR" \
+  ROOT_DIR="$ROOT_DIR" \
+  sh -eu <<'CLEANUP_ORDER_TEST'
+  fail() { exit 42; }
+  # shellcheck source=scripts/backup-evidence.sh disable=SC1091
+  . "$ROOT_DIR/scripts/backup-evidence.sh"
+  ARCHIVE_PATH=$CLEANUP_ORDER_ARCHIVE
+  BACKUP_EVIDENCE_ARCHIVE_PATH=$CLEANUP_ORDER_SIDECAR
+  BACKUP_ARCHIVE_PUBLISHED=true
+  BACKUP_EVIDENCE_ARCHIVE_PUBLISHED=true
+  # shellcheck disable=SC2317 # Invoked indirectly by the sourced cleanup helper.
+  rm() {
+    if [ "$1" = -f ] && [ "$2" = "$CLEANUP_ORDER_SIDECAR" ]; then
+      return 1
+    fi
+    command rm "$@"
+  }
+  remove_owned_backup_publication_artifacts
+CLEANUP_ORDER_TEST
+CLEANUP_ORDER_STATUS=$?
+set -e
+[ "$CLEANUP_ORDER_STATUS" -ne 0 ] \
+  || fail "injected sidecar cleanup failure reported success"
+[ -f "$CLEANUP_ORDER_SIDECAR" ] || fail "cleanup failure removed the sidecar unexpectedly"
+[ -f "$CLEANUP_ORDER_ARCHIVE" ] || fail "sidecar cleanup failure removed the archive"
+rm -f "$CLEANUP_ORDER_SIDECAR" "$CLEANUP_ORDER_ARCHIVE"
+
 echo "Verifying successful evidence publication..."
 publish_backup_evidence "$ARCHIVE_PATH" "$TEST_DIR"
 
