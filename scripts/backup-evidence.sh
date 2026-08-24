@@ -205,12 +205,14 @@ publish_backup_archive() {
     fail "archive path already exists; refusing to overwrite recovery evidence"
   fi
   BACKUP_ARCHIVE_PUBLISHED=true
+  # shellcheck disable=SC2034 # Consumed by backup.sh's EXIT cleanup.
   ARCHIVE_PENDING_EVIDENCE=true
   backup_restore_publication_signals
-  [ -f "$backup_publish_target" ] \
-    && [ ! -L "$backup_publish_target" ] \
-    && [ "$(stat -c %a "$backup_publish_target")" = 600 ] \
-    || fail "published archive is not a regular 0600 file"
+  if [ ! -f "$backup_publish_target" ] \
+    || [ -L "$backup_publish_target" ] \
+    || [ "$(stat -c %a "$backup_publish_target")" != 600 ]; then
+    fail "published archive is not a regular 0600 file"
+  fi
   rm -f "$backup_publish_source" || fail "unable to remove published archive temporary file"
 }
 
@@ -343,10 +345,11 @@ publish_backup_evidence() {
   fi
   BACKUP_EVIDENCE_ARCHIVE_PUBLISHED=true
   backup_restore_publication_signals
-  [ -f "$BACKUP_EVIDENCE_ARCHIVE_PATH" ] \
-    && [ ! -L "$BACKUP_EVIDENCE_ARCHIVE_PATH" ] \
-    && [ "$(stat -c %a "$BACKUP_EVIDENCE_ARCHIVE_PATH")" = 600 ] \
-    || fail "published per-archive backup evidence is not a regular 0600 file"
+  if [ ! -f "$BACKUP_EVIDENCE_ARCHIVE_PATH" ] \
+    || [ -L "$BACKUP_EVIDENCE_ARCHIVE_PATH" ] \
+    || [ "$(stat -c %a "$BACKUP_EVIDENCE_ARCHIVE_PATH")" != 600 ]; then
+    fail "published per-archive backup evidence is not a regular 0600 file"
+  fi
   rm -f "$BACKUP_EVIDENCE_TMP" \
     || fail "unable to remove per-archive evidence temporary file"
   BACKUP_EVIDENCE_TMP=""
@@ -369,8 +372,9 @@ publish_backup_evidence() {
   backup_atomic_replace_file "$BACKUP_EVIDENCE_TMP" "$BACKUP_EVIDENCE_LATEST_PATH" \
     || fail "unable to publish latest backup evidence"
   BACKUP_EVIDENCE_TMP=""
-  [ -f "$BACKUP_EVIDENCE_LATEST_PATH" ] \
-    && [ ! -L "$BACKUP_EVIDENCE_LATEST_PATH" ] \
-    && [ "$(stat -c %a "$BACKUP_EVIDENCE_LATEST_PATH")" = 600 ] \
-    || fail "published latest backup evidence is not a regular 0600 file"
+  if [ ! -f "$BACKUP_EVIDENCE_LATEST_PATH" ] \
+    || [ -L "$BACKUP_EVIDENCE_LATEST_PATH" ] \
+    || [ "$(stat -c %a "$BACKUP_EVIDENCE_LATEST_PATH")" != 600 ]; then
+    fail "published latest backup evidence is not a regular 0600 file"
+  fi
 }

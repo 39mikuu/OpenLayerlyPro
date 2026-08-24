@@ -29,11 +29,6 @@ BACKUP_TOOL_SCRIPT_SHA256=abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 LATEST_MIGRATION_HASH=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 STORAGE_DRIVER=local
 UPLOADS_INCLUDED=true
-SESSION_SECRET_SOURCE=file
-NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE=file
-NOTIFICATION_UNSUBSCRIBE_PREVIOUS_KEY_SOURCE=none
-NOTIFICATION_SUPPRESSION_DIGEST_KEY_SOURCE=file
-NOTIFICATION_SUPPRESSION_DIGEST_PREVIOUS_KEY_SOURCE=none
 BACKUP_EVIDENCE_ARCHIVE_PATH=""
 BACKUP_EVIDENCE_TMP=""
 BACKUP_EVIDENCE_LATEST_PATH=""
@@ -73,7 +68,9 @@ set +e
 (
   fail() { exit 42; }
   BACKUP_PUBLICATION_LOCK_OWNER_ID=test-competitor
+  # shellcheck disable=SC2030 # These values intentionally belong only to the competitor subshell.
   BACKUP_PUBLICATION_LOCK_OWNER_PATH=""
+  # shellcheck disable=SC2030 # These values intentionally belong only to the competitor subshell.
   BACKUP_PUBLICATION_LOCK_HELD=false
   acquire_backup_publication_lock "$TEST_DIR"
 ) >/dev/null 2>&1
@@ -88,6 +85,7 @@ release_backup_publication_lock || fail "unable to release publication lock"
 echo "Verifying release cannot unlink a successor lock after child failure..."
 BACKUP_PUBLICATION_LOCK_OWNER_ID=test-release-owner
 acquire_backup_publication_lock "$TEST_DIR"
+# shellcheck disable=SC2031 # The earlier competitor assignments were subshell-local by design.
 RELEASE_OWNER_PATH="$BACKUP_PUBLICATION_LOCK_OWNER_PATH"
 backup_unlink_owned_publication_lock() {
   rm -f "$BACKUP_PUBLICATION_LOCK_PATH"
@@ -96,6 +94,7 @@ backup_unlink_owned_publication_lock() {
   return 143
 }
 release_backup_publication_lock || fail "successor reconciliation reported failure"
+# shellcheck disable=SC2031 # The earlier competitor assignment was subshell-local by design.
 [ "$BACKUP_PUBLICATION_LOCK_HELD" = false ] || fail "released lock remained marked owned"
 [ "$(cat "$BACKUP_PUBLICATION_LOCK_PATH")" = successor ] \
   || fail "old owner removed the successor lock"
@@ -239,8 +238,6 @@ tar -czf "$EXTERNAL_ARCHIVE" -C "$TEST_DIR/payload" .
 STOP_APP=false
 STORAGE_DRIVER=s3
 UPLOADS_INCLUDED=false
-SESSION_SECRET_SOURCE=external
-NOTIFICATION_UNSUBSCRIBE_KEY_SOURCE=external
 publish_backup_evidence "$EXTERNAL_ARCHIVE" "$TEST_DIR"
 grep -Fx "ARCHIVE_BASENAME=${EXTERNAL_ARCHIVE##*/}" "$LATEST_EVIDENCE" >/dev/null \
   || fail "latest evidence did not advance to the new archive"
@@ -279,6 +276,7 @@ HASH_FAILURE_ARCHIVE="$TEST_DIR/openlayerly-backup-20260824-125000.tar.gz"
 tar -czf "$HASH_FAILURE_ARCHIVE" -C "$TEST_DIR/payload" .
 BASELINE_SHA256=$(sha256sum "$LATEST_EVIDENCE" | awk '{print $1}')
 if (
+  # shellcheck disable=SC2317 # Invoked indirectly by publish_backup_evidence in this subshell.
   sha256sum() { return 1; }
   publish_backup_evidence "$HASH_FAILURE_ARCHIVE" "$TEST_DIR"
 ) >/dev/null 2>&1; then
