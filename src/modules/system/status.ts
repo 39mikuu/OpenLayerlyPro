@@ -5,6 +5,10 @@ import { downloadLogs, files, memberships, paymentRequests, posts, users } from 
 import { getBuildInfo } from "@/lib/build-info";
 import { getEnv } from "@/lib/env";
 import { getIntegrationStatuses, type IntegrationStatus } from "@/modules/integration";
+import {
+  getTaskQueueOperationalSnapshot,
+  type TaskQueueOperationalSnapshot,
+} from "@/modules/tasks";
 
 export type SystemStatus = {
   appUrl: string;
@@ -13,12 +17,17 @@ export type SystemStatus = {
   buildTimestamp: string;
   databaseOk: boolean;
   integrations: IntegrationStatus[];
+  taskQueue?: TaskQueueOperationalSnapshot | null;
 };
 
-export async function getSystemStatus(): Promise<SystemStatus> {
+export type SystemStatusOptions = {
+  includeTaskQueue?: boolean;
+};
+
+export async function getSystemStatus(options: SystemStatusOptions = {}): Promise<SystemStatus> {
   const env = getEnv();
   const buildInfo = getBuildInfo();
-  const [databaseOk, integrations] = await Promise.all([
+  const [databaseOk, integrations, taskQueue] = await Promise.all([
     (async () => {
       try {
         await getDb().execute(sql`select 1`);
@@ -28,6 +37,9 @@ export async function getSystemStatus(): Promise<SystemStatus> {
       }
     })(),
     getIntegrationStatuses(),
+    options.includeTaskQueue
+      ? getTaskQueueOperationalSnapshot().catch(() => null)
+      : Promise.resolve(undefined),
   ]);
 
   return {
@@ -37,6 +49,7 @@ export async function getSystemStatus(): Promise<SystemStatus> {
     buildTimestamp: buildInfo.buildTimestamp,
     databaseOk,
     integrations,
+    ...(taskQueue !== undefined ? { taskQueue } : {}),
   };
 }
 

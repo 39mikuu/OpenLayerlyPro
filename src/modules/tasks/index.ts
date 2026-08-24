@@ -26,6 +26,12 @@ export {
   type TaskQueueClass,
 };
 
+export {
+  getTaskQueueOperationalSnapshot,
+  type TaskQueueOperationalCounts,
+  type TaskQueueOperationalSnapshot,
+} from "./operational-snapshot";
+
 // Total execution limit: failures 1-4 retry after 1m/2m/4m/8m; failure 5 is dead.
 export const TASK_LEASE_MS = 60_000;
 export const TASK_BATCH_SIZE = 20;

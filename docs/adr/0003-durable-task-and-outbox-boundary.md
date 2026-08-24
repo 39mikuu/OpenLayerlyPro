@@ -45,7 +45,7 @@
 4. **`kind` 区分处理器**：`email` 处理器发信；`publish_post` 处理器执行定时发布（见第 5 点）。两者共用领取/租约/重试/幂等骨架。
 5. **定时发布不给 post 增加 `scheduled` 状态**：保持 `posts.status` 为 `draft / published / archived`，新增 `posts.scheduled_at` 时间戳。`publish_post` 处理器做条件更新 `where status='draft' and scheduled_at <= now` → 置 `published`、`published_at=now`、清空 `scheduled_at`。这样**不扩展翻译状态机**，也不触及 `post_translations` 的「每语言一条 published」唯一索引。
 6. **幂等**：处理器自身也要幂等（发布用上面的条件更新；邮件用 `dedupe_key` + 业务层去重），重试不产生重复副作用。
-7. **后台可视**：#7 要求的「retry view」即 `tasks` 列表 + 手动重试 `failed`/`dead` 行，对所有 `kind` 通用。
+7. **后台可视**：#7 要求的「retry view」即 `tasks` 列表 + 手动重试 `failed`/`dead` 行，对所有 `kind` 通用。系统详情页与管理员系统状态 API 按需提供 queue class 聚合的 queue/lease/fence 运维快照；使用单一数据库时钟区分到期、计划中、活动租约、按实际 reclaim 谓词计算的过期可回收租约、最终租约过期待 sweep、已耗尽但不会被 claim/sweep 的 pending/failed、dead 与 fence 元数据异常。诊断维度允许重叠，只暴露计数和最早到期时间，不暴露任务 payload、错误或 claim token；不需要该数据的管理员首页不执行聚合。
 
 ## Alternatives
 

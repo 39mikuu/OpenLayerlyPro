@@ -7,7 +7,10 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     await requireAdmin();
-    const [status, stats] = await Promise.all([getSystemStatus(), getDashboardStats()]);
+    const [status, stats] = await Promise.all([
+      getSystemStatus({ includeTaskQueue: true }),
+      getDashboardStats(),
+    ]);
     return jsonOk({ status, stats });
   } catch (err) {
     return handleApiError(err);

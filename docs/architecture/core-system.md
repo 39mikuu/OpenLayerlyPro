@@ -89,6 +89,7 @@ src/
 
 - 业务状态变化与 `audit_events` 在同一事务提交，使用 `correlation_id` / `causation_id` 连接因果链。
 - `tasks` 使用 dedupe key、lease、随机 `locked_by` token、续租与最终 fencing；外部 I/O 后只有当前 claim 可提交结果。
+- `/admin/system` 与管理员系统状态 API 按需提供 queue class 聚合的运维快照；管理员首页不执行这项随任务历史增长的聚合。快照包含可领取到期、等待计划时间、活动租约、按真实 reclaim 条件计算的过期租约、最终租约过期待 sweep、已耗尽但不会被 claim/sweep 的 pending/failed、dead 与 fence 元数据异常计数，以及最早到期时间。各诊断维度可重叠（例如 fence 缺失但 lease 已过期的 processing 行同时计入过期租约和 fence 异常）。快照使用同一数据库时钟，且不返回任务 ID、kind、payload、错误或 lock token。
 - Stripe webhook 验签后持久化 normalized provider event，再返回 2xx；dispatcher 负责业务处理，event-id 与 invoice-id 双层幂等。
 - 终态 task 仍占用全局 dedupe key，因此恢复/重建流程必须显式 re-arm、upsert 或删除对应行，不能假设普通 enqueue 会覆盖。
 

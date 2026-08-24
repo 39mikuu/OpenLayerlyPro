@@ -1,9 +1,11 @@
 import { IntegrationTestButton } from "@/components/admin/integration-test-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatDateTime } from "@/lib/dates";
 import type { Translate } from "@/modules/i18n";
 import { getT } from "@/modules/i18n/server";
 import type { IntegrationId, IntegrationSource, IntegrationStatus } from "@/modules/integration";
 import { getSystemStatus } from "@/modules/system/status";
+import type { TaskQueueClass, TaskQueueOperationalCounts } from "@/modules/tasks";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +27,51 @@ const SOURCE_KEYS: Record<IntegrationSource, string> = {
   environment: "admin.system.sourceEnvironment",
   none: "admin.system.sourceNone",
 };
+
+const QUEUE_CLASS_KEYS: Record<TaskQueueClass, string> = {
+  transactional: "admin.system.queueTransactional",
+  auth_delivery_v2: "admin.system.queueAuthDelivery",
+  auth_intake: "admin.system.queueAuthIntake",
+  notification: "admin.system.queueNotification",
+  maintenance: "admin.system.queueMaintenance",
+  default: "admin.system.queueDefault",
+};
+
+const QUEUE_METRICS: Array<{
+  key: Exclude<keyof TaskQueueOperationalCounts, "oldestDueAt">;
+  label: string;
+  warn?: boolean;
+}> = [
+  { key: "due", label: "admin.system.queueDue" },
+  { key: "scheduled", label: "admin.system.queueScheduled" },
+  { key: "activeLeases", label: "admin.system.queueActiveLeases" },
+  { key: "staleLeases", label: "admin.system.queueStaleLeases", warn: true },
+  { key: "exhausted", label: "admin.system.queueExhausted", warn: true },
+  { key: "stranded", label: "admin.system.queueStranded", warn: true },
+  { key: "dead", label: "admin.system.queueDead", warn: true },
+  { key: "fenceAnomalies", label: "admin.system.queueFenceAnomalies", warn: true },
+];
+
+function QueueMetrics({ counts, t }: { counts: TaskQueueOperationalCounts; t: Translate }) {
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {QUEUE_METRICS.map((metric) => (
+        <div key={metric.key} className="rounded-md border px-2 py-1.5">
+          <p className="text-xs text-muted-foreground">{t(metric.label)}</p>
+          <p
+            className={
+              metric.warn && counts[metric.key] > 0
+                ? "font-semibold text-destructive"
+                : "font-semibold"
+            }
+          >
+            {counts[metric.key]}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function statusLabel(status: IntegrationStatus, t: Translate): string {
   if (status.error) return t("admin.system.readFailed");
@@ -50,7 +97,7 @@ function statusDetail(status: IntegrationStatus, t: Translate): string | null {
 }
 
 export default async function AdminSystemPage() {
-  const status = await getSystemStatus();
+  const status = await getSystemStatus({ includeTaskQueue: true });
   const smtp = status.integrations.find((integration) => integration.id === "smtp");
   const t = await getT();
   return (
@@ -75,6 +122,42 @@ export default async function AdminSystemPage() {
             {t("admin.system.database")}：
             {t(status.databaseOk ? "admin.overview.normal" : "admin.overview.abnormal")}
           </p>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t("admin.system.taskQueue")}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4 text-sm">
+          {status.taskQueue ? (
+            <>
+              <p className="text-xs text-muted-foreground">
+                {t("admin.system.queueCapturedAt")}：{formatDateTime(status.taskQueue.capturedAt)}
+              </p>
+              <QueueMetrics counts={status.taskQueue.totals} t={t} />
+              {status.taskQueue.totals.oldestDueAt && (
+                <p className="text-xs text-muted-foreground">
+                  {t("admin.system.queueOldestDue")}：
+                  {formatDateTime(status.taskQueue.totals.oldestDueAt)}
+                </p>
+              )}
+              <div className="space-y-4">
+                {status.taskQueue.queues.map((queue) => (
+                  <div key={queue.queueClass} className="space-y-2 border-t pt-4">
+                    <p className="font-medium">{t(QUEUE_CLASS_KEYS[queue.queueClass])}</p>
+                    <QueueMetrics counts={queue} t={t} />
+                    {queue.oldestDueAt && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("admin.system.queueOldestDue")}：{formatDateTime(queue.oldestDueAt)}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="text-muted-foreground">{t("admin.system.queueUnavailable")}</p>
+          )}
         </CardContent>
       </Card>
       <Card>
