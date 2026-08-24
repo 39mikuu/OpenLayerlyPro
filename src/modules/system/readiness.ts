@@ -8,6 +8,8 @@ import {
   isConfigEncryptionKeyConfigured,
 } from "@/modules/security/config-key";
 
+import { isRuntimeSchemaCurrent } from "./schema-readiness";
+
 /** 可选集成的就绪探测结果（信息性，绝不参与 ready 门禁）。 */
 export type IntegrationProbe = {
   id: IntegrationId;
@@ -20,6 +22,7 @@ export type Readiness = {
   ready: boolean;
   checks: {
     database: boolean;
+    schema: boolean;
     config: boolean;
     encryptionKey: boolean;
   };
@@ -52,13 +55,18 @@ export async function getReadiness(options?: {
   }
 
   let database = false;
-  if (config) {
+  let schema = false;
+  try {
+    const db = getDb();
+    await db.execute(sql`select 1`);
+    database = true;
     try {
-      await getDb().execute(sql`select 1`);
-      database = true;
+      schema = await isRuntimeSchemaCurrent(db);
     } catch {
-      database = false;
+      schema = false;
     }
+  } catch {
+    database = false;
   }
 
   // 生产环境必须存在可用的配置加密根密钥；
@@ -77,8 +85,8 @@ export async function getReadiness(options?: {
   }
 
   const readiness: Readiness = {
-    ready: database && config && encryptionKey,
-    checks: { database, config, encryptionKey },
+    ready: database && schema && config && encryptionKey,
+    checks: { database, schema, config, encryptionKey },
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 

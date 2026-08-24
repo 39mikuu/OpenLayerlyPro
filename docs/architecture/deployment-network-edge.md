@@ -29,8 +29,10 @@
 | 接口 | 用途 | 行为 |
 |---|---|---|
 | `GET /api/health` | liveness | 进程存活即 200，不依赖外部集成 |
-| `GET /api/ready` | readiness | 检查数据库、基础配置和配置加密密钥；失败 503，不暴露 secret |
+| `GET /api/ready` | readiness | 检查数据库连接、当前镜像要求的完整有序迁移身份、基础配置和配置加密密钥；失败 503，只返回粗粒度布尔值，不暴露 schema/secret 细节 |
 | `GET /api/ready?integrations=true` | 信息性集成摘要 | 附带 `{id,enabled,healthy}`；不改变 200/503 门禁，探测失败可省略 |
+
+数据库虽然可连接，但迁移表缺失、任一历史迁移缺失/重排/哈希或时间戳漂移、历史落后或数据库比当前镜像更新时，`schema` 检查均失败关闭；部署必须先完成与镜像完整匹配的 forward migration。
 
 ## 配置与秘密的运维 ✅
 

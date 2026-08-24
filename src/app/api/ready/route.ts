@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * 就绪检查：数据库可连接、配置可读取、配置加密密钥可用。
+ * 就绪检查：数据库可连接、运行时 schema 与当前镜像匹配、配置可读取、配置加密密钥可用。
  * 可选 ?integrations=true 附带集成探测（信息性，不影响 200/503 判定）。
  */
 export async function GET(req: NextRequest) {

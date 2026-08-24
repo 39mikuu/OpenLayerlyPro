@@ -5,6 +5,8 @@ import {
   validateNotificationKeyPair,
 } from "@/modules/security/notification-key-validation";
 
+import { DEFAULT_DATABASE_URL } from "./database-url";
+
 const TASK_BATCH_SIZE = 20;
 
 const envSchema = z.object({
@@ -31,9 +33,7 @@ const envSchema = z.object({
   CONFIG_ENCRYPTION_KEY: z.string().optional(),
   CONFIG_ENCRYPTION_KEY_FILE: z.string().optional(),
 
-  DATABASE_URL: z
-    .string()
-    .default("postgresql://artist:artist_password@localhost:5432/artist_member"),
+  DATABASE_URL: z.string().default(DEFAULT_DATABASE_URL),
 
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().default(587),

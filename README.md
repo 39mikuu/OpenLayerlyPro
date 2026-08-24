@@ -232,7 +232,7 @@ JSON、Stripe webhook 和 multipart 图片上传会先按实际传输字节执�
 | 接口 | 说明 |
 |---|---|
 | `GET /api/health` | 存活检查 |
-| `GET /api/ready` | 数据库、配置与加密密钥就绪检查 |
+| `GET /api/ready` | 数据库连接、完整迁移身份、配置与加密密钥就绪检查 |
 | `GET /api/ready?integrations=true` | 附带信息性的集成健康摘要，不改变 200/503 门禁 |
 
 ## 本地开发
