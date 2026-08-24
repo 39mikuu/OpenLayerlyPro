@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { MarkdownEditor } from "@/components/admin/markdown-editor";
 import { PostTranslationEditor } from "@/components/admin/post-translation-editor";
-import { Notice } from "@/components/admin/primitives";
+import { FormField, Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -45,6 +45,9 @@ type EditablePostForm = {
   title: string;
   visibility: "public" | "login" | "member";
 };
+
+const FILE_INPUT_CLASS = "h-auto min-h-8 max-w-full py-1 file:mr-2 file:max-w-full";
+const MOBILE_ACTION_CLASS = "w-full sm:w-auto";
 
 function formSnapshot(form: EditablePostForm): string {
   return JSON.stringify({
@@ -422,8 +425,8 @@ export function PostEditor({
   }
 
   return (
-    <div className="max-w-2xl space-y-6">
-      <div className="space-y-4">
+    <div className="min-w-0 max-w-2xl space-y-6" data-testid="post-editor">
+      <div className="min-w-0 space-y-4">
         {hasAnyUnsavedChanges ? (
           <Notice variant="warning">{t("admin.posts.unsavedChanges")}</Notice>
         ) : (
@@ -431,31 +434,29 @@ export function PostEditor({
             {t("admin.posts.allChangesSaved")}
           </p>
         )}
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1">
-            <Label>{t("admin.posts.titleColumn")}</Label>
+        <div className="grid min-w-0 gap-3 sm:grid-cols-2" data-testid="post-editor-title-row">
+          <FormField id="post-title" label={t("admin.posts.titleColumn")}>
             <Input
               value={form.title}
               disabled={loading || isPublished}
               onChange={(e) => setForm({ ...form, title: e.target.value })}
             />
-          </div>
-          <div className="space-y-1">
-            <Label>{t("admin.posts.slug")}</Label>
+          </FormField>
+          <FormField id="post-slug" label={t("admin.posts.slug")}>
             <Input
               value={form.slug}
               disabled={loading || isPublished}
               onChange={(e) => setForm({ ...form, slug: e.target.value })}
             />
-          </div>
+          </FormField>
         </div>
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
             <CardTitle className="text-base">{t("admin.taxonomy.title")}</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label>{t("admin.taxonomy.categories")}</Label>
+            <fieldset className="min-w-0 space-y-2">
+              <legend className="text-sm font-medium">{t("admin.taxonomy.categories")}</legend>
               <div className="space-y-1">
                 {categories.map((category) => (
                   <label key={category.id} className="flex items-center gap-2 text-sm">
@@ -478,9 +479,9 @@ export function PostEditor({
                   <p className="text-sm text-muted-foreground">{t("admin.taxonomy.none")}</p>
                 )}
               </div>
-            </div>
-            <div className="space-y-2">
-              <Label>{t("admin.taxonomy.tags")}</Label>
+            </fieldset>
+            <fieldset className="min-w-0 space-y-2">
+              <legend className="text-sm font-medium">{t("admin.taxonomy.tags")}</legend>
               <div className="space-y-1">
                 {tags.map((tag) => (
                   <label key={tag.id} className="flex items-center gap-2 text-sm">
@@ -503,35 +504,34 @@ export function PostEditor({
                   <p className="text-sm text-muted-foreground">{t("admin.taxonomy.none")}</p>
                 )}
               </div>
-            </div>
+            </fieldset>
           </CardContent>
         </Card>
-        <div className="space-y-1">
-          <Label>{t("admin.posts.summary")}</Label>
+        <FormField id="post-summary" label={t("admin.posts.summary")}>
           <Input
             value={form.summary}
             disabled={loading || isPublished}
             onChange={(e) => setForm({ ...form, summary: e.target.value })}
           />
-        </div>
-        <div className="space-y-1">
-          <Label>{t("admin.posts.body")}</Label>
+        </FormField>
+        <FormField
+          id="post-body"
+          label={t("admin.posts.body")}
+          description={!post ? t("admin.posts.createDraftFirst") : undefined}
+        >
           <MarkdownEditor
+            id="post-body"
             value={form.body}
             onChange={(body) => setForm((current) => ({ ...current, body }))}
             onUploadImage={post ? uploadInlineImage : undefined}
             disabled={loading}
             ariaLabel={t("admin.posts.body")}
           />
-          {!post && (
-            <p className="text-xs text-muted-foreground">{t("admin.posts.createDraftFirst")}</p>
-          )}
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1">
-            <Label>{t("admin.posts.visibility")}</Label>
+        </FormField>
+        <div className="grid min-w-0 gap-3 sm:grid-cols-2" data-testid="post-editor-access-row">
+          <FormField id="post-visibility" className="min-w-0" label={t("admin.posts.visibility")}>
             <select
-              className="border rounded-md h-9 px-2 w-full bg-transparent text-sm"
+              className="h-9 min-w-0 max-w-full w-full rounded-md border bg-transparent px-2 text-sm"
               value={form.visibility}
               disabled={loading || isPublished}
               onChange={(e) =>
@@ -542,12 +542,15 @@ export function PostEditor({
               <option value="login">{t("admin.posts.login")}</option>
               <option value="member">{t("admin.posts.member")}</option>
             </select>
-          </div>
+          </FormField>
           {form.visibility === "member" && (
-            <div className="space-y-1">
-              <Label>{t("admin.posts.requiredTier")}</Label>
+            <FormField
+              id="post-required-tier"
+              className="min-w-0"
+              label={t("admin.posts.requiredTier")}
+            >
               <select
-                className="border rounded-md h-9 px-2 w-full bg-transparent text-sm"
+                className="h-9 min-w-0 max-w-full w-full rounded-md border bg-transparent px-2 text-sm"
                 value={form.requiredTierId}
                 disabled={loading || isPublished}
                 onChange={(e) => setForm({ ...form, requiredTierId: e.target.value })}
@@ -559,21 +562,23 @@ export function PostEditor({
                   </option>
                 ))}
               </select>
-            </div>
+            </FormField>
           )}
         </div>
-        <div className="space-y-2">
-          <Label>{t("admin.posts.cover")}</Label>
+        <div className="min-w-0 space-y-2">
+          <Label htmlFor="post-cover">{t("admin.posts.cover")}</Label>
           {form.coverFileId && (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={`/api/files/${form.coverFileId}/download`}
               alt={t("admin.posts.coverAlt")}
-              className="w-48 rounded-md border"
+              className="h-auto max-w-full rounded-md border sm:w-48"
             />
           )}
           <Input
+            id="post-cover"
             type="file"
+            className={FILE_INPUT_CLASS}
             accept=".jpg,.jpeg,.png,.webp"
             disabled={loading || isPublished}
             onChange={(e) => {
@@ -589,13 +594,13 @@ export function PostEditor({
             }}
           />
         </div>
-        {message && (
-          <p aria-live="polite" className="text-sm text-muted-foreground">
-            {message}
-          </p>
-        )}
-        <div className="flex flex-wrap gap-2">
+        {message && <Notice className="break-words [overflow-wrap:anywhere]">{message}</Notice>}
+        <div
+          className="flex flex-col gap-2 sm:flex-row sm:flex-wrap"
+          data-testid="post-editor-actions"
+        >
           <Button
+            className={MOBILE_ACTION_CLASS}
             disabled={loading || !form.title || !form.slug || (!isNew && !hasUnsavedChanges)}
             onClick={save}
           >
@@ -607,6 +612,7 @@ export function PostEditor({
           </Button>
           {!isNew && post.status !== "published" && (
             <Button
+              className={MOBILE_ACTION_CLASS}
               variant="outline"
               disabled={loading}
               onClick={() =>
@@ -627,6 +633,7 @@ export function PostEditor({
           )}
           {!isNew && post.status === "published" && (
             <Button
+              className={MOBILE_ACTION_CLASS}
               variant="outline"
               disabled={loading}
               onClick={() =>
@@ -647,6 +654,7 @@ export function PostEditor({
           )}
           {!isNew && (
             <Button
+              className={MOBILE_ACTION_CLASS}
               variant="outline"
               disabled={loading || isPublished || !hasUnsavedTaxonomyChanges}
               onClick={saveTaxonomy}
@@ -656,6 +664,7 @@ export function PostEditor({
           )}
           {!isNew && (
             <Button
+              className={MOBILE_ACTION_CLASS}
               variant="destructive"
               disabled={loading}
               onClick={() =>
@@ -682,7 +691,7 @@ export function PostEditor({
       )}
 
       {!isNew && (
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
             <CardTitle className="text-base">{t("admin.posts.gallery")}</CardTitle>
           </CardHeader>
@@ -694,15 +703,17 @@ export function PostEditor({
               {attachedFiles.map((f) => (
                 <div
                   key={f.fileId}
-                  className="flex items-center justify-between border rounded-md px-3 py-2 text-sm"
+                  className="flex min-w-0 flex-col items-stretch gap-2 rounded-md border px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
+                  data-testid="post-editor-attached-file"
                 >
-                  <span className="truncate mr-2">
+                  <span className="min-w-0 break-words [overflow-wrap:anywhere] sm:mr-2">
                     [{t(f.kind === "image" ? "admin.posts.image" : "admin.posts.attachment")}]{" "}
                     {f.originalName}
                   </span>
                   <Button
                     size="sm"
                     variant="outline"
+                    className={MOBILE_ACTION_CLASS}
                     disabled={loading || isPublished}
                     onClick={() =>
                       run(async () => {
@@ -719,11 +730,13 @@ export function PostEditor({
                 </div>
               ))}
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label>{t("admin.posts.uploadImage")}</Label>
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor="post-gallery-image">{t("admin.posts.uploadImage")}</Label>
                 <Input
+                  id="post-gallery-image"
                   type="file"
+                  className={FILE_INPUT_CLASS}
                   accept=".jpg,.jpeg,.png,.webp,.gif"
                   disabled={loading || isPublished}
                   onChange={(e) => {
@@ -732,10 +745,12 @@ export function PostEditor({
                   }}
                 />
               </div>
-              <div className="space-y-1">
-                <Label>{t("admin.posts.uploadAttachment")}</Label>
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor="post-gallery-attachment">{t("admin.posts.uploadAttachment")}</Label>
                 <Input
+                  id="post-gallery-attachment"
                   type="file"
+                  className={FILE_INPUT_CLASS}
                   accept=".jpg,.jpeg,.png,.webp,.gif,.zip,.psd,.clip,.brush,.abr,.procreate,.pdf,.txt,.mp4,.webm,.mov,.m4v"
                   disabled={loading || isPublished}
                   onChange={(e) => {

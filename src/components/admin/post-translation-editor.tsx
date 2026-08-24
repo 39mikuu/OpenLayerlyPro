@@ -12,6 +12,7 @@ import {
   type TranslationVersion,
   translationVersionsForLocale,
 } from "@/components/admin/post-translation-editor-model";
+import { FormField, Notice } from "@/components/admin/primitives";
 import { useT } from "@/components/i18n-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,8 @@ const STATUS_KEYS: Record<TranslationEditorStatus, string> = {
   published: "admin.posts.translationPublishedStatus",
   machineDraft: "admin.posts.translationMachineDraft",
 };
+
+const MOBILE_ACTION_CLASS = "w-full sm:w-auto";
 
 export function PostTranslationEditor({
   postId,
@@ -158,18 +161,18 @@ export function PostTranslationEditor({
   }
 
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader>
         <CardTitle className="text-base">{t("admin.posts.translations")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <p className="text-sm text-muted-foreground">
+        <p className="break-words text-sm text-muted-foreground">
           {t("admin.posts.translationHelp", {
             locale: LOCALE_NAMES[originalLocale as Locale] ?? originalLocale,
           })}
         </p>
-        <div className="flex items-end gap-3">
-          <div className="min-w-48 space-y-1">
+        <div className="flex min-w-0 flex-col items-stretch gap-3 sm:flex-row sm:items-end">
+          <div className="min-w-0 space-y-1 sm:min-w-48">
             <Label htmlFor="translation-locale">{t("admin.posts.translationLanguage")}</Label>
             <select
               id="translation-locale"
@@ -185,26 +188,20 @@ export function PostTranslationEditor({
               ))}
             </select>
           </div>
-          <Badge variant={status === "published" ? "default" : "outline"}>
+          <Badge className="self-start" variant={status === "published" ? "default" : "outline"}>
             {t(STATUS_KEYS[status])}
           </Badge>
         </div>
 
-        <div className="space-y-1">
-          <Label htmlFor={`translation-title-${locale}`}>{t("admin.posts.translationTitle")}</Label>
+        <FormField id={`translation-title-${locale}`} label={t("admin.posts.translationTitle")}>
           <Input
-            id={`translation-title-${locale}`}
             disabled={loading}
             value={form.title}
             onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
           />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor={`translation-summary-${locale}`}>
-            {t("admin.posts.translationSummary")}
-          </Label>
+        </FormField>
+        <FormField id={`translation-summary-${locale}`} label={t("admin.posts.translationSummary")}>
           <Input
-            id={`translation-summary-${locale}`}
             disabled={loading}
             value={form.summary}
             onChange={(event) =>
@@ -214,21 +211,22 @@ export function PostTranslationEditor({
               }))
             }
           />
-        </div>
-        <div className="space-y-1">
-          <Label>{t("admin.posts.translationBody")}</Label>
+        </FormField>
+        <FormField id={`translation-body-${locale}`} label={t("admin.posts.translationBody")}>
           <MarkdownEditor
+            id={`translation-body-${locale}`}
             value={form.body}
             onChange={(body) => setForm((current) => ({ ...current, body }))}
             onUploadImage={uploadInlineImage}
             disabled={loading}
             ariaLabel={t("admin.posts.translationBody")}
           />
-        </div>
+        </FormField>
 
-        {message && <p className="text-sm text-muted-foreground">{message}</p>}
-        <div className="flex flex-wrap gap-2">
+        {message && <Notice className="break-words [overflow-wrap:anywhere]">{message}</Notice>}
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <Button
+            className={MOBILE_ACTION_CLASS}
             disabled={loading}
             onClick={() =>
               run(async () => {
@@ -241,6 +239,7 @@ export function PostTranslationEditor({
             {t("admin.posts.saveTranslationDraft")}
           </Button>
           <Button
+            className={MOBILE_ACTION_CLASS}
             variant="outline"
             disabled={loading || !hasPublishableTitle(form.title)}
             onClick={() =>
@@ -262,6 +261,7 @@ export function PostTranslationEditor({
           </Button>
           {versions.published && (
             <Button
+              className={MOBILE_ACTION_CLASS}
               variant="outline"
               disabled={loading}
               onClick={() =>
@@ -280,6 +280,7 @@ export function PostTranslationEditor({
           )}
           {versions.draft && (
             <Button
+              className={MOBILE_ACTION_CLASS}
               variant="destructive"
               disabled={loading}
               onClick={() =>
