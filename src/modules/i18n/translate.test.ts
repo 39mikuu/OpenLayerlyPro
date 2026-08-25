@@ -76,6 +76,32 @@ describe("translate", () => {
     }
   });
 
+  it("localizes every OPT-17 user-facing surface", () => {
+    const keys = [
+      "login.turnstileLoadFailed",
+      "login.turnstileReload",
+      "admin.files.quarantinedTitle",
+      "admin.files.quarantinedDescription",
+      "admin.files.quarantineReason",
+      "admin.files.quarantinedAt",
+      "admin.tiers.slug",
+      "admin.tiers.pricePlaceholder",
+      "admin.translation.apiKey",
+      "admin.site.themeNames.builtin",
+      "admin.site.themeNames.blog",
+      "admin.site.themeNames.wordpress",
+      "admin.site.colorPresetNames.neutral",
+      "admin.site.colorPresetNames.gofunSeiji",
+      "admin.site.colorPresetNames.layerSeal",
+    ];
+
+    for (const locale of ["zh", "en", "ja"] as const) {
+      for (const key of keys) {
+        expect(translate(locale, key), `${locale} is missing ${key}`).not.toBe(key);
+      }
+    }
+  });
+
   it("returns the key when missing in every locale", () => {
     expect(translate("en", "nope.missing")).toBe("nope.missing");
   });

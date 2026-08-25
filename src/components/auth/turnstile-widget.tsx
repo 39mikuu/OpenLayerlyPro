@@ -2,6 +2,7 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 
+import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 
 const SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
@@ -42,7 +43,7 @@ function loadTurnstileScript(): Promise<void> {
       // 失败后移除残留 script 并清空缓存，允许重试重新注入
       script.remove();
       scriptPromise = null;
-      reject(new Error("Turnstile 脚本加载失败"));
+      reject(new Error("Turnstile script failed to load"));
     };
     document.head.appendChild(script);
   });
@@ -62,6 +63,7 @@ type TurnstileWidgetProps = {
 
 export const TurnstileWidget = forwardRef<TurnstileWidgetHandle, TurnstileWidgetProps>(
   function TurnstileWidget({ siteKey, onToken }, ref) {
+    const t = useT();
     const containerRef = useRef<HTMLDivElement>(null);
     const widgetIdRef = useRef<string | null>(null);
     const onTokenRef = useRef(onToken);
@@ -106,7 +108,7 @@ export const TurnstileWidget = forwardRef<TurnstileWidgetHandle, TurnstileWidget
     if (loadFailed) {
       return (
         <div className="space-y-2">
-          <p className="text-xs text-destructive">人机验证加载失败，请检查网络后重试。</p>
+          <p className="text-xs text-destructive">{t("login.turnstileLoadFailed")}</p>
           <Button
             type="button"
             variant="outline"
@@ -116,7 +118,7 @@ export const TurnstileWidget = forwardRef<TurnstileWidgetHandle, TurnstileWidget
               setAttempt((n) => n + 1);
             }}
           >
-            重新加载人机验证
+            {t("login.turnstileReload")}
           </Button>
         </div>
       );

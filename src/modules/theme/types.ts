@@ -219,18 +219,18 @@ export type ThemeColorVars = {
 export type ThemeColorPreset =
   | {
       id: string;
-      name: string;
+      nameKey: string;
       kind: "none";
     }
   | {
       id: string;
-      name: string;
+      nameKey: string;
       kind: "hue";
       hue: number;
     }
   | {
       id: string;
-      name: string;
+      nameKey: string;
       kind: "vars";
       cssVars: ThemeColorVars;
     };
@@ -244,7 +244,7 @@ export type ThemeConfig = {
 /** 官方主题描述符；只承载表现层，不含业务逻辑。 */
 export type Theme = {
   id: ThemeId;
-  name: string;
+  nameKey: string;
   components: ThemeComponents;
   /** 主题自带的颜色预设（含默认）。 */
   colorPresets: ThemeColorPreset[];

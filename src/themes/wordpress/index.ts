@@ -11,7 +11,7 @@ import { SupporterWall } from "./supporter-wall";
 /** WordPress 经典主题：主栏 + 侧栏的传统博客阅读形态。 */
 export const wordpressTheme: Theme = {
   id: "wordpress",
-  name: "WordPress 经典",
+  nameKey: "admin.site.themeNames.wordpress",
   components: {
     ...builtinTheme.components,
     Chrome,

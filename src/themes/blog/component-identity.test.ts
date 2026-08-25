@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+import { SUPPORTED_LOCALES } from "@/modules/i18n";
+import { translate } from "@/modules/i18n/translate";
 import { buildColorPresetCss, normalizeHue, resolveColorHue } from "@/modules/theme/registry";
 import type { Theme } from "@/modules/theme/types";
 import { blogTheme } from "@/themes/blog";
@@ -69,6 +71,17 @@ describe("real theme color preset and hue behavior", () => {
     ["blog", blogTheme],
   ];
 
+  it("resolves every theme and preset label key in every supported locale", () => {
+    for (const theme of [builtinTheme, blogTheme, wordpressTheme]) {
+      for (const locale of SUPPORTED_LOCALES) {
+        expect(translate(locale, theme.nameKey)).not.toBe(theme.nameKey);
+        for (const preset of theme.colorPresets) {
+          expect(translate(locale, preset.nameKey)).not.toBe(preset.nameKey);
+        }
+      }
+    }
+  });
+
   it.each(hueThemeCases)("resolves every %s named preset", (_themeName, theme) => {
     for (const preset of theme.colorPresets) {
       const config = { colorPreset: preset.id };
@@ -88,9 +101,9 @@ describe("real theme color preset and hue behavior", () => {
   it("uses exact vars for wordpress presets and does not support custom hue", () => {
     expect(wordpressTheme.defaultColorPresetId).toBe("gofun-seiji");
     expect(wordpressTheme.colorVarsFromHue).toBeUndefined();
-    expect(wordpressTheme.colorPresets.map((preset) => [preset.id, preset.name])).toEqual([
-      ["gofun-seiji", "胡粉 × 墨 × 青磁"],
-      ["layer-seal", "層印品牌"],
+    expect(wordpressTheme.colorPresets.map((preset) => [preset.id, preset.nameKey])).toEqual([
+      ["gofun-seiji", "admin.site.colorPresetNames.gofunSeiji"],
+      ["layer-seal", "admin.site.colorPresetNames.layerSeal"],
     ]);
 
     for (const preset of wordpressTheme.colorPresets) {

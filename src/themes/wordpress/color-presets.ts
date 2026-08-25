@@ -119,13 +119,13 @@ const layerSealDark = {
 export const WORDPRESS_COLOR_PRESETS: ThemeColorPreset[] = [
   {
     id: WORDPRESS_DEFAULT_COLOR_PRESET_ID,
-    name: "胡粉 × 墨 × 青磁",
+    nameKey: "admin.site.colorPresetNames.gofunSeiji",
     kind: "vars",
     cssVars: { light: gofunSeijiLight, dark: gofunSeijiDark },
   },
   {
     id: "layer-seal",
-    name: "層印品牌",
+    nameKey: "admin.site.colorPresetNames.layerSeal",
     kind: "vars",
     cssVars: { light: layerSealLight, dark: layerSealDark },
   },

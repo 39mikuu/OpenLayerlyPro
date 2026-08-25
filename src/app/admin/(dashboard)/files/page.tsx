@@ -140,20 +140,18 @@ export default async function AdminFilesPage({
       )}
 
       <section className="space-y-3">
-        <h2 className="text-lg font-semibold">Quarantined files</h2>
-        <p className="text-sm text-muted-foreground">
-          Metadata only. Quarantined bytes cannot be downloaded, previewed, exported, or overridden.
-        </p>
+        <h2 className="text-lg font-semibold">{t("admin.files.quarantinedTitle")}</h2>
+        <p className="text-sm text-muted-foreground">{t("admin.files.quarantinedDescription")}</p>
         <ResponsiveDataView
           table={
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>ID</TableHead>
+                  <TableHead>{t("admin.common.id")}</TableHead>
                   <TableHead>{t("admin.files.name")}</TableHead>
                   <TableHead>{t("admin.files.purpose")}</TableHead>
-                  <TableHead>Reason</TableHead>
-                  <TableHead>Quarantined at</TableHead>
+                  <TableHead>{t("admin.files.quarantineReason")}</TableHead>
+                  <TableHead>{t("admin.files.quarantinedAt")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -166,7 +164,7 @@ export default async function AdminFilesPage({
                     <TableCell>
                       <Badge variant="secondary">{file.purpose}</Badge>
                     </TableCell>
-                    <TableCell>{file.quarantineReason ?? "unknown"}</TableCell>
+                    <TableCell>{file.quarantineReason ?? t("admin.common.unknown")}</TableCell>
                     <TableCell className="text-muted-foreground">
                       {file.quarantinedAt ? formatDateTime(file.quarantinedAt) : "-"}
                     </TableCell>
@@ -179,9 +177,14 @@ export default async function AdminFilesPage({
             <MobileDataCard key={file.id} title={file.originalName} eyebrow={file.id}>
               <div className="flex flex-wrap gap-2">
                 <Badge variant="secondary">{file.purpose}</Badge>
-                <Badge variant="outline">{file.quarantineReason ?? "unknown"}</Badge>
+                <Badge variant="outline">
+                  {file.quarantineReason ?? t("admin.common.unknown")}
+                </Badge>
               </div>
-              <MobileDataField label="Quarantined at" valueClassName="text-muted-foreground">
+              <MobileDataField
+                label={t("admin.files.quarantinedAt")}
+                valueClassName="text-muted-foreground"
+              >
                 {file.quarantinedAt ? formatDateTime(file.quarantinedAt) : "-"}
               </MobileDataField>
             </MobileDataCard>

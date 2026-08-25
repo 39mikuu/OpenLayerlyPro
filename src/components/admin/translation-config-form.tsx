@@ -106,7 +106,7 @@ export function TranslationConfigForm({ initial }: { initial: TranslationAdminVi
         />
       </div>
       <div className="space-y-2">
-        <Label htmlFor="translation-api-key">API Key</Label>
+        <Label htmlFor="translation-api-key">{t("admin.translation.apiKey")}</Label>
         <Input
           id="translation-api-key"
           type="password"

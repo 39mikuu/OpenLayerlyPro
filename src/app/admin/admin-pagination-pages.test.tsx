@@ -31,7 +31,12 @@ vi.mock("@/modules/user", () => ({
 vi.mock("@/modules/i18n/server", () => ({
   getT: async () => (key: string) => {
     if (key === "admin.common.firstPage") return "First page";
+    if (key === "admin.common.unknown") return "不明";
     if (key === "admin.reviews.pending") return "Pending reviews";
+    if (key === "admin.files.quarantinedTitle") return "隔離ファイル";
+    if (key === "admin.files.quarantinedDescription") return "隔離ファイルの説明";
+    if (key === "admin.files.quarantineReason") return "隔離理由";
+    if (key === "admin.files.quarantinedAt") return "隔離日時";
     return key;
   },
 }));
@@ -130,6 +135,29 @@ describe("admin pagination pages", () => {
       await AdminFilesPage({ searchParams: Promise.resolve({}) }),
     );
     expect(firstPage).not.toContain("First page");
+  });
+
+  it("renders quarantined-file labels and unknown reasons through i18n", async () => {
+    mocks.listQuarantinedFilesPage.mockResolvedValueOnce({
+      items: [
+        {
+          id: "file-1",
+          originalName: "unsafe.svg",
+          purpose: "post_attachment",
+          quarantineReason: null,
+          quarantinedAt: new Date("2026-08-25T00:00:00.000Z"),
+        },
+      ],
+      nextCursor: null,
+    });
+
+    const html = renderToStaticMarkup(await AdminFilesPage({ searchParams: Promise.resolve({}) }));
+
+    expect(html).toContain("隔離ファイル");
+    expect(html).toContain("隔離ファイルの説明");
+    expect(html).toContain("隔離理由");
+    expect(html).toContain("隔離日時");
+    expect(html).toContain("不明");
   });
 
   it("shows bounded user-list next and first-page links", async () => {

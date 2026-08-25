@@ -18,7 +18,7 @@ import { SupporterWall } from "./supporter-wall";
  */
 export const blogTheme: Theme = {
   id: "blog",
-  name: "博客主题",
+  nameKey: "admin.site.themeNames.blog",
   components: {
     ...builtinTheme.components,
     Chrome,
