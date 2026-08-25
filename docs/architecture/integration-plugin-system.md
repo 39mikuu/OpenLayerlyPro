@@ -23,6 +23,7 @@ Hub / 聚合发现能力暂不规划；未来只有在真实运营证明需要�
 - Cloudflare Tunnel（compose 部署层）✅
 - Stripe 一次性付款与订阅 ✅
 - OpenAI-compatible Translation provider ✅
+- Google / GitHub OAuth ✅
 - Plausible / Umami public analytics ✅
 
 ### 统一抽象：注册表与状态 ✅
@@ -32,7 +33,7 @@ Hub / 聚合发现能力暂不规划；未来只有在真实运营证明需要�
 - `Integration` 描述符包含稳定 id、类型、异步 `getStatus()` 和可选 `test()`。
 - `IntegrationStatus` 只返回 `configured`、`enabled`、`source`、可选 driver/error 等结构化信号，不包含 secret 或展示文案。
 - 注册表使用稳定顺序收敛状态；单项读取失败降级为 `error`，不让整个系统状态页失败。
-- SMTP、Storage、Turnstile、Stripe、Translation 复用各自 config admin view，不复制密钥判断或启用逻辑；Plausible 与 Umami 从同一 fail-closed public integration parser 派生三态状态。
+- SMTP、Storage、Turnstile、Stripe、Translation、Google OAuth 与 GitHub OAuth 复用各自 config admin view，不复制密钥判断或启用逻辑；Plausible 与 Umami 从同一 fail-closed public integration parser 派生三态状态。
 - Tunnel 是 `deployment` 类型，只读 compose/env 状态，不在应用内启停。
 - `/admin/system` 根据结构化信号组装名称、状态、来源和说明。
 - Plausible 与 Umami 均关闭 provider 自动 pageview，由 nonce inline tracker 复用 Core 的公开路径边界；初始加载和 SPA history 导航只会上报当前公开 pathname + search，私有路径不会进入延迟队列。

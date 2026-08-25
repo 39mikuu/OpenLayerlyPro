@@ -21,12 +21,15 @@ pnpm dev
 pnpm lint
 pnpm format:check
 pnpm check:request-bodies
+pnpm check:auth-before-body
+pnpm check:task-boundaries
 pnpm exec tsc --noEmit
 pnpm test
 pnpm build:migrator
 pnpm build:files-backfill
 pnpm build:admin-reset
 pnpm build:magic-link-rollback
+pnpm build:restore-tools
 pnpm build
 ```
 
@@ -36,8 +39,9 @@ pnpm build
 - `dist/files-backfill.mjs`；
 - `dist/admin-reset.mjs`。
 - `dist/magic-link-rollback.mjs`。
+- `dist/restore-pre-scan.mjs`、`dist/restore-neutralize.mjs`、`dist/restore-converge.mjs`、`dist/restore-schema-check.mjs` 与 `dist/restore-config-key-probe.mjs`。
 
-当前 Dockerfile 会显式构建并复制这些 bundle。当前 CI 已运行 lint、format、request-body、tsc、migration、tests、migrator/rollback bundle build 与 Next build；发布验收不能只依赖 Dockerfile 间接覆盖。
+当前 Dockerfile 会显式构建并复制这些 bundle。当前 CI 已运行 lint、format、request-body、auth-before-body、task-boundary、tsc、migration、tests、运行时 one-off bundle build 与 Next build；发布验收不能只依赖 Dockerfile 间接覆盖。
 
 涉及 PostgreSQL 并发、约束、任务或支付行为时运行：
 

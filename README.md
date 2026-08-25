@@ -4,14 +4,16 @@
 
 OpenLayerlyPro helps independent illustrators and creators run their own membership site: publish posts, offer membership tiers through manual review, Stripe hosted one-time checkout, or recurring Stripe subscriptions, and deliver member-only files from a self-hosted deployment.
 
-Current status: **v1.1.0 was released on 2026-07-17**. Acceptance evidence is archived in `docs/releases/v1.1.0-release-notes.md`; v1.2 planning is tracked in `docs/release-v1.2-plan.md`. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, payments, and backups.
+Current release: **v1.1.0**, published on 2026-07-17. Acceptance evidence is archived in `docs/releases/v1.1.0-release-notes.md`. The v1.2 implementation milestones and acceptance-preparation work have merged into `main`, but no v1.2 tag or GitHub Release has been published; the remaining release gates are tracked in `docs/release-v1.2-plan.md`. The project is intended for technical self-hosters who can operate Docker Compose, PostgreSQL, SMTP, storage, payments, and backups.
 
 ## 核心特性
 
 - 开源自托管
 - 单画师 / 单创作者会员站
 - 管理员邮箱 + 密码登录
-- 粉丝邮箱验证码登录与防定向锁死限流
+- 粉丝邮箱验证码登录、邮件 Magic Link，以及可选 Google / GitHub OAuth
+- 粉丝登录的 Turnstile、一次性凭据、重放保护与防定向锁死限流
+- 会员等级白名单权益（Membership Bundle），按当前等级实时解析并保持既有等级鉴权
 - 人工审核收银台
 - 收款码配置、付款截图上传与审核
 - Stripe 托管一次性 Checkout（可选，卡支付）
@@ -48,7 +50,7 @@ Current status: **v1.1.0 was released on 2026-07-17**. Acceptance evidence is ar
 - 多画师入驻平台
 - 内容广场或推荐流
 - 评论、点赞、收藏、关注
-- 粉丝密码注册（Google / GitHub OAuth 作为后续 Core Auth 候选，不属于当前已实现能力）
+- 粉丝密码注册（当前粉丝入口为邮箱验证码、邮件 Magic Link，以及可选 Google / GitHub OAuth）
 - 第三方插件 runtime、插件市场或主题市场
 - 完整视频媒体处理（封面、时长、缩略图、转码、HLS/DASH、multipart Range）
 - 多实例共享限流与高可用编排
@@ -83,7 +85,7 @@ http://localhost:3000
 
 ```txt
 创作者初始化站点 → 配置 SMTP / 存储 → 配置收款码和/或 Stripe → 创建会员等级 → 发布会员作品
-粉丝邮箱验证码登录 → 选择会员等级 → 上传付款截图、进入一次性 Checkout，或创建 Stripe 订阅
+粉丝通过邮箱验证码、Magic Link 或 Google/GitHub OAuth 登录 → 选择会员等级 → 上传付款截图、进入一次性 Checkout，或创建 Stripe 订阅
 创作者人工审核，或签名 webhook 持久化并由 dispatcher 处理 → 系统事务化开通当期会员并入队邮件
 后续订阅 invoice 按 Stripe 实际周期授予；退款/拒付只反转对应付款期 → 粉丝按权限访问和下载内容
 ```
@@ -151,7 +153,7 @@ docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | Turnstile 密钥对 |
 | `CONFIG_ENCRYPTION_KEY` / `CONFIG_ENCRYPTION_KEY_FILE` | 后台敏感配置加密根密钥 |
 
-Stripe and AI translation provider settings are configured in the admin settings UI and stored encrypted. Do not place provider API keys or webhook secrets in `NEXT_PUBLIC_*` variables.
+Stripe, Google/GitHub OAuth, and AI translation provider settings are configured in the admin settings UI and stored encrypted. Do not place provider API keys, OAuth client secrets, or webhook secrets in `NEXT_PUBLIC_*` variables.
 
 ## 安全配置
 
@@ -266,8 +268,14 @@ pnpm test
 pnpm lint
 pnpm format:check
 pnpm check:request-bodies
+pnpm check:auth-before-body
+pnpm check:task-boundaries
 pnpm exec tsc --noEmit
 pnpm build:migrator
+pnpm build:files-backfill
+pnpm build:admin-reset
+pnpm build:magic-link-rollback
+pnpm build:restore-tools
 pnpm build
 ```
 

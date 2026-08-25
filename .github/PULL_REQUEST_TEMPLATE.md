@@ -18,7 +18,15 @@
 - [ ] `pnpm test`
 - [ ] `pnpm lint`
 - [ ] `pnpm format:check`
+- [ ] `pnpm check:request-bodies`
+- [ ] `pnpm check:auth-before-body`
+- [ ] `pnpm check:task-boundaries`
 - [ ] `pnpm exec tsc --noEmit`
+- [ ] `pnpm build:migrator`
+- [ ] `pnpm build:files-backfill`
+- [ ] `pnpm build:admin-reset`
+- [ ] `pnpm build:magic-link-rollback`
+- [ ] `pnpm build:restore-tools`
 - [ ] `pnpm build`
 
 ## Notes
