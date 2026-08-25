@@ -1,6 +1,6 @@
 # Core 单站系统架构
 
-> ✅ 已实现｜▶ v1.0 当前硬化｜🚧 后续计划
+> ✅ 已实现｜▶ 当前发布准备｜🚧 后续计划
 
 ## 定位
 
@@ -12,13 +12,13 @@ Core 负责且仅 Core 负责：
 
 | 职责 | 说明 | 状态 |
 |---|---|---|
-| 会员 | 等级、按笔时间窗、active/suspended/revoked 生命周期、按 user 串行授予 | ✅ |
+| 会员 | 等级、按笔时间窗、active/suspended/revoked 生命周期、按 user 串行授予、当前 tier 白名单权益 | ✅ |
 | 内容 | 作品、定时发布、分类/标签、Markdown、内联媒体、public/login/member 权限、多语言版本 | ✅ |
 | 文件 | 有界上传、权威 MIME、图片重编码/quarantine、local/S3、Range、引用与删除生命周期、上传 orphan journal | ✅ |
 | 下载鉴权 | 所有非公开字节逐请求鉴权、日志与限流；公开 S3 只按真实公开授权签名 | ✅ |
 | 付款与订阅 | 人工审核、Stripe 一次性/订阅、手动提醒、退款/拒付、provider inbox/dispatch/reconcile | ✅ |
-| Session / Auth | 管理员会话、粉丝验证码、Turnstile、可信 IP、S4 rate-limit/fence | ✅ |
-| 配置中心 | 加密 `app_settings` 与 SMTP/Turnstile/Storage/Upload/Stripe/Translation 管理 | ✅ |
+| Session / Auth | 管理员会话、粉丝验证码、Magic Link、Google/GitHub OAuth、Turnstile、可信 IP、S4 rate-limit/fence | ✅ |
+| 配置中心 | 加密 `app_settings`、revision/CAS 与 SMTP/Turnstile/Storage/Upload/Stripe/OAuth/Translation 管理 | ✅ |
 | 审计与任务 | `audit_events` 因果链、`app_events`、durable task/outbox、lease/fencing/retry | ✅ |
 | 全局安全响应头 | per-request nonce CSP、动态来源与 legacy footer 迁移 | ✅ #86 |
 | 恢复一致性 | archive integrity、schema probe、任务中和、文件 backfill 与 DB↔存储收敛 | ✅ #87 |
@@ -34,7 +34,7 @@ src/
 ├── components/              # admin 与交互组件
 ├── themes/                  # 内置主题；只消费 Core view-model
 ├── modules/
-│   ├── auth/                # login code、admin login、session、rate-limit identity
+│   ├── auth/                # login code、Magic Link、OAuth、admin login、session、rate-limit identity
 │   ├── content/             # 发布、分页、翻译、Markdown/inline refs
 │   ├── membership/          # 生命周期、grant 串行化、有效会员投影
 │   ├── payment/             # 人工付款、Stripe、订阅、refund/dispute/reconcile
@@ -61,7 +61,7 @@ src/
 6. **存储位置按文件记录**：历史文件按 `storageDriver` 与 bucket 读取；切换当前 driver 不迁移旧文件。
 7. **事务外不做外部 I/O**：SMTP、Stripe/S3 网络调用不得占用数据库事务或 advisory lock；使用 claim/fence 分阶段提交。
    文件上传在对象写入前原子创建 `storage_upload_journal` 与 cleanup task；成功时 `files` 行与 journal 消费同事务提交。cleanup 删除无精确引用的对象后仍保留 tombstone 并低频重复幂等删除，因为 S3-compatible provider 没有统一可证明的最晚提交上界；只有正常上传事务消费 journal 或发现精确 `files` 引用时才移除。删除失败耗尽单轮重试的 task 会在冷却后自动重新武装。失败上传会因此永久占用一行 journal/task 并周期性调用 provider DELETE，运维需监控 maintenance backlog 与存储 API 配额。
-8. **敏感信息边界明确**：secret、token、验证码明文和原始 provider 错误不得进入日志、非授权管理响应或可公开输出；邮件任务 `payload_json` 属于敏感数据库数据，当前仍保存收件人地址，必须按用户数据保护其数据库访问、备份与留存。
+8. **敏感信息边界明确**：secret、token、验证码明文和原始 provider 错误不得进入日志、非授权管理响应或可公开输出；事务邮件任务 `payload_json` 只保存业务引用，不保存 `to` 收件人地址，worker 在发送时解析最新邮箱与 locale。任务表及其业务引用仍须按敏感用户数据保护数据库访问、备份与留存。
 9. **单实例边界明确**：当前限流与 dispatcher 以单 app 实例为目标；多实例共享 limiter/调度属于 Phase 10。
 10. **任务模块入口明确**：业务事务只从 `tasks/enqueue` 入队；dispatcher 只从 `tasks/runtime` 领取、续租和终结；管理重试与运维聚合分别使用 `tasks/admin`、`tasks/operational-snapshot`。禁止通过 `tasks/index` 桶入口跨越这些边界，CI 由 `check:task-boundaries` 阻止回退。
 
@@ -75,6 +75,8 @@ src/
 - source-scoped pre-comparison hard budget 限制昂贵比较，但不能让第三方只凭受害者 email 锁死正确码。
 - Turnstile、request-code、verify-code 和 admin-login 都使用可信 resolved identity 或各操作独立的 unresolved emergency bucket。
 - 登录码任务在短事务内 claim/fence，SMTP 在事务与 advisory lock 之外执行；stale task 成功 no-op。
+- Magic Link 只存 keyed hash；GET 仅展示不消费，显式确认才在同一事务内原子消费 token、创建/更新用户并插入 session。protocol-v2 rollout 通过独立 intake/delivery ledger、lease 与角色边界 fence 控制。
+- Google/GitHub OAuth 使用 PKCE S256、单次 state、浏览器绑定与站内 redirect allowlist；provider identity 优先，只有 verified email 可自动绑定。provider 故障不影响验证码和 Magic Link fallback。
 
 权威语义见 [../handoff/harden-s4-auth-rate-limiting.md](../handoff/harden-s4-auth-rate-limiting.md)。底层 limiter 仍是进程内实现；v1.0 不承诺多副本全局计数。
 
@@ -82,7 +84,7 @@ src/
 
 - 根密钥优先级：`CONFIG_ENCRYPTION_KEY` 环境变量 > `CONFIG_ENCRYPTION_KEY_FILE` 文件；Docker 首启可生成权限 600 的持久化文件。
 - `app_settings` 以 AES-256-GCM 整组加密；密钥错误、密文损坏或认证失败均抛错，不返回伪默认值。
-- SMTP、Turnstile、Storage、Upload 解析 DB ＞ env ＞ default；Stripe 与 Translation 使用后台加密配置并默认关闭。
+- SMTP、Turnstile、Storage、Upload 解析 DB ＞ env ＞ default；Stripe、Google/GitHub OAuth 与 Translation 使用后台加密配置并默认关闭。
 - 管理 API 只返回掩码/是否已设置，不返回 secret。
 - 配置加密根密钥与 `SESSION_SECRET` 用途不同，恢复时必须分别管理。
 

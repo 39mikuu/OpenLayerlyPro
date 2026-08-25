@@ -90,7 +90,7 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 - keyset 分页、流式上传、S3 multipart。
 - 视频附件、local/S3 单段 Range 与权限代理。
 
-真实 Stripe、local/S3、升级和恢复统一归入 #88 验收。
+真实 Stripe、local/S3、升级和恢复已在 #88 的 v1.0.0 exact-head 验收中完成；后续版本仍须按各自发布门槛重新绑定当前证据。
 
 ## v1.0 安全硬化与发布 ✅
 
@@ -108,11 +108,11 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 - 后续扩展优先以官方内置能力交付：主题、Integration adapter、邮件、SEO、统计、内容组织与运营工具都随 Core 版本一起维护和验收。
 - 若出现强需求，先以明确的 Core/Integration 功能设计进入路线图，不引入第三方任意扩展点。
 
-**v1.2 主线**：
+**v1.2 已交付范围（正式发布待单独判断）**：
 
-- Core Auth：邮件 Magic Link、Google OAuth、GitHub OAuth；仅用于粉丝/会员，保留邮箱验证码和管理员邮箱密码登录。
-- Membership：在 `membership_tiers` 上增加白名单权益，并保持现有内容与文件鉴权边界。
-- 债务包：处理 G5 CI Actions 警告和 G7 Plausible SPA tracking parity。
+- Core Auth：邮件 Magic Link、Google OAuth、GitHub OAuth 已用于粉丝/会员；保留邮箱验证码和管理员邮箱密码主入口。
+- Membership：`membership_tiers` 白名单权益已落地，并保持现有内容与文件鉴权边界。
+- 债务包：G5 CI Actions 警告和 G7 Plausible SPA tracking parity 已关闭。
 
 具体安全约束、测试要求和范围外项目见 [v1.2 计划书](./release-v1.2-plan.md)。
 

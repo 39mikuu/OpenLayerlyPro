@@ -26,15 +26,19 @@ Run the baseline checks before opening a PR:
 pnpm lint
 pnpm format:check
 pnpm check:request-bodies
+pnpm check:auth-before-body
+pnpm check:task-boundaries
 pnpm exec tsc --noEmit
 pnpm test
 pnpm build:migrator
 pnpm build:files-backfill
 pnpm build:admin-reset
+pnpm build:magic-link-rollback
+pnpm build:restore-tools
 pnpm build
 ```
 
-`pnpm build` only builds the Next application. It does not replace the explicit one-off artifact builds. Recovery/upgrade work must verify that `dist/migrate.mjs`, `dist/files-backfill.mjs`, and `dist/admin-reset.mjs` are produced and included in the target image.
+`pnpm build` only builds the Next application. It does not replace the explicit one-off artifact builds. Recovery/upgrade work must verify that `dist/migrate.mjs`, `dist/files-backfill.mjs`, `dist/admin-reset.mjs`, `dist/magic-link-rollback.mjs`, and the five `dist/restore-*.mjs` tools are produced and included in the target image.
 
 Security/payment/file/task changes that depend on PostgreSQL behavior must also run the real database suite:
 

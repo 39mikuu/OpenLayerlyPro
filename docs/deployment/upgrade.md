@@ -348,5 +348,6 @@ Use `--yes` only in a reviewed recovery command.
 - Store archives off-host and encrypted; they may contain member files and payment proofs.
 - Monitor non-zero backup/upgrade exits and maintain adequate disk headroom for image builds and remediated objects.
 - A backup that has never been restored is not a verified recovery plan.
-- For v1.0 release, #88 requires current local and real/compatible S3 restore
-  drills; historical baseline drills alone are insufficient.
+- The v1.0 #88 gate completed local and real/compatible S3 restore drills on
+  that exact release build. A later upgrade still requires fresh drills bound
+  to its own target build; the historical #88 result is not sufficient.

@@ -18,8 +18,8 @@
 
 ## 已完成
 
-- **G5（v1.2 M4 债务包，待对应 PR 合并后归档）**：CI、restore drills 与 Pages workflows 的第三方 actions 已升级到当前 Node 24-based supported major，并全部使用带准确版本注释的完整 immutable commit SHA。实现与 exact-head CI 证据将在 M4 PR 创建后回填。
-- **G7（v1.2 M4 债务包，待对应 PR 合并后归档）**：Plausible 已关闭默认自动 pageview，改由 nonce inline tracker 按共享公开路径边界处理 initial load 与 SPA history 导航；后台 Integration status registry 已补齐与 Umami 相同的三态及 invalid stored error 语义。实现与浏览器 CI 证据将在 M4 PR 创建后回填。
+- **G5（v1.2 M4 债务包）**：随 PR #172 合并。CI、restore drills 与 Pages workflows 的第三方 actions 已升级到当前 Node 24-based supported major，并全部使用带准确版本注释的完整 immutable commit SHA；PR #172 的 exact-head CI 已执行完整工作流验证，Pages 的 path-filtered 部署 action pins 通过 GitHub tag/API 独立核验。
+- **G7（v1.2 M4 债务包）**：随 PR #172 合并。Plausible 已关闭默认自动 pageview，改由 nonce inline tracker 按共享公开路径边界处理 initial load 与 SPA history 导航；后台 Integration status registry 已补齐与 Umami 相同的三态及 invalid stored error 语义，并由真实 PostgreSQL、production build 与隔离 Chromium CSP 回归验证。
 
 - **G2（label-only 关闭）**：Translation `monthlyCharLimit` 已在后台三语文案和 `docs/architecture/config-center.md` 中明确标为「仅记录，不限制」。本地用量账本与强制预算不进入 v1.2；运维使用 provider 侧 hard limit/alert。
 

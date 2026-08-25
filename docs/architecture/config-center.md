@@ -1,6 +1,6 @@
 # 配置中心（Config Center）
 
-配置中心把运行时设置放入后台并加密落库，让运维不必编辑 `.env` 或重启容器即可修改常用集成。当前已实现 SMTP、Turnstile、Storage、Upload、Stripe 与 Translation 配置组。
+配置中心把运行时设置放入后台并加密落库，让运维不必编辑 `.env` 或重启容器即可修改常用集成。当前已实现 SMTP、Turnstile、Storage、Upload、Stripe、Google OAuth、GitHub OAuth 与 Translation 配置组。
 
 ## 数据模型
 
@@ -36,6 +36,7 @@
 - `storage.ts`：DB ＞ env ＞ default，支持 local / S3；历史文件仍按行内 driver/bucket。
 - `upload.ts`：内容附件上限直接按 DB ＞ env；付款凭证/二维码上限按 DB 请求值与 env hard ceiling 取较小值。
 - `stripe.ts`：后台加密配置，默认 disabled；secret key/webhook secret 必须完整后才能启用。
+- `oauth.ts`：Google/GitHub 分别使用独立 DB-only 加密配置组，默认 disabled；Client ID + Client Secret 完整后才能启用，登录页读取失败时只隐藏对应 provider 按钮。
 - `translation.ts`：后台加密配置，默认 disabled；provider/model/endpoint/API key 完整后才 configured。
 
 消费者只调用 config 模块，不能在 mail、storage、payment、login page、Integration status 或 admin UI 中复制配置优先级。
@@ -96,6 +97,14 @@
 - secret key/webhook secret 不返回前端；enabled 且配置不完整时拒绝保存/启用。
 - Integration registry 提供结构化状态和 Stripe 连接测试。
 - 一次性 Checkout、订阅 Checkout、webhook 与 reconcile 只读取 `getStripeConfig()`。
+
+## Google / GitHub OAuth ✅
+
+- UI 位于 `/admin/settings` 的两个独立 OAuth 配置卡片；API 分别为 `/api/admin/config/oauth/google` 与 `/api/admin/config/oauth/github`，配置组分别为 `oauth_google` 与 `oauth_github`。
+- 两组均保存 `enabled`、Client ID 与 Client Secret；Secret 只返回 set flag，启用时缺少任一凭据会拒绝保存。
+- 配置是 DB-only、默认关闭；clear 保留 revision tombstone，不回落到环境变量或隐式默认凭据。
+- Integration registry 暴露结构化 configured/enabled/source 状态，不提供伪造的连接测试，也不返回 secret。
+- 登录页按 provider 独立 fail closed：解密或解析失败只隐藏对应 OAuth 按钮，邮箱验证码、Magic Link 与管理员邮箱密码入口仍可用。
 
 ## Translation ✅
 
