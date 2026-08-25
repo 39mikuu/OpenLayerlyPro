@@ -10,13 +10,14 @@ export const dynamic = "force-dynamic";
 export default async function AdminSitePage() {
   const site = await readAdminSiteInfo();
   const theme = await getActiveTheme();
+  const t = await getT();
   const themeOptions = await Promise.all(
     Object.values(themes).map(async (option) => {
       const config = await getThemeConfig(option);
       return {
         id: option.id,
-        name: option.name,
-        presets: option.colorPresets.map((p) => ({ id: p.id, name: p.name })),
+        name: t(option.nameKey),
+        presets: option.colorPresets.map((p) => ({ id: p.id, name: t(p.nameKey) })),
         supportsCustomColor: typeof option.colorVarsFromHue === "function",
         initial: {
           colorPreset: config.colorPreset,
@@ -28,7 +29,6 @@ export default async function AdminSitePage() {
       };
     }),
   );
-  const t = await getT();
 
   return (
     <div className="space-y-6">

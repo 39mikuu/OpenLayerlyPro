@@ -5,6 +5,7 @@ import { handleApiError, jsonError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
 import { requireAdmin } from "@/modules/auth/session";
+import { getT } from "@/modules/i18n/server";
 import type { Theme, ThemeId } from "@/modules/theme";
 import { applyThemeUpdate, getActiveTheme, getThemeConfig, themes } from "@/modules/theme";
 
@@ -14,13 +15,13 @@ function isThemeId(value: string): value is ThemeId {
   return Object.hasOwn(themes, value);
 }
 
-async function themeOption(theme: Theme) {
+async function themeOption(theme: Theme, t: Awaited<ReturnType<typeof getT>>) {
   const config = await getThemeConfig(theme);
   return {
     id: theme.id,
-    name: theme.name,
+    name: t(theme.nameKey),
     // 只返回预设 id/name，不暴露完整 CSS 变量 map。
-    presets: theme.colorPresets.map((p) => ({ id: p.id, name: p.name })),
+    presets: theme.colorPresets.map((p) => ({ id: p.id, name: t(p.nameKey) })),
     supportsCustomColor: typeof theme.colorVarsFromHue === "function",
     colorPreset: config.colorPreset,
     customHue: config.customHue,
@@ -31,9 +32,10 @@ export async function GET() {
   try {
     await requireAdmin();
     const active = await getActiveTheme();
+    const t = await getT();
     return jsonOk({
       activeTheme: active.id,
-      themes: await Promise.all(Object.values(themes).map(themeOption)),
+      themes: await Promise.all(Object.values(themes).map((theme) => themeOption(theme, t))),
     });
   } catch (err) {
     return handleApiError(err);

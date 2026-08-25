@@ -39,7 +39,7 @@ function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) 
 function DialogContent({
   className,
   children,
-  closeLabel = "Close",
+  closeLabel,
   finalFocus,
   showCloseButton = true,
   ...props
@@ -47,6 +47,9 @@ function DialogContent({
   closeLabel?: React.ReactNode;
   showCloseButton?: boolean;
 }) {
+  if (showCloseButton && closeLabel === undefined) {
+    throw new Error("DialogContent requires closeLabel when the close button is visible");
+  }
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -82,11 +85,11 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
 
 function DialogFooter({
   className,
-  showCloseButton = false,
+  closeLabel,
   children,
   ...props
 }: React.ComponentProps<"div"> & {
-  showCloseButton?: boolean;
+  closeLabel?: React.ReactNode;
 }) {
   return (
     <div
@@ -98,8 +101,10 @@ function DialogFooter({
       {...props}
     >
       {children}
-      {showCloseButton && (
-        <DialogPrimitive.Close render={<Button variant="outline" />}>Close</DialogPrimitive.Close>
+      {closeLabel !== undefined && (
+        <DialogPrimitive.Close render={<Button variant="outline" />}>
+          {closeLabel}
+        </DialogPrimitive.Close>
       )}
     </div>
   );

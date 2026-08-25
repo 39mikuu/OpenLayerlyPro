@@ -19,7 +19,7 @@ import { Tiers } from "./tiers";
 /** 内置主题：Phase 5 的第一个标准主题，作为主题数据契约的参考实现。 */
 export const builtinTheme: Theme = {
   id: "builtin",
-  name: "内置主题",
+  nameKey: "admin.site.themeNames.builtin",
   components: {
     Chrome,
     Home,

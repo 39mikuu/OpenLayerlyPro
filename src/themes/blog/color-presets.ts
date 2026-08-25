@@ -7,10 +7,10 @@ export { colorVarsFromHue } from "@/themes/builtin/color-presets";
  * `ink` 的 hue=null 表示零覆盖，作为博客主题的默认阅读配色。
  */
 export const BLOG_COLOR_PRESETS: ThemeColorPreset[] = [
-  { id: "ink", name: "墨", kind: "none" },
-  { id: "indigo", name: "靛蓝", kind: "hue", hue: 275 },
-  { id: "teal", name: "青", kind: "hue", hue: 190 },
-  { id: "amber", name: "琥珀", kind: "hue", hue: 70 },
+  { id: "ink", nameKey: "admin.site.colorPresetNames.ink", kind: "none" },
+  { id: "indigo", nameKey: "admin.site.colorPresetNames.indigo", kind: "hue", hue: 275 },
+  { id: "teal", nameKey: "admin.site.colorPresetNames.teal", kind: "hue", hue: 190 },
+  { id: "amber", nameKey: "admin.site.colorPresetNames.amber", kind: "hue", hue: 70 },
 ];
 
 export const BLOG_DEFAULT_COLOR_PRESET_ID = "ink";

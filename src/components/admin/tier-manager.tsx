@@ -81,13 +81,13 @@ function TierEditor({
           <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         </div>
         <div className="space-y-1">
-          <Label>slug</Label>
+          <Label>{t("admin.tiers.slug")}</Label>
           <Input value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} />
         </div>
         <div className="space-y-1">
           <Label>{t("admin.tiers.price")}</Label>
           <Input
-            placeholder="¥29 / 月"
+            placeholder={t("admin.tiers.pricePlaceholder")}
             value={form.priceLabel}
             onChange={(e) => setForm({ ...form, priceLabel: e.target.value })}
           />

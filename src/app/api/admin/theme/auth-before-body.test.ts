@@ -19,6 +19,7 @@ vi.mock("@/lib/request-body", async (importOriginal) => {
   };
 });
 vi.mock("@/modules/auth/session", () => ({ requireAdmin: mocks.requireAdmin }));
+vi.mock("@/modules/i18n/server", () => ({ getT: vi.fn() }));
 vi.mock("@/modules/theme", () => ({
   applyThemeUpdate: mocks.applyThemeUpdate,
   getActiveTheme: mocks.getActiveTheme,
@@ -26,8 +27,10 @@ vi.mock("@/modules/theme", () => ({
   themes: {
     builtin: {
       id: "builtin",
-      name: "内置主题",
-      colorPresets: [{ id: "neutral", name: "中性", hue: null }],
+      nameKey: "admin.site.themeNames.builtin",
+      colorPresets: [
+        { id: "neutral", nameKey: "admin.site.colorPresetNames.neutral", kind: "none" },
+      ],
       colorVarsFromHue: vi.fn(),
     },
   },

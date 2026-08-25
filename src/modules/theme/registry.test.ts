@@ -20,7 +20,7 @@ import {
 vi.mock("@/themes/builtin", () => ({
   builtinTheme: {
     id: "builtin",
-    name: "内置主题",
+    nameKey: "admin.site.themeNames.builtin",
     components: {
       Chrome: () => null,
       Home: () => null,
@@ -28,8 +28,8 @@ vi.mock("@/themes/builtin", () => ({
       PostDetail: () => null,
     },
     colorPresets: [
-      { id: "neutral", name: "中性", kind: "none" },
-      { id: "blue", name: "蓝", kind: "hue", hue: 256 },
+      { id: "neutral", nameKey: "admin.site.colorPresetNames.neutral", kind: "none" },
+      { id: "blue", nameKey: "admin.site.colorPresetNames.blue", kind: "hue", hue: 256 },
     ],
     defaultColorPresetId: "neutral",
     colorVarsFromHue: (hue: number) => ({
@@ -42,7 +42,7 @@ vi.mock("@/themes/builtin", () => ({
 vi.mock("@/themes/blog", () => ({
   blogTheme: {
     id: "blog",
-    name: "博客主题",
+    nameKey: "admin.site.themeNames.blog",
     components: {
       Chrome: () => null,
       Home: () => null,
@@ -50,8 +50,8 @@ vi.mock("@/themes/blog", () => ({
       PostDetail: () => null,
     },
     colorPresets: [
-      { id: "ink", name: "墨", kind: "none" },
-      { id: "indigo", name: "靛蓝", kind: "hue", hue: 275 },
+      { id: "ink", nameKey: "admin.site.colorPresetNames.ink", kind: "none" },
+      { id: "indigo", nameKey: "admin.site.colorPresetNames.indigo", kind: "hue", hue: 275 },
     ],
     defaultColorPresetId: "ink",
     colorVarsFromHue: (hue: number) => ({
@@ -64,7 +64,7 @@ vi.mock("@/themes/blog", () => ({
 vi.mock("@/themes/wordpress", () => ({
   wordpressTheme: {
     id: "wordpress",
-    name: "WordPress 经典",
+    nameKey: "admin.site.themeNames.wordpress",
     components: {
       Chrome: () => null,
       Home: () => null,
@@ -74,7 +74,7 @@ vi.mock("@/themes/wordpress", () => ({
     colorPresets: [
       {
         id: "gofun-seiji",
-        name: "胡粉 × 墨 × 青磁",
+        nameKey: "admin.site.colorPresetNames.gofunSeiji",
         kind: "vars",
         cssVars: {
           light: { "--primary": "oklch(0.52 0.09 195)", "--wordpress-seal": "oklch(0.53 0.17 18)" },
@@ -83,7 +83,7 @@ vi.mock("@/themes/wordpress", () => ({
       },
       {
         id: "layer-seal",
-        name: "層印品牌",
+        nameKey: "admin.site.colorPresetNames.layerSeal",
         kind: "vars",
         cssVars: {
           light: { "--primary": "oklch(0.52 0.09 195)", "--wordpress-seal": "oklch(0.53 0.17 18)" },
