@@ -11,7 +11,7 @@
 ```text
 v1.1.0 发布完成 ✅
 → M1 邮件 Magic Link ✅（#168；后续安全边界 #183 / #197）
-→ M2 Google / GitHub OAuth ✅（#170；粉丝/会员，管理员仍邮箱 + 密码）
+→ M2 Google / GitHub OAuth ✅（#170；主要面向粉丝/会员；已有管理员可经公共流程匹配，邮箱 + 密码仍是管理员专用主入口）
 → M3 Membership Bundle ✅（#171；`membership_tiers` 白名单 entitlements，Core-only）
 → M4 债务包 ✅（#172；G5 CI actions、G7 Plausible parity；dispatcher baseline 回归保持绿）
 → M5 验收收尾与发布准备 ✅（#174；正式发布待单独判断，不包含 G3 legacy removal）
@@ -32,8 +32,8 @@ v1.1.0 发布完成 ✅
 
 ## Phase 2：配置中心 ✅
 
-- SMTP、Turnstile、Storage、Upload、Stripe、Translation 后台配置。
-- 加密配置采用 DB override 与 env fallback 的统一读取入口。
+- SMTP、Turnstile、OAuth、Storage、Upload、Stripe、Translation 后台配置。
+- SMTP、Turnstile、Storage、Upload 通过统一入口解析 DB override 与 env fallback；OAuth、Stripe、Translation 使用仅后台加密配置并默认关闭。
 - 内容附件上限直接 DB > env；付款凭证/二维码上限不能高于 env ceiling。
 
 详见 [配置中心](./architecture/config-center.md)。
@@ -48,7 +48,7 @@ v1.1.0 发布完成 ✅
 ## Phase 4：Integration v1 基座 ✅
 
 - 第一方 Integration 注册表、状态页与统一测试契约。
-- SMTP、Storage、Stripe、Turnstile、Tunnel、Translation 状态收口。
+- SMTP、Storage、Stripe、Turnstile、Tunnel、Translation、Google/GitHub OAuth 与 Plausible/Umami 状态收口。
 - Stripe payment adapter 与 Translation provider 已存在，但它们是应用内第一方能力，不是通用第三方 Plugin runtime。
 
 **⏸ 后续：** 只在出现真实统一需求时再评估通用启停开关；不规划第三方集成生命周期。
@@ -110,7 +110,7 @@ ADR 与 handoff 是设计和实施时点记录；当前行为以代码、archite
 
 **v1.2 已交付范围（正式发布待单独判断）**：
 
-- Core Auth：邮件 Magic Link、Google OAuth、GitHub OAuth 已用于粉丝/会员；保留邮箱验证码和管理员邮箱密码主入口。
+- Core Auth：邮件 Magic Link、Google OAuth、GitHub OAuth 已主要用于粉丝/会员；公共 OAuth 可按 [ADR-0012](./adr/0012-oauth-fan-login.md) 认证已有管理员账号，但不提供管理员专用 OAuth 页面，邮箱 + 密码仍是管理员专用主入口；邮箱验证码保留。
 - Membership：`membership_tiers` 白名单权益已落地，并保持现有内容与文件鉴权边界。
 - 债务包：G5 CI Actions 警告和 G7 Plausible SPA tracking parity 已关闭。
 

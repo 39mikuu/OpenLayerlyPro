@@ -17,7 +17,7 @@ Core 负责且仅 Core 负责：
 | 文件 | 有界上传、权威 MIME、图片重编码/quarantine、local/S3、Range、引用与删除生命周期、上传 orphan journal | ✅ |
 | 下载鉴权 | 所有非公开字节逐请求鉴权、日志与限流；公开 S3 只按真实公开授权签名 | ✅ |
 | 付款与订阅 | 人工审核、Stripe 一次性/订阅、手动提醒、退款/拒付、provider inbox/dispatch/reconcile | ✅ |
-| Session / Auth | 管理员会话、粉丝验证码、Magic Link、Google/GitHub OAuth、Turnstile、可信 IP、S4 rate-limit/fence | ✅ |
+| Session / Auth | 管理员邮箱密码与会话、粉丝验证码/Magic Link、公共 Google/GitHub OAuth（可按 [ADR-0012](../adr/0012-oauth-fan-login.md) 绑定已有管理员）、Turnstile、可信 IP、S4 rate-limit/fence | ✅ |
 | 配置中心 | 加密 `app_settings`、revision/CAS 与 SMTP/Turnstile/Storage/Upload/Stripe/OAuth/Translation 管理 | ✅ |
 | 审计与任务 | `audit_events` 因果链、`app_events`、durable task/outbox、lease/fencing/retry | ✅ |
 | 全局安全响应头 | per-request nonce CSP、动态来源与 legacy footer 迁移 | ✅ #86 |
@@ -61,7 +61,7 @@ src/
 6. **存储位置按文件记录**：历史文件按 `storageDriver` 与 bucket 读取；切换当前 driver 不迁移旧文件。
 7. **事务外不做外部 I/O**：SMTP、Stripe/S3 网络调用不得占用数据库事务或 advisory lock；使用 claim/fence 分阶段提交。
    文件上传在对象写入前原子创建 `storage_upload_journal` 与 cleanup task；成功时 `files` 行与 journal 消费同事务提交。cleanup 删除无精确引用的对象后仍保留 tombstone 并低频重复幂等删除，因为 S3-compatible provider 没有统一可证明的最晚提交上界；只有正常上传事务消费 journal 或发现精确 `files` 引用时才移除。删除失败耗尽单轮重试的 task 会在冷却后自动重新武装。失败上传会因此永久占用一行 journal/task 并周期性调用 provider DELETE，运维需监控 maintenance backlog 与存储 API 配额。
-8. **敏感信息边界明确**：secret、token、验证码明文和原始 provider 错误不得进入日志、非授权管理响应或可公开输出；事务邮件任务 `payload_json` 只保存业务引用，不保存 `to` 收件人地址，worker 在发送时解析最新邮箱与 locale。任务表及其业务引用仍须按敏感用户数据保护数据库访问、备份与留存。
+8. **敏感信息边界明确**：secret、token、验证码明文和原始 provider 错误不得进入日志、非授权管理响应或可公开输出。`kind='email'` 的业务事务邮件任务只保存业务引用，不保存 `to` 收件人地址，worker 在发送时解析最新邮箱与 locale。`auth.login_code_email` / `auth.magic_link_email` 保存认证记录 ID、加密的 code/token 和可选请求 locale，不保存明文收件人、code 或 token；handler 在发送前从认证记录解析当前邮箱并解密一次性 secret。任务表及其业务引用仍须按敏感用户数据保护数据库访问、备份与留存。
 9. **单实例边界明确**：当前限流与 dispatcher 以单 app 实例为目标；多实例共享 limiter/调度属于 Phase 10。
 10. **任务模块入口明确**：业务事务只从 `tasks/enqueue` 入队；dispatcher 只从 `tasks/runtime` 领取、续租和终结；管理重试与运维聚合分别使用 `tasks/admin`、`tasks/operational-snapshot`。禁止通过 `tasks/index` 桶入口跨越这些边界，CI 由 `check:task-boundaries` 阻止回退。
 

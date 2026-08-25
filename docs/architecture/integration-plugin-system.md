@@ -57,7 +57,7 @@ Integration 状态是信息性的，**不进入 `/api/ready` 的 200/503 门禁*
 
 不强制所有 Integration 共享一个虚假的总开关：
 
-- Turnstile、Stripe、Translation 有明确 `enabled` 配置；
+- Turnstile、Stripe、Google/GitHub OAuth、Translation 有明确 `enabled` 配置；
 - Storage 通过 active driver 选择；
 - SMTP 由最终配置是否完整决定；
 - Tunnel 由部署拓扑决定。
