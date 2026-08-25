@@ -49,7 +49,7 @@
 
 ## Config, integrations, and custom code
 
-- [ ] S3/R2, SMTP, Stripe, Turnstile and Translation secrets are encrypted or protected server-side.
+- [ ] S3/R2, SMTP, Stripe, Turnstile, Google/GitHub OAuth, Translation and the Cloudflare Tunnel token are encrypted or protected server-side.
 - [ ] AI translation is disabled unless intentionally configured; visitors cannot trigger provider calls.
 - [ ] `SECURITY_CSP_MODE` is intentionally `auto`, `report-only`, or `enforce`;
   legacy footer code is migrated, explicitly disabled, or kept in the
