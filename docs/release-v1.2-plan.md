@@ -8,7 +8,7 @@
 >
 > 2026-07-17 确认的范围：
 >
-> - 粉丝登录依次实现邮件 Magic Link、Google OAuth 和 GitHub OAuth；管理员继续使用邮箱 + 密码，邮箱验证码保留。
+> - 粉丝登录依次实现邮件 Magic Link、Google OAuth 和 GitHub OAuth；管理员专用主入口继续使用邮箱 + 密码，公共 OAuth 可按 [ADR-0012](adr/0012-oauth-fan-login.md) 认证已有管理员账号，邮箱验证码保留。
 > - Membership Bundle 只在 `membership_tiers` 上配置 Core 白名单权益，并按当前 tier 实时解析；不引入通用 `EntitlementGrant`。
 > - G3 legacy compatibility removal 不进入 v1.2，另行安排在不早于 2026-10-14 的版本（当前预期 v1.3）。
 > - G2 `monthlyCharLimit` 保持“仅记录，不限制”，不在 v1.2 增加本地强制预算。
@@ -62,14 +62,14 @@ v1.2 聚焦粉丝登录和会员权益配置，同时处理两项低风险工程
 
 - **用户故事**：粉丝可使用 Google 或 GitHub 登录会员账户；已有邮箱账户可在 verified email 匹配时自动绑定。
 - **范围内**
-  - Google OAuth 与 GitHub OAuth 粉丝/会员登录；管理员登录继续邮箱 + 密码。
+  - Google OAuth 与 GitHub OAuth 主要用于粉丝/会员登录；公共流程在已有 identity 或 verified email 命中管理员账号时可保留其角色并建立会话，管理员专用主入口继续使用邮箱 + 密码。
   - OAuth client id/secret、callback URL 与启用状态通过既有加密配置存储管理；secret 加密持久化，不返回前端、不进日志。
   - Google/GitHub provider 状态进入后台 Integration status registry，使用与 Umami 同等的 3-state 语义（未配置 / 已配置未启用 / 已启用，附 source/error 摘要）。
   - 新增 dedicated identity table，唯一约束 `(provider, provider_account_id)`；provider identity 是绑定主键，不以邮箱作为唯一身份源。
   - 绑定优先级固定：provider identity 命中优先，其次才允许 verified-email 自动绑定；发生 identity/user/email 冲突时 fail closed 并返回明确错误，禁止 silent rebind。
   - fail-closed 默认：Google `email_verified=false` 拒绝；GitHub 无 verified email 或无法确认 verified email 时拒绝。
   - 保留邮箱验证码 fallback；provider outage、配置错误或 OAuth 回调失败不得影响邮箱验证码登录，Magic Link 也不被 OAuth 取代。
-- **范围外**：管理员 OAuth、组织/team 授权、账号合并 UI、OAuth provider marketplace、OIDC 泛化框架。
+- **范围外**：管理员专用 OAuth 入口、组织/team 授权、账号合并 UI、OAuth provider marketplace、OIDC 泛化框架。
 - **实现要点**
   - OAuth 必须使用 PKCE S256 + state；server-side verifier 持久化必须有 TTL、single-use 消费和回调后清理，防 CSRF、重放与 session fixation；错误回调不得泄露 provider raw error 或 token。
   - callback redirect 只允许站内相对路径或显式 allowlist，拒绝 open redirect。
@@ -152,7 +152,7 @@ M5 的验收收尾与发布准备已合并，但 v1.2 的正式发布状态不�
 | PPV / Tips coupling | 不做 | 支付型新商业能力需要单独产品定义、退款/撤销语义和文件鉴权设计 |
 | 视频封面/缩略图/时长 metadata | 未来候选 | 与 Auth/Membership 主线不同，不纳入 v1.2 |
 | batch-claim worker model | 条件触发 | `issue-101` §4.1 指出 lease-before-start 风险；需独立设计 bounded parallelism 与 lease protection 后再推进 |
-| 管理员 OAuth / passkeys | 后续候选 | v1.2 Auth 仅粉丝/会员登录；管理员继续邮箱 + 密码 |
+| 管理员专用 OAuth 入口 / passkeys | 后续候选 | v1.2 公共 OAuth 可认证已有管理员账号，但未提供管理员专用入口；邮箱 + 密码仍是管理员专用主入口 |
 | 评论系统 | 不做 | 反垃圾、审核、法务和对话状态不进入 Core |
 | 主题包上传 / 主题市场 | 维持 ⏸ | 不规划第三方主题生命周期；官方内置主题能力单独评估 |
 | Plugin runtime / Hub / HA | Plugin/Hub 暂不规划；HA 维持 roadmap 触发条件 | 不进入 v1.2 Core；Hub 未来只有在真实运营证明需要跨站发现时再作为独立产品方向重新评估 |
@@ -162,7 +162,7 @@ M5 的验收收尾与发布准备已合并，但 v1.2 的正式发布状态不�
 > 本节保留正式发布时必须绑定 exact release HEAD 的独立门槛。其未归档的发布记录不能被“相关工作已合并至 `main`”替代；同样，里程碑已完成也不等同于已经创建 v1.2 tag 或 GitHub Release。
 
 - [ ] 全部纳入范围的 WP 验收通过；发布证据必须绑定 exact release HEAD，不能引用旧 SHA、摘要或非目标分支 run。
-- [ ] `.github/workflows/ci.yml` 在 exact release HEAD 通过；同时保留本地/CI 静态门证据：`pnpm check:request-bodies` 与 `pnpm check:auth-before-body` 均绿。
+- [ ] `.github/workflows/ci.yml` 在 exact release HEAD 通过；同时保留本地/CI 静态门证据：`pnpm check:request-bodies`、`pnpm check:auth-before-body` 与 `pnpm check:task-boundaries` 均绿。
 - [ ] exact release HEAD 手动 dispatch `.github/workflows/restore-drills.yml` 通过；从 `v1.1.0` 原地升级演练通过，且 restore drills 仍覆盖 legacy v1 restore compatibility（本版不移除）。
 - [ ] `pnpm build` 与浏览器/e2e 验证通过；若网站 `website/` 或 Pages 配置发生变化，必须附 exact-head Pages workflow 证据。
 - [ ] Magic Link 完成真实 SMTP 证据：邮件可达、确认登录成功、过期失败、重放失败、prefetch 不消费、redirect allowlist、Turnstile/限流复用、audit 安全摘要和无 token 泄露。

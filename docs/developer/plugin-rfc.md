@@ -4,7 +4,7 @@ OpenLayerlyPro no longer plans a generic third-party plugin runtime.
 
 ## Current Decision
 
-- A first-party Integration registry exists for SMTP, Storage, Turnstile, Tunnel, Stripe, and Translation status/test boundaries.
+- A first-party Integration registry exists for SMTP, Storage, Turnstile, Tunnel, Stripe, Translation, Google/GitHub OAuth, and Plausible/Umami status boundaries; adapters expose connection tests only where meaningful.
 - A first-party `PaymentProvider` adapter boundary is implemented and used by Stripe one-time Checkout and subscriptions.
 - Translation uses an admin-only OpenAI-compatible provider abstraction.
 - No third-party plugin loading or execution runtime is planned.

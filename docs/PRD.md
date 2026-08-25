@@ -17,7 +17,7 @@ OpenLayerlyPro 是一个**开源、自托管、面向画师/创作者的单站�
 
 | 角色 | 说明 | 登录方式 |
 |---|---|---|
-| 创作者 / 管理员 | 管理内容、会员等级、付款/订阅、文件、系统配置与运维状态 | 邮箱 + 密码 ✅ |
+| 创作者 / 管理员 | 管理内容、会员等级、付款/订阅、文件、系统配置与运维状态 | 邮箱 + 密码（管理员专用主入口）；公共 Google/GitHub OAuth 在已有 identity 或 verified email 命中该账号时也可建立管理员会话 ✅ |
 | 粉丝 / 会员 | 购买/订阅会员、管理提醒偏好、按权限浏览与下载内容 | 邮箱验证码、邮件 Magic Link、可选 Google / GitHub OAuth ✅ |
 | 访客 | 未登录用户，仅可浏览 public 内容 | 无 ✅ |
 
@@ -72,7 +72,7 @@ Integration 是官方内置的第三方服务对接，随 Core 发布、由项�
 
 - 不规划通用第三方 Plugin runtime。插件加载、生命周期、权限模型、故障隔离、版本兼容和安全审计会显著增加项目难度，不符合当前单创作者自托管产品主线。
 - 后续扩展优先通过官方内置能力交付：Theme、Integration、邮件、SEO、统计、内容组织和运营工具都随 Core 版本一起维护。
-- 邮件 Magic Link、Google OAuth 与 GitHub OAuth 已作为粉丝登录补充入口实现；现有邮箱验证码登录保留为 fallback，管理员主入口仍是邮箱 + 密码。
+- 邮件 Magic Link、Google OAuth 与 GitHub OAuth 已主要作为粉丝登录补充入口实现；现有邮箱验证码登录保留为 fallback。邮箱 + 密码仍是管理员专用主入口，且没有管理员专用 OAuth 页面；但公共 OAuth 流程可按 [ADR-0012](adr/0012-oauth-fan-login.md) 通过已有 identity 或 verified email 认证已有管理员账号，并保留其角色。
 - `membership_tiers` 上的白名单 Membership Bundle 已实现；它按当前 tier 实时解析，不创建并行授权事实源。Tips、PPV 等支付型新商业能力继续保留为产品定义和运营验证项。
 - Hub / 聚合发现暂不规划。未来如真实运营证明需要跨站发现，应作为独立产品方向重新评估，不进入 Core。
 
@@ -118,7 +118,7 @@ Integration 是官方内置的第三方服务对接，随 Core 发布、由项�
 ## 10. 配置中心 ✅
 
 - SMTP、Turnstile、Storage、Upload 使用 DB ＞ env ＞ default 的最终配置语义；删除 DB 组可回落环境变量。
-- Stripe 与 Translation 使用后台加密配置，默认关闭，敏感 key 不返回前端。
+- OAuth、Stripe 与 Translation 使用后台加密配置，默认关闭，敏感 key 不返回前端。
 - 配置读取当前按需查库，修改后无需重启；如果未来增加缓存，必须设计跨进程 revision/失效策略。
 - 配置加密根密钥和 `SESSION_SECRET` 是不同秘密，备份/恢复语义分别记录。
 
