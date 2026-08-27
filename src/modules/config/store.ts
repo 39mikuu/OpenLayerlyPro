@@ -2,7 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import { appSettings } from "@/db/schema";
-import { ApiError } from "@/lib/api";
+import { ApiError } from "@/lib/api-error";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 
 export type StoredGroupSnapshot<T> = {
