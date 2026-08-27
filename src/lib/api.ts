@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
 
+import { ApiError, type ApiErrorParams } from "@/lib/api-error";
 import { getEnv } from "@/lib/env";
 import {
   InvalidContentLengthError,
@@ -12,11 +13,11 @@ import {
 } from "@/lib/request-body";
 import { DEFAULT_LOCALE, translate } from "@/modules/i18n";
 
+export { ApiError, type ApiErrorParams };
+
 export function jsonOk<T>(data: T, init?: ResponseInit): NextResponse {
   return NextResponse.json({ ok: true, data }, withJsonSecurityHeaders(init));
 }
-
-export type ApiErrorParams = Record<string, string | number>;
 
 export function jsonError(status: number, code: string, params?: ApiErrorParams): NextResponse {
   return NextResponse.json(
@@ -69,18 +70,6 @@ export function getClientIp(req: NextRequest): string | null {
 
 export function getUserAgent(req: NextRequest): string | null {
   return req.headers.get("user-agent");
-}
-
-export class ApiError extends Error {
-  status: number;
-  code: string;
-  params?: ApiErrorParams;
-  constructor(status: number, code: string, params?: ApiErrorParams) {
-    super(code);
-    this.status = status;
-    this.code = code;
-    this.params = params;
-  }
 }
 
 export function handleApiError(err: unknown): NextResponse {

@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -79,5 +81,11 @@ describe("encrypted config store", () => {
       snapshot: { value: null, revision: 0 },
     });
     expect(snapshots).toHaveLength(3);
+  });
+
+  it("does not import Next.js HTTP helpers", async () => {
+    const source = await readFile(new URL("./store.ts", import.meta.url), "utf8");
+    expect(source).not.toMatch(/from ["']@\/lib\/api["']/);
+    expect(source).not.toMatch(/from ["']next(?:\/[^"']*)?["']/);
   });
 });
