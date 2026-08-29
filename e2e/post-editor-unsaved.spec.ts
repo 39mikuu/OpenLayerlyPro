@@ -160,10 +160,7 @@ test("new draft creates once and replaces the /new route after rapid save clicks
   expect(createRequests).toBe(1);
   await expect
     .poll(async () => {
-      const rows = await getDb()
-        .select({ id: posts.id })
-        .from(posts)
-        .where(eq(posts.slug, slug));
+      const rows = await getDb().select({ id: posts.id }).from(posts).where(eq(posts.slug, slug));
       return rows.length;
     })
     .toBe(1);
