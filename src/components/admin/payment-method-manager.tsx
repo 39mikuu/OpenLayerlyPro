@@ -190,6 +190,18 @@ export function PaymentMethodManager({ methods }: { methods: MethodData[] }) {
             />
           </CardContent>
         </Card>
+      ) : methods.length === 0 ? (
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-start gap-4 py-8">
+            <div className="space-y-1">
+              <h2 className="font-medium">{t("admin.paymentMethods.emptyTitle")}</h2>
+              <p className="text-sm text-muted-foreground">
+                {t("admin.paymentMethods.emptyDescription")}
+              </p>
+            </div>
+            <Button onClick={() => setShowCreate(true)}>{t("admin.paymentMethods.new")}</Button>
+          </CardContent>
+        </Card>
       ) : (
         <Button onClick={() => setShowCreate(true)}>{t("admin.paymentMethods.new")}</Button>
       )}

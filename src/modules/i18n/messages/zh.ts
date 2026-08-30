@@ -730,6 +730,7 @@ export const zh = {
       tierLevel: "{name}（level {level}）",
       unsavedChanges: "有未保存更改。保存后再发布或离开页面。",
       allChangesSaved: "当前更改已保存。",
+      newDraftNotCreated: "此草稿尚未创建。填写标题和 Slug 后点击“保存草稿”。",
       unsavedChangesConfirm: "你有未保存更改，离开页面会丢失这些更改。确定离开？",
       saveBeforePublish: "请先保存当前更改，再发布内容。",
       saveBeforeArchive: "请先保存当前更改，再归档内容。",
@@ -801,6 +802,8 @@ export const zh = {
     paymentMethods: {
       title: "收款方式",
       new: "新建收款方式",
+      emptyTitle: "还没有收款方式",
+      emptyDescription: "添加人工收款方式、付款说明和收款码；启用后粉丝可在结账时选择。",
       name: "名称（如：微信收款码）",
       description: "付款说明",
       qr: "收款二维码",

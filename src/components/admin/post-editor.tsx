@@ -429,6 +429,10 @@ export function PostEditor({
       <div className="min-w-0 space-y-4">
         {hasAnyUnsavedChanges ? (
           <Notice variant="warning">{t("admin.posts.unsavedChanges")}</Notice>
+        ) : isNew ? (
+          <p aria-live="polite" className="text-sm text-muted-foreground">
+            {t("admin.posts.newDraftNotCreated")}
+          </p>
         ) : (
           <p aria-live="polite" className="text-sm text-muted-foreground">
             {t("admin.posts.allChangesSaved")}
