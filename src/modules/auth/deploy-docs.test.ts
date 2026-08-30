@@ -27,8 +27,9 @@ describe("auth client identity deployment contract", () => {
     expect(doc).toContain("不得把这个模式暴露到公网");
     expect(envExample).toContain("AUTH_ALLOW_UNRESOLVED_CLIENT_IP=false");
     expect(baseCompose).toContain(
-      "AUTH_ALLOW_UNRESOLVED_CLIENT_IP: ${AUTH_ALLOW_UNRESOLVED_CLIENT_IP:-true}",
+      "AUTH_ALLOW_UNRESOLVED_CLIENT_IP: ${DIRECT_COMPOSE_AUTH_ALLOW_UNRESOLVED_CLIENT_IP:-true}",
     );
+    expect(envExample).toContain("DIRECT_COMPOSE_AUTH_ALLOW_UNRESOLVED_CLIENT_IP=");
     expect(caddyCompose).toContain('AUTH_ALLOW_UNRESOLVED_CLIENT_IP: "false"');
     expect(tunnelCompose).toContain('AUTH_ALLOW_UNRESOLVED_CLIENT_IP: "false"');
     expect(playwrightConfig).toContain('process.env.E2E_TRUSTED_PROXY_IP ?? "127.0.0.1"');
