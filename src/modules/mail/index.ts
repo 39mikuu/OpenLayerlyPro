@@ -8,6 +8,7 @@ import { logger } from "@/lib/logger";
 import { getSmtpConfig, type ResolvedSmtpConfig } from "@/modules/config";
 import { DEFAULT_LOCALE, type Locale, translate } from "@/modules/i18n";
 import { formatPaymentRejectionReviewNote } from "@/modules/payment/rejection-note";
+import { readPublicSiteInfo } from "@/modules/site";
 
 import { classifyMailError, MailDeliveryError } from "./delivery";
 import { renderTransactionalEmailHtml } from "./html";
@@ -114,6 +115,11 @@ function getEmailBranding(branding?: EmailBranding): EmailBranding {
   return { siteName: env.APP_NAME.trim() || "Artist Member Site", siteUrl: env.APP_URL };
 }
 
+async function readEmailBranding(): Promise<EmailBranding> {
+  const [site, env] = await Promise.all([readPublicSiteInfo(), Promise.resolve(getEnv())]);
+  return { siteName: site.siteName, siteUrl: env.APP_URL };
+}
+
 function localeLang(locale?: Locale): string {
   return locale ?? DEFAULT_LOCALE;
 }
@@ -165,7 +171,7 @@ export async function sendLoginCodeEmail(
   locale?: Locale,
   options: MailTaskOwnershipOptions = {},
 ): Promise<void> {
-  const message = renderLoginCodeEmail(code, locale);
+  const message = renderLoginCodeEmail(code, locale, await readEmailBranding());
   await sendMail({
     to,
     subject: message.subject,
@@ -217,7 +223,7 @@ export async function sendMagicLinkEmail(
   locale?: Locale,
   options: { assertTaskOwnership?: () => Promise<void> } = {},
 ): Promise<void> {
-  const message = renderMagicLinkEmail(confirmUrl, locale);
+  const message = renderMagicLinkEmail(confirmUrl, locale, await readEmailBranding());
   await sendMail({
     to,
     subject: message.subject,
@@ -240,11 +246,11 @@ export async function sendMagicLinkEmailWithDeadline(
   deadlineSeconds: number,
   options?: { signal?: AbortSignal },
 ): Promise<void> {
-  const cfg = await getSmtpConfig();
+  const [cfg, branding] = await Promise.all([getSmtpConfig(), readEmailBranding()]);
   if (!cfg.configured) throw new ApiError(500, "mailNotConfigured");
   if (options?.signal?.aborted) throw new MailDeliveryError("transient");
 
-  const message = renderMagicLinkEmail(confirmUrl, locale);
+  const message = renderMagicLinkEmail(confirmUrl, locale, branding);
   const transport = nodemailer.createTransport({
     host: cfg.host,
     port: cfg.port,
@@ -354,7 +360,12 @@ export async function sendMembershipActivatedEmail(
   locale?: Locale,
   options: MailTaskOwnershipOptions = {},
 ): Promise<void> {
-  const message = renderMembershipActivatedEmail(tierName, endsAt, locale);
+  const message = renderMembershipActivatedEmail(
+    tierName,
+    endsAt,
+    locale,
+    await readEmailBranding(),
+  );
   await sendMail({
     to,
     subject: message.subject,

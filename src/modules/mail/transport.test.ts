@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   createTransport: vi.fn(),
   sendMail: vi.fn(),
   getSmtpConfig: vi.fn(),
+  readPublicSiteInfo: vi.fn(),
   loggerInfo: vi.fn(),
 }));
 
@@ -19,6 +20,9 @@ vi.mock("nodemailer", () => ({
 }));
 vi.mock("@/modules/config", () => ({
   getSmtpConfig: mocks.getSmtpConfig,
+}));
+vi.mock("@/modules/site", () => ({
+  readPublicSiteInfo: mocks.readPublicSiteInfo,
 }));
 vi.mock("@/lib/logger", () => ({
   logger: { info: mocks.loggerInfo, warn: vi.fn(), error: vi.fn() },
@@ -91,6 +95,16 @@ describe("SMTP transport", () => {
       password: "secret",
       from: "noreply@example.com",
     });
+    mocks.readPublicSiteInfo.mockResolvedValue({
+      initialized: true,
+      siteName: "Configured Studio",
+      artistName: "Artist",
+      artistBio: "",
+      artistAvatarFileId: null,
+      siteLogoFileId: null,
+      siteIconFileId: null,
+      socialLinks: [],
+    });
   });
 
   it("sets bounded connection, greeting, and socket timeouts", async () => {
@@ -119,7 +133,9 @@ describe("SMTP transport", () => {
     for (const [message] of mocks.sendMail.mock.calls) {
       expect(message.text).toEqual(expect.any(String));
       expect(message.html).toMatch(/^<!doctype html>/);
-      expect(message.html).toContain("Artist Member Site");
+      expect(message.text).toContain("Configured Studio");
+      expect(message.html).toContain("Configured Studio");
+      expect(message.html).not.toContain("Artist Member Site");
     }
     expect(mocks.sendMail.mock.calls[0]?.[0]?.html).toContain("123456");
     expect(mocks.sendMail.mock.calls[1]?.[0]?.html).toContain(
