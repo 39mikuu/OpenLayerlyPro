@@ -110,6 +110,8 @@ jobs:
           SECURITY_CSP_MODE: auto
           UPLOAD_DIR: /tmp/openlayerlypro-s6-e2e-uploads
           E2E_BASE_URL: http://127.0.0.1:3001
+          E2E_TRUSTED_PROXY_IP: 127.0.0.1
+          TRUSTED_PROXY_HOPS: 1
         run: pnpm test:e2e
       - name: Upload e2e failure artifacts
         if: failure()

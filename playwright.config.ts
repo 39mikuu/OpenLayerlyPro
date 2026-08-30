@@ -1,5 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const trustedProxyIp = process.env.E2E_TRUSTED_PROXY_IP;
+
 export default defineConfig({
   testDir: "./e2e",
   // The iOS Safari Chinese-IME investigation harness runs under its own
@@ -16,6 +18,7 @@ export default defineConfig({
   use: {
     baseURL: process.env.E2E_BASE_URL ?? "http://127.0.0.1:3001",
     trace: "retain-on-failure",
+    ...(trustedProxyIp ? { extraHTTPHeaders: { "x-forwarded-for": trustedProxyIp } } : undefined),
     ...devices["Desktop Chrome"],
   },
   webServer: {
