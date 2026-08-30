@@ -123,8 +123,22 @@ describeWithDatabase("S4 login-code integration", () => {
       freshAttemptExhausted: false,
     });
 
-    const [stored] = await db.select().from(loginCodes);
-    expect(stored).toMatchObject({ attemptCount: 5, usedAt: null });
+    const replacement = await requestLoginCode("attempts@example.com", {
+      challenge: "B".repeat(43),
+    });
+    expect(replacement.suppressed).toBe(false);
+    await expect(
+      verifyLoginCode("attempts@example.com", TEST_CODE, TEST_CHALLENGE),
+    ).rejects.toMatchObject({
+      status: 429,
+      code: "codeAttemptsExceeded",
+      freshAttemptExhausted: false,
+    });
+
+    const stored = await db.select().from(loginCodes).orderBy(asc(loginCodes.createdAt));
+    expect(stored).toHaveLength(2);
+    expect(stored[0]).toMatchObject({ attemptCount: 5, usedAt: null });
+    expect(stored[1]).toMatchObject({ attemptCount: 0, usedAt: null });
   });
 
   it("serializes concurrent guesses without losing increments or exceeding the cap", async () => {

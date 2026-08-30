@@ -78,7 +78,8 @@ export async function POST(req: NextRequest) {
     } catch (error) {
       if (
         error instanceof ApiError &&
-        (error.code === "codeIncorrect" ||
+        ((error.code === "codeIncorrect" &&
+          (error as ApiError & { comparisonDeferred?: boolean }).comparisonDeferred !== true) ||
           error.code === "codeExpired" ||
           (error.code === "codeAttemptsExceeded" &&
             (error as ApiError & { freshAttemptExhausted?: boolean }).freshAttemptExhausted ===

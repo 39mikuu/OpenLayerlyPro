@@ -49,6 +49,14 @@ class LoginCodeAttemptsExceededError extends ApiError {
   }
 }
 
+class LoginCodeComparisonDeferredError extends ApiError {
+  readonly comparisonDeferred = true;
+
+  constructor() {
+    super(400, "codeIncorrect");
+  }
+}
+
 export type LoginCodeEmailTaskPayload = {
   version: 1;
   codeId: string;
@@ -185,13 +193,18 @@ export async function verifyLoginCode(
 ): Promise<User> {
   const normalized = normalizeEmail(email);
   const normalizedCode = normalizeLoginCode(code);
+  const candidateChallengeHash = challenge ? hmacLoginCodeChallenge(challenge) : null;
   const db = getDb();
 
   const outcome = await db.transaction(
     async (
       tx,
     ): Promise<
-      "correct" | "incorrect" | "attempts_exhausted_now" | "attempts_already_exhausted"
+      | "correct"
+      | "incorrect"
+      | "delivery_in_progress"
+      | "attempts_exhausted_now"
+      | "attempts_already_exhausted"
     > => {
       const [record] = await executeRows<{
         id: string;
@@ -210,7 +223,15 @@ export async function verifyLoginCode(
         where ${loginCodes.email} = ${normalized}
           and ${loginCodes.usedAt} is null
           and ${loginCodes.expiresAt} > now()
-        order by ${loginCodes.createdAt} desc
+        order by
+          case
+            when ${candidateChallengeHash} is not null
+              and ${loginCodes.challengeHash} = ${candidateChallengeHash}
+              and ${loginCodes.attemptCount} >= ${LOGIN_CODE_MAX_ATTEMPTS}
+            then 0
+            else 1
+          end,
+          ${loginCodes.createdAt} desc
         limit 1
         for update
       `,
@@ -228,8 +249,20 @@ export async function verifyLoginCode(
           return "incorrect";
         }
       } else {
+        const [deliveryTask] = await tx
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(
+            and(
+              eq(tasks.dedupeKey, `auth-login-code-email:${record.id}`),
+              eq(tasks.status, "processing"),
+            ),
+          )
+          .limit(1);
+        if (deliveryTask) return "delivery_in_progress";
+
         const challengeMatches = Boolean(
-          challenge && safeEqualHex(hmacLoginCodeChallenge(challenge), record.challenge_hash),
+          candidateChallengeHash && safeEqualHex(candidateChallengeHash, record.challenge_hash),
         );
         if (record.attempt_count >= LOGIN_CODE_MAX_ATTEMPTS) {
           return "attempts_already_exhausted";
@@ -281,6 +314,9 @@ export async function verifyLoginCode(
 
   if (outcome === "incorrect") {
     throw new ApiError(400, "codeIncorrect");
+  }
+  if (outcome === "delivery_in_progress") {
+    throw new LoginCodeComparisonDeferredError();
   }
   if (outcome === "attempts_exhausted_now") {
     throw new LoginCodeAttemptsExceededError(true);
@@ -365,7 +401,8 @@ export async function deliverLoginCodeEmailTask(
       })
       .from(loginCodes)
       .where(eq(loginCodes.id, payload.codeId))
-      .limit(1);
+      .limit(1)
+      .for("update");
 
     if (
       !record ||

@@ -191,7 +191,10 @@ export function LoginForm({
             className="px-0"
             disabled={loading}
             onClick={() => {
-              clearLoginCodeChallenge(requestedEmail);
+              // Keep the existing challenge while the address is being edited.
+              // getOrCreateLoginCodeChallenge reuses it when the normalized
+              // address is unchanged and rotates it only when a request is
+              // actually sent for a different address.
               setFanFlow((current) => resetFanLoginRequestedEmail(current));
               setMessage(null);
               setTurnstileToken(null);

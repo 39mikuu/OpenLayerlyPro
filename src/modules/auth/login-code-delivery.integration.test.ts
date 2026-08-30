@@ -31,6 +31,7 @@ import {
   deliverLoginCodeEmailTask,
   type LoginCodeEmailTaskPayload,
   requestLoginCode,
+  verifyLoginCode,
 } from "./login-code";
 
 const describeWithDatabase =
@@ -114,6 +115,14 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
       sql`select pg_try_advisory_xact_lock(hashtext(${email})) as acquired`,
     );
     expect(lockResult[0]?.acquired).toBe(true);
+
+    await expect(verifyLoginCode(email, "000000", TEST_CHALLENGE)).rejects.toMatchObject({
+      status: 400,
+      code: "codeIncorrect",
+      comparisonDeferred: true,
+    });
+    const [whileSending] = await db.select().from(loginCodes);
+    expect(whileSending?.attemptCount).toBe(0);
 
     const resend = await requestLoginCode(email, { challenge: TEST_CHALLENGE, locale: "en" });
     expect(resend).toEqual({ suppressed: true });

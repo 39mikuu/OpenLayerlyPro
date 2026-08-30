@@ -144,6 +144,23 @@ describe("verify-code route budgets", () => {
     expect(JSON.stringify(mocks.rateLimit.mock.calls)).not.toContain("Fan@Example.com");
   });
 
+  it("does not charge the target bucket while SMTP delivery owns the code", async () => {
+    mocks.verifyLoginCode.mockRejectedValue(
+      Object.assign(new ApiError(400, "codeIncorrect"), { comparisonDeferred: true }),
+    );
+
+    const response = await POST(
+      request(
+        { email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.rateLimit).toHaveBeenCalledOnce();
+    expect(mocks.rateLimit).toHaveBeenCalledWith("verify-code-ip:198.51.100.10", 30, 600_000);
+  });
+
   it("records the fifth matched-code failure but not later exhausted-code retries", async () => {
     const exhaustedNow = Object.assign(new ApiError(429, "codeAttemptsExceeded"), {
       freshAttemptExhausted: true,

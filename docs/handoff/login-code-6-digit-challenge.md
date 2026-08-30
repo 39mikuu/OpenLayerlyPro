@@ -35,7 +35,7 @@
 - 浏览器在第一次请求某个 normalized email 的登录码前，用 Web Crypto 生成 32 字节 challenge。
 - challenge 仅保存在当前浏览器的登录流程状态和 `sessionStorage`；不得进入 URL、analytics、console、错误上报或持久 cookie。
 - 同一 `requestedEmail` 的重发必须复用已有 challenge。服务端可能因 active code / durable task fence 返回统一 `accepted` 但不创建新 code；客户端此时若换 challenge，会使仍在途的 code 无法验证。
-- 更换邮箱时删除旧 challenge 并生成新的 challenge。登录成功、显式取消或 code 过期后删除。
+- 点击“更换邮箱”只解锁输入框，不得立即删除旧 challenge。只有实际向另一个 normalized email 发起 code 请求时，`getOrCreate` 才用新 challenge 覆盖旧值；若用户未改变地址，或编辑后又改回原地址，必须继续复用原 challenge。登录成功、显式取消或 code 过期后删除。
 - 页面刷新后从 `sessionStorage` 恢复。若浏览器会话在 code 仍 active 时丢失，服务端不能仅凭一个新 challenge 安全替换旧 code，否则第三方可借重发接口使受害者的 code 失效。UI 必须明确提示：在原浏览器完成验证，或等待最多一个 code TTL（10 分钟）后再请求新 code；也可改用 Magic Link / OAuth。不得提示用户立即重发并暗示会生成可用的新 code。
 
 浏览器生成逻辑必须使用 `crypto.getRandomValues`，禁止 `Math.random()`、时间戳、UUID v1 或可预测 PRNG。
@@ -98,20 +98,25 @@ active code 被抑制时，不更新其 `challenge_hash`、`attempt_count`、创
 
 对新协议行，`attempt_count >= 5` 表示 code 已耗尽：它不再属于 active-code dedupe/fence 的候选，后续请求可以创建绑定新 challenge 的 code。该旧 code 对应的 pending、processing 或可重试 failed 投递任务必须在取得任务 ownership 与 per-email fence 后判定为 stale，并成功 no-op；不得再解密或发送已耗尽 code。legacy 行仍只按 `used_at` 与 expiry 判断 active。
 
+`tasks.status='processing'` 同时作为 SMTP 最后安全点的短期发送预留。worker 在 per-email advisory lock 内重新确认 task ownership 后，必须 `FOR UPDATE` 锁定 code 行并完成 exhausted / superseded 检查；事务提交后 task 在整个 SMTP 调用和 handler 返回前保持 `processing`。验证事务若看到该 code 的 delivery task 正在 `processing`，必须返回内部 `delivery_in_progress`，对外保持通用 `codeIncorrect`，但不比较 code、不增加 attempts、也不消费 resolved email+IP 失败桶。这样 worker 提交最后检查后，验证不能再把即将发送的 code 耗尽。worker 崩溃时该预留最多持续到 task lease 被回收；回收后的 worker 重新执行同一检查，不把数据库连接或 advisory lock 跨 SMTP 持有。
+
 ## 6. 验证事务
 
 route 顺序仍为：输入校验 → target failure bucket 只读检查 → source comparison budget 消费 → 核心数据库事务 → 失败后 resolved email+IP 记账。
 
-核心事务锁定 normalized email 最新 active code 后，按行类型执行：
+核心事务不得复用发码 dedupe 的 “active code” 谓词。它通常锁定 normalized email 最新的 unused、unexpired code；但如果请求携带的 challenge HMAC 匹配某个 unused、unexpired 且 `attempt_count >= 5` 的新协议行，则优先锁定该已耗尽行。这个窄例外只用于在 replacement 已创建后仍识别旧 challenge 的 `attempts_already_exhausted`，不得让未耗尽的旧 code 越过更新 code 重新生效。由此在 replacement 创建前后，已耗尽重试都不会退化成 `codeExpired` / 普通错误并重复消费 target bucket。
+
+锁定目标行后按行类型执行：
 
 ### 6.1 新协议行（`challenge_hash IS NOT NULL`）
 
-1. 常量时间比较 challenge HMAC。
-2. challenge 不匹配：返回通用 `codeIncorrect`；不得比较 code、不得更新 `attempt_count` / `used_at`。
-3. challenge 匹配但 `attempt_count >= 5`：返回 `codeAttemptsExceeded`；不得比较 code。
-4. 常量时间比较 code HMAC。
-5. code 正确：条件更新 `used_at = now()` 并登录；不增加 `attempt_count`。
-6. code 错误：在持有行锁时把 `attempt_count` 原子增加 1；第 1–4 次返回 `codeIncorrect`，第 5 次产生内部 `attempts_exhausted_now` 结果并对外返回 `codeAttemptsExceeded`。
+1. 若该 code 的 delivery task 正在 `processing`，返回内部 `delivery_in_progress`；对外使用通用 `codeIncorrect`，不得比较 challenge/code、更新状态或消费 target bucket。
+2. 常量时间比较 challenge HMAC。
+3. challenge 不匹配：返回通用 `codeIncorrect`；不得比较 code、不得更新 `attempt_count` / `used_at`。
+4. challenge 匹配但 `attempt_count >= 5`：返回 `codeAttemptsExceeded`；不得比较 code。
+5. 常量时间比较 code HMAC。
+6. code 正确：条件更新 `used_at = now()` 并登录；不增加 `attempt_count`。
+7. code 错误：在持有行锁时把 `attempt_count` 原子增加 1；第 1–4 次返回 `codeIncorrect`，第 5 次产生内部 `attempts_exhausted_now` 结果并对外返回 `codeAttemptsExceeded`。
 
 challenge mismatch 与 code mismatch 对外都不得暴露可区分的正文、字段或稳定可利用的时序差异。route 可以继续让两者进入相同的 source / resolved email+IP 失败记账路径，但数据库 attempts 只由 challenge-matched code mismatch 推进。
 
@@ -131,6 +136,7 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - 并发错误提交在 challenge 匹配时串行增加 attempts，最终值不得超过 5。
 - challenge mismatch 并发不得改变 attempts。
 - 第 5 次错误与同时到达的正确提交按取得行锁的顺序决定；一旦 attempts 已到 5，后到的正确提交必须失败。
+- worker 的最后检查与验证通过同一 code 行锁排序；worker 检查通过后由 processing task 预留覆盖 SMTP 窗口，验证只消耗 source budget 并延后比较。不得持有数据库事务或 advisory lock 执行 SMTP。
 - SMTP / task 重试只携带加密 code；challenge 永不进入 outbox，因此现有敏感数据边界不回退。
 - `SESSION_SECRET` 轮换仍使存量 code HMAC 与在途加密 task 失效，用户重新请求即可。
 
@@ -150,7 +156,9 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - challenge 错误时 attempts 不变，正确 challenge + 错误 code 每次只加 1；
 - 第 5 次错误封锁该 code，正确 code 在 attempts 达 5 后也失败；
 - 第 5 次错误同时计入 resolved email+IP 失败桶，耗尽后的后续请求不重复记账；
+- replacement 创建前后，旧 challenge 都能命中已耗尽行并返回 `attempts_already_exhausted`；未耗尽的旧 code 不得因此重新可用；
 - 已耗尽 code 不抑制新 code 创建，其旧投递任务在 SMTP 前成功 no-op；
+- SMTP 阻塞期间验证不推进 attempts/used_at/target bucket，task 完成或被回收后再比较；
 - challenge 丢失时 UI 不进入立即重发循环，而是提示等待旧 code 最多 10 分钟过期或改用其他登录方式；
 - attempts 未达 5 时正确 code 成功且不增加 attempts；
 - 并发错误 attempts 不丢失、不超过 5，并发正确最多一次成功；
