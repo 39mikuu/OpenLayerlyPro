@@ -194,6 +194,14 @@ export async function verifyLoginCode(
   const normalized = normalizeEmail(email);
   const normalizedCode = normalizeLoginCode(code);
   const candidateChallengeHash = challenge ? hmacLoginCodeChallenge(challenge) : null;
+  const exhaustedChallengeFirst = candidateChallengeHash
+    ? sql`case
+        when ${loginCodes.challengeHash} = ${candidateChallengeHash}
+          and ${loginCodes.attemptCount} >= ${LOGIN_CODE_MAX_ATTEMPTS}
+        then 0
+        else 1
+      end`
+    : sql`1`;
   const db = getDb();
 
   const outcome = await db.transaction(
@@ -224,13 +232,7 @@ export async function verifyLoginCode(
           and ${loginCodes.usedAt} is null
           and ${loginCodes.expiresAt} > now()
         order by
-          case
-            when ${candidateChallengeHash} is not null
-              and ${loginCodes.challengeHash} = ${candidateChallengeHash}
-              and ${loginCodes.attemptCount} >= ${LOGIN_CODE_MAX_ATTEMPTS}
-            then 0
-            else 1
-          end,
+          ${exhaustedChallengeFirst},
           ${loginCodes.createdAt} desc
         limit 1
         for update
