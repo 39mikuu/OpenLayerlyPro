@@ -37,7 +37,9 @@ export async function POST(req: NextRequest) {
     assertContentLengthWithinLimit(req, env.REQUEST_JSON_MAX_BYTES);
     const ip = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(ip);
-    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "magic-link request");
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "magic-link request", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
     // Shares the request-code source budget: both flows spend the same
     // outbound auth-email quota per source.
     const primaryLimit = getRequestCodePrimaryRateLimit(identity, env);

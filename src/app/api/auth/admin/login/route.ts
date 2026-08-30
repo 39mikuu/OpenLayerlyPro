@@ -32,7 +32,9 @@ export async function POST(req: NextRequest) {
     const clientIp = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(clientIp);
     const env = getEnv();
-    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "admin login");
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "admin login", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
     const limit = getAdminLoginRateLimit(identity, env);
     if (!rateLimit(limit.key, limit.max, limit.windowMs)) {
       return jsonError(429, "requestRateLimited");

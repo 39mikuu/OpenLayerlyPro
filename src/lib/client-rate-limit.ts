@@ -16,8 +16,15 @@ export function assertProductionAuthClientIdentity(
   identity: ClientRateLimitIdentity,
   nodeEnv: string,
   operation: string,
+  options: { allowUnresolved?: boolean } = {},
 ): void {
   if (identity.kind !== "unresolved" || nodeEnv !== "production") return;
+  if (options.allowUnresolved) {
+    warnUnresolvedClientRateLimitIdentity({
+      message: `Trusted client IP is unavailable for ${operation}. Allowing the production authentication request only because AUTH_ALLOW_UNRESOLVED_CLIENT_IP is enabled for a trusted direct network.`,
+    });
+    return;
+  }
   warnUnresolvedClientRateLimitIdentity({
     message: `Trusted client IP is unavailable for ${operation}. Rejecting production authentication request; configure TRUSTED_PROXY_HEADER/TRUSTED_PROXY_HOPS.`,
   });

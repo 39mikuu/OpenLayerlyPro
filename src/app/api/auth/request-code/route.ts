@@ -32,7 +32,9 @@ export async function POST(req: NextRequest) {
     assertContentLengthWithinLimit(req, env.REQUEST_JSON_MAX_BYTES);
     const ip = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(ip);
-    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "request-code");
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "request-code", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
     const primaryLimit = getRequestCodePrimaryRateLimit(identity, env);
     if (!rateLimit(primaryLimit.key, primaryLimit.max, primaryLimit.windowMs)) {
       return jsonError(429, "requestRateLimited");

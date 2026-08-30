@@ -40,7 +40,9 @@ export async function POST(req: NextRequest) {
 
     const clientIp = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(clientIp);
-    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "verify-code");
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "verify-code", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
 
     const failureLimits = getVerifyCodeWrongAttemptRateLimits({
       identity,

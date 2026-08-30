@@ -45,7 +45,9 @@ export async function POST(req: NextRequest) {
     const env = getEnv();
     const clientIp = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(clientIp);
-    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "magic-link confirm");
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "magic-link confirm", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
     // Shares the verify-code comparison budget: token confirmation attempts
     // spend the same per-source login-verification quota.
     const compareLimit = getVerifyCodeCompareRateLimit({ identity, env });

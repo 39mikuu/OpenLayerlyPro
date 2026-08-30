@@ -128,4 +128,19 @@ describe("admin login request ordering", () => {
     expect(mocks.readJsonWithLimit).not.toHaveBeenCalled();
     expect(mocks.adminLogin).not.toHaveBeenCalled();
   });
+
+  it("uses the emergency bucket for the explicit trusted-direct production mode", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.getEnv.mockReturnValue({
+      ...mocks.getEnv(),
+      NODE_ENV: "production",
+      AUTH_ALLOW_UNRESOLVED_CLIENT_IP: true,
+    });
+
+    const response = await POST(request('{"email":"admin@example.test","password":"secret"}'));
+
+    expect(response.status).toBe(200);
+    expect(mocks.rateLimit).toHaveBeenCalledWith("admin-login-unresolved", 100, 600_000);
+    expect(mocks.adminLogin).toHaveBeenCalledOnce();
+  });
 });

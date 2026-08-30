@@ -34,7 +34,9 @@ export async function GET(req: NextRequest) {
     const env = getEnv();
     const ip = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(ip);
-    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "Google OAuth start");
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "Google OAuth start", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
     // Unauthenticated: bound oauth_states row creation per source before it happens.
     const limit = getOAuthStartRateLimit("google", identity, env);
     if (!rateLimit(limit.key, limit.max, limit.windowMs)) {

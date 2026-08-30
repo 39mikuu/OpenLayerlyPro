@@ -15,6 +15,7 @@ const AUTH_ENV_KEYS = [
   "REQUEST_CODE_UNRESOLVED_RATE_MAX",
   "REQUEST_CODE_RATE_WINDOW_MS",
   "REQUEST_CODE_SEND_DEDUPE_SECONDS",
+  "AUTH_ALLOW_UNRESOLVED_CLIENT_IP",
 ] as const;
 
 const originalValues = new Map(AUTH_ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -54,6 +55,7 @@ describe("auth rate-limit environment configuration", () => {
       REQUEST_CODE_IP_RATE_MAX: 20,
       REQUEST_CODE_EMAIL_IP_RATE_MAX: 5,
       REQUEST_CODE_SEND_DEDUPE_SECONDS: 60,
+      AUTH_ALLOW_UNRESOLVED_CLIENT_IP: false,
     });
   });
 
@@ -63,5 +65,14 @@ describe("auth rate-limit environment configuration", () => {
 
   it("rejects unsupported login-code alphabets", async () => {
     await expect(loadEnv({ LOGIN_CODE_ALPHABET: "decimal" })).rejects.toThrow("环境变量配置错误");
+  });
+
+  it("requires an explicit strict boolean for the trusted direct-network exception", async () => {
+    await expect(loadEnv({ AUTH_ALLOW_UNRESOLVED_CLIENT_IP: "true" })).resolves.toMatchObject({
+      AUTH_ALLOW_UNRESOLVED_CLIENT_IP: true,
+    });
+    await expect(loadEnv({ AUTH_ALLOW_UNRESOLVED_CLIENT_IP: "1" })).rejects.toThrow(
+      "环境变量配置错误",
+    );
   });
 });

@@ -32,4 +32,17 @@ describe("production auth client identity", () => {
       ),
     ).not.toThrow();
   });
+
+  it("allows the explicit trusted-direct-network production exception with a warning", () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    expect(() =>
+      assertProductionAuthClientIdentity({ kind: "unresolved" }, "production", "admin login", {
+        allowUnresolved: true,
+      }),
+    ).not.toThrow();
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining("AUTH_ALLOW_UNRESOLVED_CLIENT_IP is enabled"),
+    );
+  });
 });

@@ -13,6 +13,10 @@ services:
     environment:
       DATABASE_URL: postgresql://artist:artist_password@postgres:5432/artist_member
       UPLOAD_DIR: /app/uploads
+      # Base Compose publishes :3000 for direct access and Next.js cannot derive a
+      # trustworthy peer IP from its Request object. This exception is safe only on
+      # a trusted LAN or behind a firewall. Public ingress overlays force it off.
+      AUTH_ALLOW_UNRESOLVED_CLIENT_IP: "true"
       # SESSION_SECRET_FILE is intentionally not fixed here so an operator-provided value in
       # .env is honoured. When it is unset the entrypoint falls back to
       # /app/secrets/session-secret on the persistent secrets volume. A custom path must

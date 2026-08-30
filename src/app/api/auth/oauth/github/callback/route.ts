@@ -54,7 +54,9 @@ export async function GET(req: NextRequest) {
     // into unbounded audit-event writes. Use a distinct namespace from starts.
     const env = getEnv();
     const identity = resolveClientRateLimitIdentity(getClientIp(req));
-    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "GitHub OAuth callback");
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "GitHub OAuth callback", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
     const limit = getOAuthStartRateLimit("github-callback", identity, env);
     if (!rateLimit(limit.key, limit.max, limit.windowMs)) {
       // No state has been validated or consumed yet. Preserve the binding
