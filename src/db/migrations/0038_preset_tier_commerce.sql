@@ -6,9 +6,16 @@ WITH "preset"("slug", "price_label", "price_amount_minor", "currency", "descript
 )
 UPDATE "membership_tiers" AS "tier"
 SET
-	"price_amount_minor" = COALESCE("tier"."price_amount_minor", "preset"."price_amount_minor"),
+	"price_amount_minor" = CASE
+		WHEN "tier"."price_amount_minor" IS NULL
+			AND NULLIF(BTRIM("tier"."currency"), '') IS NULL
+			THEN "preset"."price_amount_minor"
+		ELSE "tier"."price_amount_minor"
+	END,
 	"currency" = CASE
-		WHEN NULLIF(BTRIM("tier"."currency"), '') IS NULL THEN "preset"."currency"
+		WHEN "tier"."price_amount_minor" IS NULL
+			AND NULLIF(BTRIM("tier"."currency"), '') IS NULL
+			THEN "preset"."currency"
 		ELSE "tier"."currency"
 	END,
 	"description" = CASE
@@ -21,7 +28,9 @@ WHERE
 	"tier"."slug" = "preset"."slug"
 	AND "tier"."price_label" = "preset"."price_label"
 	AND (
-		"tier"."price_amount_minor" IS NULL
-		OR NULLIF(BTRIM("tier"."currency"), '') IS NULL
+		(
+			"tier"."price_amount_minor" IS NULL
+			AND NULLIF(BTRIM("tier"."currency"), '') IS NULL
+		)
 		OR NULLIF(BTRIM("tier"."description"), '') IS NULL
 	);
