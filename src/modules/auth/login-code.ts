@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, sql, type SQLWrapper } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lt, or, sql, type SQLWrapper } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import { loginCodes, tasks, type User } from "@/db/schema";
@@ -39,6 +39,15 @@ const LOGIN_CODE_HMAC_PURPOSE = "auth-login-code";
 const LOGIN_CODE_CHALLENGE_HMAC_PURPOSE = "auth-login-code-challenge";
 
 export type RequestLoginCodeResult = { suppressed: boolean; codeId?: string };
+
+class LoginCodeAttemptsExceededError extends ApiError {
+  readonly freshAttemptExhausted: boolean;
+
+  constructor(freshAttemptExhausted: boolean) {
+    super(429, "codeAttemptsExceeded");
+    this.freshAttemptExhausted = freshAttemptExhausted;
+  }
+}
 
 export type LoginCodeEmailTaskPayload = {
   version: 1;
@@ -87,6 +96,10 @@ export async function requestLoginCode(
         where ${loginCodes.email} = ${normalized}
           and ${loginCodes.usedAt} is null
           and ${loginCodes.expiresAt} > now()
+          and (
+            ${loginCodes.challengeHash} is null
+            or ${loginCodes.attemptCount} < ${LOGIN_CODE_MAX_ATTEMPTS}
+          )
         order by ${loginCodes.createdAt} desc
         limit 1
         for update
@@ -175,7 +188,11 @@ export async function verifyLoginCode(
   const db = getDb();
 
   const outcome = await db.transaction(
-    async (tx): Promise<"correct" | "incorrect" | "attempts_exceeded"> => {
+    async (
+      tx,
+    ): Promise<
+      "correct" | "incorrect" | "attempts_exhausted_now" | "attempts_already_exhausted"
+    > => {
       const [record] = await executeRows<{
         id: string;
         code_hash: string;
@@ -211,27 +228,36 @@ export async function verifyLoginCode(
           return "incorrect";
         }
       } else {
-        if (!challenge || !safeEqualHex(hmacLoginCodeChallenge(challenge), record.challenge_hash)) {
-          return "incorrect";
-        }
+        const challengeMatches = Boolean(
+          challenge && safeEqualHex(hmacLoginCodeChallenge(challenge), record.challenge_hash),
+        );
         if (record.attempt_count >= LOGIN_CODE_MAX_ATTEMPTS) {
-          return "attempts_exceeded";
+          return "attempts_already_exhausted";
         }
-        if (
-          !LOGIN_CODE_PATTERN.test(normalizedCode) ||
-          !safeEqualHex(hmacLoginCode(normalizedCode), record.code_hash)
-        ) {
+        const codeMatches =
+          challengeMatches &&
+          LOGIN_CODE_PATTERN.test(normalizedCode) &&
+          safeEqualHex(hmacLoginCode(normalizedCode), record.code_hash);
+        if (!challengeMatches || !codeMatches) {
+          // Both new-protocol mismatch paths perform the same locked UPDATE
+          // round trip. A challenge mismatch is a no-op and never compares the
+          // candidate code; a matched challenge increments the durable cap.
+          const increment = challengeMatches ? 1 : 0;
           const [attempt] = await executeRows<{ attempt_count: number }>(
             tx,
             sql`
             update ${loginCodes}
-            set attempt_count = least(${loginCodes.attemptCount} + 1, ${LOGIN_CODE_MAX_ATTEMPTS})
+            set attempt_count = least(
+              ${loginCodes.attemptCount} + ${increment},
+              ${LOGIN_CODE_MAX_ATTEMPTS}
+            )
             where ${loginCodes.id} = ${record.id}
             returning ${loginCodes.attemptCount} as attempt_count
           `,
           );
+          if (!challengeMatches) return "incorrect";
           return (attempt?.attempt_count ?? LOGIN_CODE_MAX_ATTEMPTS) >= LOGIN_CODE_MAX_ATTEMPTS
-            ? "attempts_exceeded"
+            ? "attempts_exhausted_now"
             : "incorrect";
         }
       }
@@ -256,8 +282,11 @@ export async function verifyLoginCode(
   if (outcome === "incorrect") {
     throw new ApiError(400, "codeIncorrect");
   }
-  if (outcome === "attempts_exceeded") {
-    throw new ApiError(429, "codeAttemptsExceeded");
+  if (outcome === "attempts_exhausted_now") {
+    throw new LoginCodeAttemptsExceededError(true);
+  }
+  if (outcome === "attempts_already_exhausted") {
+    throw new LoginCodeAttemptsExceededError(false);
   }
 
   const user = await findOrCreateUserByEmail(normalized);
@@ -331,12 +360,19 @@ export async function deliverLoginCodeEmailTask(
         email: loginCodes.email,
         expiresAt: loginCodes.expiresAt,
         usedAt: loginCodes.usedAt,
+        challengeHash: loginCodes.challengeHash,
+        attemptCount: loginCodes.attemptCount,
       })
       .from(loginCodes)
       .where(eq(loginCodes.id, payload.codeId))
       .limit(1);
 
-    if (!record || record.usedAt || record.expiresAt <= new Date()) {
+    if (
+      !record ||
+      record.usedAt ||
+      record.expiresAt <= new Date() ||
+      (record.challengeHash !== null && record.attemptCount >= LOGIN_CODE_MAX_ATTEMPTS)
+    ) {
       return { note: "Login code is no longer active; delivery skipped" } as const;
     }
 
@@ -348,6 +384,10 @@ export async function deliverLoginCodeEmailTask(
           eq(loginCodes.email, record.email),
           isNull(loginCodes.usedAt),
           gt(loginCodes.expiresAt, sql<Date>`now()`),
+          or(
+            isNull(loginCodes.challengeHash),
+            lt(loginCodes.attemptCount, LOGIN_CODE_MAX_ATTEMPTS),
+          ),
         ),
       )
       .orderBy(desc(loginCodes.createdAt))

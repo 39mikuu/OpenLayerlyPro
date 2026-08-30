@@ -78,7 +78,11 @@ export async function POST(req: NextRequest) {
     } catch (error) {
       if (
         error instanceof ApiError &&
-        (error.code === "codeIncorrect" || error.code === "codeExpired")
+        (error.code === "codeIncorrect" ||
+          error.code === "codeExpired" ||
+          (error.code === "codeAttemptsExceeded" &&
+            (error as ApiError & { freshAttemptExhausted?: boolean }).freshAttemptExhausted ===
+              true))
       ) {
         // Target-scoped accounting remains post-comparison so another source
         // cannot pre-fill an email-only bucket and block the account owner.

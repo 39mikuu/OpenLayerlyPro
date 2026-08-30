@@ -144,6 +144,45 @@ describe("verify-code route budgets", () => {
     expect(JSON.stringify(mocks.rateLimit.mock.calls)).not.toContain("Fan@Example.com");
   });
 
+  it("records the fifth matched-code failure but not later exhausted-code retries", async () => {
+    const exhaustedNow = Object.assign(new ApiError(429, "codeAttemptsExceeded"), {
+      freshAttemptExhausted: true,
+    });
+    mocks.verifyLoginCode.mockRejectedValueOnce(exhaustedNow);
+
+    const fifth = await POST(
+      request(
+        { email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+
+    expect(fifth.status).toBe(429);
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(2);
+    expect(mocks.rateLimit.mock.calls[1][0]).toContain("verify-code-email-ip:");
+
+    vi.clearAllMocks();
+    mocks.getEnv.mockReturnValue(env);
+    mocks.isRateLimited.mockReturnValue(false);
+    mocks.rateLimit.mockReturnValue(true);
+    mocks.resolveLocale.mockResolvedValue("zh");
+    const alreadyExhausted = Object.assign(new ApiError(429, "codeAttemptsExceeded"), {
+      freshAttemptExhausted: false,
+    });
+    mocks.verifyLoginCode.mockRejectedValueOnce(alreadyExhausted);
+
+    const later = await POST(
+      request(
+        { email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+
+    expect(later.status).toBe(429);
+    expect(mocks.rateLimit).toHaveBeenCalledOnce();
+    expect(mocks.rateLimit.mock.calls[0][0]).toBe("verify-code-ip:198.51.100.10");
+  });
+
   it("rejects invalid raw input without consuming a budget", async () => {
     const response = await POST(
       request(

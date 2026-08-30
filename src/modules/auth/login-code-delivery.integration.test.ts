@@ -154,6 +154,33 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
     expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();
   });
 
+  it("retires an exhausted code and no-ops its queued delivery", async () => {
+    const email = "exhausted@example.com";
+    const first = await requestLoginCode(email, { challenge: TEST_CHALLENGE, locale: "en" });
+    expect(first.suppressed).toBe(false);
+    await db.update(loginCodes).set({ attemptCount: 5 }).where(eq(loginCodes.id, first.codeId!));
+
+    const [claimed] = await claimDueTasks(1, { lockToken: "exhausted-worker" });
+    expect(claimed).toBeDefined();
+    await expect(
+      deliverLoginCodeEmailTask(payloadOf(claimed!), {
+        taskId: claimed!.id,
+        lockToken: "exhausted-worker",
+        assertTaskOwnership: async () => undefined,
+      }),
+    ).resolves.toContain("no longer active");
+    expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();
+
+    const replacement = await requestLoginCode(email, {
+      challenge: "B".repeat(43),
+      locale: "en",
+    });
+    expect(replacement).toMatchObject({ suppressed: false });
+    expect(replacement.codeId).not.toBe(first.codeId);
+    await expect(db.select().from(loginCodes)).resolves.toHaveLength(2);
+    await expect(db.select().from(tasks)).resolves.toHaveLength(2);
+  });
+
   it("allows a reclaimed worker to repeat the same code after a pre-completion crash", async () => {
     await requestLoginCode("retry@example.com", { challenge: TEST_CHALLENGE, locale: "en" });
     const [firstClaim] = await claimDueTasks(1, { lockToken: "worker-a" });

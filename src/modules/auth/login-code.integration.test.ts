@@ -110,10 +110,18 @@ describeWithDatabase("S4 login-code integration", () => {
     }
     await expect(
       verifyLoginCode("attempts@example.com", "000004", TEST_CHALLENGE),
-    ).rejects.toMatchObject({ status: 429, code: "codeAttemptsExceeded" });
+    ).rejects.toMatchObject({
+      status: 429,
+      code: "codeAttemptsExceeded",
+      freshAttemptExhausted: true,
+    });
     await expect(
       verifyLoginCode("attempts@example.com", TEST_CODE, TEST_CHALLENGE),
-    ).rejects.toMatchObject({ status: 429, code: "codeAttemptsExceeded" });
+    ).rejects.toMatchObject({
+      status: 429,
+      code: "codeAttemptsExceeded",
+      freshAttemptExhausted: false,
+    });
 
     const [stored] = await db.select().from(loginCodes);
     expect(stored).toMatchObject({ attemptCount: 5, usedAt: null });

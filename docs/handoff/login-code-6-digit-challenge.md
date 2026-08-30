@@ -1,6 +1,6 @@
 # 交接：6 位数字登录码与请求挑战绑定
 
-> 状态：已确认设计，待实现。本文在实现落地后取代 S4 中“登录码至少 80 bit、错误提交永不写 `attempt_count`”两项约束；S4 的来源硬预算、email+IP 失败桶、持久投递 fence、加密任务和 SMTP 边界继续生效。
+> 状态：已实现。本文已取代 S4 中“登录码至少 80 bit、错误提交永不写 `attempt_count`”两项约束；S4 的来源硬预算、email+IP 失败桶、持久投递 fence、加密任务和 SMTP 边界继续生效。
 
 ## 1. 目标与威胁模型
 
@@ -36,7 +36,7 @@
 - challenge 仅保存在当前浏览器的登录流程状态和 `sessionStorage`；不得进入 URL、analytics、console、错误上报或持久 cookie。
 - 同一 `requestedEmail` 的重发必须复用已有 challenge。服务端可能因 active code / durable task fence 返回统一 `accepted` 但不创建新 code；客户端此时若换 challenge，会使仍在途的 code 无法验证。
 - 更换邮箱时删除旧 challenge 并生成新的 challenge。登录成功、显式取消或 code 过期后删除。
-- 页面刷新后从 `sessionStorage` 恢复；浏览器会话丢失时需要重新发码。UI 应明确提示在原浏览器完成验证。
+- 页面刷新后从 `sessionStorage` 恢复。若浏览器会话在 code 仍 active 时丢失，服务端不能仅凭一个新 challenge 安全替换旧 code，否则第三方可借重发接口使受害者的 code 失效。UI 必须明确提示：在原浏览器完成验证，或等待最多一个 code TTL（10 分钟）后再请求新 code；也可改用 Magic Link / OAuth。不得提示用户立即重发并暗示会生成可用的新 code。
 
 浏览器生成逻辑必须使用 `crypto.getRandomValues`，禁止 `Math.random()`、时间戳、UUID v1 或可预测 PRNG。
 
@@ -96,6 +96,8 @@ challenge_hash text null
 
 active code 被抑制时，不更新其 `challenge_hash`、`attempt_count`、创建时间或 task。客户端复用原 challenge 是协议的一部分。
 
+对新协议行，`attempt_count >= 5` 表示 code 已耗尽：它不再属于 active-code dedupe/fence 的候选，后续请求可以创建绑定新 challenge 的 code。该旧 code 对应的 pending、processing 或可重试 failed 投递任务必须在取得任务 ownership 与 per-email fence 后判定为 stale，并成功 no-op；不得再解密或发送已耗尽 code。legacy 行仍只按 `used_at` 与 expiry 判断 active。
+
 ## 6. 验证事务
 
 route 顺序仍为：输入校验 → target failure bucket 只读检查 → source comparison budget 消费 → 核心数据库事务 → 失败后 resolved email+IP 记账。
@@ -109,9 +111,11 @@ route 顺序仍为：输入校验 → target failure bucket 只读检查 → sou
 3. challenge 匹配但 `attempt_count >= 5`：返回 `codeAttemptsExceeded`；不得比较 code。
 4. 常量时间比较 code HMAC。
 5. code 正确：条件更新 `used_at = now()` 并登录；不增加 `attempt_count`。
-6. code 错误：在持有行锁时把 `attempt_count` 原子增加 1；第 1–4 次返回 `codeIncorrect`，第 5 次返回 `codeAttemptsExceeded`。
+6. code 错误：在持有行锁时把 `attempt_count` 原子增加 1；第 1–4 次返回 `codeIncorrect`，第 5 次产生内部 `attempts_exhausted_now` 结果并对外返回 `codeAttemptsExceeded`。
 
 challenge mismatch 与 code mismatch 对外都不得暴露可区分的正文、字段或稳定可利用的时序差异。route 可以继续让两者进入相同的 source / resolved email+IP 失败记账路径，但数据库 attempts 只由 challenge-matched code mismatch 推进。
+
+route 必须把 `attempts_exhausted_now` 当作本次真实错误比较计入 resolved email+IP 失败桶，同时保持 429 响应；已经在进入请求前耗尽的 code 则返回单独的内部 `attempts_already_exhausted`，不得重复消费该失败桶。这样第 5 次错误不会绕过 S4 记账，也不会让耗尽后的重试继续累积 target-scoped 失败次数。
 
 ### 6.2 legacy 行（`challenge_hash IS NULL`）
 
@@ -145,6 +149,9 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - 新 code 行同时写 code/challenge HMAC，task JSON 不含 challenge 或明文 code；
 - challenge 错误时 attempts 不变，正确 challenge + 错误 code 每次只加 1；
 - 第 5 次错误封锁该 code，正确 code 在 attempts 达 5 后也失败；
+- 第 5 次错误同时计入 resolved email+IP 失败桶，耗尽后的后续请求不重复记账；
+- 已耗尽 code 不抑制新 code 创建，其旧投递任务在 SMTP 前成功 no-op；
+- challenge 丢失时 UI 不进入立即重发循环，而是提示等待旧 code 最多 10 分钟过期或改用其他登录方式；
 - attempts 未达 5 时正确 code 成功且不增加 attempts；
 - 并发错误 attempts 不丢失、不超过 5，并发正确最多一次成功；
 - 来源硬预算和 resolved email+IP 门禁的 S4 测试全部保留；
@@ -155,13 +162,13 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 
 ## 10. 验收清单
 
-- [ ] 固定 6 位 decimal，旧 env 值不再控制生成策略
-- [ ] 32-byte challenge 由浏览器 CSPRNG 生成并在同一邮箱重发时复用
-- [ ] 数据库只存 purpose-separated challenge HMAC
-- [ ] challenge mismatch 不比较 code、不写 attempts
-- [ ] attempts 仅在 challenge-matched code mismatch 后增加，最大 5
-- [ ] 正确 code 仍受 attempts 上限、source gate 与 target gate 约束
-- [ ] legacy 16 位行只在自然过期窗口兼容
-- [ ] active-code dedupe 不替换 challenge
-- [ ] durable task、SMTP、日志和审计不泄露 challenge/code
-- [ ] 迁移和部署说明明确旧实例不能验证新 6 位码
+- [x] 固定 6 位 decimal，旧 env 值不再控制生成策略
+- [x] 32-byte challenge 由浏览器 CSPRNG 生成并在同一邮箱重发时复用
+- [x] 数据库只存 purpose-separated challenge HMAC
+- [x] challenge mismatch 不比较 code、不写 attempts
+- [x] attempts 仅在 challenge-matched code mismatch 后增加，最大 5
+- [x] 正确 code 仍受 attempts 上限、source gate 与 target gate 约束
+- [x] legacy 16 位行只在自然过期窗口兼容
+- [x] active-code dedupe 不替换 challenge，并排除已耗尽新协议行
+- [x] durable task、SMTP、日志和审计不泄露 challenge/code
+- [x] 迁移和部署说明明确旧实例不能验证新 6 位码

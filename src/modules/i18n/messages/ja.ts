@@ -285,7 +285,8 @@ export const ja: Messages = {
     code: "認証コード",
     codePlaceholder: "{length}桁の数字コード",
     codeHint: "リクエストしたブラウザで入力してください。コードは10分間有効です。",
-    challengeMissing: "このブラウザにログイン確認情報がありません。コードを再送してください。",
+    challengeMissing:
+      "このブラウザのログイン確認情報が失われました。元のブラウザを使用するか、最大10分待ってから新しいコードをリクエストしてください。マジックリンクやソーシャルログインも利用できます。",
     resend: "再送信",
     sendCode: "認証コードを送信",
     changeEmail: "メールアドレスを変更",

@@ -276,6 +276,9 @@ export function LoginForm({
             run(async () => {
               try {
                 const targetEmail = requestedEmail ?? normalizeEmail(email);
+                if (codeSent && requestedEmail && !getStoredLoginCodeChallenge(requestedEmail)) {
+                  throw new Error(t("login.challengeMissing"));
+                }
                 const challenge = getOrCreateLoginCodeChallenge(targetEmail);
                 await api("/api/auth/request-code", {
                   method: "POST",
