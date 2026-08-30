@@ -94,12 +94,10 @@ function collectStaticTranslationUsages(sourceRoot: string): TranslationUsage[] 
             keyArgument.getStart(sourceFile),
           );
           for (const key of staticTranslationKeys(keyArgument)) {
-            if (key.includes(".")) {
-              usages.push({
-                key,
-                location: `${relative(sourceRoot, path)}:${line + 1}`,
-              });
-            }
+            usages.push({
+              key,
+              location: `${relative(sourceRoot, path)}:${line + 1}`,
+            });
           }
         }
       }
