@@ -9,12 +9,14 @@ SET
 	"price_amount_minor" = CASE
 		WHEN "tier"."price_amount_minor" IS NULL
 			AND NULLIF(BTRIM("tier"."currency"), '') IS NULL
+			AND "tier"."updated_at" = "tier"."created_at"
 			THEN "preset"."price_amount_minor"
 		ELSE "tier"."price_amount_minor"
 	END,
 	"currency" = CASE
 		WHEN "tier"."price_amount_minor" IS NULL
 			AND NULLIF(BTRIM("tier"."currency"), '') IS NULL
+			AND "tier"."updated_at" = "tier"."created_at"
 			THEN "preset"."currency"
 		ELSE "tier"."currency"
 	END,
@@ -31,6 +33,7 @@ WHERE
 		(
 			"tier"."price_amount_minor" IS NULL
 			AND NULLIF(BTRIM("tier"."currency"), '') IS NULL
+			AND "tier"."updated_at" = "tier"."created_at"
 		)
 		OR NULLIF(BTRIM("tier"."description"), '') IS NULL
 	);

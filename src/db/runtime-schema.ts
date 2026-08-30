@@ -199,7 +199,7 @@ export const RUNTIME_SCHEMA_MIGRATIONS = [
   },
   {
     tag: "0038_preset_tier_commerce",
-    hash: "43e77545855b871f03a07751ccd53499ae4309ad12a7298e0fa77b37e99d1101",
+    hash: "24a7b1a45ba68d001ab3fef750968eaa9f56480f20fb9f2f219b825f55443f5d",
     createdAt: 1788030397614,
   },
 ] as const;

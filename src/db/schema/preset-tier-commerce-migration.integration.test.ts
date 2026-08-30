@@ -26,6 +26,7 @@ describeWithDatabase("preset tier commerce migration", () => {
         price_label text not null,
         price_amount_minor bigint,
         currency text,
+        created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()
       );
     `);
@@ -38,12 +39,12 @@ describeWithDatabase("preset tier commerce migration", () => {
   it("fills only missing fields on recognizable presets and is idempotent", async () => {
     await db.unsafe(`
       insert into membership_tiers
-        (slug, description, price_label, price_amount_minor, currency, updated_at)
+        (slug, description, price_label, price_amount_minor, currency, created_at, updated_at)
       values
-        ('supporter', null, '¥9 / 月', null, null, '2025-01-01T00:00:00Z'),
-        ('hd-member', null, '¥29 / 月', 2900, 'CNY', '2025-01-01T00:00:00Z'),
-        ('pack-member', '   ', '¥59 / 月', null, 'cny', '2025-01-01T00:00:00Z'),
-        ('custom-supporter', null, '¥9 / 月', null, null, '2025-01-01T00:00:00Z');
+        ('supporter', null, '¥9 / 月', null, null, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z'),
+        ('hd-member', null, '¥29 / 月', 2900, 'CNY', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z'),
+        ('pack-member', '   ', '¥59 / 月', null, 'cny', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z'),
+        ('custom-supporter', null, '¥9 / 月', null, null, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z');
     `);
 
     await db.unsafe(migrationSql);
@@ -94,10 +95,10 @@ describeWithDatabase("preset tier commerce migration", () => {
   it("keeps partially customized structured prices non-payable", async () => {
     await db.unsafe(`
       insert into membership_tiers
-        (slug, description, price_label, price_amount_minor, currency, updated_at)
+        (slug, description, price_label, price_amount_minor, currency, created_at, updated_at)
       values
-        ('supporter', null, '¥9 / 月', null, 'usd', '2025-01-01T00:00:00Z'),
-        ('hd-member', null, '¥29 / 月', 3100, null, '2025-01-01T00:00:00Z');
+        ('supporter', null, '¥9 / 月', null, 'usd', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z'),
+        ('hd-member', null, '¥29 / 月', 3100, null, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z');
     `);
 
     await db.unsafe(migrationSql);
@@ -123,11 +124,37 @@ describeWithDatabase("preset tier commerce migration", () => {
     ]);
   });
 
+  it("keeps a preset deliberately saved as manual-only", async () => {
+    await db.unsafe(`
+      insert into membership_tiers
+        (slug, description, price_label, price_amount_minor, currency, created_at, updated_at)
+      values
+        ('supporter', null, '¥9 / 月', null, null,
+         '2025-01-01T00:00:00Z', '2025-02-01T00:00:00Z');
+    `);
+
+    await db.unsafe(migrationSql);
+
+    await expect(db`
+      select slug, description,
+             price_amount_minor::integer as "priceAmountMinor", currency
+      from membership_tiers
+    `).resolves.toMatchObject([
+      {
+        slug: "supporter",
+        description: "支持创作者持续更新，并获得支持者身份与基础会员内容。",
+        priceAmountMinor: null,
+        currency: null,
+      },
+    ]);
+  });
+
   it("does not reinterpret a preset slug after its displayed price was customized", async () => {
     await db.unsafe(`
       insert into membership_tiers
-        (slug, description, price_label, price_amount_minor, currency, updated_at)
-      values ('supporter', null, '¥12 / 月', null, null, '2025-01-01T00:00:00Z');
+        (slug, description, price_label, price_amount_minor, currency, created_at, updated_at)
+      values ('supporter', null, '¥12 / 月', null, null,
+              '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z');
     `);
 
     await db.unsafe(migrationSql);
