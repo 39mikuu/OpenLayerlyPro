@@ -1172,6 +1172,7 @@ export const zh = {
     magicLinkNotConfigured: "邮件登录链接未配置，请联系站点管理员",
     magicLinkDeliveryInFlight: "该邮箱的登录链接投递仍在进行中，请在处理完成后重试。",
     requestRateLimited: "请求过于频繁，请稍后再试",
+    trustedClientIpUnavailable: "站点无法确认客户端来源，请联系管理员检查反向代理配置",
     hourlyRateLimited: "请求过于频繁，请一小时后再试",
     cooldownRateLimited: "发送过于频繁，请 {seconds} 秒后再试",
     downloadRateLimited: "下载过于频繁，请稍后再试",

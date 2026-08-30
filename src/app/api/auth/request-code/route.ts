@@ -3,8 +3,8 @@ import { z } from "zod";
 
 import { getClientIp, getUserAgent, handleApiError, jsonError, jsonOk } from "@/lib/api";
 import {
+  assertProductionAuthClientIdentity,
   resolveClientRateLimitIdentity,
-  warnUnresolvedClientRateLimitIdentity,
 } from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
@@ -32,12 +32,7 @@ export async function POST(req: NextRequest) {
     assertContentLengthWithinLimit(req, env.REQUEST_JSON_MAX_BYTES);
     const ip = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(ip);
-    if (identity.kind === "unresolved" && env.NODE_ENV === "production") {
-      warnUnresolvedClientRateLimitIdentity({
-        message:
-          "Trusted client IP is unavailable for request-code. Using request-code-unresolved emergency rate-limit bucket.",
-      });
-    }
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "request-code");
     const primaryLimit = getRequestCodePrimaryRateLimit(identity, env);
     if (!rateLimit(primaryLimit.key, primaryLimit.max, primaryLimit.windowMs)) {
       return jsonError(429, "requestRateLimited");

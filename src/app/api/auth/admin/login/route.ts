@@ -3,8 +3,8 @@ import { z } from "zod";
 
 import { getClientIp, getUserAgent, handleApiError, jsonError, jsonOk } from "@/lib/api";
 import {
+  assertProductionAuthClientIdentity,
   resolveClientRateLimitIdentity,
-  warnUnresolvedClientRateLimitIdentity,
 } from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
@@ -32,12 +32,7 @@ export async function POST(req: NextRequest) {
     const clientIp = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(clientIp);
     const env = getEnv();
-    if (identity.kind === "unresolved" && env.NODE_ENV === "production") {
-      warnUnresolvedClientRateLimitIdentity({
-        message:
-          "Trusted client IP is unavailable for admin login. Using admin-login-unresolved emergency rate-limit bucket.",
-      });
-    }
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "admin login");
     const limit = getAdminLoginRateLimit(identity, env);
     if (!rateLimit(limit.key, limit.max, limit.windowMs)) {
       return jsonError(429, "requestRateLimited");

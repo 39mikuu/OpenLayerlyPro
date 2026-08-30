@@ -73,7 +73,7 @@ src/
 - 同邮箱 active code 与 durable delivery task 使用并发安全 fence；新请求统一返回 accepted，不泄漏是否实际发信。
 - 正确码先进入核心比较，wrong/expired 结果确认后才记 IP、email+IP 或 unresolved 错误预算。
 - source-scoped pre-comparison hard budget 限制昂贵比较，但不能让第三方只凭受害者 email 锁死正确码。
-- Turnstile、request-code、verify-code 和 admin-login 都使用可信 resolved identity 或各操作独立的 unresolved emergency bucket。
+- Turnstile、request-code、verify-code、Magic Link、OAuth 和 admin-login 在生产必须获得可信 resolved identity，否则失败关闭；开发/测试保留各操作独立的 unresolved emergency bucket。
 - 登录码任务在短事务内 claim/fence，SMTP 在事务与 advisory lock 之外执行；stale task 成功 no-op。
 - Magic Link 只存 keyed hash；GET 仅展示不消费，显式确认才在同一事务内原子消费 token、创建/更新用户并插入 session。protocol-v2 rollout 通过独立 intake/delivery ledger、lease 与角色边界 fence 控制。
 - Google/GitHub OAuth 使用 PKCE S256、单次 state、浏览器绑定与站内 redirect allowlist；provider identity 优先，只有 verified email 可自动绑定。provider 故障不影响验证码和 Magic Link fallback。

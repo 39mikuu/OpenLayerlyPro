@@ -1232,6 +1232,8 @@ export const en: Messages = {
     magicLinkDeliveryInFlight:
       "A login-link delivery for this address is still in progress. Try again after it is resolved.",
     requestRateLimited: "Too many requests. Please try again later.",
+    trustedClientIpUnavailable:
+      "The site cannot verify the client source. Ask the administrator to check the reverse-proxy configuration.",
     hourlyRateLimited: "Too many requests. Please try again in an hour.",
     cooldownRateLimited: "Please wait {seconds} seconds before sending again.",
     downloadRateLimited: "Too many downloads. Please try again later.",

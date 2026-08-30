@@ -3,8 +3,8 @@ import { z } from "zod";
 
 import { getClientIp, getUserAgent, handleApiError, jsonError } from "@/lib/api";
 import {
+  assertProductionAuthClientIdentity,
   resolveClientRateLimitIdentity,
-  warnUnresolvedClientRateLimitIdentity,
 } from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
@@ -45,12 +45,7 @@ export async function POST(req: NextRequest) {
     const env = getEnv();
     const clientIp = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(clientIp);
-    if (identity.kind === "unresolved" && env.NODE_ENV === "production") {
-      warnUnresolvedClientRateLimitIdentity({
-        message:
-          "Trusted client IP is unavailable for magic-link confirm. Using verify-code-unresolved emergency rate-limit bucket.",
-      });
-    }
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "magic-link confirm");
     // Shares the verify-code comparison budget: token confirmation attempts
     // spend the same per-source login-verification quota.
     const compareLimit = getVerifyCodeCompareRateLimit({ identity, env });

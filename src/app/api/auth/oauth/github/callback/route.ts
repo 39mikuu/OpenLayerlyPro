@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { ApiError, getClientIp, getUserAgent, handleApiError } from "@/lib/api";
-import { resolveClientRateLimitIdentity } from "@/lib/client-rate-limit";
+import {
+  assertProductionAuthClientIdentity,
+  resolveClientRateLimitIdentity,
+} from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
 import {
@@ -51,6 +54,7 @@ export async function GET(req: NextRequest) {
     // into unbounded audit-event writes. Use a distinct namespace from starts.
     const env = getEnv();
     const identity = resolveClientRateLimitIdentity(getClientIp(req));
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "GitHub OAuth callback");
     const limit = getOAuthStartRateLimit("github-callback", identity, env);
     if (!rateLimit(limit.key, limit.max, limit.windowMs)) {
       // No state has been validated or consumed yet. Preserve the binding
