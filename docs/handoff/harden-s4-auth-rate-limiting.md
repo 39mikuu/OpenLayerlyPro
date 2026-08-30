@@ -1,6 +1,6 @@
 # 交接：S4 认证限流硬化（含 #66 verify-code 定向锁死）
 
-> 2026-08-30 follow-up：生产认证入口在可信客户端 IP 无法解析时改为失败关闭，不再进入本文的 unresolved 共享 emergency bucket；这些 bucket 仅保留给开发/测试诊断。生产文件读取仍使用独立高阈值降级桶。本文其余 resolved-IP 门禁、比较顺序和持久投递约束不变。
+> 2026-08-30 follow-up：公网生产认证入口在可信客户端 IP 无法解析时改为失败关闭，不再进入本文的 unresolved 共享 emergency bucket；只有受信任局域网/防火墙后的基础 Compose 直连可显式启用该例外，开发/测试也保留这些 bucket 用于诊断。生产文件读取仍使用独立高阈值降级桶。本文其余 resolved-IP 门禁、比较顺序和持久投递约束不变。
 
 > 自包含实现说明。前置依赖：当前 `main` 已含 #60 client identity helpers、`@/lib/rate-limit`、S1a/#70 请求体有界读取。属 v1.0 安全硬化 S4（epic #64，含 #66）。
 >
