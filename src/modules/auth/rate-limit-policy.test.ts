@@ -38,6 +38,8 @@ describe("auth rate-limit and login-code policy", () => {
 
   it("accepts legacy Crockford candidates during the migration window", () => {
     expect(validateLoginCode("ABCD1234EFGH5678", env)).toBe("ABCD1234EFGH5678");
+    expect(validateLoginCode("A".repeat(24), env)).toBe("A".repeat(24));
+    expect(validateLoginCode("1".repeat(64), env)).toBe("1".repeat(64));
     expect(getLoginCodePolicy(env).pattern.test("ABCD1234EFGH5678")).toBe(false);
   });
 
@@ -45,6 +47,7 @@ describe("auth rate-limit and login-code policy", () => {
     expect(() => validateLoginCode("12345", env)).toThrow();
     expect(() => validateLoginCode("12345A", env)).toThrow();
     expect(() => validateLoginCode("ABCD1234EFGH567O", env)).toThrow();
+    expect(() => validateLoginCode("A".repeat(65), env)).toThrow();
   });
 
   it("accepts only unpadded 32-byte base64url challenges", () => {

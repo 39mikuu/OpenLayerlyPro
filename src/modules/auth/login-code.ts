@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, lt, or, sql, type SQLWrapper } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, lt, or, sql, type SQLWrapper } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import { loginCodes, tasks, type User } from "@/db/schema";
@@ -243,6 +243,20 @@ export async function verifyLoginCode(
         throw new ApiError(400, "codeExpired");
       }
 
+      const [deliveryTask] = await tx
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.dedupeKey, `auth-login-code-email:${record.id}`),
+            eq(tasks.status, "processing"),
+            isNotNull(tasks.lockedBy),
+            gt(tasks.leaseUntil, sql<Date>`now()`),
+          ),
+        )
+        .limit(1);
+      if (deliveryTask) return "delivery_in_progress";
+
       if (record.challenge_hash === null) {
         if (
           !isLegacyLoginCode(normalizedCode) ||
@@ -251,18 +265,6 @@ export async function verifyLoginCode(
           return "incorrect";
         }
       } else {
-        const [deliveryTask] = await tx
-          .select({ id: tasks.id })
-          .from(tasks)
-          .where(
-            and(
-              eq(tasks.dedupeKey, `auth-login-code-email:${record.id}`),
-              eq(tasks.status, "processing"),
-            ),
-          )
-          .limit(1);
-        if (deliveryTask) return "delivery_in_progress";
-
         const challengeMatches = Boolean(
           candidateChallengeHash && safeEqualHex(candidateChallengeHash, record.challenge_hash),
         );

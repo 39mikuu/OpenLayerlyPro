@@ -24,7 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/client";
-import { LEGACY_LOGIN_CODE_LENGTH, normalizeEmail } from "@/modules/auth/input-policy";
+import { LEGACY_LOGIN_CODE_MAX_LENGTH, normalizeEmail } from "@/modules/auth/input-policy";
 
 export function LoginForm({
   mode,
@@ -214,7 +214,7 @@ export function LoginForm({
             inputMode="numeric"
             autoCapitalize="off"
             autoComplete="one-time-code"
-            maxLength={LEGACY_LOGIN_CODE_LENGTH}
+            maxLength={LEGACY_LOGIN_CODE_MAX_LENGTH}
             pattern="[0-9]*"
             placeholder={t("login.codePlaceholder", { length: loginCodeLength })}
             value={code}

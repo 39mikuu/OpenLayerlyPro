@@ -79,6 +79,53 @@ describeWithDatabase("S4 login-code integration", () => {
     expect(stored?.usedAt).toBeInstanceOf(Date);
   });
 
+  it("accepts every previously configurable legacy code length", async () => {
+    for (const [index, legacyCode] of ["A".repeat(24), "1".repeat(64)].entries()) {
+      const email = `legacy-${index}@example.com`;
+      await db.insert(loginCodes).values({
+        email,
+        codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, legacyCode),
+        expiresAt: new Date(Date.now() + 10 * 60_000),
+      });
+
+      await expect(verifyLoginCode(email, legacyCode)).resolves.toMatchObject({ email });
+    }
+  });
+
+  it("defers legacy verification only for an actively leased delivery", async () => {
+    const email = "legacy-delivery@example.com";
+    const requested = await requestLoginCode(email, { challenge: TEST_CHALLENGE });
+    await db
+      .update(loginCodes)
+      .set({
+        challengeHash: null,
+        codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, LEGACY_TEST_CODE),
+      })
+      .where(eq(loginCodes.id, requested.codeId!));
+    await db
+      .update(tasks)
+      .set({
+        status: "processing",
+        lockedBy: "legacy-worker",
+        leaseUntil: new Date(Date.now() + 60_000),
+      })
+      .where(eq(tasks.dedupeKey, `auth-login-code-email:${requested.codeId}`));
+
+    await expect(verifyLoginCode(email, LEGACY_TEST_CODE)).rejects.toMatchObject({
+      status: 400,
+      code: "codeIncorrect",
+      comparisonDeferred: true,
+    });
+    const [reserved] = await db.select().from(loginCodes);
+    expect(reserved?.usedAt).toBeNull();
+
+    await db
+      .update(tasks)
+      .set({ leaseUntil: new Date(Date.now() - 1_000) })
+      .where(eq(tasks.dedupeKey, `auth-login-code-email:${requested.codeId}`));
+    await expect(verifyLoginCode(email, LEGACY_TEST_CODE)).resolves.toMatchObject({ email });
+  });
+
   it("does not consume attempts for a wrong challenge", async () => {
     await db.insert(loginCodes).values({
       email: "challenge@example.com",

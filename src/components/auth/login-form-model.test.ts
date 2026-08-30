@@ -99,6 +99,9 @@ describe("fan login form flow", () => {
       canSubmitFanLoginCode(changeFanLoginCode(accepted, "ABCD1234EFGH5678"), 6, codePattern),
     ).toBe(true);
     expect(
+      canSubmitFanLoginCode(changeFanLoginCode(accepted, "1".repeat(64)), 6, codePattern),
+    ).toBe(true);
+    expect(
       canSubmitFanLoginCode(
         resetFanLoginRequestedEmail(changeFanLoginCode(accepted, "123456")),
         6,

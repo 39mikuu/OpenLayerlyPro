@@ -73,7 +73,7 @@ challenge_hash text null
 ```
 
 - 新协议创建的行必须写非空 `challenge_hash`。
-- 迁移不得给存量行伪造 challenge；`NULL` 明确表示 legacy 16-char Crockford code。
+- 迁移不得给存量行伪造 challenge；`NULL` 明确表示 legacy Crockford code。存量长度由部署前的 `LOGIN_CODE_LENGTH` 决定，旧 schema 曾允许 16–64，因此兼容分支必须覆盖整个范围。
 - 不需要 challenge 索引；查询仍以 normalized email 的最新 active code 为入口。
 - `attempt_count` 保留非负默认值。新协议中它只统计 **challenge 已匹配** 后的错误 code 比较。
 - 不新增 raw challenge、code format 或 code 明文列。
@@ -98,7 +98,7 @@ active code 被抑制时，不更新其 `challenge_hash`、`attempt_count`、创
 
 对新协议行，`attempt_count >= 5` 表示 code 已耗尽：它不再属于 active-code dedupe/fence 的候选，后续请求可以创建绑定新 challenge 的 code。该旧 code 对应的 pending、processing 或可重试 failed 投递任务必须在取得任务 ownership 与 per-email fence 后判定为 stale，并成功 no-op；不得再解密或发送已耗尽 code。legacy 行仍只按 `used_at` 与 expiry 判断 active。
 
-`tasks.status='processing'` 同时作为 SMTP 最后安全点的短期发送预留。worker 在 per-email advisory lock 内重新确认 task ownership 后，必须 `FOR UPDATE` 锁定 code 行并完成 exhausted / superseded 检查；事务提交后 task 在整个 SMTP 调用和 handler 返回前保持 `processing`。验证事务若看到该 code 的 delivery task 正在 `processing`，必须返回内部 `delivery_in_progress`，对外保持通用 `codeIncorrect`，但不比较 code、不增加 attempts、也不消费 resolved email+IP 失败桶。这样 worker 提交最后检查后，验证不能再把即将发送的 code 耗尽。worker 崩溃时该预留最多持续到 task lease 被回收；回收后的 worker 重新执行同一检查，不把数据库连接或 advisory lock 跨 SMTP 持有。
+`tasks.status='processing'`、非空 current owner 和 `lease_until > now()` 共同构成 SMTP 最后安全点的短期发送预留。worker 在 per-email advisory lock 内重新确认 task ownership 后，必须 `FOR UPDATE` 锁定 code 行并完成 exhausted / superseded 检查；事务提交后 task 在整个 SMTP 调用和 handler 返回前保持有 owner 的未过期 processing claim。验证事务对新旧协议行都必须检查该预留；命中时返回内部 `delivery_in_progress`，对外保持通用 `codeIncorrect`，但不比较 code、不增加 attempts、也不消费 resolved email+IP 失败桶。这样 worker 提交最后检查后，验证不能再消费或耗尽即将发送的 code。只有 status=processing 但 owner 为空或 lease 已过期的 abandoned 行不构成预留，验证不得无限等待 worker reclaim；现有 ownership fencing 负责阻止该过期 worker 开始新的 SMTP。回收后的 worker 重新执行同一检查，不把数据库连接或 advisory lock 跨 SMTP 持有。
 
 ## 6. 验证事务
 
@@ -106,17 +106,16 @@ route 顺序仍为：输入校验 → target failure bucket 只读检查 → sou
 
 核心事务不得复用发码 dedupe 的 “active code” 谓词。它通常锁定 normalized email 最新的 unused、unexpired code；但如果请求携带的 challenge HMAC 匹配某个 unused、unexpired 且 `attempt_count >= 5` 的新协议行，则优先锁定该已耗尽行。这个窄例外只用于在 replacement 已创建后仍识别旧 challenge 的 `attempts_already_exhausted`，不得让未耗尽的旧 code 越过更新 code 重新生效。由此在 replacement 创建前后，已耗尽重试都不会退化成 `codeExpired` / 普通错误并重复消费 target bucket。
 
-锁定目标行后按行类型执行：
+锁定目标行后，先检查其 delivery task 是否持有上述有效 SMTP 预留；命中则按 `delivery_in_progress` 返回。随后按行类型执行：
 
 ### 6.1 新协议行（`challenge_hash IS NOT NULL`）
 
-1. 若该 code 的 delivery task 正在 `processing`，返回内部 `delivery_in_progress`；对外使用通用 `codeIncorrect`，不得比较 challenge/code、更新状态或消费 target bucket。
-2. 常量时间比较 challenge HMAC。
-3. challenge 不匹配：返回通用 `codeIncorrect`；不得比较 code、不得更新 `attempt_count` / `used_at`。
-4. challenge 匹配但 `attempt_count >= 5`：返回 `codeAttemptsExceeded`；不得比较 code。
-5. 常量时间比较 code HMAC。
-6. code 正确：条件更新 `used_at = now()` 并登录；不增加 `attempt_count`。
-7. code 错误：在持有行锁时把 `attempt_count` 原子增加 1；第 1–4 次返回 `codeIncorrect`，第 5 次产生内部 `attempts_exhausted_now` 结果并对外返回 `codeAttemptsExceeded`。
+1. 常量时间比较 challenge HMAC。
+2. challenge 不匹配：返回通用 `codeIncorrect`；不得比较 code、不得更新 `attempt_count` / `used_at`。
+3. challenge 匹配但 `attempt_count >= 5`：返回 `codeAttemptsExceeded`；不得比较 code。
+4. 常量时间比较 code HMAC。
+5. code 正确：条件更新 `used_at = now()` 并登录；不增加 `attempt_count`。
+6. code 错误：在持有行锁时把 `attempt_count` 原子增加 1；第 1–4 次返回 `codeIncorrect`，第 5 次产生内部 `attempts_exhausted_now` 结果并对外返回 `codeAttemptsExceeded`。
 
 challenge mismatch 与 code mismatch 对外都不得暴露可区分的正文、字段或稳定可利用的时序差异。route 可以继续让两者进入相同的 source / resolved email+IP 失败记账路径，但数据库 attempts 只由 challenge-matched code mismatch 推进。
 
@@ -124,11 +123,12 @@ route 必须把 `attempts_exhausted_now` 当作本次真实错误比较计入 re
 
 ### 6.2 legacy 行（`challenge_hash IS NULL`）
 
-- 只接受精确 16 位 uppercase Crockford base32 输入；challenge 可缺省且不参与比较。
+- 接受 16–64 位 uppercase Crockford base32 输入，以覆盖旧版允许的全部 `LOGIN_CODE_LENGTH`；challenge 可缺省且不参与比较。最终仍由存量 `code_hash` 常量时间比较决定是否正确，扩大兼容输入长度不产生可用 code。
+- legacy 行同样先受有效 SMTP 预留保护，避免 retry worker 在用户刚消费 code 后发送已失效邮件。
 - 保持 S4 行为：错误输入不写 `attempt_count`，正确输入仍可在过期前使用。
 - legacy 支持只为迁移窗口存在；新代码不得再创建此类行。
 
-route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 16-char Crockford；核心必须根据锁定行的 `challenge_hash` 决定最终格式，不能只靠客户端传入格式选择协议。
+route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 16–64-char Crockford；核心必须根据锁定行的 `challenge_hash` 决定最终格式，不能只靠客户端传入格式选择协议。
 
 ## 7. 并发与失败语义
 
@@ -142,7 +142,7 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 
 ## 8. UI 与邮件
 
-- 输入框使用 `inputMode="numeric"`、`autoComplete="one-time-code"`。迁移发布中 `maxLength` 暂为 16，状态模型优先保留最多 6 位数字，同时允许粘贴精确的 legacy 16-char Crockford code；legacy TTL 排空后再收紧为只保留 6 位数字。
+- 输入框使用 `inputMode="numeric"`、`autoComplete="one-time-code"`。迁移发布中 `maxLength` 暂为 64，状态模型允许粘贴 16–64 位 legacy Crockford code；legacy TTL 排空后再收紧为只保留 6 位数字。
 - placeholder、帮助文案和邮件模板都必须显示 6 位数字语义，不再提大小写或 16 位长度。
 - 登录码邮件 HTML 化属于独立事务邮件 PR；本协议实现不能依赖 HTML 邮件才能完成验证，纯文本邮件仍包含 6 位 code。
 - challenge 丢失时返回通用失败，并提示在发起请求的浏览器重新发送，不得把 challenge 是否匹配暴露给攻击者。
@@ -158,12 +158,12 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - 第 5 次错误同时计入 resolved email+IP 失败桶，耗尽后的后续请求不重复记账；
 - replacement 创建前后，旧 challenge 都能命中已耗尽行并返回 `attempts_already_exhausted`；未耗尽的旧 code 不得因此重新可用；
 - 已耗尽 code 不抑制新 code 创建，其旧投递任务在 SMTP 前成功 no-op；
-- SMTP 阻塞期间验证不推进 attempts/used_at/target bucket，task 完成或被回收后再比较；
+- 新旧协议行在 active processing claim 的 SMTP 阻塞期间都不推进 attempts/used_at/target bucket；owner 缺失或 lease 过期后不再延后比较；
 - challenge 丢失时 UI 不进入立即重发循环，而是提示等待旧 code 最多 10 分钟过期或改用其他登录方式；
 - attempts 未达 5 时正确 code 成功且不增加 attempts；
 - 并发错误 attempts 不丢失、不超过 5，并发正确最多一次成功；
 - 来源硬预算和 resolved email+IP 门禁的 S4 测试全部保留；
-- legacy 16 位行在 TTL 内可验证且错误不写 attempts；新协议行拒绝 legacy 格式；
+- legacy 16–64 位行在 TTL 内可验证且错误不写 attempts；新协议行拒绝 legacy 格式；
 - migration 保留存量行并允许新旧 verifier 分支；
 - 日志、task、audit、API 响应不出现 raw email、challenge 或 code；
 - lint、format、类型、真实 PostgreSQL 集成测试、build 与完整 CI 全绿。
@@ -176,7 +176,7 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - [x] challenge mismatch 不比较 code、不写 attempts
 - [x] attempts 仅在 challenge-matched code mismatch 后增加，最大 5
 - [x] 正确 code 仍受 attempts 上限、source gate 与 target gate 约束
-- [x] legacy 16 位行只在自然过期窗口兼容
+- [x] legacy 16–64 位行只在自然过期窗口兼容
 - [x] active-code dedupe 不替换 challenge，并排除已耗尽新协议行
 - [x] durable task、SMTP、日志和审计不泄露 challenge/code
 - [x] 迁移和部署说明明确旧实例不能验证新 6 位码
