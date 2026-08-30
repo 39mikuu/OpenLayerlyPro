@@ -753,7 +753,7 @@ export const ja: Messages = {
       unsavedChanges: "未保存の変更があります。公開またはページ移動の前に保存してください。",
       allChangesSaved: "現在の変更は保存済みです。",
       newDraftNotCreated:
-        "この下書きはまだ作成されていません。タイトルとスラッグを入力し、「下書きを保存」を選択してください。",
+        "この下書きはまだ作成されていません。タイトルとスラッグを入力し、「{action}」を選択してください。",
       unsavedChangesConfirm:
         "未保存の変更があります。このページを離れると変更は失われます。移動しますか？",
       saveBeforePublish: "公開する前に現在の変更を保存してください。",

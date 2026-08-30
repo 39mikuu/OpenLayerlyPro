@@ -759,7 +759,7 @@ export const en: Messages = {
       unsavedChanges: "You have unsaved changes. Save before publishing or leaving this page.",
       allChangesSaved: "Current changes are saved.",
       newDraftNotCreated:
-        "This draft has not been created yet. Enter a title and slug, then select Save draft.",
+        "This draft has not been created yet. Enter a title and slug, then select {action}.",
       unsavedChangesConfirm:
         "You have unsaved changes. Leaving this page will discard them. Leave anyway?",
       saveBeforePublish: "Save your current changes before publishing.",

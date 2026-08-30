@@ -431,7 +431,9 @@ export function PostEditor({
           <Notice variant="warning">{t("admin.posts.unsavedChanges")}</Notice>
         ) : isNew ? (
           <p aria-live="polite" className="text-sm text-muted-foreground">
-            {t("admin.posts.newDraftNotCreated")}
+            {t("admin.posts.newDraftNotCreated", {
+              action: t("admin.posts.createDraft"),
+            })}
           </p>
         ) : (
           <p aria-live="polite" className="text-sm text-muted-foreground">

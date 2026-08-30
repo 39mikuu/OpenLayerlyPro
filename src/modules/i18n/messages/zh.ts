@@ -730,7 +730,7 @@ export const zh = {
       tierLevel: "{name}（level {level}）",
       unsavedChanges: "有未保存更改。保存后再发布或离开页面。",
       allChangesSaved: "当前更改已保存。",
-      newDraftNotCreated: "此草稿尚未创建。填写标题和 Slug 后点击“保存草稿”。",
+      newDraftNotCreated: "此草稿尚未创建。填写标题和 Slug 后点击“{action}”。",
       unsavedChangesConfirm: "你有未保存更改，离开页面会丢失这些更改。确定离开？",
       saveBeforePublish: "请先保存当前更改，再发布内容。",
       saveBeforeArchive: "请先保存当前更改，再归档内容。",
