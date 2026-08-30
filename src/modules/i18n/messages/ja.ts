@@ -1373,14 +1373,18 @@ export const ja: Messages = {
   },
   mail: {
     loginSubject: "ログイン認証コード",
+    loginCodeIntro: "下の認証コードを使ってログインを完了してください：",
     loginCode: "認証コード：{code}",
     loginExpiry: "認証コードは10分間有効です。",
+    loginAction: "ログイン画面に戻る",
     ignore: "この操作に心当たりがない場合は、このメールを無視してください。",
     membershipSubject: "メンバーシップが有効になりました",
     membershipOpened: "メンバーシップが有効になりました。",
     membershipTier: "メンバーシッププラン：{tier}",
     membershipUntil: "有効期限：{date}",
     membershipReady: "ログインするとメンバー限定コンテンツの閲覧とダウンロードができます。",
+    membershipAction: "メンバーシップを確認",
+    membershipFooter: "サイトをご支援いただきありがとうございます。",
     membershipRevokedSubject: "メンバーシップの利用を停止しました",
     membershipRevokedBody: "メンバーシップへのアクセスを停止しました。",
     membershipRevokedHelp: "ご不明な点はサイト管理者へお問い合わせください。",
@@ -1404,5 +1408,6 @@ export const ja: Messages = {
     magicLinkExpiry: "リンクの有効期限は 15 分で、一度しか使えません。",
     magicLinkConfirmNote:
       "リンクを開いた後、ページ上で「ログインを確認」をクリックする必要があります。",
+    magicLinkAction: "ログインリンクを開く",
   },
 };
