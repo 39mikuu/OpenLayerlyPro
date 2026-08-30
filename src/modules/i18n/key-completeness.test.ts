@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { extname, join, relative } from "node:path";
 
 import ts from "typescript";
@@ -73,25 +74,144 @@ function staticTranslationKeys(expression: ts.Expression): string[] {
   return [];
 }
 
+type TranslationBindingKind = "bound" | "direct" | "factory";
+
 function collectStaticTranslationUsages(sourceRoot: string): TranslationUsage[] {
-  return productionSourceFiles(sourceRoot).flatMap((path) => {
-    const sourceFile = ts.createSourceFile(
-      path,
-      readFileSync(path, "utf8"),
-      ts.ScriptTarget.Latest,
-      true,
-      path.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-    );
+  const paths = productionSourceFiles(sourceRoot);
+  const configPath = ts.findConfigFile(process.cwd(), ts.sys.fileExists, "tsconfig.json");
+  if (!configPath) throw new Error("tsconfig.json not found");
+  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (config.error)
+    throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, "\n"));
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, process.cwd());
+  const program = ts.createProgram({ rootNames: paths, options: parsed.options });
+  const checker = program.getTypeChecker();
+  const kindCache = new Map<ts.Symbol, TranslationBindingKind | null>();
+  const resolving = new Set<ts.Symbol>();
+
+  function unwrapExpression(expression: ts.Expression): ts.Expression {
+    if (
+      ts.isParenthesizedExpression(expression) ||
+      ts.isAsExpression(expression) ||
+      ts.isTypeAssertionExpression(expression) ||
+      ts.isNonNullExpression(expression) ||
+      ts.isSatisfiesExpression(expression) ||
+      ts.isAwaitExpression(expression)
+    ) {
+      return unwrapExpression(expression.expression);
+    }
+    return expression;
+  }
+
+  function importBindingKind(declaration: ts.ImportSpecifier): TranslationBindingKind | null {
+    const importDeclaration = declaration.parent.parent.parent;
+    if (!ts.isImportDeclaration(importDeclaration)) return null;
+    const moduleName = ts.isStringLiteral(importDeclaration.moduleSpecifier)
+      ? importDeclaration.moduleSpecifier.text
+      : "";
+    const importedName = declaration.propertyName?.text ?? declaration.name.text;
+    if (
+      importedName === "translate" &&
+      ["@/modules/i18n", "@/modules/i18n/translate", "./translate"].includes(moduleName)
+    ) {
+      return "direct";
+    }
+    if (importedName === "useT" && moduleName === "@/components/i18n-provider") {
+      return "factory";
+    }
+    if (importedName === "getT" && moduleName === "@/modules/i18n/server") {
+      return "factory";
+    }
+    return null;
+  }
+
+  function expressionBindingKind(expression: ts.Expression): TranslationBindingKind | null {
+    const unwrapped = unwrapExpression(expression);
+    if (ts.isIdentifier(unwrapped)) {
+      const symbol = checker.getSymbolAtLocation(unwrapped);
+      return symbol ? symbolBindingKind(symbol) : null;
+    }
+    if (ts.isCallExpression(unwrapped)) {
+      return expressionBindingKind(unwrapped.expression) === "factory" ? "bound" : null;
+    }
+    if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
+      return functionReturnsDirectTranslation(unwrapped) ? "bound" : null;
+    }
+    return null;
+  }
+
+  function functionReturnsDirectTranslation(
+    declaration: ts.ArrowFunction | ts.FunctionExpression,
+  ): boolean {
+    let found = false;
+    function visit(node: ts.Node) {
+      if (found) return;
+      if (node !== declaration && ts.isFunctionLike(node)) return;
+      if (ts.isCallExpression(node) && expressionBindingKind(node.expression) === "direct") {
+        found = true;
+        return;
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(declaration.body);
+    return found;
+  }
+
+  function functionDeclarationKind(
+    declaration: ts.FunctionDeclaration,
+  ): TranslationBindingKind | null {
+    if (!declaration.body) return null;
+    let factory = false;
+    function visit(node: ts.Node) {
+      if (factory) return;
+      if (node !== declaration.body && ts.isFunctionLike(node)) return;
+      if (
+        ts.isReturnStatement(node) &&
+        node.expression &&
+        expressionBindingKind(node.expression) === "bound"
+      ) {
+        factory = true;
+        return;
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(declaration.body);
+    return factory ? "factory" : null;
+  }
+
+  function symbolBindingKind(symbol: ts.Symbol): TranslationBindingKind | null {
+    const cached = kindCache.get(symbol);
+    if (cached !== undefined) return cached;
+    if (resolving.has(symbol)) return null;
+    resolving.add(symbol);
+    let kind: TranslationBindingKind | null = null;
+    for (const declaration of symbol.declarations ?? []) {
+      if (ts.isImportSpecifier(declaration)) kind ??= importBindingKind(declaration);
+      else if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
+        kind ??= expressionBindingKind(declaration.initializer);
+      } else if (ts.isFunctionDeclaration(declaration)) {
+        kind ??= functionDeclarationKind(declaration);
+      }
+      if (kind) break;
+    }
+    resolving.delete(symbol);
+    kindCache.set(symbol, kind);
+    return kind;
+  }
+
+  return paths.flatMap((path) => {
+    const sourceFile = program.getSourceFile(path);
+    if (!sourceFile) throw new Error(`TypeScript program did not load ${path}`);
     const usages: TranslationUsage[] = [];
 
     function visit(node: ts.Node) {
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-        const keyArgumentIndex =
-          node.expression.text === "t" ? 0 : node.expression.text === "translate" ? 1 : -1;
+      if (ts.isCallExpression(node)) {
+        const bindingKind = expressionBindingKind(node.expression);
+        const keyArgumentIndex = bindingKind === "bound" ? 0 : bindingKind === "direct" ? 1 : -1;
         const keyArgument = keyArgumentIndex >= 0 ? node.arguments[keyArgumentIndex] : undefined;
         if (keyArgument) {
-          const { line } = sourceFile.getLineAndCharacterOfPosition(
-            keyArgument.getStart(sourceFile),
+          const { line } = sourceFile!.getLineAndCharacterOfPosition(
+            keyArgument.getStart(sourceFile!),
           );
           for (const key of staticTranslationKeys(keyArgument)) {
             usages.push({
@@ -139,5 +259,35 @@ describe("i18n message key completeness (G4)", () => {
       .sort();
 
     expect(missing).toEqual([]);
+  });
+
+  it("distinguishes translation API aliases from unrelated same-name functions", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "i18n-binding-scan-"));
+    try {
+      writeFileSync(
+        join(fixtureRoot, "bindings.ts"),
+        `
+          import { useT as useTranslate } from "@/components/i18n-provider";
+          import { translate as renderMessage } from "@/modules/i18n";
+
+          function t(state: string) { return state; }
+
+          export function render(locale: "en") {
+            const message = useTranslate();
+            t("business-state");
+            message("nav.posts");
+            renderMessage(locale, "nav.home");
+          }
+        `,
+        "utf8",
+      );
+
+      expect(collectStaticTranslationUsages(fixtureRoot).map(({ key }) => key)).toEqual([
+        "nav.posts",
+        "nav.home",
+      ]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });
