@@ -89,6 +89,28 @@ function collectStaticTranslationUsages(sourceRoot: string): TranslationUsage[] 
   const kindCache = new Map<ts.Symbol, TranslationBindingKind | null>();
   const resolving = new Set<ts.Symbol>();
 
+  function resolveAlias(symbol: ts.Symbol): ts.Symbol {
+    return symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+  }
+
+  function isTranslateType(type: ts.Type): boolean {
+    const candidates = [type.aliasSymbol, type.getSymbol()].filter(
+      (symbol): symbol is ts.Symbol => symbol !== undefined,
+    );
+    return candidates.some((candidate) => {
+      const symbol = resolveAlias(candidate);
+      return (
+        symbol.name === "Translate" &&
+        (symbol.declarations ?? []).some((declaration) =>
+          declaration
+            .getSourceFile()
+            .fileName.replaceAll("\\", "/")
+            .endsWith("/modules/i18n/runtime.ts"),
+        )
+      );
+    });
+  }
+
   function unwrapExpression(expression: ts.Expression): ts.Expression {
     if (
       ts.isParenthesizedExpression(expression) ||
@@ -189,6 +211,8 @@ function collectStaticTranslationUsages(sourceRoot: string): TranslationUsage[] 
       if (ts.isImportSpecifier(declaration)) kind ??= importBindingKind(declaration);
       else if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
         kind ??= expressionBindingKind(declaration.initializer);
+      } else if (ts.isParameter(declaration) || ts.isBindingElement(declaration)) {
+        kind ??= isTranslateType(checker.getTypeAtLocation(declaration.name)) ? "bound" : null;
       } else if (ts.isFunctionDeclaration(declaration)) {
         kind ??= functionDeclarationKind(declaration);
       }
@@ -259,7 +283,7 @@ describe("i18n message key completeness (G4)", () => {
       .sort();
 
     expect(missing).toEqual([]);
-  });
+  }, 30_000);
 
   it("distinguishes translation API aliases from unrelated same-name functions", () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "i18n-binding-scan-"));
@@ -269,6 +293,8 @@ describe("i18n message key completeness (G4)", () => {
         `
           import { useT as useTranslate } from "@/components/i18n-provider";
           import { translate as renderMessage } from "@/modules/i18n";
+          import type { Translate } from "@/modules/i18n";
+          import { getT } from "@/modules/i18n/server";
 
           function t(state: string) { return state; }
 
@@ -278,6 +304,15 @@ describe("i18n message key completeness (G4)", () => {
             message("nav.posts");
             renderMessage(locale, "nav.home");
           }
+
+          export function renderProp({ translator }: { translator: Translate }) {
+            translator("nav.login");
+          }
+
+          export async function renderServer() {
+            const [serverTranslate] = await Promise.all([getT()]);
+            serverTranslate("nav.logout");
+          }
         `,
         "utf8",
       );
@@ -285,6 +320,8 @@ describe("i18n message key completeness (G4)", () => {
       expect(collectStaticTranslationUsages(fixtureRoot).map(({ key }) => key)).toEqual([
         "nav.posts",
         "nav.home",
+        "nav.login",
+        "nav.logout",
       ]);
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
