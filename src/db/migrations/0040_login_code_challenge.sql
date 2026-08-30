@@ -1,0 +1,1 @@
+ALTER TABLE "login_codes" ADD COLUMN "challenge_hash" text;

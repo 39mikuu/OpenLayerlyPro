@@ -15,12 +15,13 @@ import {
   normalizeEmail,
   normalizeLoginCode,
   validateLoginCode,
+  validateLoginCodeChallenge,
   validateNormalizedEmail,
 } from "./rate-limit-policy";
 
 const env = {
-  LOGIN_CODE_LENGTH: 16,
-  LOGIN_CODE_ALPHABET: "crockford-base32",
+  LOGIN_CODE_LENGTH: 6,
+  LOGIN_CODE_ALPHABET: "decimal",
   SESSION_SECRET: "auth-rate-policy-test-secret",
 } as unknown as Env;
 
@@ -29,15 +30,27 @@ describe("auth rate-limit and login-code policy", () => {
     expect(validateNormalizedEmail(normalizeEmail(" Fan@Example.com "))).toBe("fan@example.com");
   });
 
-  it("normalizes and validates uppercase Crockford base32 codes", () => {
-    const code = normalizeLoginCode(" abcd1234efgh5678 ");
-    expect(validateLoginCode(code, env)).toBe("ABCD1234EFGH5678");
+  it("normalizes and validates six-digit codes", () => {
+    const code = normalizeLoginCode(" 012345 ");
+    expect(validateLoginCode(code, env)).toBe("012345");
     expect(getLoginCodePolicy(env).pattern.test(code)).toBe(true);
   });
 
-  it("rejects ambiguous or wrong-length codes", () => {
-    expect(() => validateLoginCode("ABCD1234EFGH567", env)).toThrow();
+  it("accepts legacy Crockford candidates during the migration window", () => {
+    expect(validateLoginCode("ABCD1234EFGH5678", env)).toBe("ABCD1234EFGH5678");
+    expect(getLoginCodePolicy(env).pattern.test("ABCD1234EFGH5678")).toBe(false);
+  });
+
+  it("rejects malformed new and legacy candidates", () => {
+    expect(() => validateLoginCode("12345", env)).toThrow();
+    expect(() => validateLoginCode("12345A", env)).toThrow();
     expect(() => validateLoginCode("ABCD1234EFGH567O", env)).toThrow();
+  });
+
+  it("accepts only unpadded 32-byte base64url challenges", () => {
+    expect(validateLoginCodeChallenge("A".repeat(43))).toBe("A".repeat(43));
+    expect(() => validateLoginCodeChallenge("A".repeat(42))).toThrow();
+    expect(() => validateLoginCodeChallenge(`${"A".repeat(42)}=`)).toThrow();
   });
 
   it("derives stable keyed email identities without exposing raw email", () => {

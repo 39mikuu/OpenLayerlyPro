@@ -31,7 +31,10 @@ const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
 
 const LOGIN_CODE_HMAC_PURPOSE = "auth-login-code";
-const TEST_CODE = "ABCD1234EFGH5678";
+const LOGIN_CODE_CHALLENGE_HMAC_PURPOSE = "auth-login-code-challenge";
+const LEGACY_TEST_CODE = "ABCD1234EFGH5678";
+const TEST_CODE = "123456";
+const TEST_CHALLENGE = "A".repeat(43);
 
 describeWithDatabase("S4 login-code integration", () => {
   const db = getDb();
@@ -50,10 +53,10 @@ describeWithDatabase("S4 login-code integration", () => {
     await resetDatabase(db);
   });
 
-  it("keeps correct codes usable after wrong attempts and high attempt_count", async () => {
+  it("keeps legacy codes usable until expiry without changing their attempt_count", async () => {
     await db.insert(loginCodes).values({
       email: "fan@example.com",
-      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, LEGACY_TEST_CODE),
       attemptCount: 50,
       expiresAt: new Date(Date.now() + 10 * 60_000),
     });
@@ -67,12 +70,100 @@ describeWithDatabase("S4 login-code integration", () => {
       code: "codeIncorrect",
     });
 
-    await expect(verifyLoginCode("Fan@Example.com", TEST_CODE, "zh")).resolves.toMatchObject({
-      email: "fan@example.com",
-    });
+    await expect(
+      verifyLoginCode("Fan@Example.com", LEGACY_TEST_CODE, undefined, "zh"),
+    ).resolves.toMatchObject({ email: "fan@example.com" });
 
     const [stored] = await db.select().from(loginCodes);
     expect(stored?.attemptCount).toBe(50);
+    expect(stored?.usedAt).toBeInstanceOf(Date);
+  });
+
+  it("does not consume attempts for a wrong challenge", async () => {
+    await db.insert(loginCodes).values({
+      email: "challenge@example.com",
+      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+      challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+
+    await expect(
+      verifyLoginCode("challenge@example.com", TEST_CODE, "B".repeat(43)),
+    ).rejects.toMatchObject({ status: 400, code: "codeIncorrect" });
+
+    const [stored] = await db.select().from(loginCodes);
+    expect(stored).toMatchObject({ attemptCount: 0, usedAt: null });
+  });
+
+  it("caps challenge-matched wrong guesses at five and blocks a later correct code", async () => {
+    await db.insert(loginCodes).values({
+      email: "attempts@example.com",
+      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+      challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+
+    for (const code of ["000000", "000001", "000002", "000003"]) {
+      await expect(
+        verifyLoginCode("attempts@example.com", code, TEST_CHALLENGE),
+      ).rejects.toMatchObject({ status: 400, code: "codeIncorrect" });
+    }
+    await expect(
+      verifyLoginCode("attempts@example.com", "000004", TEST_CHALLENGE),
+    ).rejects.toMatchObject({ status: 429, code: "codeAttemptsExceeded" });
+    await expect(
+      verifyLoginCode("attempts@example.com", TEST_CODE, TEST_CHALLENGE),
+    ).rejects.toMatchObject({ status: 429, code: "codeAttemptsExceeded" });
+
+    const [stored] = await db.select().from(loginCodes);
+    expect(stored).toMatchObject({ attemptCount: 5, usedAt: null });
+  });
+
+  it("serializes concurrent guesses without losing increments or exceeding the cap", async () => {
+    await db.insert(loginCodes).values({
+      email: "concurrent-attempts@example.com",
+      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+      challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 6 }, (_value, index) =>
+        verifyLoginCode(
+          "concurrent-attempts@example.com",
+          String(index).padStart(6, "0"),
+          TEST_CHALLENGE,
+        ),
+      ),
+    );
+
+    expect(results).toHaveLength(6);
+    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    const errors = results.map((result) =>
+      result.status === "rejected" ? result.reason : undefined,
+    );
+    expect(errors.filter((error) => error?.code === "codeIncorrect")).toHaveLength(4);
+    expect(errors.filter((error) => error?.code === "codeAttemptsExceeded")).toHaveLength(2);
+
+    const [stored] = await db.select().from(loginCodes);
+    expect(stored).toMatchObject({ attemptCount: 5, usedAt: null });
+  });
+
+  it("accepts a correct six-digit code with its matching challenge", async () => {
+    await db.insert(loginCodes).values({
+      email: "correct@example.com",
+      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+      challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+      attemptCount: 4,
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+
+    await expect(
+      verifyLoginCode("correct@example.com", TEST_CODE, TEST_CHALLENGE, "ja"),
+    ).resolves.toMatchObject({ email: "correct@example.com" });
+
+    const [stored] = await db.select().from(loginCodes);
+    expect(stored?.attemptCount).toBe(4);
     expect(stored?.usedAt).toBeInstanceOf(Date);
   });
 
@@ -80,8 +171,18 @@ describeWithDatabase("S4 login-code integration", () => {
     const identity = { kind: "ip", value: "198.51.100.10" } as const;
 
     const results = await Promise.all([
-      requestLoginCode(" Fan@Example.com ", { identity, ip: identity.value, locale: "zh" }),
-      requestLoginCode("fan@example.com", { identity, ip: identity.value, locale: "zh" }),
+      requestLoginCode(" Fan@Example.com ", {
+        challenge: TEST_CHALLENGE,
+        identity,
+        ip: identity.value,
+        locale: "zh",
+      }),
+      requestLoginCode("fan@example.com", {
+        challenge: TEST_CHALLENGE,
+        identity,
+        ip: identity.value,
+        locale: "zh",
+      }),
     ]);
 
     expect(results.filter((result) => result.suppressed)).toHaveLength(1);
@@ -91,17 +192,30 @@ describeWithDatabase("S4 login-code integration", () => {
     expect(taskRows[0]?.kind).toBe("auth.login_code_email");
     expect(taskRows[0]?.payloadJson).not.toHaveProperty("to");
     expect(JSON.stringify(taskRows[0]?.payloadJson)).not.toContain("fan@example.com");
+    expect(JSON.stringify(taskRows[0]?.payloadJson)).not.toContain(TEST_CHALLENGE);
+    const [storedCode] = await db.select().from(loginCodes);
+    expect(storedCode?.challengeHash).toBe(
+      hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+    );
     expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();
   });
 
   it("suppresses duplicates without minting unseen codes or refreshing the timestamp", async () => {
     const identity = { kind: "ip", value: "198.51.100.20" } as const;
 
-    const first = await requestLoginCode("fan@example.com", { identity, ip: identity.value });
+    const first = await requestLoginCode("fan@example.com", {
+      challenge: TEST_CHALLENGE,
+      identity,
+      ip: identity.value,
+    });
     expect(first.suppressed).toBe(false);
     const [before] = await db.select().from(loginCodes);
 
-    const second = await requestLoginCode(" fan@example.com ", { identity, ip: identity.value });
+    const second = await requestLoginCode(" fan@example.com ", {
+      challenge: TEST_CHALLENGE,
+      identity,
+      ip: identity.value,
+    });
 
     const codeRows = await db.select().from(loginCodes);
     const taskRows = await db.select().from(tasks);
@@ -115,7 +229,11 @@ describeWithDatabase("S4 login-code integration", () => {
   it("keeps suppressing replacement codes after the dedupe window while delivery is retryable", async () => {
     const identity = { kind: "ip", value: "198.51.100.25" } as const;
 
-    await requestLoginCode("retrying@example.com", { identity, ip: identity.value });
+    await requestLoginCode("retrying@example.com", {
+      challenge: TEST_CHALLENGE,
+      identity,
+      ip: identity.value,
+    });
     const [code] = await db.select().from(loginCodes);
     const [task] = await db.select().from(tasks);
     await db
@@ -125,7 +243,11 @@ describeWithDatabase("S4 login-code integration", () => {
     await db.update(tasks).set({ status: "failed" }).where(eq(tasks.id, task!.id));
 
     await expect(
-      requestLoginCode("retrying@example.com", { identity, ip: identity.value }),
+      requestLoginCode("retrying@example.com", {
+        challenge: TEST_CHALLENGE,
+        identity,
+        ip: identity.value,
+      }),
     ).resolves.toEqual({ suppressed: true });
     await expect(db.select().from(loginCodes)).resolves.toHaveLength(1);
     await expect(db.select().from(tasks)).resolves.toHaveLength(1);
@@ -135,7 +257,11 @@ describeWithDatabase("S4 login-code integration", () => {
     const identity = { kind: "ip", value: "198.51.100.26" } as const;
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    await requestLoginCode("missing-task@example.com", { identity, ip: identity.value });
+    await requestLoginCode("missing-task@example.com", {
+      challenge: TEST_CHALLENGE,
+      identity,
+      ip: identity.value,
+    });
     const [code] = await db.select().from(loginCodes);
     await db.delete(tasks);
     await db
@@ -144,7 +270,11 @@ describeWithDatabase("S4 login-code integration", () => {
       .where(eq(loginCodes.id, code!.id));
 
     await expect(
-      requestLoginCode("missing-task@example.com", { identity, ip: identity.value }),
+      requestLoginCode("missing-task@example.com", {
+        challenge: TEST_CHALLENGE,
+        identity,
+        ip: identity.value,
+      }),
     ).resolves.toEqual({ suppressed: true });
     await expect(db.select().from(loginCodes)).resolves.toHaveLength(1);
     await expect(db.select().from(tasks)).resolves.toHaveLength(0);
@@ -155,7 +285,12 @@ describeWithDatabase("S4 login-code integration", () => {
   it("allows a replacement only after terminal delivery and the dedupe window", async () => {
     const identity = { kind: "ip", value: "198.51.100.30" } as const;
 
-    await requestLoginCode("fan@example.com", { identity, ip: identity.value, locale: "zh" });
+    await requestLoginCode("fan@example.com", {
+      challenge: TEST_CHALLENGE,
+      identity,
+      ip: identity.value,
+      locale: "zh",
+    });
     const [firstCode] = await db.select().from(loginCodes);
     const [firstTask] = await db.select().from(tasks);
     await db
@@ -165,6 +300,7 @@ describeWithDatabase("S4 login-code integration", () => {
     await db.update(tasks).set({ status: "succeeded" }).where(eq(tasks.id, firstTask!.id));
 
     const replacement = await requestLoginCode("fan@example.com", {
+      challenge: TEST_CHALLENGE,
       identity,
       ip: identity.value,
       locale: "zh",
@@ -177,7 +313,7 @@ describeWithDatabase("S4 login-code integration", () => {
     await expect(runTaskHandler(claimed!)).resolves.toEqual({});
     expect(mocks.sendLoginCodeEmail).toHaveBeenCalledOnce();
     const sentCode = mocks.sendLoginCodeEmail.mock.calls[0][1] as string;
-    expect(sentCode).toMatch(/^[0-9A-HJKMNP-TV-Z]{16}$/);
+    expect(sentCode).toMatch(/^[0-9]{6}$/);
     expect(JSON.stringify(claimed!.payloadJson)).not.toContain(sentCode);
   });
 });

@@ -14,6 +14,7 @@ import {
   getRequestCodePrimaryRateLimit,
   normalizeEmail,
   rawEmailSchema,
+  validateLoginCodeChallenge,
   validateNormalizedEmail,
 } from "@/modules/auth/rate-limit-policy";
 import { resolveLocale } from "@/modules/i18n/server";
@@ -23,6 +24,7 @@ export const runtime = "nodejs";
 
 const bodySchema = z.object({
   email: rawEmailSchema,
+  challenge: z.string(),
   turnstileToken: z.string().optional(),
 });
 
@@ -43,15 +45,17 @@ export async function POST(req: NextRequest) {
       return jsonError(429, "requestRateLimited");
     }
 
-    const { email, turnstileToken } = await readJsonWithLimit(
+    const { email, challenge, turnstileToken } = await readJsonWithLimit(
       req,
       env.REQUEST_JSON_MAX_BYTES,
       bodySchema,
     );
     const normalizedEmail = validateNormalizedEmail(normalizeEmail(email));
+    const validatedChallenge = validateLoginCodeChallenge(challenge);
     // 人机验证失败时直接抛错，不会进入验证码发送逻辑
     await assertTurnstile(turnstileToken, ip);
     await requestLoginCode(normalizedEmail, {
+      challenge: validatedChallenge,
       identity,
       ip,
       userAgent: getUserAgent(req),

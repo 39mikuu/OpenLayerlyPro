@@ -5,10 +5,20 @@ import type { Env } from "@/lib/env";
 export type { LoginCodeAlphabet } from "@/modules/auth/input-policy";
 export {
   CROCKFORD_BASE32_ALPHABET,
+  DECIMAL_LOGIN_CODE_ALPHABET,
   getLoginCodeAlphabet,
   getLoginCodePolicy,
+  isLegacyLoginCode,
   isLoginCodeComplete,
+  LEGACY_LOGIN_CODE_LENGTH,
+  LEGACY_LOGIN_CODE_PATTERN,
   LOGIN_CODE_ALPHABETS,
+  LOGIN_CODE_CHALLENGE_BYTES,
+  LOGIN_CODE_CHALLENGE_LENGTH,
+  LOGIN_CODE_CHALLENGE_PATTERN,
+  LOGIN_CODE_LENGTH,
+  LOGIN_CODE_MAX_ATTEMPTS,
+  LOGIN_CODE_PATTERN,
   NORMALIZED_EMAIL_MAX_LENGTH,
   normalizedEmailSchema,
   normalizeEmail,
@@ -18,6 +28,7 @@ export {
   rawEmailSchema,
   sanitizeLoginCodeInput,
   validateLoginCode,
+  validateLoginCodeChallenge,
   validateNormalizedEmail,
 } from "@/modules/auth/input-policy";
 

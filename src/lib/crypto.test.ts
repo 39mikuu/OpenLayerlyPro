@@ -2,13 +2,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getConfigEncryptionKey } from "@/modules/security/config-key";
 
-import { decryptSecret, encryptSecret } from "./crypto";
+import { decryptSecret, encryptSecret, generateLoginCode } from "./crypto";
 
 vi.mock("@/modules/security/config-key", () => ({
   getConfigEncryptionKey: vi.fn(),
 }));
 
 const mockedGetKey = vi.mocked(getConfigEncryptionKey);
+
+describe("generateLoginCode", () => {
+  it("always returns exactly six decimal digits", () => {
+    for (let index = 0; index < 100; index += 1) {
+      expect(generateLoginCode()).toMatch(/^[0-9]{6}$/);
+    }
+  });
+});
 
 describe("encryptSecret / decryptSecret", () => {
   afterEach(() => {

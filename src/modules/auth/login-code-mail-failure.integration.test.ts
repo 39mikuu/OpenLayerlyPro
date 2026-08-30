@@ -39,6 +39,7 @@ import { claimDueTasks } from "@/modules/tasks/runtime";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
+const TEST_CHALLENGE = "A".repeat(43);
 
 describeWithDatabase("auth login-code SMTP failure redaction", () => {
   const db = getDb();
@@ -61,13 +62,13 @@ describeWithDatabase("auth login-code SMTP failure redaction", () => {
     let leakedCode = "";
 
     mocks.sendMail.mockImplementation(async (message: { to?: string; text?: string }) => {
-      leakedCode = message.text?.match(/[0-9A-HJKMNP-TV-Z]{16}/)?.[0] ?? "";
+      leakedCode = message.text?.match(/\b[0-9]{6}\b/)?.[0] ?? "";
       throw new Error(
         `550 recipient ${message.to} rejected; rendered body=${message.text}; code=${leakedCode}`,
       );
     });
 
-    await requestLoginCode(rawRecipient, { locale: "en" });
+    await requestLoginCode(rawRecipient, { challenge: TEST_CHALLENGE, locale: "en" });
     const [claimed] = await claimDueTasks(1, { lockToken: "mail-failure-worker" });
     expect(claimed).toBeDefined();
 
@@ -76,7 +77,7 @@ describeWithDatabase("auth login-code SMTP failure redaction", () => {
     const [stored] = await db.select().from(tasks).where(eq(tasks.id, claimed!.id));
     expect(stored?.status).toBe("failed");
     expect(stored?.lastError).toBe("Email delivery failed");
-    expect(leakedCode).toMatch(/^[0-9A-HJKMNP-TV-Z]{16}$/);
+    expect(leakedCode).toMatch(/^[0-9]{6}$/);
 
     const loggerArguments = JSON.stringify([
       mocks.loggerInfo.mock.calls,
@@ -97,7 +98,10 @@ describeWithDatabase("auth login-code SMTP failure redaction", () => {
       response: `credentials rejected for ${rawRecipient}; body=private`,
     });
 
-    const requested = await requestLoginCode(rawRecipient, { locale: "en" });
+    const requested = await requestLoginCode(rawRecipient, {
+      challenge: TEST_CHALLENGE,
+      locale: "en",
+    });
     const [claimed] = await claimDueTasks(1, { lockToken: "mail-auth-worker" });
     await dispatchClaimedTask(claimed!);
 
@@ -126,7 +130,10 @@ describeWithDatabase("auth login-code SMTP failure redaction", () => {
   });
 
   it("moves a queued login code directly to dead when SMTP becomes unconfigured", async () => {
-    const requested = await requestLoginCode("fan-unconfigured@example.com", { locale: "en" });
+    const requested = await requestLoginCode("fan-unconfigured@example.com", {
+      challenge: TEST_CHALLENGE,
+      locale: "en",
+    });
     await setStoredGroup("smtp", { host: "", from: "" }, 1);
     const [claimed] = await claimDueTasks(1, { lockToken: "mail-unconfigured-worker" });
 
@@ -154,7 +161,10 @@ describeWithDatabase("auth login-code SMTP failure redaction", () => {
       response: "recipient rejected",
     });
 
-    await requestLoginCode("fan-permanent@example.com", { locale: "en" });
+    await requestLoginCode("fan-permanent@example.com", {
+      challenge: TEST_CHALLENGE,
+      locale: "en",
+    });
     const [claimed] = await claimDueTasks(1, { lockToken: "mail-permanent-worker" });
     await dispatchClaimedTask(claimed!);
 
