@@ -132,7 +132,7 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 
 ## 8. UI 与邮件
 
-- 输入框使用 `inputMode="numeric"`、`autoComplete="one-time-code"`、最大长度 6；状态模型只保留数字。
+- 输入框使用 `inputMode="numeric"`、`autoComplete="one-time-code"`。迁移发布中 `maxLength` 暂为 16，状态模型优先保留最多 6 位数字，同时允许粘贴精确的 legacy 16-char Crockford code；legacy TTL 排空后再收紧为只保留 6 位数字。
 - placeholder、帮助文案和邮件模板都必须显示 6 位数字语义，不再提大小写或 16 位长度。
 - 登录码邮件 HTML 化属于独立事务邮件 PR；本协议实现不能依赖 HTML 邮件才能完成验证，纯文本邮件仍包含 6 位 code。
 - challenge 丢失时返回通用失败，并提示在发起请求的浏览器重新发送，不得把 challenge 是否匹配暴露给攻击者。
