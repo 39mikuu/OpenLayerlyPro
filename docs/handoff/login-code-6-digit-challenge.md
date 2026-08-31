@@ -35,6 +35,7 @@
 - 浏览器在第一次请求某个 normalized email 的登录码前，用 Web Crypto 生成 32 字节 challenge。
 - challenge 仅保存在当前浏览器的登录流程状态和 `sessionStorage`；不得进入 URL、analytics、console、错误上报或持久 cookie。
 - 同一 `requestedEmail` 的重发必须复用已有 challenge。服务端可能因 active code / durable task fence 返回统一 `accepted` 但不创建新 code；客户端此时若换 challenge，会使仍在途的 code 无法验证。
+- 唯一例外是 challenge 已匹配且第 5 次错误刚耗尽 code：verify route 在 `codeAttemptsExceeded` 的 429 中返回非敏感的 `challengeRotationRequired=1` 指令。客户端只在收到该精确指令时立即生成并保存新 challenge、清除旧 pending marker；普通 source/target 限流 429 或预先已耗尽的重试不得触发轮换。随后请求的 replacement 必须绑定这个新 challenge，因此旧耗尽行与新行不会共享 challenge HMAC。
 - 点击“更换邮箱”只解锁输入框，不得立即删除旧 challenge。只有实际向另一个 normalized email 发起 code 请求时，`getOrCreate` 才用新 challenge 覆盖旧值；若用户未改变地址，或编辑后又改回原地址，必须继续复用原 challenge。登录成功、显式取消或 code 过期后删除。
 - 页面刷新后从 `sessionStorage` 恢复。若浏览器会话在 code 仍 active 时丢失，服务端不能仅凭一个新 challenge 安全替换旧 code，否则第三方可借重发接口使受害者的 code 失效。UI 必须明确提示：在原浏览器完成验证，或等待最多一个 code TTL（10 分钟）后再请求新 code；也可改用 Magic Link / OAuth。不得提示用户立即重发并暗示会生成可用的新 code。
 
@@ -106,6 +107,8 @@ route 顺序仍为：输入校验 → target failure bucket 只读检查 → sou
 
 核心事务不得复用发码 dedupe 的 “active code” 谓词。它通常锁定 normalized email 最新的 unused、unexpired code；但如果请求携带的 challenge HMAC 匹配某个 unused、unexpired 且 `attempt_count >= 5` 的新协议行，则优先锁定该已耗尽行。这个窄例外只用于在 replacement 已创建后仍识别旧 challenge 的 `attempts_already_exhausted`，不得让未耗尽的旧 code 越过更新 code 重新生效。由此在 replacement 创建前后，已耗尽重试都不会退化成 `codeExpired` / 普通错误并重复消费 target bucket。
 
+replacement 使用耗尽响应后轮换的新 challenge；新 challenge 必须选择最新未耗尽行。只有携带旧 challenge 的请求才会命中上述耗尽行优先规则，因此新邮件中的 code 可以立即验证，不必等待旧行过期。
+
 锁定目标行后，先检查其 delivery task 是否持有上述有效 SMTP 预留；命中则按 `delivery_in_progress` 返回。随后按行类型执行：
 
 ### 6.1 新协议行（`challenge_hash IS NOT NULL`）
@@ -157,6 +160,7 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - 第 5 次错误封锁该 code，正确 code 在 attempts 达 5 后也失败；
 - 第 5 次错误同时计入 resolved email+IP 失败桶，耗尽后的后续请求不重复记账；
 - replacement 创建前后，旧 challenge 都能命中已耗尽行并返回 `attempts_already_exhausted`；未耗尽的旧 code 不得因此重新可用；
+- 第 5 次匹配错误的响应指示客户端轮换 challenge，replacement 绑定新 challenge 并立即可验证；普通 429 不轮换；
 - 已耗尽 code 不抑制新 code 创建，其旧投递任务在 SMTP 前成功 no-op；
 - 新旧协议行在 active processing claim 的 SMTP 阻塞期间都不推进 attempts/used_at/target bucket；owner 缺失或 lease 过期后不再延后比较；
 - challenge 丢失时 UI 不进入立即重发循环，而是提示等待旧 code 最多 10 分钟过期或改用其他登录方式；
