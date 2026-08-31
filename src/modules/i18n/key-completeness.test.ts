@@ -165,11 +165,27 @@ function collectStaticTranslationUsages(sourceRoot: string): TranslationUsage[] 
   function functionReturnsDirectTranslation(
     declaration: ts.ArrowFunction | ts.FunctionExpression,
   ): boolean {
+    function isDirectTranslationCall(expression: ts.Expression): boolean {
+      const unwrapped = unwrapExpression(expression);
+      return (
+        ts.isCallExpression(unwrapped) &&
+        expressionBindingKind(unwrapped.expression) === "direct"
+      );
+    }
+
+    if (!ts.isBlock(declaration.body)) {
+      return isDirectTranslationCall(declaration.body);
+    }
+
     let found = false;
     function visit(node: ts.Node) {
       if (found) return;
-      if (node !== declaration && ts.isFunctionLike(node)) return;
-      if (ts.isCallExpression(node) && expressionBindingKind(node.expression) === "direct") {
+      if (node !== declaration.body && ts.isFunctionLike(node)) return;
+      if (
+        ts.isReturnStatement(node) &&
+        node.expression &&
+        isDirectTranslationCall(node.expression)
+      ) {
         found = true;
         return;
       }
@@ -300,7 +316,12 @@ describe("i18n message key completeness (G4)", () => {
 
           export function render(locale: "en") {
             const message = useTranslate();
+            const handler = (event: string) => {
+              renderMessage(locale, "audit.created");
+              return event;
+            };
             t("business-state");
+            handler("business-handler");
             message("nav.posts");
             renderMessage(locale, "nav.home");
           }
