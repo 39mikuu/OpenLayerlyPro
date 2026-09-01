@@ -339,6 +339,7 @@ describe("i18n message key completeness (G4)", () => {
       );
 
       expect(collectStaticTranslationUsages(fixtureRoot).map(({ key }) => key)).toEqual([
+        "audit.created",
         "nav.posts",
         "nav.home",
         "nav.login",
