@@ -18,6 +18,7 @@ import {
   RAW_LOGIN_CODE_MAX_LENGTH,
   rawEmailSchema,
   validateLoginCode,
+  validateLoginCodeChallenge,
   validateNormalizedEmail,
 } from "@/modules/auth/rate-limit-policy";
 import { createSession, setSessionCookie } from "@/modules/auth/session";
@@ -28,15 +29,21 @@ export const runtime = "nodejs";
 const bodySchema = z.object({
   email: rawEmailSchema,
   code: z.string().min(1).max(RAW_LOGIN_CODE_MAX_LENGTH),
+  challenge: z.string().optional(),
 });
 
 export async function POST(req: NextRequest) {
   try {
     const env = getEnv();
     assertContentLengthWithinLimit(req, env.REQUEST_JSON_MAX_BYTES);
-    const { email, code } = await readJsonWithLimit(req, env.REQUEST_JSON_MAX_BYTES, bodySchema);
+    const { email, code, challenge } = await readJsonWithLimit(
+      req,
+      env.REQUEST_JSON_MAX_BYTES,
+      bodySchema,
+    );
     const normalizedEmail = validateNormalizedEmail(normalizeEmail(email));
     const normalizedCode = validateLoginCode(normalizeLoginCode(code), env);
+    const validatedChallenge = challenge ? validateLoginCodeChallenge(challenge) : undefined;
 
     const clientIp = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(clientIp);
@@ -67,11 +74,16 @@ export async function POST(req: NextRequest) {
     const locale = await resolveLocale();
     let user: Awaited<ReturnType<typeof verifyLoginCode>>;
     try {
-      user = await verifyLoginCode(normalizedEmail, normalizedCode, locale);
+      user = await verifyLoginCode(normalizedEmail, normalizedCode, validatedChallenge, locale);
     } catch (error) {
       if (
         error instanceof ApiError &&
-        (error.code === "codeIncorrect" || error.code === "codeExpired")
+        ((error.code === "codeIncorrect" &&
+          (error as ApiError & { comparisonDeferred?: boolean }).comparisonDeferred !== true) ||
+          error.code === "codeExpired" ||
+          (error.code === "codeAttemptsExceeded" &&
+            (error as ApiError & { freshAttemptExhausted?: boolean }).freshAttemptExhausted ===
+              true))
       ) {
         // Target-scoped accounting remains post-comparison so another source
         // cannot pre-fill an email-only bucket and block the account owner.

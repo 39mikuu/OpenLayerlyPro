@@ -274,7 +274,9 @@ export const zh = {
     email: "邮箱",
     code: "验证码",
     codePlaceholder: "{length} 位验证码",
-    codeHint: "已受理的验证码请求在 10 分钟内有效。",
+    codeHint: "请在发起请求的浏览器中输入，验证码在 10 分钟内有效。",
+    challengeMissing:
+      "当前浏览器的登录验证信息已丢失。请使用原浏览器，或等待最多 10 分钟后再请求新验证码；也可以改用魔法链接或第三方登录。",
     resend: "重新发送",
     sendCode: "发送验证码",
     changeEmail: "更换邮箱",

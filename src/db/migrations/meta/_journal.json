@@ -267,6 +267,13 @@
       "when": 1787206460655,
       "tag": "0037_peaceful_risque",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1788031323310,
+      "tag": "0040_login_code_challenge",
+      "breakpoints": true
     }
   ]
 }

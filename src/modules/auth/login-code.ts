@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, sql, type SQLWrapper } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, lt, or, sql, type SQLWrapper } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import { loginCodes, tasks, type User } from "@/db/schema";
@@ -17,8 +17,12 @@ import { logger } from "@/lib/logger";
 import { rateLimit } from "@/lib/rate-limit";
 import {
   getRequestCodeEmailIpRateLimit,
+  isLegacyLoginCode,
+  LOGIN_CODE_MAX_ATTEMPTS,
+  LOGIN_CODE_PATTERN,
   normalizeEmail,
   normalizeLoginCode,
+  validateLoginCodeChallenge,
 } from "@/modules/auth/rate-limit-policy";
 import { getSmtpConfig } from "@/modules/config";
 import type { Locale } from "@/modules/i18n";
@@ -32,8 +36,26 @@ import { findOrCreateUserByEmail, touchLastLogin } from "@/modules/user";
 
 const CODE_TTL_MINUTES = 10;
 const LOGIN_CODE_HMAC_PURPOSE = "auth-login-code";
+const LOGIN_CODE_CHALLENGE_HMAC_PURPOSE = "auth-login-code-challenge";
 
 export type RequestLoginCodeResult = { suppressed: boolean; codeId?: string };
+
+class LoginCodeAttemptsExceededError extends ApiError {
+  readonly freshAttemptExhausted: boolean;
+
+  constructor(freshAttemptExhausted: boolean) {
+    super(429, "codeAttemptsExceeded");
+    this.freshAttemptExhausted = freshAttemptExhausted;
+  }
+}
+
+class LoginCodeComparisonDeferredError extends ApiError {
+  readonly comparisonDeferred = true;
+
+  constructor() {
+    super(400, "codeIncorrect");
+  }
+}
 
 export type LoginCodeEmailTaskPayload = {
   version: 1;
@@ -50,7 +72,8 @@ export type LoginCodeEmailTaskFence = {
 
 export async function requestLoginCode(
   email: string,
-  meta?: {
+  meta: {
+    challenge: string;
     identity?: ClientRateLimitIdentity;
     ip?: string | null;
     userAgent?: string | null;
@@ -58,6 +81,7 @@ export async function requestLoginCode(
   },
 ): Promise<RequestLoginCodeResult> {
   const normalized = normalizeEmail(email);
+  const challenge = validateLoginCodeChallenge(meta.challenge);
   const env = getEnv();
   const identity = meta?.identity ?? { kind: "unresolved" };
 
@@ -80,6 +104,10 @@ export async function requestLoginCode(
         where ${loginCodes.email} = ${normalized}
           and ${loginCodes.usedAt} is null
           and ${loginCodes.expiresAt} > now()
+          and (
+            ${loginCodes.challengeHash} is null
+            or ${loginCodes.attemptCount} < ${LOGIN_CODE_MAX_ATTEMPTS}
+          )
         order by ${loginCodes.createdAt} desc
         limit 1
         for update
@@ -114,6 +142,7 @@ export async function requestLoginCode(
     const code = generateLoginCode();
     const encryptedCode = encryptAuthTaskSecret(code);
     const codeHash = hmacLoginCode(code);
+    const challengeHash = hmacLoginCodeChallenge(challenge);
 
     if (identity.kind === "ip") {
       const emailIpLimit = getRequestCodeEmailIpRateLimit({
@@ -131,6 +160,7 @@ export async function requestLoginCode(
       .values({
         email: normalized,
         codeHash,
+        challengeHash,
         expiresAt: addMinutes(new Date(), CODE_TTL_MINUTES),
         ip: meta?.ip ?? null,
         userAgent: meta?.userAgent ?? null,
@@ -155,57 +185,148 @@ export async function requestLoginCode(
   });
 }
 
-export async function verifyLoginCode(email: string, code: string, locale?: Locale): Promise<User> {
+export async function verifyLoginCode(
+  email: string,
+  code: string,
+  challenge?: string,
+  locale?: Locale,
+): Promise<User> {
   const normalized = normalizeEmail(email);
   const normalizedCode = normalizeLoginCode(code);
+  const candidateChallengeHash = challenge ? hmacLoginCodeChallenge(challenge) : null;
+  const exhaustedChallengeFirst = candidateChallengeHash
+    ? sql`case
+        when ${loginCodes.challengeHash} = ${candidateChallengeHash}
+          and ${loginCodes.attemptCount} >= ${LOGIN_CODE_MAX_ATTEMPTS}
+        then 0
+        else 1
+      end`
+    : sql`1`;
   const db = getDb();
 
-  const outcome = await db.transaction(async (tx): Promise<"correct" | "incorrect"> => {
-    const [record] = await executeRows<{
-      id: string;
-      code_hash: string;
-    }>(
+  const outcome = await db.transaction(
+    async (
       tx,
-      sql`
+    ): Promise<
+      | "correct"
+      | "incorrect"
+      | "delivery_in_progress"
+      | "attempts_exhausted_now"
+      | "attempts_already_exhausted"
+    > => {
+      const [record] = await executeRows<{
+        id: string;
+        code_hash: string;
+        challenge_hash: string | null;
+        attempt_count: number;
+      }>(
+        tx,
+        sql`
         select
           ${loginCodes.id} as id,
-          ${loginCodes.codeHash} as code_hash
+          ${loginCodes.codeHash} as code_hash,
+          ${loginCodes.challengeHash} as challenge_hash,
+          ${loginCodes.attemptCount} as attempt_count
         from ${loginCodes}
         where ${loginCodes.email} = ${normalized}
           and ${loginCodes.usedAt} is null
           and ${loginCodes.expiresAt} > now()
-        order by ${loginCodes.createdAt} desc
+        order by
+          ${exhaustedChallengeFirst},
+          ${loginCodes.createdAt} desc
         limit 1
         for update
       `,
-    );
+      );
 
-    if (!record) {
-      throw new ApiError(400, "codeExpired");
-    }
+      if (!record) {
+        throw new ApiError(400, "codeExpired");
+      }
 
-    if (!safeEqualHex(hmacLoginCode(normalizedCode), record.code_hash)) {
-      return "incorrect";
-    }
+      const [deliveryTask] = await tx
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.dedupeKey, `auth-login-code-email:${record.id}`),
+            eq(tasks.status, "processing"),
+            isNotNull(tasks.lockedBy),
+            gt(tasks.leaseUntil, sql<Date>`now()`),
+          ),
+        )
+        .limit(1);
+      if (deliveryTask) return "delivery_in_progress";
 
-    const used = await executeRows<{ id: string }>(
-      tx,
-      sql`
+      if (record.challenge_hash === null) {
+        if (
+          !isLegacyLoginCode(normalizedCode) ||
+          !safeEqualHex(hmacLoginCode(normalizedCode), record.code_hash)
+        ) {
+          return "incorrect";
+        }
+      } else {
+        const challengeMatches = Boolean(
+          candidateChallengeHash && safeEqualHex(candidateChallengeHash, record.challenge_hash),
+        );
+        if (record.attempt_count >= LOGIN_CODE_MAX_ATTEMPTS) {
+          return "attempts_already_exhausted";
+        }
+        const codeMatches =
+          challengeMatches &&
+          LOGIN_CODE_PATTERN.test(normalizedCode) &&
+          safeEqualHex(hmacLoginCode(normalizedCode), record.code_hash);
+        if (!challengeMatches || !codeMatches) {
+          // Both new-protocol mismatch paths perform the same locked UPDATE
+          // round trip. A challenge mismatch is a no-op and never compares the
+          // candidate code; a matched challenge increments the durable cap.
+          const increment = challengeMatches ? 1 : 0;
+          const [attempt] = await executeRows<{ attempt_count: number }>(
+            tx,
+            sql`
+            update ${loginCodes}
+            set attempt_count = least(
+              ${loginCodes.attemptCount} + ${increment},
+              ${LOGIN_CODE_MAX_ATTEMPTS}
+            )
+            where ${loginCodes.id} = ${record.id}
+            returning ${loginCodes.attemptCount} as attempt_count
+          `,
+          );
+          if (!challengeMatches) return "incorrect";
+          return (attempt?.attempt_count ?? LOGIN_CODE_MAX_ATTEMPTS) >= LOGIN_CODE_MAX_ATTEMPTS
+            ? "attempts_exhausted_now"
+            : "incorrect";
+        }
+      }
+
+      const used = await executeRows<{ id: string }>(
+        tx,
+        sql`
         update ${loginCodes}
         set used_at = now()
         where ${loginCodes.id} = ${record.id}
           and ${loginCodes.usedAt} is null
         returning ${loginCodes.id} as id
       `,
-    );
-    if (!used[0]) {
-      throw new ApiError(400, "codeExpired");
-    }
-    return "correct";
-  });
+      );
+      if (!used[0]) {
+        throw new ApiError(400, "codeExpired");
+      }
+      return "correct";
+    },
+  );
 
   if (outcome === "incorrect") {
     throw new ApiError(400, "codeIncorrect");
+  }
+  if (outcome === "delivery_in_progress") {
+    throw new LoginCodeComparisonDeferredError();
+  }
+  if (outcome === "attempts_exhausted_now") {
+    throw new LoginCodeAttemptsExceededError(true);
+  }
+  if (outcome === "attempts_already_exhausted") {
+    throw new LoginCodeAttemptsExceededError(false);
   }
 
   const user = await findOrCreateUserByEmail(normalized);
@@ -279,12 +400,20 @@ export async function deliverLoginCodeEmailTask(
         email: loginCodes.email,
         expiresAt: loginCodes.expiresAt,
         usedAt: loginCodes.usedAt,
+        challengeHash: loginCodes.challengeHash,
+        attemptCount: loginCodes.attemptCount,
       })
       .from(loginCodes)
       .where(eq(loginCodes.id, payload.codeId))
-      .limit(1);
+      .limit(1)
+      .for("update");
 
-    if (!record || record.usedAt || record.expiresAt <= new Date()) {
+    if (
+      !record ||
+      record.usedAt ||
+      record.expiresAt <= new Date() ||
+      (record.challengeHash !== null && record.attemptCount >= LOGIN_CODE_MAX_ATTEMPTS)
+    ) {
       return { note: "Login code is no longer active; delivery skipped" } as const;
     }
 
@@ -296,6 +425,10 @@ export async function deliverLoginCodeEmailTask(
           eq(loginCodes.email, record.email),
           isNull(loginCodes.usedAt),
           gt(loginCodes.expiresAt, sql<Date>`now()`),
+          or(
+            isNull(loginCodes.challengeHash),
+            lt(loginCodes.attemptCount, LOGIN_CODE_MAX_ATTEMPTS),
+          ),
         ),
       )
       .orderBy(desc(loginCodes.createdAt))
@@ -342,6 +475,10 @@ export async function deliverLoginCodeEmailTask(
 
 function hmacLoginCode(code: string): string {
   return hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, normalizeLoginCode(code));
+}
+
+function hmacLoginCodeChallenge(challenge: string): string {
+  return hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, challenge);
 }
 
 async function executeRows<T>(

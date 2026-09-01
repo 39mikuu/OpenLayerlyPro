@@ -102,7 +102,7 @@ Integration 是官方内置的第三方服务对接，随 Core 发布、由项�
 | 生产环境禁止默认 / 弱 `SESSION_SECRET` | ✅ |
 | 可信代理真实 IP 与 operation-specific unresolved emergency bucket | ✅ |
 | S4 正确码优先、错误后限流、source-scoped pre-compare budget | ✅ |
-| 高熵 Crockford login code、keyed email identity、加密 durable delivery task | ✅ |
+| 6 位数字 + 浏览器 challenge 登录码、keyed email identity、加密 durable delivery task | ✅ |
 | Turnstile 与调用前保护 | ✅ |
 | 全生产 Route Handler 请求体有界读取 | ✅ |
 | 配置加密根密钥与敏感配置加密存储 | ✅ |

@@ -34,12 +34,13 @@ const env = {
   VERIFY_CODE_EMAIL_IP_RATE_MAX: 10,
   VERIFY_CODE_UNRESOLVED_RATE_MAX: 300,
   VERIFY_CODE_RATE_WINDOW_MS: 600_000,
-  LOGIN_CODE_LENGTH: 16,
-  LOGIN_CODE_ALPHABET: "crockford-base32",
+  LOGIN_CODE_LENGTH: 6,
+  LOGIN_CODE_ALPHABET: "decimal",
   TRUSTED_PROXY_HEADER: "x-forwarded-for",
   TRUSTED_PROXY_HOPS: 1,
   SESSION_SECRET: "test-secret-that-is-long-enough-for-hmac",
 } as const;
+const TEST_CHALLENGE = "A".repeat(43);
 
 function request(body: unknown, headers: HeadersInit = {}) {
   return new NextRequest("http://localhost/api/auth/verify-code", {
@@ -71,7 +72,7 @@ describe("verify-code route budgets", () => {
   it("prechecks target exhaustion and consumes only the source budget for success", async () => {
     const response = await POST(
       request(
-        { email: " Fan@Example.com ", code: "abcd1234efgh5678" },
+        { email: " Fan@Example.com ", code: "123456", challenge: TEST_CHALLENGE },
         { "x-forwarded-for": "198.51.100.10" },
       ),
     );
@@ -84,7 +85,12 @@ describe("verify-code route budgets", () => {
     expect(mocks.rateLimit.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.verifyLoginCode.mock.invocationCallOrder[0]!,
     );
-    expect(mocks.verifyLoginCode).toHaveBeenCalledWith("fan@example.com", "ABCD1234EFGH5678", "zh");
+    expect(mocks.verifyLoginCode).toHaveBeenCalledWith(
+      "fan@example.com",
+      "123456",
+      TEST_CHALLENGE,
+      "zh",
+    );
   });
 
   it("blocks an already exhausted target budget before comparison", async () => {
@@ -92,7 +98,7 @@ describe("verify-code route budgets", () => {
 
     const response = await POST(
       request(
-        { email: "fan@example.com", code: "ABCD1234EFGH5678" },
+        { email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE },
         { "x-forwarded-for": "198.51.100.10" },
       ),
     );
@@ -108,7 +114,7 @@ describe("verify-code route budgets", () => {
 
     const response = await POST(
       request(
-        { email: "fan@example.com", code: "ABCD1234EFGH5678" },
+        { email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE },
         { "x-forwarded-for": "198.51.100.10" },
       ),
     );
@@ -123,7 +129,7 @@ describe("verify-code route budgets", () => {
 
     const response = await POST(
       request(
-        { email: "Fan@Example.com", code: "ABCD1234EFGH5678" },
+        { email: "Fan@Example.com", code: "123456", challenge: TEST_CHALLENGE },
         { "x-forwarded-for": "198.51.100.10" },
       ),
     );
@@ -138,10 +144,70 @@ describe("verify-code route budgets", () => {
     expect(JSON.stringify(mocks.rateLimit.mock.calls)).not.toContain("Fan@Example.com");
   });
 
+  it("does not charge the target bucket while SMTP delivery owns the code", async () => {
+    mocks.verifyLoginCode.mockRejectedValue(
+      Object.assign(new ApiError(400, "codeIncorrect"), { comparisonDeferred: true }),
+    );
+
+    const response = await POST(
+      request(
+        { email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.rateLimit).toHaveBeenCalledOnce();
+    expect(mocks.rateLimit).toHaveBeenCalledWith("verify-code-ip:198.51.100.10", 30, 600_000);
+  });
+
+  it("records the fifth matched-code failure but not later exhausted-code retries", async () => {
+    const exhaustedNow = Object.assign(new ApiError(429, "codeAttemptsExceeded"), {
+      freshAttemptExhausted: true,
+    });
+    mocks.verifyLoginCode.mockRejectedValueOnce(exhaustedNow);
+
+    const fifth = await POST(
+      request(
+        { email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+
+    expect(fifth.status).toBe(429);
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(2);
+    expect(mocks.rateLimit.mock.calls[1][0]).toContain("verify-code-email-ip:");
+
+    vi.clearAllMocks();
+    mocks.getEnv.mockReturnValue(env);
+    mocks.isRateLimited.mockReturnValue(false);
+    mocks.rateLimit.mockReturnValue(true);
+    mocks.resolveLocale.mockResolvedValue("zh");
+    const alreadyExhausted = Object.assign(new ApiError(429, "codeAttemptsExceeded"), {
+      freshAttemptExhausted: false,
+    });
+    mocks.verifyLoginCode.mockRejectedValueOnce(alreadyExhausted);
+
+    const later = await POST(
+      request(
+        { email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+
+    expect(later.status).toBe(429);
+    expect(mocks.rateLimit).toHaveBeenCalledOnce();
+    expect(mocks.rateLimit.mock.calls[0][0]).toBe("verify-code-ip:198.51.100.10");
+  });
+
   it("rejects invalid raw input without consuming a budget", async () => {
     const response = await POST(
       request(
-        { email: `${"a".repeat(513)}@example.com`, code: "A".repeat(129) },
+        {
+          email: `${"a".repeat(513)}@example.com`,
+          code: "A".repeat(129),
+          challenge: TEST_CHALLENGE,
+        },
         { "x-forwarded-for": "198.51.100.10" },
       ),
     );
@@ -158,7 +224,7 @@ describe("verify-code route budgets", () => {
 
     const response = await POST(
       request(
-        { email: "fan@example.com", code: "ABCD1234EFGH5678" },
+        { email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE },
         { "x-forwarded-for": "198.51.100.10" },
       ),
     );
@@ -170,11 +236,44 @@ describe("verify-code route budgets", () => {
   it("uses only the unresolved source emergency bucket", async () => {
     mocks.verifyLoginCode.mockRejectedValue(new ApiError(400, "codeIncorrect"));
 
-    const response = await POST(request({ email: "fan@example.com", code: "ABCD1234EFGH5678" }));
+    const response = await POST(
+      request({ email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE }),
+    );
 
     expect(response.status).toBe(400);
     expect(mocks.isRateLimited).not.toHaveBeenCalled();
     expect(mocks.rateLimit).toHaveBeenCalledOnce();
     expect(mocks.rateLimit).toHaveBeenCalledWith("verify-code-unresolved", 300, 600_000);
+  });
+
+  it("rejects a malformed challenge before consuming comparison budgets", async () => {
+    const response = await POST(
+      request(
+        { email: "fan@example.com", code: "123456", challenge: "not-base64url" },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.isRateLimited).not.toHaveBeenCalled();
+    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.verifyLoginCode).not.toHaveBeenCalled();
+  });
+
+  it("keeps the challenge optional for a legacy 16-character candidate", async () => {
+    const response = await POST(
+      request(
+        { email: "fan@example.com", code: "ABCD1234EFGH5678" },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.verifyLoginCode).toHaveBeenCalledWith(
+      "fan@example.com",
+      "ABCD1234EFGH5678",
+      undefined,
+      "zh",
+    );
   });
 });

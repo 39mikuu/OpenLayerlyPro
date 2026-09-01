@@ -1,6 +1,6 @@
 # 交接：6 位数字登录码与请求挑战绑定
 
-> 状态：已确认设计，待实现。本文在实现落地后取代 S4 中“登录码至少 80 bit、错误提交永不写 `attempt_count`”两项约束；S4 的来源硬预算、email+IP 失败桶、持久投递 fence、加密任务和 SMTP 边界继续生效。
+> 状态：已实现。本文已取代 S4 中“登录码至少 80 bit、错误提交永不写 `attempt_count`”两项约束；S4 的来源硬预算、email+IP 失败桶、持久投递 fence、加密任务和 SMTP 边界继续生效。
 
 ## 1. 目标与威胁模型
 
@@ -99,7 +99,7 @@ active code 被抑制时，不更新其 `challenge_hash`、`attempt_count`、创
 
 对新协议行，`attempt_count >= 5` 表示 code 已耗尽：它不再属于 active-code dedupe/fence 的候选，后续请求可以创建绑定新 challenge 的 code。该旧 code 对应的 pending、processing 或可重试 failed 投递任务必须在取得任务 ownership 与 per-email fence 后判定为 stale，并成功 no-op；不得再解密或发送已耗尽 code。legacy 行仍只按 `used_at` 与 expiry 判断 active。
 
-`tasks.status='processing'`、非空 current owner 和 `lease_until > now()` 共同构成 SMTP 最后安全点的短期发送预留。worker 在 per-email advisory lock 内重新确认 task ownership 后，必须 `FOR UPDATE` 锁定 code 行并完成 exhausted / superseded 检查；事务提交后 task 在整个 SMTP 调用和 handler 返回前保持有 owner 的未过期 processing claim。验证事务对新旧协议行都必须检查该预留；命中时返回内部 `delivery_in_progress`，对外保持通用 `codeIncorrect`，但不比较 code、不增加 attempts、也不消费 resolved email+IP 失败桶。这样 worker 提交最后检查后，验证不能再消费或耗尽即将发送的 code。只有 status=processing 但 owner 为空或 lease 已过期的 abandoned 行不构成预留，验证不得无限等待 worker reclaim；现有 ownership fencing 负责阻止该过期 worker开始新的 SMTP。回收后的 worker 重新执行同一检查，不把数据库连接或 advisory lock 跨 SMTP 持有。
+`tasks.status='processing'`、非空 current owner 和 `lease_until > now()` 共同构成 SMTP 最后安全点的短期发送预留。worker 在 per-email advisory lock 内重新确认 task ownership 后，必须 `FOR UPDATE` 锁定 code 行并完成 exhausted / superseded 检查；事务提交后 task 在整个 SMTP 调用和 handler 返回前保持有 owner 的未过期 processing claim。验证事务对新旧协议行都必须检查该预留；命中时返回内部 `delivery_in_progress`，对外保持通用 `codeIncorrect`，但不比较 code、不增加 attempts、也不消费 resolved email+IP 失败桶。这样 worker 提交最后检查后，验证不能再消费或耗尽即将发送的 code。只有 status=processing 但 owner 为空或 lease 已过期的 abandoned 行不构成预留，验证不得无限等待 worker reclaim；现有 ownership fencing 负责阻止该过期 worker 开始新的 SMTP。回收后的 worker 重新执行同一检查，不把数据库连接或 advisory lock 跨 SMTP 持有。
 
 ## 6. 验证事务
 
@@ -174,13 +174,13 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 
 ## 10. 验收清单
 
-- [ ] 固定 6 位 decimal，旧 env 值不再控制生成策略
-- [ ] 32-byte challenge 由浏览器 CSPRNG 生成并在同一邮箱重发时复用
-- [ ] 数据库只存 purpose-separated challenge HMAC
-- [ ] challenge mismatch 不比较 code、不写 attempts
-- [ ] attempts 仅在 challenge-matched code mismatch 后增加，最大 5
-- [ ] 正确 code 仍受 attempts 上限、source gate 与 target gate 约束
-- [ ] legacy 16–64 位行只在自然过期窗口兼容
-- [ ] active-code dedupe 不替换 challenge
-- [ ] durable task、SMTP、日志和审计不泄露 challenge/code
-- [ ] 迁移和部署说明明确旧实例不能验证新 6 位码
+- [x] 固定 6 位 decimal，旧 env 值不再控制生成策略
+- [x] 32-byte challenge 由浏览器 CSPRNG 生成并在同一邮箱重发时复用
+- [x] 数据库只存 purpose-separated challenge HMAC
+- [x] challenge mismatch 不比较 code、不写 attempts
+- [x] attempts 仅在 challenge-matched code mismatch 后增加，最大 5
+- [x] 正确 code 仍受 attempts 上限、source gate 与 target gate 约束
+- [x] legacy 16–64 位行只在自然过期窗口兼容
+- [x] active-code dedupe 不替换 challenge，并排除已耗尽新协议行
+- [x] durable task、SMTP、日志和审计不泄露 challenge/code
+- [x] 迁移和部署说明明确旧实例不能验证新 6 位码

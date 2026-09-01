@@ -30,6 +30,7 @@ const env = {
   TRUSTED_PROXY_HOPS: 1,
   SESSION_SECRET: "test-secret-that-is-long-enough-for-hmac",
 } as const;
+const TEST_CHALLENGE = "A".repeat(43);
 
 function request(body: unknown, headers: HeadersInit = {}) {
   return new NextRequest("http://localhost/api/auth/request-code", {
@@ -63,7 +64,7 @@ describe("request-code route S4 ordering", () => {
   it("normalizes email before requestLoginCode and preserves Turnstile", async () => {
     const response = await POST(
       request(
-        { email: " Fan@Example.com ", turnstileToken: "token" },
+        { email: " Fan@Example.com ", challenge: TEST_CHALLENGE, turnstileToken: "token" },
         { "x-forwarded-for": "198.51.100.10" },
       ),
     );
@@ -74,6 +75,7 @@ describe("request-code route S4 ordering", () => {
     expect(mocks.requestLoginCode).toHaveBeenCalledWith(
       "fan@example.com",
       expect.objectContaining({
+        challenge: TEST_CHALLENGE,
         identity: { kind: "ip", value: "198.51.100.10" },
         ip: "198.51.100.10",
         locale: "zh",
@@ -84,7 +86,11 @@ describe("request-code route S4 ordering", () => {
   it("rejects overlong raw email before Turnstile or send-budget logic", async () => {
     const response = await POST(
       request(
-        { email: `${"a".repeat(513)}@example.com`, turnstileToken: "token" },
+        {
+          email: `${"a".repeat(513)}@example.com`,
+          challenge: TEST_CHALLENGE,
+          turnstileToken: "token",
+        },
         { "x-forwarded-for": "198.51.100.10" },
       ),
     );
@@ -100,7 +106,7 @@ describe("request-code route S4 ordering", () => {
 
     const response = await POST(
       request(
-        { email: "fan@example.com", turnstileToken: "bad-token" },
+        { email: "fan@example.com", challenge: TEST_CHALLENGE, turnstileToken: "bad-token" },
         { "x-forwarded-for": "198.51.100.10" },
       ),
     );
@@ -111,13 +117,30 @@ describe("request-code route S4 ordering", () => {
   });
 
   it("uses one unresolved emergency bucket when no trusted IP is available", async () => {
-    const response = await POST(request({ email: "fan@example.com" }));
+    const response = await POST(request({ email: "fan@example.com", challenge: TEST_CHALLENGE }));
 
     expect(response.status).toBe(200);
     expect(mocks.rateLimit).toHaveBeenCalledWith("request-code-unresolved", 100, 3_600_000);
     expect(mocks.requestLoginCode).toHaveBeenCalledWith(
       "fan@example.com",
-      expect.objectContaining({ identity: { kind: "unresolved" }, ip: null }),
+      expect.objectContaining({
+        challenge: TEST_CHALLENGE,
+        identity: { kind: "unresolved" },
+        ip: null,
+      }),
     );
+  });
+
+  it("rejects malformed challenges before Turnstile or code creation", async () => {
+    const response = await POST(
+      request(
+        { email: "fan@example.com", challenge: "not-base64url", turnstileToken: "token" },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.assertTurnstile).not.toHaveBeenCalled();
+    expect(mocks.requestLoginCode).not.toHaveBeenCalled();
   });
 });

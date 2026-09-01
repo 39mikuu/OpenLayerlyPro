@@ -38,16 +38,17 @@ async function loadEnv(overrides: Partial<Record<(typeof AUTH_ENV_KEYS)[number],
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const key of AUTH_ENV_KEYS) restoreEnvValue(key, originalValues.get(key));
   restoreEnvValue("NODE_ENV", originalNodeEnv);
   restoreEnvValue("SESSION_SECRET", originalSessionSecret);
 });
 
 describe("auth rate-limit environment configuration", () => {
-  it("uses S4 defaults", async () => {
+  it("uses fixed six-digit decimal defaults", async () => {
     await expect(loadEnv()).resolves.toMatchObject({
-      LOGIN_CODE_LENGTH: 16,
-      LOGIN_CODE_ALPHABET: "crockford-base32",
+      LOGIN_CODE_LENGTH: 6,
+      LOGIN_CODE_ALPHABET: "decimal",
       ADMIN_LOGIN_RATE_MAX: 10,
       VERIFY_CODE_IP_RATE_MAX: 30,
       VERIFY_CODE_EMAIL_IP_RATE_MAX: 10,
@@ -57,11 +58,20 @@ describe("auth rate-limit environment configuration", () => {
     });
   });
 
-  it("rejects login-code entropy below the 80-bit S4 floor", async () => {
+  it("rejects obsolete unsupported lengths", async () => {
     await expect(loadEnv({ LOGIN_CODE_LENGTH: "15" })).rejects.toThrow("环境变量配置错误");
   });
 
-  it("rejects unsupported login-code alphabets", async () => {
-    await expect(loadEnv({ LOGIN_CODE_ALPHABET: "decimal" })).rejects.toThrow("环境变量配置错误");
+  it("normalizes legacy deployment values to the fixed policy", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await expect(
+      loadEnv({ LOGIN_CODE_LENGTH: "16", LOGIN_CODE_ALPHABET: "crockford-base32" }),
+    ).resolves.toMatchObject({
+      LOGIN_CODE_LENGTH: 6,
+      LOGIN_CODE_ALPHABET: "decimal",
+    });
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining("Deprecated login-code environment values"),
+    );
   });
 });

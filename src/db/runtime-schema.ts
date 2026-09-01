@@ -197,6 +197,11 @@ export const RUNTIME_SCHEMA_MIGRATIONS = [
     hash: "845767d3e1dcbfcd7e7d1c553af62eb737cbfa924214da8bcd6fb7be0bf9bcda",
     createdAt: 1787206460655,
   },
+  {
+    tag: "0040_login_code_challenge",
+    hash: "b6cb336141f6fe11a1b94164569a52eb2c886a3142ae622e166d7c62070b7397",
+    createdAt: 1788031323310,
+  },
 ] as const;
 
 export const RUNTIME_SCHEMA_MIGRATION = RUNTIME_SCHEMA_MIGRATIONS.at(-1)!;

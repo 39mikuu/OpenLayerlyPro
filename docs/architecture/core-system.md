@@ -69,7 +69,7 @@ src/
 
 ### 当前实现
 
-- 默认至少 16 位 uppercase Crockford base32 登录码；数据库只存 keyed digest，不存可恢复明文。
+- 新登录码固定为 6 位数字，并与发码浏览器保存的 256-bit challenge 绑定；数据库只存二者的 purpose-separated keyed digest，不存可恢复明文。challenge 匹配后每个 code 最多允许 5 次错误比较；存量 16 位 Crockford code 仅兼容到自然过期。
 - 同邮箱 active code 与 durable delivery task 使用并发安全 fence；新请求统一返回 accepted，不泄漏是否实际发信。
 - 正确码先进入核心比较，wrong/expired 结果确认后才记 IP、email+IP 或 unresolved 错误预算。
 - source-scoped pre-comparison hard budget 限制昂贵比较，但不能让第三方只凭受害者 email 锁死正确码。
@@ -78,7 +78,7 @@ src/
 - Magic Link 只存 keyed hash；GET 仅展示不消费，显式确认才在同一事务内原子消费 token、创建/更新用户并插入 session。protocol-v2 rollout 通过独立 intake/delivery ledger、lease 与角色边界 fence 控制。
 - Google/GitHub OAuth 使用 PKCE S256、单次 state、浏览器绑定与站内 redirect allowlist；provider identity 优先，只有 verified email 可自动绑定。provider 故障不影响验证码和 Magic Link fallback。
 
-权威语义见 [../handoff/harden-s4-auth-rate-limiting.md](../handoff/harden-s4-auth-rate-limiting.md)。底层 limiter 仍是进程内实现；v1.0 不承诺多副本全局计数。
+权威语义见 [6 位数字登录码与请求挑战绑定](../handoff/login-code-6-digit-challenge.md)和 [S4 认证限流硬化](../handoff/harden-s4-auth-rate-limiting.md)。底层 limiter 仍是进程内实现；v1.0 不承诺多副本全局计数。
 
 ## 配置加密与配置中心
 

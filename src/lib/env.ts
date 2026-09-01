@@ -6,6 +6,7 @@ import {
 } from "@/modules/security/notification-key-validation";
 
 import { DEFAULT_DATABASE_URL } from "./database-url";
+import { logger } from "./logger";
 
 const TASK_BATCH_SIZE = 20;
 
@@ -268,8 +269,18 @@ const envSchema = z.object({
   OAUTH_START_IP_RATE_MAX: z.coerce.number().int().min(1).max(10_000).default(20),
   OAUTH_START_UNRESOLVED_RATE_MAX: z.coerce.number().int().min(20).max(1_000_000).default(100),
   OAUTH_START_RATE_WINDOW_MS: z.coerce.number().int().min(10_000).max(86_400_000).default(600_000),
-  LOGIN_CODE_LENGTH: z.coerce.number().int().min(16).max(64).default(16),
-  LOGIN_CODE_ALPHABET: z.enum(["crockford-base32"]).default("crockford-base32"),
+  LOGIN_CODE_LENGTH: z.coerce
+    .number()
+    .int()
+    .min(6)
+    .max(64)
+    .refine((value) => value === 6 || value >= 16)
+    .default(6)
+    .transform(() => 6 as const),
+  LOGIN_CODE_ALPHABET: z
+    .enum(["decimal", "crockford-base32"])
+    .default("decimal")
+    .transform(() => "decimal" as const),
 
   CLOUDFLARE_TUNNEL_TOKEN: z.string().optional(),
 
@@ -414,6 +425,12 @@ export function getEnv(): Env {
   const parsed = envSchema.safeParse(process.env);
   if (!parsed.success) {
     throw new Error(`环境变量配置错误: ${parsed.error.message}`);
+  }
+  if (
+    (process.env.LOGIN_CODE_LENGTH && process.env.LOGIN_CODE_LENGTH !== "6") ||
+    (process.env.LOGIN_CODE_ALPHABET && process.env.LOGIN_CODE_ALPHABET !== "decimal")
+  ) {
+    logger.warn("Deprecated login-code environment values were normalized to 6 / decimal");
   }
   assertRuntimeSecurity(parsed.data);
   cached = parsed.data;
