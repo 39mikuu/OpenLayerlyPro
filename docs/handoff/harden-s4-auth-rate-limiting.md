@@ -1,4 +1,4 @@
-# 交接：S4 认证限流硪c化（含 #66 verify-code 定向锁死）
+# 交接：S4 认证限流硬化（含 #66 verify-code 定向锁死）
 
 > **后续设计说明**：产品已确认改用 6 位数字登录码。实现落地时，[6 位数字登录码与请求挑战绑定](login-code-6-digit-challenge.md) 将取代本文“至少 80 bit”和“永不写 `attempt_count`”两项约束；本文的 source-only 比较预算、resolved email+IP 失败桶、投递 fence、加密任务与 SMTP 边界继续生效。在该实现合并前，当前运行代码仍遵守本文的 16 位 Crockford 约束。
 
