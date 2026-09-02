@@ -168,8 +168,7 @@ function collectStaticTranslationUsages(sourceRoot: string): TranslationUsage[] 
     function isDirectTranslationCall(expression: ts.Expression): boolean {
       const unwrapped = unwrapExpression(expression);
       return (
-        ts.isCallExpression(unwrapped) &&
-        expressionBindingKind(unwrapped.expression) === "direct"
+        ts.isCallExpression(unwrapped) && expressionBindingKind(unwrapped.expression) === "direct"
       );
     }
 
