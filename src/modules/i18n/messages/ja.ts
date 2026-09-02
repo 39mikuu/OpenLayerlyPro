@@ -388,6 +388,8 @@ export const ja: Messages = {
       actions: "操作",
       cancel: "キャンセル",
       close: "閉じる",
+      clear: "クリア",
+      cleared: "クリアしました",
       environment: "環境変数",
       dbOverride: "管理画面の設定が環境変数より優先されています。",
       envSource: "現在は環境変数の設定を使用しています。",
