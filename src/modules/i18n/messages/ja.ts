@@ -1228,6 +1228,8 @@ export const ja: Messages = {
     magicLinkDeliveryInFlight:
       "このメールアドレスのログインリンク配信はまだ処理中です。解決後にもう一度お試しください。",
     requestRateLimited: "リクエストが多すぎます。しばらくしてから再度お試しください。",
+    trustedClientIpUnavailable:
+      "クライアントの送信元を確認できません。管理者にリバースプロキシ設定の確認を依頼してください。",
     hourlyRateLimited: "リクエストが多すぎます。1時間後に再度お試しください。",
     cooldownRateLimited: "{seconds} 秒待ってから再送信してください。",
     downloadRateLimited: "ダウンロードが多すぎます。しばらくしてから再度お試しください。",

@@ -17,6 +17,8 @@ cp .env.example .env
    或编排平台向所有实例提供同一值。
 3. 只向公网开放 HTTPS 入口，不直接暴露 app:3000。
 4. 单层反向代理通常使用 `TRUSTED_PROXY_HEADER=x-forwarded-for` 与 `TRUSTED_PROXY_HOPS=1`。
+   使用基础 Compose app 服务搭配自建 Nginx/Traefik 时，同时设置
+   `DIRECT_COMPOSE_AUTH_ALLOW_UNRESOLVED_CLIENT_IP=false`；不要保留直连模式默认例外。
 5. 只有源站不能被绕过时才信任 `x-real-ip`、`cf-connecting-ip` 等单值头。
 6. 代理请求体上限是第二层保护；应用的实际字节上限仍是权威边界。
 7. 代理必须转发视频 `Range` 请求，并保留应用返回的 200/206/416、`Content-Range` 与 `Accept-Ranges`。

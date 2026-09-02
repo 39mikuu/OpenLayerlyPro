@@ -278,6 +278,10 @@ const envSchema = z.object({
   TRUSTED_PROXY_HEADER: z
     .enum(["x-forwarded-for", "x-real-ip", "cf-connecting-ip", "true-client-ip"])
     .default("x-forwarded-for"),
+  AUTH_ALLOW_UNRESOLVED_CLIENT_IP: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
 });
 
 export type Env = z.infer<typeof envSchema>;

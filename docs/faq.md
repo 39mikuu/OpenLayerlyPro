@@ -50,6 +50,8 @@ docker compose exec \
 
 并确保应用 `3000` 端口不直接对公网暴露，否则 IP 仍可被伪造。详见 [公网 VPS 部署](deploy-vps.md) 与 [CDN 接入](deploy-cdn.md)。
 
+基础 `docker-compose.yml` 的直连 `:3000` 模式是唯一默认例外：它为受信任局域网/防火墙后的初始化和自托管显式启用 `AUTH_ALLOW_UNRESOLVED_CLIENT_IP=true`，认证请求会进入各操作独立的高阈值 emergency 桶并告警。Caddy/Cloudflare Tunnel overlay 会强制设为 `false`。不要把基础直连端口开放到公网。
+
 ## 存储
 
 **Q: 怎么切换到 R2 / S3？**

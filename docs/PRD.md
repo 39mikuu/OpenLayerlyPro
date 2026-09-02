@@ -100,7 +100,7 @@ Integration 是官方内置的第三方服务对接，随 Core 发布、由项�
 | 需求 | 状态 |
 |---|---|
 | 生产环境禁止默认 / 弱 `SESSION_SECRET` | ✅ |
-| 可信代理真实 IP 与 operation-specific unresolved emergency bucket | ✅ |
+| 可信代理真实 IP、生产认证 unresolved 失败关闭与文件专用 emergency bucket | ✅ |
 | S4 正确码优先、错误后限流、source-scoped pre-compare budget | ✅ |
 | 高熵 Crockford login code、keyed email identity、加密 durable delivery task | ✅ |
 | Turnstile 与调用前保护 | ✅ |

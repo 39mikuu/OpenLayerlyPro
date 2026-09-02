@@ -182,7 +182,7 @@ secrets volume。
 - Cloudflare Tunnel / Cloudflare CDN：`TRUSTED_PROXY_HEADER=cf-connecting-ip`
 - Caddy / Nginx / Traefik：`TRUSTED_PROXY_HEADER=x-forwarded-for`，并设置正确的 `TRUSTED_PROXY_HOPS`
 
-默认不信任任意 `X-Forwarded-For` 是安全设计，避免客户端伪造 IP。无法解析可信 IP 时会使用各操作独立的高阈值 unresolved emergency bucket，并记录限流告警；这不是正常生产配置的替代品。
+默认不信任任意 `X-Forwarded-For` 是安全设计，避免客户端伪造 IP。公网生产入口无法解析可信 IP 时，认证请求会失败关闭并记录节流告警，不会进入共享认证桶。基础 Compose 用独立的 `DIRECT_COMPOSE_AUTH_ALLOW_UNRESOLVED_CLIENT_IP` 为受信任局域网/防火墙直连启用高阈值 emergency bucket；为 Nginx、Traefik 等自定义公网入口部署时必须把该变量设为 `false`。应用自身的 `AUTH_ALLOW_UNRESOLVED_CLIENT_IP` 默认仍为 `false`，Caddy 与 Cloudflare Tunnel overlay 也强制关闭直连例外。
 
 ### 配置加密根密钥
 

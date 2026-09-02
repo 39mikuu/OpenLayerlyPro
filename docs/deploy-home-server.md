@@ -51,7 +51,7 @@ NOTIFICATION_UNSUBSCRIBE_TOKEN_MAX_AGE_DAYS=180
 
 - 当前 limiter 面向单 app 实例。多个副本会各自计数；v1.0 不提供共享 Redis/PG limiter。
 - Cloudflare Tunnel/CDN 推荐 `TRUSTED_PROXY_HEADER=cf-connecting-ip`；自建反向代理使用 XFF 并设置准确 `TRUSTED_PROXY_HOPS`。
-- 无法解析可信客户端 IP 时，`admin-login`、`request-code`、`verify-code` 会退回各操作专用的 unresolved emergency 桶；这不会把所有认证流量压进同一个低阈值全局桶，但 unresolved 客户端仍共享各自操作桶。生产应修复可信 IP 解析，而不是长期依赖降级路径。
+- 生产环境无法解析可信客户端 IP 时，`admin-login`、`request-code`、`verify-code`、Magic Link 和 OAuth 默认以 503/通用登录错误失败关闭，不再把不同访客压进共享认证桶。基础 Compose 为受信任局域网/防火墙后的直连 `:3000` 显式启用 `AUTH_ALLOW_UNRESOLVED_CLIENT_IP=true`，此时认证使用各操作专用的高阈值 emergency 桶并记录节流告警；不得把这个模式暴露到公网。Caddy 和 Cloudflare Tunnel overlay 会强制关闭该例外。文件下载仍保留独立高阈值降级桶。上线前必须按真实代理拓扑配置并验证 `TRUSTED_PROXY_HEADER` / `TRUSTED_PROXY_HOPS`。
 - S4 使用高熵登录码、keyed email identity、正确码优先、错误后记账和 source-scoped pre-comparison budget。详见 [S4 handoff](handoff/harden-s4-auth-rate-limiting.md)。
 - 登录码使用持久投递 fence；已有 active code 对应 pending/processing/retryable failed task 时，不创建替换码。
 - claim/fence 在短事务内完成，SMTP 在事务/advisory lock 外执行；SMTP 接受后进程崩溃仍可能导致同一码 at-least-once 重发。
@@ -66,7 +66,7 @@ docker compose up -d
 docker compose logs -f app
 ```
 
-entrypoint 会准备目录与配置加密密钥、运行 forward migration，然后启动应用。迁移失败时应用不会服务。基础 Compose 会发布主机 3000 端口，访问 `http://服务器IP:3000` 完成初始化；只应在受信任局域网或有防火墙限制的环境使用该入口。
+entrypoint 会准备目录与配置加密密钥、运行 forward migration，然后启动应用。迁移失败时应用不会服务。基础 Compose 会发布主机 3000 端口，访问 `http://服务器IP:3000` 完成初始化，并为这条无法获得可信客户端 IP 的直连路径启用认证 emergency 桶；只应在受信任局域网或有防火墙限制的环境使用该入口，绝不能直接暴露公网。
 
 > 内容附件通过 raw-body 流式写入 local 或 S3/R2；图片用途有界缓冲并由 sharp 做格式检测、重编码和 metadata stripping。`MAX_UPLOAD_SIZE_MB` 是内容附件 env fallback；后台 DB 值可直接覆盖它。付款凭证/二维码上限则不能高于 `PAYMENT_PROOF_MAX_SIZE_MB` env ceiling。S3 multipart 使用 8 MiB × 2 路并发，并应配置中止未完成 multipart upload 的 bucket 生命周期规则。
 

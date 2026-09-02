@@ -3,8 +3,8 @@ import { z } from "zod";
 
 import { getClientIp, getUserAgent, handleApiError, jsonError, jsonOk } from "@/lib/api";
 import {
+  assertProductionAuthClientIdentity,
   resolveClientRateLimitIdentity,
-  warnUnresolvedClientRateLimitIdentity,
 } from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
@@ -37,12 +37,9 @@ export async function POST(req: NextRequest) {
     assertContentLengthWithinLimit(req, env.REQUEST_JSON_MAX_BYTES);
     const ip = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(ip);
-    if (identity.kind === "unresolved" && env.NODE_ENV === "production") {
-      warnUnresolvedClientRateLimitIdentity({
-        message:
-          "Trusted client IP is unavailable for magic-link request. Using request-code-unresolved emergency rate-limit bucket.",
-      });
-    }
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "magic-link request", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
     // Shares the request-code source budget: both flows spend the same
     // outbound auth-email quota per source.
     const primaryLimit = getRequestCodePrimaryRateLimit(identity, env);
