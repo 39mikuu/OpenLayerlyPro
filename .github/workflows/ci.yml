@@ -53,6 +53,7 @@ jobs:
       - run: pnpm build:admin-reset
       - run: pnpm build:magic-link-rollback
       - run: pnpm build:restore-tools
+      - run: pnpm check:restore-pre-scan-next-free
       - run: pnpm build
       - name: Verify one-off artifacts
         run: |

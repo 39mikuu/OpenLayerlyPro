@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   createTransport: vi.fn(),
   sendMail: vi.fn(),
   getSmtpConfig: vi.fn(),
+  readPublicSiteInfo: vi.fn(),
   loggerInfo: vi.fn(),
 }));
 
@@ -20,6 +21,9 @@ vi.mock("nodemailer", () => ({
 vi.mock("@/modules/config", () => ({
   getSmtpConfig: mocks.getSmtpConfig,
 }));
+vi.mock("@/modules/site", () => ({
+  readPublicSiteInfo: mocks.readPublicSiteInfo,
+}));
 vi.mock("@/lib/logger", () => ({
   logger: { info: mocks.loggerInfo, warn: vi.fn(), error: vi.fn() },
 }));
@@ -28,6 +32,7 @@ import {
   type MailTaskOwnershipOptions,
   sendLoginCodeEmail,
   sendMagicLinkEmail,
+  sendMagicLinkEmailWithDeadline,
   sendMembershipActivatedEmail,
   sendMembershipRevokedEmail,
   sendNewPostNotificationEmail,
@@ -90,6 +95,16 @@ describe("SMTP transport", () => {
       password: "secret",
       from: "noreply@example.com",
     });
+    mocks.readPublicSiteInfo.mockResolvedValue({
+      initialized: true,
+      siteName: "Configured Studio",
+      artistName: "Artist",
+      artistBio: "",
+      artistAvatarFileId: null,
+      siteLogoFileId: null,
+      siteIconFileId: null,
+      socialLinks: [],
+    });
   });
 
   it("sets bounded connection, greeting, and socket timeouts", async () => {
@@ -102,6 +117,51 @@ describe("SMTP transport", () => {
         socketTimeout: 45_000,
       }),
     );
+  });
+
+  it("sends HTML and plain-text alternatives for the core transactional emails", async () => {
+    await sendLoginCodeEmail("fan@example.com", "123456", "en");
+    await sendMagicLinkEmail("fan@example.com", "https://example.test/login/magic/token", "en");
+    await sendMembershipActivatedEmail(
+      "fan@example.com",
+      "Supporter",
+      new Date("2026-08-20T00:00:00.000Z"),
+      "en",
+    );
+
+    expect(mocks.sendMail).toHaveBeenCalledTimes(3);
+    for (const [message] of mocks.sendMail.mock.calls) {
+      expect(message.text).toEqual(expect.any(String));
+      expect(message.html).toMatch(/^<!doctype html>/);
+      expect(message.text).toContain("Configured Studio");
+      expect(message.html).toContain("Configured Studio");
+      expect(message.html).not.toContain("Artist Member Site");
+    }
+    expect(mocks.sendMail.mock.calls[0]?.[0]?.html).toContain("123456");
+    expect(mocks.sendMail.mock.calls[1]?.[0]?.html).toContain(
+      'href="https://example.test/login/magic/token"',
+    );
+    expect(mocks.sendMail.mock.calls[2]?.[0]?.html).toContain('href="http://localhost:3000/me"');
+  });
+
+  it("keeps HTML on the deadline-bounded Magic Link transport", async () => {
+    const close = vi.fn();
+    mocks.createTransport.mockReturnValueOnce({ sendMail: mocks.sendMail, close });
+
+    await sendMagicLinkEmailWithDeadline(
+      "fan@example.com",
+      "https://example.test/login/magic/token",
+      "en",
+      5,
+    );
+
+    expect(mocks.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("https://example.test/login/magic/token"),
+        html: expect.stringContaining('href="https://example.test/login/magic/token"'),
+      }),
+    );
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("revalidates Magic Link task ownership after config resolution and before SMTP", async () => {

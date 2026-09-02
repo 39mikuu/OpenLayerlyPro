@@ -7,7 +7,7 @@ import {
   paymentProviderEvents,
   tasks,
 } from "@/db/schema";
-import { rearmStorageUploadJournalsAfterRestore } from "@/modules/file/uploadJournal";
+import { rearmStorageUploadJournalsAfterRestore } from "@/modules/file/uploadJournalRestore";
 import { enqueueTask } from "@/modules/tasks/enqueue";
 
 import type { NeutralizeReport } from "./types";
