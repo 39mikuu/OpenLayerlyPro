@@ -37,6 +37,9 @@
 - 同一 `requestedEmail` 的重发必须复用已有 challenge。服务端可能因 active code / durable task fence 返回统一 `accepted` 但不创建新 code；客户端此时若换 challenge，会使仍在途的 code 无法验证。
 - 点击“更换邮箱”只解锁输入框，不得立即删除旧 challenge。只有实际向另一个 normalized email 发起 code 请求时，`getOrCreate` 才用新 challenge 覆盖旧值；若用户未改变地址，或编辑后又改回原地址，必须继续复用原 challenge。登录成功、显式取消或 code 过期后删除。
 - 页面刷新后从 `sessionStorage` 恢复。若浏览器会话在 code 仍 active 时丢失，服务端不能仅凭一个新 challenge 安全替换旧 code，否则第三方可借重发接口使受害者的 code 失效。UI 必须明确提示：在原浏览器完成验证，或等待最多一个 code TTL（10 分钟）后再请求新 code；也可改用 Magic Link / OAuth。不得提示用户立即重发并暗示会生成可用的新 code。
+- 发码成功后把非秘密 pending-flow marker（normalized email + expiry，TTL 10 分钟）写入 `localStorage`。marker 不得包含 raw challenge；challenge 仍只存在 `sessionStorage`。
+- 若 marker 仍有效但对应 challenge 缺失（关闭标签后重开登录页），UI 必须进入等待引导（原浏览器 / 最多 10 分钟 TTL / Magic Link），**不得**调用 `getOrCreate` 铸造新 challenge。
+- 第 5 次 challenge-matched 错误比较（fresh `codeAttemptsExceeded`，响应 `params.rotateChallenge = 1`）后，客户端必须旋转 `sessionStorage` 中的 challenge，以便同邮箱重发绑定新 HMAC。普通 429（来源/目标限流、already exhausted）不得旋转。登录表单通过 `ApiError.code` 识别该错误，不匹配本地化字符串。
 
 浏览器生成逻辑必须使用 `crypto.getRandomValues`，禁止 `Math.random()`、时间戳、UUID v1 或可预测 PRNG。
 
@@ -112,7 +115,7 @@ route 顺序仍为：输入校验 → target failure bucket 只读检查 → sou
 
 1. 常量时间比较 challenge HMAC。
 2. challenge 不匹配：返回通用 `codeIncorrect`；不得比较 code、不得更新 `attempt_count` / `used_at`。
-3. challenge 匹配但 `attempt_count >= 5`：返回 `codeAttemptsExceeded`；不得比较 code。
+3. challenge 匹配但 `attempt_count >= 5`：返回 `codeAttemptsExceeded`；不得比较 code。challenge 不匹配的已耗尽行不得返回 `attempts_already_exhausted`，而是走与未耗尽 mismatch 相同的 locked UPDATE（increment 0）普通错误路径。
 4. 常量时间比较 code HMAC。
 5. code 正确：条件更新 `used_at = now()` 并登录；不增加 `attempt_count`。
 6. code 错误：在持有行锁时把 `attempt_count` 原子增加 1；第 1–4 次返回 `codeIncorrect`，第 5 次产生内部 `attempts_exhausted_now` 结果并对外返回 `codeAttemptsExceeded`。
@@ -159,7 +162,10 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - replacement 创建前后，旧 challenge 都能命中已耗尽行并返回 `attempts_already_exhausted`；未耗尽的旧 code 不得因此重新可用；
 - 已耗尽 code 不抑制新 code 创建，其旧投递任务在 SMTP 前成功 no-op；
 - 新旧协议行在 active processing claim 的 SMTP 阻塞期间都不推进 attempts/used_at/target bucket；owner 缺失或 lease 过期后不再延后比较；
-- challenge 丢失时 UI 不进入立即重发循环，而是提示等待旧 code 最多 10 分钟过期或改用其他登录方式；
+- challenge 丢失时 UI 不进入立即重发循环，而是提示等待旧 code 最多 10 分钟过期或改用其他登录方式；pending-flow marker 在 `codeSent` 被重置后仍能阻止铸造新 challenge；
+- 第 5 次错误后客户端旋转 challenge，同邮箱重发不再与已耗尽行共享 HMAC；普通 429 保持原 challenge；
+- 已耗尽行仅在 challenge 匹配时返回 `attempts_already_exhausted`；
+- 客户端以 `ApiError.code` 识别 `codeAttemptsExceeded`，不匹配本地化字符串；
 - attempts 未达 5 时正确 code 成功且不增加 attempts；
 - 并发错误 attempts 不丢失、不超过 5，并发正确最多一次成功；
 - 来源硬预算和 resolved email+IP 门禁的 S4 测试全部保留；
@@ -180,3 +186,6 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - [x] active-code dedupe 不替换 challenge，并排除已耗尽新协议行
 - [x] durable task、SMTP、日志和审计不泄露 challenge/code
 - [x] 迁移和部署说明明确旧实例不能验证新 6 位码
+- [x] 第 5 次错误后旋转 challenge；普通 429 保持 challenge
+- [x] pending-flow marker 检测关闭标签后的 challenge 丢失
+- [x] 已耗尽行在 challenge 不匹配时走普通错误路径
