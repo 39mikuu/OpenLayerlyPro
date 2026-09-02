@@ -91,7 +91,13 @@ export async function POST(req: NextRequest) {
           rateLimit(limit.key, limit.max, limit.windowMs),
         );
         if (allowed.some((value) => !value)) {
-          return jsonError(429, "codeAttemptsExceeded");
+          // Preserve rotateChallenge on a fresh exhaustion that also fills the
+          // target bucket so the client can still rotate before resend.
+          return jsonError(
+            429,
+            "codeAttemptsExceeded",
+            error instanceof ApiError ? error.params : undefined,
+          );
         }
       }
       throw error;
