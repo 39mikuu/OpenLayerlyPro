@@ -35,7 +35,7 @@
 - 浏览器在第一次请求某个 normalized email 的登录码前，用 Web Crypto 生成 32 字节 challenge。
 - challenge 仅保存在当前浏览器的登录流程状态和 `sessionStorage`；不得进入 URL、analytics、console、错误上报或持久 cookie。
 - 同一 `requestedEmail` 的重发必须复用已有 challenge。服务端可能因 active code / durable task fence 返回统一 `accepted` 但不创建新 code；客户端此时若换 challenge，会使仍在途的 code 无法验证。
-- 唯一例外是 challenge 已匹配且第 5 次错误刚耗尽 code：verify route 在 `codeAttemptsExceeded` 的 429 中返回非敏感的 `challengeRotationRequired=1` 指令。客户端只在收到该精确指令时立即生成并保存新 challenge、清除旧 pending marker；普通 source/target 限流 429 或预先已耗尽的重试不得触发轮换。随后请求的 replacement 必须绑定这个新 challenge，因此旧耗尽行与新行不会共享 challenge HMAC。
+- 唯一例外是 challenge 已匹配且第 5 次错误刚耗尽 code：verify route 在 `codeAttemptsExceeded` 的 429 中返回非敏感的 `challengeRotationRequired=1` 指令。客户端只在收到该精确指令（含 §3.3 恢复探测重放的同一指令）时生成并保存 replacement challenge；普通 source/target 限流 429 不得触发轮换。随后请求的 replacement 必须绑定这个新 challenge，因此旧耗尽行与新行不会共享 challenge HMAC。第 5 次错误的 429 丢失、连接中止、页面重载或并发重发，不得依赖“先看到响应再轮换”的一次性副作用，必须走 §3.3 的原子/幂等握手。
 - 点击“更换邮箱”只解锁输入框，不得立即删除旧 challenge。只有实际向另一个 normalized email 发起 code 请求时，`getOrCreate` 才用新 challenge 覆盖旧值；若用户未改变地址，或编辑后又改回原地址，必须继续复用原 challenge。登录成功、显式取消或 code 过期后删除。
 - 页面刷新后从 `sessionStorage` 恢复。若浏览器会话在 code 仍 active 时丢失，服务端不能仅凭一个新 challenge 安全替换旧 code，否则第三方可借重发接口使受害者的 code 失效。UI 必须明确提示：在原浏览器完成验证，或等待最多一个 code TTL（10 分钟）后再请求新 code；也可改用 Magic Link / OAuth。不得提示用户立即重发并暗示会生成可用的新 code。
 
@@ -64,6 +64,31 @@
 ```
 
 两条 route 都必须在有界 JSON 读取后校验 challenge 的长度和 base64url 字符集。challenge 不得出现在成功响应、错误详情或日志。`request-code` 仍统一返回 `{ accepted: true }`，不得泄露是否创建、抑制或替换了 code。
+
+### 3.3 耗尽轮换与 replacement 的可恢复握手
+
+第 5 次匹配错误的事务一旦提交，code 已耗尽；但对应 429 可能丢失、fetch 被 abort、页面重载，或一次已在途的 `request-code` 在客户端处理 429 之前到达。当前规则禁止对“预先已耗尽”的普通重试再轮换，因此若浏览器仍持有已耗尽 challenge，并发重发会把 replacement 绑到旧 challenge：§6 耗尽行优先规则一直选中旧行，新 challenge 无法验证新邮件，后续请求被 fence 到 TTL。轮换与 replacement 必须构成原子、可幂等恢复的握手。
+
+**浏览器持久化。** 一旦进入耗尽轮换（首次收到 `challengeRotationRequired=1`，或恢复探测重放该指令），客户端必须在 `sessionStorage` 同时持久化：
+
+1. 原始验证元组：normalized email + 已耗尽 challenge；
+2. replacement challenge（新的 32 字节 CSPRNG 值，不得等于已耗尽 challenge）。
+
+这两项必须在响应丢失、abort、重载和手动重试后仍可恢复。在 replacement 已被客户端采纳为当前验证 challenge 之前，不得丢弃原始元组。当前 `request-code` / `verify-code` 使用 replacement challenge；原始元组只用于恢复探测，以及防止在握手完成前误用已耗尽一代。登录成功、显式取消、改向另一个 email 发码、或 code TTL 结束后清除。
+
+**数据库原子登记并消费。** 发码事务在 per-email advisory lock 内，把 replacement challenge 登记为该耗尽 code 的唯一后继并消费该登记：
+
+- 禁止用已耗尽行的 `challenge_hash` 创建 replacement。携带已耗尽 challenge 的 `request-code` 仍统一返回 `{ accepted: true }`，但不创建新行、不更新旧行、不把旧 HMAC 写成新行的 `challenge_hash`。已耗尽一代是 stale generation，不能再作为发码绑定。
+- 同一耗尽行至多登记一个 replacement challenge HMAC。并发重发若提交不同的新 challenge，只有锁内第一个成功登记的被消费并创建新行；challenge HMAC 已匹配该登记的后续请求视为幂等重放（走对已有 replacement 的 accepted/dedupe）；HMAC 不匹配则不得另起一行。
+- 登记与创建必须在同一事务内提交。不得留下“已有 replacement 行但未登记”或“已登记但行未创建”的中间态；失败重试必须按登记结果幂等完成或回滚后再试。
+
+**来源有界恢复探测。** 第 5 次错误可能已经耗尽 source comparison budget 或 resolved email+IP 失败桶，使普通 verify 在 S4 比较门禁处被 429，永远走不到 `challengeRotationRequired=1`。verify route 必须在目标失败桶只读检查和 source comparison budget 消费之前，运行一次来源有界的恢复探测：
+
+- 探测只回答：该规范化 email 是否存在 unused、unexpired、`attempt_count >= 5` 的新协议行，且请求 challenge HMAC 与该行匹配。
+- 命中则重放同一非敏感指令：`codeAttemptsExceeded` + `challengeRotationRequired=1`；不比较 code、不增加 attempts、不消费 source comparison budget、不记账 target 失败桶。即使该次耗尽已经用尽 source 或 target 预算，丢失的第 5 次 429 仍须可恢复。
+- 未命中不得泄露“存在耗尽行但 challenge 不匹配”；探测失败与输入校验后的既有路径不可区分地进入后续 S4 门禁。
+- 探测受现有来源（source/IP）硬预算约束，防止成为无限 oracle；该约束独立于本次第 5 次错误已经耗尽的 comparison / target 桶。
+- §6 耗尽行优先规则仍然只作用于仍携带已耗尽 challenge 的请求；replacement challenge 选择新行。浏览器已改用 replacement 之后，针对旧元组的探测只用于补发轮换指令，不得让已耗尽行重新成为可验证 code。
 
 ## 4. 数据库与迁移
 
@@ -97,17 +122,31 @@ challenge_hash text null
 
 active code 被抑制时，不更新其 `challenge_hash`、`attempt_count`、创建时间或 task。客户端复用原 challenge 是协议的一部分。
 
-对新协议行，`attempt_count >= 5` 表示 code 已耗尽：它不再属于 active-code dedupe/fence 的候选，后续请求可以创建绑定新 challenge 的 code。该旧 code 对应的 pending、processing 或可重试 failed 投递任务必须在取得任务 ownership 与 per-email fence 后判定为 stale，并成功 no-op；不得再解密或发送已耗尽 code。legacy 行仍只按 `used_at` 与 expiry 判断 active。
+对新协议行，`attempt_count >= 5` 表示 code 已耗尽：它不再属于 active-code dedupe/fence 的候选，后续请求可以创建绑定新 challenge 的 code。创建 replacement 必须遵守 §3.3：在同一 per-email 锁与事务内原子登记并消费 replacement challenge，禁止把已耗尽 challenge 绑到新行。该旧 code 对应的 pending、processing 或可重试 failed 投递任务必须在取得任务 ownership 与 per-email fence 后判定为 stale，并成功 no-op；不得再解密或发送已耗尽 code。legacy 行仍只按 `used_at` 与 expiry 判断 active。
 
-`tasks.status='processing'`、非空 current owner 和 `lease_until > now()` 共同构成 SMTP 最后安全点的短期发送预留。worker 在 per-email advisory lock 内重新确认 task ownership 后，必须 `FOR UPDATE` 锁定 code 行并完成 exhausted / superseded 检查；事务提交后 task 在整个 SMTP 调用和 handler 返回前保持有 owner 的未过期 processing claim。验证事务对新旧协议行都必须检查该预留；命中时返回内部 `delivery_in_progress`，对外保持通用 `codeIncorrect`，但不比较 code、不增加 attempts、也不消费 resolved email+IP 失败桶。这样 worker 提交最后检查后，验证不能再消费或耗尽即将发送的 code。只有 status=processing 但 owner 为空或 lease 已过期的 abandoned 行不构成预留，验证不得无限等待 worker reclaim；现有 ownership fencing 负责阻止该过期 worker开始新的 SMTP。回收后的 worker 重新执行同一检查，不把数据库连接或 advisory lock 跨 SMTP 持有。
+`tasks.status='processing'`、非空 current owner 和 `lease_until > now()` 共同构成 SMTP 最后安全点的短期发送预留。worker 在 per-email advisory lock 内重新确认 task ownership 后，必须 `FOR UPDATE` 锁定 code 行并完成 exhausted / superseded 检查；事务提交后 task 在整个 SMTP 调用和 handler 返回前保持有 owner 的未过期 processing claim。验证事务对新旧协议行都必须检查该预留；命中时返回内部 `delivery_in_progress`，对外保持通用 `codeIncorrect`，但不比较 code、不增加 attempts、也不消费 resolved email+IP 失败桶。这样 worker 提交最后检查后，验证不能再消费或耗尽即将发送的 code。只有 status=processing 但 owner 为空或 lease 已过期的 abandoned 行不构成预留，验证不得无限等待 worker reclaim；现有 ownership fencing 负责阻止该过期 worker 开始新的 SMTP。回收后的 worker 重新执行同一检查，不把数据库连接或 advisory lock 跨 SMTP 持有。lease 过期本身不足以结束一次已经开始的 SMTP，见 §5.1。
+
+### 5.1 SMTP 预留丢失时的取消
+
+预留定义保持不变：`status=processing` **并且** 非空 `locked_by` **并且** `lease_until > now()`。验证侧仍只按这三项判断 `delivery_in_progress`。
+
+不能假设“processing lease 到期”就等于发送已停。worker 在 SMTP 进行中失去预留（续租失败、lease 过期、ownership 被 reclaim）时，必须取消该次发送，并在取消完成前保持失败关闭。
+
+必须：
+
+1. 每次发送使用**独占的 per-send 传输**，不得复用共享 Nodemailer socket 或 pooled transporter 连接。取消一次发送不得拆掉其他邮件的连接。
+2. 取消必须关闭该传输的底层 socket，并等待拆除得到确认。未确认拆除之前，不得把该 task 当作已释放预留。
+3. `sendLoginCodeEmail` 必须观察取消（传入的 `AbortSignal` 或等价句柄）。仅 abort `TaskExecutionContext.signal` 而邮件发送忽略该信号，视为协议违规：旧发送仍可能在验证已消费或耗尽 code 之后完成。
+4. 拆除结果不明确时必须失败关闭：继续把该 task 当作仍被预留，验证保持 `delivery_in_progress` / 通用 `codeIncorrect`，不得比较或消费 code。随后只能走 stuck-reservation 恢复（ownership fencing + 确认旧 worker 已停且 socket 已关）。歧义窗口内不得开启新的 SMTP，也不得让验证抢先耗尽即将发出的 code。
+5. 失去预留的那一代 SMTP 调用是 stale generation：即使底层 `sendMail` 稍后才回调成功，也不得把该结果当作投递成功去 finalize 新 generation 的 task；新 worker 必须重新执行 exhausted / superseded 检查。只有确认 socket 拆除，或 stuck-reservation 恢复完成之后，过期/无主 processing 行才回到“不构成预留、验证不再无限等待”的规则。
 
 ## 6. 验证事务
 
-route 顺序仍为：输入校验 → target failure bucket 只读检查 → source comparison budget 消费 → 核心数据库事务 → 失败后 resolved email+IP 记账。
+route 顺序仍为：输入校验 → §3.3 来源有界恢复探测 → target failure bucket 只读检查 → source comparison budget 消费 → 核心数据库事务 → 失败后 resolved email+IP 记账。恢复探测只在命中已耗尽 challenge 时短路返回轮换指令；未命中则对后续门禁不可见。
 
 核心事务不得复用发码 dedupe 的 “active code” 谓词。它通常锁定 normalized email 最新的 unused、unexpired code；但如果请求携带的 challenge HMAC 匹配某个 unused、unexpired 且 `attempt_count >= 5` 的新协议行，则优先锁定该已耗尽行。这个窄例外只用于在 replacement 已创建后仍识别旧 challenge 的 `attempts_already_exhausted`，不得让未耗尽的旧 code 越过更新 code 重新生效。由此在 replacement 创建前后，已耗尽重试都不会退化成 `codeExpired` / 普通错误并重复消费 target bucket。
 
-replacement 使用耗尽响应后轮换的新 challenge；新 challenge 必须选择最新未耗尽行。只有携带旧 challenge 的请求才会命中上述耗尽行优先规则，因此新邮件中的 code 可以立即验证，不必等待旧行过期。
+replacement 使用耗尽响应后轮换的新 challenge；新 challenge 必须选择最新未耗尽行。只有携带旧 challenge 的请求才会命中上述耗尽行优先规则，因此新邮件中的 code 可以立即验证，不必等待旧行过期。§3.3 握手不改变这一选择规则：耗尽行优先只作用于已耗尽 challenge；replacement challenge 选择新行。
 
 锁定目标行后，先检查其 delivery task 是否持有上述有效 SMTP 预留；命中则按 `delivery_in_progress` 返回。随后按行类型执行：
 
@@ -122,7 +161,7 @@ replacement 使用耗尽响应后轮换的新 challenge；新 challenge 必须�
 
 challenge mismatch 与 code mismatch 对外都不得暴露可区分的正文、字段或稳定可利用的时序差异。route 可以继续让两者进入相同的 source / resolved email+IP 失败记账路径，但数据库 attempts 只由 challenge-matched code mismatch 推进。
 
-route 必须把 `attempts_exhausted_now` 当作本次真实错误比较计入 resolved email+IP 失败桶，同时保持 429 响应；已经在进入请求前耗尽的 code 则返回单独的内部 `attempts_already_exhausted`，不得重复消费该失败桶。这样第 5 次错误不会绕过 S4 记账，也不会让耗尽后的重试继续累积 target-scoped 失败次数。
+route 必须把 `attempts_exhausted_now` 当作本次真实错误比较计入 resolved email+IP 失败桶，同时保持 429 响应；已经在进入请求前耗尽的 code 则返回单独的内部 `attempts_already_exhausted`，不得重复消费该失败桶。这样第 5 次错误不会绕过 S4 记账，也不会让耗尽后的重试继续累积 target-scoped 失败次数。`attempts_exhausted_now` 的 429 必须带 `challengeRotationRequired=1`；`attempts_already_exhausted` 不得再带该指令，改由 §3.3 恢复探测在 S4 门禁之前重放轮换。
 
 ### 6.2 legacy 行（`challenge_hash IS NULL`）
 
@@ -139,7 +178,9 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - 并发错误提交在 challenge 匹配时串行增加 attempts，最终值不得超过 5。
 - challenge mismatch 并发不得改变 attempts。
 - 第 5 次错误与同时到达的正确提交按取得行锁的顺序决定；一旦 attempts 已到 5，后到的正确提交必须失败。
+- 第 5 次错误提交后、客户端尚未采纳 replacement 之前，并发 `request-code` 必须走 §3.3 登记/消费，不得创建绑定已耗尽 challenge 的新行。
 - worker 的最后检查与验证通过同一 code 行锁排序；worker 检查通过后由 processing task 预留覆盖 SMTP 窗口，验证只消耗 source budget 并延后比较。不得持有数据库事务或 advisory lock 执行 SMTP。
+- SMTP 进行中失去预留时按 §5.1 取消独占传输并确认 socket 拆除；歧义状态失败关闭，stale generation 不得 finalize。
 - SMTP / task 重试只携带加密 code；challenge 永不进入 outbox，因此现有敏感数据边界不回退。
 - `SESSION_SECRET` 轮换仍使存量 code HMAC 与在途加密 task 失效，用户重新请求即可。
 
@@ -161,8 +202,14 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - 第 5 次错误同时计入 resolved email+IP 失败桶，耗尽后的后续请求不重复记账；
 - replacement 创建前后，旧 challenge 都能命中已耗尽行并返回 `attempts_already_exhausted`；未耗尽的旧 code 不得因此重新可用；
 - 第 5 次匹配错误的响应指示客户端轮换 challenge，replacement 绑定新 challenge 并立即可验证；普通 429 不轮换；
+- 丢失第 5 次 429（响应丢弃、abort、重载）后，浏览器仍持有已耗尽元组，恢复探测重放 `challengeRotationRequired=1`，随后 replacement 可验证；
+- 并发重发握手：已在途或并行的 `request-code` 不得创建绑定已耗尽 challenge 的 replacement；同一 replacement challenge 幂等，不同新 challenge 不得并起两行；
+- 来源/target 预算已被该次第 5 次错误耗尽时，恢复探测仍能在 S4 比较门禁之前重放轮换指令，且不额外消费 comparison / target 桶；
 - 已耗尽 code 不抑制新 code 创建，其旧投递任务在 SMTP 前成功 no-op；
 - 新旧协议行在 active processing claim 的 SMTP 阻塞期间都不推进 attempts/used_at/target bucket；owner 缺失或 lease 过期后不再延后比较；
+- SMTP 进行中失去预留时取消独占 per-send 传输（不得只 abort `TaskExecutionContext.signal`），确认 socket 拆除后验证才可消费该 code；
+- stale generation：lease 丢失后的旧 SMTP 回调不得 finalize 新 generation；已耗尽 challenge 不得再作为发码绑定；
+- 拆除结果不明确时失败关闭，走 stuck-reservation 恢复，验证在恢复完成前保持 `delivery_in_progress`；
 - challenge 丢失时 UI 不进入立即重发循环，而是提示等待旧 code 最多 10 分钟过期或改用其他登录方式；
 - attempts 未达 5 时正确 code 成功且不增加 attempts；
 - 并发错误 attempts 不丢失、不超过 5，并发正确最多一次成功；
@@ -184,3 +231,6 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - [ ] active-code dedupe 不替换 challenge
 - [ ] durable task、SMTP、日志和审计不泄露 challenge/code
 - [ ] 迁移和部署说明明确旧实例不能验证新 6 位码
+- [ ] 耗尽轮换与 replacement 走 §3.3 原子/幂等握手：sessionStorage 同时保留已耗尽元组与 replacement challenge，数据库登记并消费唯一后继，丢失 429 可由来源有界探测恢复
+- [ ] 并发重发不得把 replacement 绑到已耗尽 challenge；§6 耗尽行优先只作用于旧 challenge
+- [ ] SMTP 预留丢失时取消独占 per-send 传输，确认 socket 拆除，`sendLoginCodeEmail` 观察取消；歧义状态失败关闭并走 stuck-reservation 恢复
