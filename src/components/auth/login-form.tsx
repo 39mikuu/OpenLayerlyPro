@@ -5,8 +5,12 @@ import { useMemo, useRef, useState } from "react";
 
 import {
   clearLoginCodeChallenge,
+  clearPendingLoginCodeFlow,
   getOrCreateLoginCodeChallenge,
   getStoredLoginCodeChallenge,
+  hasLostLoginCodeChallenge,
+  rememberPendingLoginCodeFlow,
+  rotateLoginCodeChallenge,
 } from "@/components/auth/login-code-challenge";
 import {
   acceptFanLoginCodeRequest,
@@ -23,7 +27,7 @@ import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api } from "@/lib/client";
+import { api, ApiError } from "@/lib/client";
 import { LEGACY_LOGIN_CODE_MAX_LENGTH, normalizeEmail } from "@/modules/auth/input-policy";
 
 export function LoginForm({
@@ -279,6 +283,9 @@ export function LoginForm({
             run(async () => {
               try {
                 const targetEmail = requestedEmail ?? normalizeEmail(email);
+                if (hasLostLoginCodeChallenge(targetEmail)) {
+                  throw new Error(t("login.challengeMissing"));
+                }
                 if (codeSent && requestedEmail && !getStoredLoginCodeChallenge(requestedEmail)) {
                   throw new Error(t("login.challengeMissing"));
                 }
@@ -291,6 +298,7 @@ export function LoginForm({
                     turnstileToken: turnstileToken ?? undefined,
                   },
                 });
+                rememberPendingLoginCodeFlow(targetEmail);
                 setFanFlow((current) => acceptFanLoginCodeRequest(current, targetEmail));
                 setMessage(t("login.codeSent"));
               } finally {
@@ -314,11 +322,26 @@ export function LoginForm({
                 if (!requestedEmail) throw new Error(t("login.challengeMissing"));
                 const challenge = getStoredLoginCodeChallenge(requestedEmail);
                 if (!challenge) throw new Error(t("login.challengeMissing"));
-                await api("/api/auth/verify-code", {
-                  method: "POST",
-                  body: { email: requestedEmail, code, challenge },
-                });
+                try {
+                  await api("/api/auth/verify-code", {
+                    method: "POST",
+                    body: { email: requestedEmail, code, challenge },
+                  });
+                } catch (error) {
+                  // Only a fresh fifth-attempt 429 rotates the stored challenge.
+                  // Rate-limit 429s and already-exhausted retries keep it so a
+                  // still-active code remains verifiable in this browser.
+                  if (
+                    error instanceof ApiError &&
+                    error.code === "codeAttemptsExceeded" &&
+                    error.params?.rotateChallenge === 1
+                  ) {
+                    rotateLoginCodeChallenge(requestedEmail);
+                  }
+                  throw error;
+                }
                 clearLoginCodeChallenge(requestedEmail);
+                clearPendingLoginCodeFlow(requestedEmail);
                 window.location.assign("/me");
               })
             }
