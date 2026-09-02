@@ -760,6 +760,8 @@ export const en: Messages = {
       tierLevel: "{name} (level {level})",
       unsavedChanges: "You have unsaved changes. Save before publishing or leaving this page.",
       allChangesSaved: "Current changes are saved.",
+      newDraftNotCreated:
+        "This draft has not been created yet. Enter a title and slug, then select {action}.",
       unsavedChangesConfirm:
         "You have unsaved changes. Leaving this page will discard them. Leave anyway?",
       saveBeforePublish: "Save your current changes before publishing.",
@@ -833,6 +835,9 @@ export const en: Messages = {
     paymentMethods: {
       title: "Payment methods",
       new: "New payment method",
+      emptyTitle: "No payment methods yet",
+      emptyDescription:
+        "Add a manual payment method, instructions, and a payment QR code. Once enabled, fans can select it at checkout.",
       name: "Name (for example: WeChat QR)",
       description: "Payment instructions",
       qr: "Payment QR code",
