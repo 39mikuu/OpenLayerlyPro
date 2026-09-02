@@ -388,6 +388,8 @@ export const ja: Messages = {
       actions: "操作",
       cancel: "キャンセル",
       close: "閉じる",
+      clear: "クリア",
+      cleared: "クリアしました",
       environment: "環境変数",
       dbOverride: "管理画面の設定が環境変数より優先されています。",
       envSource: "現在は環境変数の設定を使用しています。",
@@ -752,6 +754,8 @@ export const ja: Messages = {
       tierLevel: "{name}（レベル {level}）",
       unsavedChanges: "未保存の変更があります。公開またはページ移動の前に保存してください。",
       allChangesSaved: "現在の変更は保存済みです。",
+      newDraftNotCreated:
+        "この下書きはまだ作成されていません。タイトルとスラッグを入力し、「{action}」を選択してください。",
       unsavedChangesConfirm:
         "未保存の変更があります。このページを離れると変更は失われます。移動しますか？",
       saveBeforePublish: "公開する前に現在の変更を保存してください。",
@@ -825,6 +829,9 @@ export const ja: Messages = {
     paymentMethods: {
       title: "支払い方法",
       new: "新規支払い方法",
+      emptyTitle: "支払い方法がまだありません",
+      emptyDescription:
+        "手動の支払い方法、手順、支払い QR コードを追加してください。有効にすると、ファンがチェックアウト時に選択できます。",
       name: "名前（例：WeChat QR）",
       description: "支払い手順",
       qr: "支払い QR コード",
