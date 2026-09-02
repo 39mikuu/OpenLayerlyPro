@@ -80,6 +80,8 @@ describe("PostEditor responsive form", () => {
     expect(html).toContain('id="post-body-description"');
     expect(html).toContain("sm:grid-cols-2");
     expect(html).toContain("w-full sm:w-auto");
+    expect(html).toContain("此草稿尚未创建。填写标题和 Slug 后点击“创建草稿”");
+    expect(html).not.toContain("当前更改已保存");
   });
 
   it("associates visible labels with post, upload, and translation controls", () => {

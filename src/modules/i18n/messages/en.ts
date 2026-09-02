@@ -390,6 +390,8 @@ export const en: Messages = {
       actions: "Actions",
       cancel: "Cancel",
       close: "Close",
+      clear: "Clear",
+      cleared: "Cleared",
       environment: "Environment variables",
       dbOverride: "Admin settings currently override environment variables.",
       envSource: "Environment variables are the current configuration source.",
@@ -758,6 +760,8 @@ export const en: Messages = {
       tierLevel: "{name} (level {level})",
       unsavedChanges: "You have unsaved changes. Save before publishing or leaving this page.",
       allChangesSaved: "Current changes are saved.",
+      newDraftNotCreated:
+        "This draft has not been created yet. Enter a title and slug, then select {action}.",
       unsavedChangesConfirm:
         "You have unsaved changes. Leaving this page will discard them. Leave anyway?",
       saveBeforePublish: "Save your current changes before publishing.",
@@ -831,6 +835,9 @@ export const en: Messages = {
     paymentMethods: {
       title: "Payment methods",
       new: "New payment method",
+      emptyTitle: "No payment methods yet",
+      emptyDescription:
+        "Add a manual payment method, instructions, and a payment QR code. Once enabled, fans can select it at checkout.",
       name: "Name (for example: WeChat QR)",
       description: "Payment instructions",
       qr: "Payment QR code",
@@ -1384,14 +1391,18 @@ export const en: Messages = {
   },
   mail: {
     loginSubject: "Your sign-in code",
+    loginCodeIntro: "Use the verification code below to finish signing in:",
     loginCode: "Your verification code is: {code}",
     loginExpiry: "The code is valid for 10 minutes.",
+    loginAction: "Return to sign in",
     ignore: "If you did not request this, you can ignore this email.",
     membershipSubject: "Membership activated",
     membershipOpened: "Your membership is now active.",
     membershipTier: "Membership tier: {tier}",
     membershipUntil: "Valid until: {date}",
     membershipReady: "You can now sign in to view and download members-only content.",
+    membershipAction: "View my membership",
+    membershipFooter: "Thank you for supporting this site.",
     membershipRevokedSubject: "Membership access disabled",
     membershipRevokedBody: "Your membership access has been disabled.",
     membershipRevokedHelp: "Contact the site administrator if you have questions.",
@@ -1416,5 +1427,6 @@ export const en: Messages = {
     magicLinkExpiry: "The link is valid for 15 minutes and works only once.",
     magicLinkConfirmNote:
       "After opening the link, you still need to click \u201cConfirm sign-in\u201d on the page.",
+    magicLinkAction: "Open login link",
   },
 };
