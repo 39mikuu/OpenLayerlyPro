@@ -162,9 +162,10 @@ describe("verify-code route budgets", () => {
   });
 
   it("records the fifth matched-code failure but not later exhausted-code retries", async () => {
-    const exhaustedNow = Object.assign(new ApiError(429, "codeAttemptsExceeded"), {
-      freshAttemptExhausted: true,
-    });
+    const exhaustedNow = Object.assign(
+      new ApiError(429, "codeAttemptsExceeded", { rotateChallenge: 1 }),
+      { freshAttemptExhausted: true },
+    );
     mocks.verifyLoginCode.mockRejectedValueOnce(exhaustedNow);
 
     const fifth = await POST(
@@ -177,6 +178,11 @@ describe("verify-code route budgets", () => {
     expect(fifth.status).toBe(429);
     expect(mocks.rateLimit).toHaveBeenCalledTimes(2);
     expect(mocks.rateLimit.mock.calls[1][0]).toContain("verify-code-email-ip:");
+    await expect(fifth.json()).resolves.toMatchObject({
+      ok: false,
+      code: "codeAttemptsExceeded",
+      params: { rotateChallenge: 1 },
+    });
 
     vi.clearAllMocks();
     mocks.getEnv.mockReturnValue(env);
@@ -198,6 +204,12 @@ describe("verify-code route budgets", () => {
     expect(later.status).toBe(429);
     expect(mocks.rateLimit).toHaveBeenCalledOnce();
     expect(mocks.rateLimit.mock.calls[0][0]).toBe("verify-code-ip:198.51.100.10");
+    const laterBody = await later.json();
+    expect(laterBody).toMatchObject({
+      ok: false,
+      code: "codeAttemptsExceeded",
+    });
+    expect(laterBody.params).toBeUndefined();
   });
 
   it("rejects invalid raw input without consuming a budget", async () => {
