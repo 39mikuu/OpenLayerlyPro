@@ -112,6 +112,9 @@ export function PostEditor({
   const unsavedChangesConfirmMessageRef = useRef(t("admin.posts.unsavedChangesConfirm"));
   const allowNextPopStateRef = useRef(false);
   const suppressBeforeUnloadRef = useRef(false);
+  const collapseDirtyGuardRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const createdPostIdRef = useRef<string | null>(post?.id ?? null);
+  const saveInFlightRef = useRef(false);
   hasUnsavedChangesRef.current = hasAnyUnsavedChanges;
   unsavedChangesConfirmMessageRef.current = t("admin.posts.unsavedChangesConfirm");
 
@@ -217,6 +220,7 @@ export function PostEditor({
         window.history.back();
       });
     };
+    collapseDirtyGuardRef.current = collapseDirtyGuardHistoryEntry;
     let logoutCollapsePromise: Promise<void> | null = null;
     let pendingCollapseResolve: (() => void) | null = null;
 
@@ -316,6 +320,7 @@ export function PostEditor({
     window.addEventListener("admin:logout-aborted", handleLogoutAborted);
     window.addEventListener("popstate", handlePopState, true);
     return () => {
+      collapseDirtyGuardRef.current = () => Promise.resolve();
       document.removeEventListener("click", handleDocumentClick, true);
       window.removeEventListener("admin:before-logout", handleBeforeLogout);
       window.removeEventListener("admin:logout-aborted", handleLogoutAborted);
@@ -337,6 +342,7 @@ export function PostEditor({
   }
 
   function markCurrentStateSaved() {
+    hasUnsavedChangesRef.current = false;
     setSavedFormSnapshot(formSnapshot(form));
     setSavedTaxonomySnapshot(taxonomySnapshot(categoryIds, tagIds));
   }
@@ -356,33 +362,47 @@ export function PostEditor({
   }
 
   async function save() {
-    await run(async () => {
-      if (isNew) {
-        const created = await api<{ id: string }>("/api/admin/posts", {
-          method: "POST",
-          body: payload(),
-        });
-        markCurrentStateSaved();
-        router.push(`/admin/posts/${created.id}`);
-        router.refresh();
-      } else {
-        if (isPublished) {
-          await api(`/api/admin/posts/${post.id}/content`, {
-            method: "PUT",
-            body: { body: form.body || null },
-          });
-        } else {
-          await api(`/api/admin/posts/${post.id}`, { method: "PUT", body: payload() });
-        }
-        if (isPublished) {
-          setSavedFormSnapshot(formSnapshot(form));
-        } else {
+    if (saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
+    try {
+      await run(async () => {
+        if (isNew) {
+          const existingCreatedId = createdPostIdRef.current;
+          const created = existingCreatedId
+            ? await api<{ id: string }>(`/api/admin/posts/${existingCreatedId}`, {
+                method: "PUT",
+                body: payload(),
+              })
+            : await api<{ id: string }>("/api/admin/posts", {
+                method: "POST",
+                body: payload(),
+              });
+          createdPostIdRef.current = created.id;
+          await collapseDirtyGuardRef.current();
           markCurrentStateSaved();
+          suppressBeforeUnloadRef.current = true;
+          router.replace(`/admin/posts/${created.id}`);
+        } else {
+          if (isPublished) {
+            await api(`/api/admin/posts/${post.id}/content`, {
+              method: "PUT",
+              body: { body: form.body || null },
+            });
+          } else {
+            await api(`/api/admin/posts/${post.id}`, { method: "PUT", body: payload() });
+          }
+          if (isPublished) {
+            setSavedFormSnapshot(formSnapshot(form));
+          } else {
+            markCurrentStateSaved();
+          }
+          setMessage(t("admin.common.saved"));
+          router.refresh();
         }
-        setMessage(t("admin.common.saved"));
-        router.refresh();
-      }
-    });
+      });
+    } finally {
+      saveInFlightRef.current = false;
+    }
   }
 
   async function saveTaxonomy() {

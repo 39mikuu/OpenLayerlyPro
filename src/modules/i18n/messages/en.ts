@@ -390,6 +390,8 @@ export const en: Messages = {
       actions: "Actions",
       cancel: "Cancel",
       close: "Close",
+      clear: "Clear",
+      cleared: "Cleared",
       environment: "Environment variables",
       dbOverride: "Admin settings currently override environment variables.",
       envSource: "Environment variables are the current configuration source.",
