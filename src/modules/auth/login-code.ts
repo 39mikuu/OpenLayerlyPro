@@ -44,7 +44,11 @@ class LoginCodeAttemptsExceededError extends ApiError {
   readonly freshAttemptExhausted: boolean;
 
   constructor(freshAttemptExhausted: boolean) {
-    super(429, "codeAttemptsExceeded");
+    super(
+      429,
+      "codeAttemptsExceeded",
+      freshAttemptExhausted ? { rotateChallenge: 1 } : undefined,
+    );
     this.freshAttemptExhausted = freshAttemptExhausted;
   }
 }
@@ -268,7 +272,11 @@ export async function verifyLoginCode(
         const challengeMatches = Boolean(
           candidateChallengeHash && safeEqualHex(candidateChallengeHash, record.challenge_hash),
         );
-        if (record.attempt_count >= LOGIN_CODE_MAX_ATTEMPTS) {
+        // Exhaustion is only distinguishable once the caller proves possession
+        // of the bound challenge. Mismatches take the ordinary incorrect path
+        // (same locked UPDATE, increment 0) so they cannot skip target-bucket
+        // accounting via a 429.
+        if (challengeMatches && record.attempt_count >= LOGIN_CODE_MAX_ATTEMPTS) {
           return "attempts_already_exhausted";
         }
         const codeMatches =
