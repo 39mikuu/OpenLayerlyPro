@@ -11,6 +11,23 @@ type ApiResponse<T> =
       error: string;
     };
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly params?: Record<string, string | number>;
+
+  constructor(
+    message: string,
+    options: { status: number; code?: string; params?: Record<string, string | number> },
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.status = options.status;
+    this.code = options.code;
+    this.params = options.params;
+  }
+}
+
 function errorMessage(response: Extract<ApiResponse<unknown>, { ok: false }>): string {
   if (!response.code) return response.error;
   const key = `errors.${response.code}`;
@@ -31,9 +48,17 @@ export async function api<T = unknown>(
   if (!json) {
     const key = "common.requestFailed";
     const localized = translateClient(key, { status: res.status });
-    throw new Error(localized === key ? `Request failed (${res.status})` : localized);
+    throw new ApiError(localized === key ? `Request failed (${res.status})` : localized, {
+      status: res.status,
+    });
   }
-  if (!json.ok) throw new Error(errorMessage(json) || `Request failed (${res.status})`);
+  if (!json.ok) {
+    throw new ApiError(errorMessage(json) || `Request failed (${res.status})`, {
+      status: res.status,
+      code: json.code,
+      params: json.params,
+    });
+  }
   return json.data;
 }
 
@@ -50,9 +75,17 @@ export async function uploadFile<T = unknown>(
   if (!json) {
     const key = "common.uploadFailed";
     const localized = translateClient(key, { status: res.status });
-    throw new Error(localized === key ? `Upload failed (${res.status})` : localized);
+    throw new ApiError(localized === key ? `Upload failed (${res.status})` : localized, {
+      status: res.status,
+    });
   }
-  if (!json.ok) throw new Error(errorMessage(json) || `Upload failed (${res.status})`);
+  if (!json.ok) {
+    throw new ApiError(errorMessage(json) || `Upload failed (${res.status})`, {
+      status: res.status,
+      code: json.code,
+      params: json.params,
+    });
+  }
   return json.data;
 }
 
@@ -70,8 +103,16 @@ export async function uploadStreamFile<T = unknown>(path: string, file: File): P
   if (!json) {
     const key = "common.uploadFailed";
     const localized = translateClient(key, { status: res.status });
-    throw new Error(localized === key ? `Upload failed (${res.status})` : localized);
+    throw new ApiError(localized === key ? `Upload failed (${res.status})` : localized, {
+      status: res.status,
+    });
   }
-  if (!json.ok) throw new Error(errorMessage(json) || `Upload failed (${res.status})`);
+  if (!json.ok) {
+    throw new ApiError(errorMessage(json) || `Upload failed (${res.status})`, {
+      status: res.status,
+      code: json.code,
+      params: json.params,
+    });
+  }
   return json.data;
 }
