@@ -1316,14 +1316,18 @@ export const zh = {
   },
   mail: {
     loginSubject: "你的登录验证码",
+    loginCodeIntro: "使用下面的验证码完成登录：",
     loginCode: "你的验证码是：{code}",
     loginExpiry: "验证码 10 分钟内有效。",
+    loginAction: "返回站点登录",
     ignore: "如果不是你本人操作，请忽略这封邮件。",
     membershipSubject: "会员已开通",
     membershipOpened: "你的会员已开通。",
     membershipTier: "会员等级：{tier}",
     membershipUntil: "有效期至：{date}",
     membershipReady: "现在可以登录站点查看和下载会员内容。",
+    membershipAction: "查看我的会员",
+    membershipFooter: "感谢你对站点的支持。",
     membershipRevokedSubject: "会员访问已停用",
     membershipRevokedBody: "你的会员访问已停用。",
     membershipRevokedHelp: "如有疑问，请联系站点管理员。",
@@ -1346,6 +1350,7 @@ export const zh = {
     magicLinkIntro: "点击下面的链接并在页面上确认，即可登录你的会员账户：",
     magicLinkExpiry: "链接 15 分钟内有效，且只能使用一次。",
     magicLinkConfirmNote: "打开链接后需要在页面上点击「确认登录」才会生效。",
+    magicLinkAction: "打开登录链接",
   },
 };
 
