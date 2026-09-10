@@ -5,6 +5,7 @@ const artifacts =
   process.argv.length > 2
     ? process.argv.slice(2)
     : [
+        "files-backfill.mjs",
         "restore-pre-scan.mjs",
         "restore-neutralize.mjs",
         "restore-converge.mjs",

@@ -35,6 +35,11 @@ Required host tools:
 
 The scripts honor `COMPOSE_PROJECT_NAME`.
 
+CI checks that the standalone restore tools and mandatory file-safety backfill
+bundle do not include the Next.js server runtime. Shared configuration validation
+must use the framework-independent `ApiError` from `src/lib/api-error.ts` so these
+tools can start in a one-off Node.js process before the application is running.
+
 ## Create a Backup
 
 Hot backup (the app remains online):
