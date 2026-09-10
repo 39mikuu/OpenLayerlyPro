@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getClientIp, getUserAgent, handleApiError } from "@/lib/api";
 import { ApiError } from "@/lib/api";
-import { resolveClientRateLimitIdentity } from "@/lib/client-rate-limit";
+import {
+  assertProductionAuthClientIdentity,
+  resolveClientRateLimitIdentity,
+} from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
 import {
@@ -52,6 +55,9 @@ export async function GET(req: NextRequest) {
     // into unbounded audit-event writes. Use a distinct namespace from starts.
     const env = getEnv();
     const identity = resolveClientRateLimitIdentity(getClientIp(req));
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "Google OAuth callback", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
     const limit = getOAuthStartRateLimit("google-callback", identity, env);
     if (!rateLimit(limit.key, limit.max, limit.windowMs)) {
       // No state has been validated or consumed yet. Preserve the binding

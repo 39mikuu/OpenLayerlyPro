@@ -13,39 +13,53 @@ import {
 
 describe("localized mail templates", () => {
   it("renders login codes in the requested locale and defaults to Chinese", () => {
-    expect(renderLoginCodeEmail("123456", "en")).toEqual({
-      subject: "Your sign-in code",
-      text: [
-        "Your verification code is: 123456",
-        "",
-        "The code is valid for 10 minutes.",
-        "If you did not request this, you can ignore this email.",
-      ].join("\n"),
+    const email = renderLoginCodeEmail("123456", "en", {
+      siteName: "Example Site",
+      siteUrl: "https://site.example/community/",
     });
+    expect(email.subject).toBe("Your sign-in code");
+    expect(email.text).toContain("Example Site");
+    expect(email.text).toContain("Your verification code is: 123456");
+    expect(email.text).toContain("https://site.example/community/login");
+    expect(email.html).toContain("Example Site");
+    expect(email.html).toContain("123456");
+    expect(email.html).toContain('href="https://site.example/community/login"');
+    expect(email.html).toContain("Return to sign in");
     expect(renderLoginCodeEmail("123456").subject).toBe("你的登录验证码");
   });
 
   it("renders magic link emails with the confirm URL and localized framing", () => {
     const url = "https://site.example/login/magic/olp_mlk.v1.current.abc";
-    const en = renderMagicLinkEmail(url, "en");
+    const branding = { siteName: "Example Site", siteUrl: "https://site.example" };
+    const en = renderMagicLinkEmail(url, "en", branding);
     expect(en.subject).toBe("Your login link");
     expect(en.text).toContain(url);
     expect(en.text).toContain("15 minutes");
+    expect(en.html).toContain("Example Site");
+    expect(en.html).toContain(`href="${url}"`);
+    expect(en.html).toContain("Open login link");
 
-    const zh = renderMagicLinkEmail(url);
+    const zh = renderMagicLinkEmail(url, undefined, branding);
     expect(zh.subject).toBe("你的登录链接");
     expect(zh.text).toContain(url);
 
-    const ja = renderMagicLinkEmail(url, "ja");
+    const ja = renderMagicLinkEmail(url, "ja", branding);
     expect(ja.subject).toBe("ログインリンク");
     expect(ja.text).toContain(url);
   });
 
   it("renders membership and rejection data without translating user content", () => {
-    const membership = renderMembershipActivatedEmail("黄金会员", new Date(2026, 5, 30), "en");
+    const membership = renderMembershipActivatedEmail("黄金会员", new Date(2026, 5, 30), "en", {
+      siteName: "Example Site",
+      siteUrl: "https://site.example",
+    });
     expect(membership.subject).toBe("Membership activated");
     expect(membership.text).toContain("Membership tier: 黄金会员");
     expect(membership.text).toContain("Valid until: 2026-06-30");
+    expect(membership.text).toContain("https://site.example/me");
+    expect(membership.html).toContain("Example Site");
+    expect(membership.html).toContain("Membership tier: 黄金会员");
+    expect(membership.html).toContain('href="https://site.example/me"');
 
     const revoked = renderMembershipRevokedEmail("Gold", "en");
     expect(revoked.subject).toBe("Membership access disabled");
@@ -84,15 +98,13 @@ describe("localized mail templates", () => {
   });
 
   it("renders Japanese transactional emails", () => {
-    expect(renderLoginCodeEmail("123456", "ja")).toEqual({
-      subject: "ログイン認証コード",
-      text: [
-        "認証コード：123456",
-        "",
-        "認証コードは10分間有効です。",
-        "この操作に心当たりがない場合は、このメールを無視してください。",
-      ].join("\n"),
+    const login = renderLoginCodeEmail("123456", "ja", {
+      siteName: "サイト",
+      siteUrl: "https://site.example",
     });
+    expect(login.subject).toBe("ログイン認証コード");
+    expect(login.text).toContain("認証コード：123456");
+    expect(login.html).toContain("ログイン画面に戻る");
 
     expect(renderMembershipActivatedEmail("ゴールド", new Date(2026, 5, 30), "ja").text).toContain(
       "メンバーシッププラン：ゴールド",

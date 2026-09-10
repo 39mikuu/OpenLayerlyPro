@@ -3,8 +3,8 @@ import { z } from "zod";
 
 import { ApiError, getClientIp, getUserAgent, handleApiError, jsonError, jsonOk } from "@/lib/api";
 import {
+  assertProductionAuthClientIdentity,
   resolveClientRateLimitIdentity,
-  warnUnresolvedClientRateLimitIdentity,
 } from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
 import { isRateLimited, rateLimit } from "@/lib/rate-limit";
@@ -40,12 +40,9 @@ export async function POST(req: NextRequest) {
 
     const clientIp = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(clientIp);
-    if (identity.kind === "unresolved" && env.NODE_ENV === "production") {
-      warnUnresolvedClientRateLimitIdentity({
-        message:
-          "Trusted client IP is unavailable for verify-code. Using verify-code-unresolved emergency rate-limit bucket.",
-      });
-    }
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "verify-code", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
 
     const failureLimits = getVerifyCodeWrongAttemptRateLimits({
       identity,

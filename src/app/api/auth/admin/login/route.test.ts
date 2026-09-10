@@ -13,7 +13,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/env", () => ({ getEnv: mocks.getEnv }));
 vi.mock("@/lib/rate-limit", () => ({ rateLimit: mocks.rateLimit }));
-vi.mock("@/lib/request-body", () => ({
+vi.mock("@/lib/request-body", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/request-body")>()),
   assertContentLengthWithinLimit: mocks.assertContentLengthWithinLimit,
   readJsonWithLimit: mocks.readJsonWithLimit,
 }));
@@ -107,5 +108,39 @@ describe("admin login request ordering", () => {
     expect(mocks.rateLimit).toHaveBeenCalledWith("admin-login-unresolved", 100, 600_000);
     expect(JSON.stringify(mocks.rateLimit.mock.calls)).not.toContain("unknown");
     expect(mocks.adminLogin).toHaveBeenCalledWith("admin@example.test", "secret");
+  });
+
+  it("fails closed before the shared bucket when production client IP is unresolved", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.getEnv.mockReturnValue({
+      ...mocks.getEnv(),
+      NODE_ENV: "production",
+    });
+
+    const response = await POST(request('{"email":"admin@example.test","password":"secret"}'));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      code: "trustedClientIpUnavailable",
+    });
+    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.readJsonWithLimit).not.toHaveBeenCalled();
+    expect(mocks.adminLogin).not.toHaveBeenCalled();
+  });
+
+  it("uses the emergency bucket for the explicit trusted-direct production mode", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.getEnv.mockReturnValue({
+      ...mocks.getEnv(),
+      NODE_ENV: "production",
+      AUTH_ALLOW_UNRESOLVED_CLIENT_IP: true,
+    });
+
+    const response = await POST(request('{"email":"admin@example.test","password":"secret"}'));
+
+    expect(response.status).toBe(200);
+    expect(mocks.rateLimit).toHaveBeenCalledWith("admin-login-unresolved", 100, 600_000);
+    expect(mocks.adminLogin).toHaveBeenCalledOnce();
   });
 });

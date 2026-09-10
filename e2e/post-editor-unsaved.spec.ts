@@ -131,6 +131,41 @@ test.afterAll(async () => {
   }
 });
 
+test("new draft creates once and replaces the /new route after rapid save clicks", async ({
+  page,
+}) => {
+  await installAdminSession(page);
+  await page.goto("/admin/posts/new");
+
+  const slug = `${POST_SLUG_PREFIX}-new-${Date.now()}`;
+  await page.locator("#post-title").fill("Post Editor New Draft E2E");
+  await page.locator("#post-slug").fill(slug);
+
+  let createRequests = 0;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() === "POST" && url.pathname === "/api/admin/posts") {
+      createRequests += 1;
+    }
+  });
+
+  const createButton = page.getByRole("button", { name: "创建草稿", exact: true });
+  await createButton.evaluate((element) => {
+    const button = element as HTMLButtonElement;
+    button.click();
+    button.click();
+  });
+
+  await expect(page).toHaveURL(/\/admin\/posts\/[0-9a-f-]+$/);
+  expect(createRequests).toBe(1);
+  await expect
+    .poll(async () => {
+      const rows = await getDb().select({ id: posts.id }).from(posts).where(eq(posts.slug, slug));
+      return rows.length;
+    })
+    .toBe(1);
+});
+
 test("dirty editor shows unsaved state, blocks publish, and returns to saved state after save", async ({
   page,
 }) => {

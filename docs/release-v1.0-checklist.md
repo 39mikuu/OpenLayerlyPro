@@ -19,7 +19,7 @@
 - [ ] `payment_proof` 保持 attachment 响应、严格 CSP/sandbox 与 `nosniff`，不得作为同源可执行内容渲染。
 - [ ] S2 所有生产 Route Handler 通过 `check:request-bodies`；声明超限、无 `Content-Length` 和低报长度均按实际字节有界处理。
 - [ ] Stripe webhook 在验签前按原始字节有界读取，超限返回稳定 413。
-- [ ] S4 admin-login、request-code、verify-code 的 resolved/unresolved 身份与阈值符合部署配置。
+- [ ] S4 admin-login、request-code、verify-code 在公网生产入口可解析可信 IP；故意移除可信头时会失败关闭且不消费共享认证桶。基础 Compose 受信任局域网直连例外须显式验证高阈值 emergency bucket，且不得暴露公网。
 - [ ] 正确登录码不受 wrong-attempt 桶阻断；错误码只在核心比较失败后记账。
 - [ ] source-scoped pre-comparison hard budget 能限制昂贵比较，同时另一可信 IP 仍可正常登录。
 - [ ] S6 先在 `report-only` 观察无意外阻断，再切换 `enforce`。

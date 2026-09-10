@@ -42,7 +42,7 @@ Report-Only 观察和 enforce 切换由 `SECURITY_CSP_MODE` 控制。
 
 单值头只有在源站不能被绕过、边缘会覆盖该头时可信。用防火墙/安全组限制源站入口，并实际验证登录、上传和下载日志中的客户端 IP。
 
-解析失败时应用会使用各操作独立的 unresolved emergency bucket 并告警；这不是可以长期忽略的正常配置。
+生产环境解析失败时认证入口会失败关闭并告警，不会把不同访客放入共享认证桶；文件读取仍使用各操作独立的高阈值 unresolved emergency bucket。上线前必须从真实 CDN 路径验证可信 IP 解析。
 
 ## 备份与可恢复性
 
