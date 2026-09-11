@@ -47,7 +47,7 @@ class LoginCodeAttemptsExceededError extends ApiError {
     super(
       429,
       "codeAttemptsExceeded",
-      freshAttemptExhausted ? { rotateChallenge: 1 } : undefined,
+      freshAttemptExhausted ? { challengeRotationRequired: 1 } : undefined,
     );
     this.freshAttemptExhausted = freshAttemptExhausted;
   }
@@ -98,6 +98,53 @@ export async function requestLoginCode(
   return getDb().transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${normalized}))`);
 
+    const challengeHash = hmacLoginCodeChallenge(challenge);
+    const candidates = await executeRows<{
+      id: string;
+      challenge_hash: string | null;
+      attempt_count: number;
+      replacement_challenge_hash: string | null;
+    }>(
+      tx,
+      sql`
+      select id, challenge_hash, attempt_count, replacement_challenge_hash from ${loginCodes}
+      where ${loginCodes.email} = ${normalized}
+        and ${loginCodes.usedAt} is null and ${loginCodes.expiresAt} > now()
+      order by ${loginCodes.createdAt} desc
+      for update
+    `,
+    );
+    // Lock before classifying. A concurrent fifth verification may commit while
+    // this statement waits; PostgreSQL returns its updated attempts under lock.
+    const exhausted = candidates.filter(
+      (row) => row.challenge_hash !== null && row.attempt_count >= LOGIN_CODE_MAX_ATTEMPTS,
+    );
+    // In-flight resends must not reuse an exhausted generation, even if the
+    // browser never received the fifth-attempt response.
+    if (exhausted.some((row) => safeEqualHex(row.challenge_hash!, challengeHash))) {
+      return { suppressed: true };
+    }
+    let predecessor: (typeof exhausted)[number] | undefined = exhausted[0];
+    // Registration commits together with issuance. A registered successor
+    // already exists; matching retries and competing proposals are no-ops.
+    if (predecessor?.replacement_challenge_hash) {
+      const [completed] = await tx
+        .select({ id: loginCodes.id })
+        .from(loginCodes)
+        .where(
+          and(
+            eq(loginCodes.email, normalized),
+            eq(loginCodes.challengeHash, predecessor.replacement_challenge_hash),
+            or(isNotNull(loginCodes.usedAt), sql`${loginCodes.expiresAt} <= now()`),
+          ),
+        )
+        .limit(1);
+      if (!completed) return { suppressed: true };
+      // A completed login permits a fresh independent generation, not a second
+      // successor registration on the old exhausted row.
+      predecessor = undefined;
+    }
+
     const [active] = await executeRows<{ id: string; is_recent: boolean }>(
       tx,
       sql`
@@ -146,8 +193,6 @@ export async function requestLoginCode(
     const code = generateLoginCode();
     const encryptedCode = encryptAuthTaskSecret(code);
     const codeHash = hmacLoginCode(code);
-    const challengeHash = hmacLoginCodeChallenge(challenge);
-
     if (identity.kind === "ip") {
       const emailIpLimit = getRequestCodeEmailIpRateLimit({
         normalizedEmail: normalized,
@@ -159,6 +204,12 @@ export async function requestLoginCode(
       }
     }
 
+    if (predecessor) {
+      await tx
+        .update(loginCodes)
+        .set({ replacementChallengeHash: challengeHash })
+        .where(eq(loginCodes.id, predecessor.id));
+    }
     const [inserted] = await tx
       .insert(loginCodes)
       .values({
@@ -187,6 +238,27 @@ export async function requestLoginCode(
     });
     return { suppressed: false, codeId: inserted.id };
   });
+}
+
+/** The route bounds this probe independently of code-comparison budgets. */
+export async function isExhaustedLoginCodeChallenge(
+  email: string,
+  challenge: string,
+): Promise<boolean> {
+  const hash = hmacLoginCodeChallenge(validateLoginCodeChallenge(challenge));
+  const rows = await getDb()
+    .select({ challengeHash: loginCodes.challengeHash })
+    .from(loginCodes)
+    .where(
+      and(
+        eq(loginCodes.email, normalizeEmail(email)),
+        isNull(loginCodes.usedAt),
+        gt(loginCodes.expiresAt, sql<Date>`now()`),
+        sql`${loginCodes.attemptCount} >= ${LOGIN_CODE_MAX_ATTEMPTS}`,
+        isNotNull(loginCodes.challengeHash),
+      ),
+    );
+  return rows.some((row) => safeEqualHex(row.challengeHash!, hash));
 }
 
 export async function verifyLoginCode(

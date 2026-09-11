@@ -7,9 +7,18 @@ import { deleteStorageObject } from "@/modules/file/cleanup";
 import type { StorageDeletePayload } from "@/modules/file/storageDeleteTask";
 import { enqueueTask } from "@/modules/tasks/enqueue";
 
+import {
+  STORAGE_UPLOAD_RECONCILE_MAX_ATTEMPTS,
+  storageUploadCleanupTaskDedupeKey,
+} from "./uploadJournalRestore";
+
+export {
+  rearmStorageUploadJournalsAfterRestore,
+  STORAGE_UPLOAD_RECONCILE_MAX_ATTEMPTS,
+} from "./uploadJournalRestore";
+
 const STORAGE_UPLOAD_RECONCILE_GRACE_MS = 24 * 60 * 60 * 1_000;
 export const STORAGE_UPLOAD_TOMBSTONE_RECHECK_MS = 24 * 60 * 60 * 1_000;
-export const STORAGE_UPLOAD_RECONCILE_MAX_ATTEMPTS = 10;
 export const STORAGE_UPLOAD_RECONCILE_REARM_DELAY_MS = 6 * 60 * 60 * 1_000;
 
 export class StorageUploadJournalOwnershipLostError extends Error {
@@ -29,10 +38,6 @@ export class StorageUploadReconciliationError extends Error {
 export type StorageUploadReconcileResult =
   | { outcome: "missing" | "referenced" }
   | { outcome: "defer"; deferUntil: Date };
-
-function cleanupTaskDedupeKey(journalId: string): string {
-  return `storage:reconcile_upload:${journalId}`;
-}
 
 function assertExactLocation(payload: StorageDeletePayload): void {
   if (
@@ -66,7 +71,7 @@ export async function createStorageUploadJournal(
     await enqueueTask(tx, {
       id,
       kind: "storage.reconcile_upload",
-      dedupeKey: cleanupTaskDedupeKey(id),
+      dedupeKey: storageUploadCleanupTaskDedupeKey(id),
       payload: { journalId: id },
       runAfter: journal.reconcileAfter,
       maxAttempts: STORAGE_UPLOAD_RECONCILE_MAX_ATTEMPTS,
@@ -94,35 +99,6 @@ export async function consumeStorageUploadJournal(tx: TxClient, journalId: strin
     .returning({ id: storageUploadJournal.id });
   if (!consumed) throw new StorageUploadJournalOwnershipLostError();
   await removeUnclaimedCleanupTask(tx, journalId);
-}
-
-export async function rearmStorageUploadJournalsAfterRestore(tx: TxClient): Promise<number> {
-  await tx.delete(tasks).where(eq(tasks.kind, "storage.reconcile_upload"));
-
-  const journals = await tx
-    .update(storageUploadJournal)
-    .set({
-      status: "deleting",
-      reconcileAfter: sql`now()`,
-      updatedAt: sql`now()`,
-    })
-    .returning({
-      id: storageUploadJournal.id,
-      reconcileAfter: storageUploadJournal.reconcileAfter,
-    });
-
-  for (const journal of journals) {
-    await enqueueTask(tx, {
-      id: journal.id,
-      kind: "storage.reconcile_upload",
-      dedupeKey: cleanupTaskDedupeKey(journal.id),
-      payload: { journalId: journal.id },
-      runAfter: journal.reconcileAfter,
-      maxAttempts: STORAGE_UPLOAD_RECONCILE_MAX_ATTEMPTS,
-    });
-  }
-
-  return journals.length;
 }
 
 export async function rearmExhaustedStorageUploadReconciliationTasks(

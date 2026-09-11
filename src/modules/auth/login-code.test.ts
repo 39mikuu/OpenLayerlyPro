@@ -309,7 +309,7 @@ describe("verifyLoginCode", () => {
       status: 429,
       code: "codeAttemptsExceeded",
       freshAttemptExhausted: true,
-      params: { rotateChallenge: 1 },
+      params: { challengeRotationRequired: 1 },
     });
     expect(mocks.findOrCreateUserByEmail).not.toHaveBeenCalled();
   });

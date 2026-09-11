@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getClientIp, getUserAgent, handleApiError } from "@/lib/api";
-import { resolveClientRateLimitIdentity } from "@/lib/client-rate-limit";
+import {
+  assertProductionAuthClientIdentity,
+  resolveClientRateLimitIdentity,
+} from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
 import { normalizeMagicLinkRedirectPath } from "@/modules/auth/magic-link";
@@ -31,6 +34,9 @@ export async function GET(req: NextRequest) {
     const env = getEnv();
     const ip = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(ip);
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "GitHub OAuth start", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
     // Unauthenticated: bound oauth_states row creation per source before it happens.
     const limit = getOAuthStartRateLimit("github", identity, env);
     if (!rateLimit(limit.key, limit.max, limit.windowMs)) {

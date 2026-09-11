@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  acknowledgeLoginCodeReplacement,
   clearLoginCodeChallenge,
   clearPendingLoginCodeFlow,
+  getLoginCodeRecoveryChallenge,
   getOrCreateLoginCodeChallenge,
   getPendingLoginCodeFlow,
   getStoredLoginCodeChallenge,
@@ -32,6 +34,22 @@ function cryptoSource(fillStart = 1) {
 }
 
 describe("login code browser challenge", () => {
+  it("retains the same challenge through a near-expiry resend with a lost acknowledgement", () => {
+    const clock = vi.spyOn(Date, "now");
+    const session = storage();
+    const crypto = cryptoSource();
+    try {
+      clock.mockReturnValue(1_700_000_000_000);
+      const original = getOrCreateLoginCodeChallenge("fan@example.com", session, crypto);
+      clock.mockReturnValue(1_700_000_540_000);
+      expect(getOrCreateLoginCodeChallenge("fan@example.com", session, crypto)).toBe(original);
+      clock.mockReturnValue(1_700_000_660_000);
+      expect(getStoredLoginCodeChallenge("fan@example.com", session)).toBe(original);
+      expect(crypto.getRandomValues).toHaveBeenCalledOnce();
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it("generates 32 random bytes and reuses them for normalized-email resends", () => {
     const session = storage();
     const crypto = {
@@ -131,5 +149,35 @@ describe("login code browser challenge", () => {
 
     clearPendingLoginCodeFlow("fan@example.com", marker, now);
     expect(hasLostLoginCodeChallenge("fan@example.com", session, marker, now)).toBe(false);
+  });
+  it("restores both generations and replays a lost-response rotation idempotently", () => {
+    const session = storage();
+    const crypto = cryptoSource();
+    const original = getOrCreateLoginCodeChallenge("fan@example.com", session, crypto);
+    const replacement = rotateLoginCodeChallenge("fan@example.com", session, crypto, original);
+    expect(getLoginCodeRecoveryChallenge("fan@example.com", session)).toBe(original);
+    expect(getStoredLoginCodeChallenge("fan@example.com", session)).toBe(replacement);
+    expect(rotateLoginCodeChallenge("fan@example.com", session, crypto, original)).toBe(
+      replacement,
+    );
+    expect(crypto.getRandomValues).toHaveBeenCalledTimes(2);
+    acknowledgeLoginCodeReplacement("fan@example.com", session);
+    expect(getLoginCodeRecoveryChallenge("fan@example.com", session)).toBe(replacement);
+    const next = rotateLoginCodeChallenge("fan@example.com", session, crypto, replacement);
+    expect(next).not.toBe(replacement);
+    expect(getLoginCodeRecoveryChallenge("fan@example.com", session)).toBe(replacement);
+    clearLoginCodeChallenge("fan@example.com", session);
+    expect(getLoginCodeRecoveryChallenge("fan@example.com", session)).toBeNull();
+  });
+
+  it("never replaces stored state when persisting the rotation fails", () => {
+    const session = storage();
+    const crypto = cryptoSource();
+    const original = getOrCreateLoginCodeChallenge("fan@example.com", session, crypto);
+    session.setItem.mockImplementationOnce(() => {
+      throw new Error("storage unavailable");
+    });
+    expect(() => rotateLoginCodeChallenge("fan@example.com", session, crypto, original)).toThrow();
+    expect(getStoredLoginCodeChallenge("fan@example.com", session)).toBe(original);
   });
 });

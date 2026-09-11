@@ -198,8 +198,13 @@ export const RUNTIME_SCHEMA_MIGRATIONS = [
     createdAt: 1787206460655,
   },
   {
+    tag: "0038_preset_tier_commerce",
+    hash: "24a7b1a45ba68d001ab3fef750968eaa9f56480f20fb9f2f219b825f55443f5d",
+    createdAt: 1788030397614,
+  },
+  {
     tag: "0040_login_code_challenge",
-    hash: "b6cb336141f6fe11a1b94164569a52eb2c886a3142ae622e166d7c62070b7397",
+    hash: "4311a02dbbe78490e9fb4d67bc50b6552a4b7a1de24a777e4dd15c829f0127b1",
     createdAt: 1788031323310,
   },
 ] as const;

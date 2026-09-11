@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { ApiError } from "@/lib/api";
+import { ApiError } from "@/lib/api-error";
 
 import { getStoredGroupRevision } from "./store";
 

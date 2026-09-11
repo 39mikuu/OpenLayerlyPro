@@ -65,10 +65,11 @@
 无法解析可信 IP 时：
 
 - 不落到低阈值全局 `unknown` 桶；
-- admin login、request code、verify code、上传/下载等使用各操作独立的 unresolved emergency bucket；
-- unresolved 客户端之间仍共享对应操作桶，这是代理配置错误时的降级风险；
+- 生产的 admin login、request code、verify code、Magic Link 和 OAuth 默认失败关闭，不进入共享认证桶；
+- 基础 Compose 的受信任局域网/防火墙直连模式显式启用 `AUTH_ALLOW_UNRESOLVED_CLIENT_IP`，只在该受控例外下使用各操作独立的高阈值 emergency 桶；Caddy 与 Tunnel overlay 强制关闭例外；
+- 开发/测试认证与生产文件读取仍使用各操作独立的 unresolved emergency bucket；
 - S4 verify 只在核心确认错误后记账，正确码不受 wrong-attempt 桶阻断；
-- 生产记录限流告警，提示运维修复代理配置。
+- 生产记录节流告警，提示运维修复代理配置。
 
 S4 已由当前运行时实现，权威语义见 [../handoff/harden-s4-auth-rate-limiting.md](../handoff/harden-s4-auth-rate-limiting.md)。
 

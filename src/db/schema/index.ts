@@ -65,6 +65,7 @@ export const loginCodes = pgTable(
     email: text("email").notNull(),
     codeHash: text("code_hash").notNull(),
     challengeHash: text("challenge_hash"),
+    replacementChallengeHash: text("replacement_challenge_hash"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     usedAt: timestamp("used_at", { withTimezone: true }),
     attemptCount: integer("attempt_count").notNull().default(0),

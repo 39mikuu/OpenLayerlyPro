@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -15,7 +15,7 @@ vi.mock("@/modules/mail", () => ({
 
 import { getDb } from "@/db";
 import { loginCodes, tasks } from "@/db/schema";
-import { hmacSha256WithPurpose } from "@/lib/crypto";
+import { decryptAuthTaskSecret, hmacSha256WithPurpose } from "@/lib/crypto";
 import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { runTaskHandler as runTaskHandlerWithOwnership } from "@/modules/tasks/handlers";
@@ -25,7 +25,7 @@ import { claimDueTasks } from "@/modules/tasks/runtime";
 const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
   runTaskHandlerWithOwnership(task, ownedTaskExecutionContext());
 
-import { requestLoginCode, verifyLoginCode } from "./login-code";
+import { isExhaustedLoginCodeChallenge, requestLoginCode, verifyLoginCode } from "./login-code";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
@@ -51,6 +51,55 @@ describeWithDatabase("S4 login-code integration", () => {
     });
     mocks.sendLoginCodeEmail.mockResolvedValue(undefined);
     await resetDatabase(db);
+  });
+
+  it("rechecks exhaustion under the code lock when a fifth attempt races an in-flight resend", async () => {
+    const email = "fifth-resend-race@example.com";
+    const [row] = await db
+      .insert(loginCodes)
+      .values({
+        email,
+        codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+        challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+        attemptCount: 4,
+        expiresAt: new Date(Date.now() + 600_000),
+      })
+      .returning();
+    let release!: () => void;
+    let locked!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const fifth = db.transaction(async (tx) => {
+      await tx.update(loginCodes).set({ attemptCount: 5 }).where(eq(loginCodes.id, row.id));
+      locked();
+      await released;
+    });
+    await ready;
+    const resend = requestLoginCode(email, { challenge: TEST_CHALLENGE });
+    try {
+      let waiting = false;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const result = await db.execute<{ waiting: boolean }>(sql`
+          select exists(select 1 from pg_stat_activity
+            where wait_event_type = 'Lock' and query like '%login_codes%') as waiting
+        `);
+        if (result[0]?.waiting) {
+          waiting = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(waiting).toBe(true);
+    } finally {
+      release();
+      await fifth;
+    }
+    expect(await resend).toEqual({ suppressed: true });
+    expect(await db.select().from(loginCodes).where(eq(loginCodes.email, email))).toHaveLength(1);
   });
 
   it("keeps legacy codes usable until expiry without changing their attempt_count", async () => {
@@ -384,5 +433,53 @@ describeWithDatabase("S4 login-code integration", () => {
     const sentCode = mocks.sendLoginCodeEmail.mock.calls[0][1] as string;
     expect(sentCode).toMatch(/^[0-9]{6}$/);
     expect(JSON.stringify(claimed!.payloadJson)).not.toContain(sentCode);
+  });
+  it("suppresses stale generations and atomically registers exactly one concurrent successor", async () => {
+    const email = "handshake@example.com";
+    const [old] = await db
+      .insert(loginCodes)
+      .values({
+        email,
+        codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+        challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+        attemptCount: 5,
+        expiresAt: new Date(Date.now() + 600_000),
+      })
+      .returning();
+    expect(await isExhaustedLoginCodeChallenge(email, TEST_CHALLENGE)).toBe(true);
+    expect(await isExhaustedLoginCodeChallenge(email, "B".repeat(43))).toBe(false);
+    expect(await requestLoginCode(email, { challenge: TEST_CHALLENGE })).toEqual({
+      suppressed: true,
+    });
+    expect(await db.select().from(loginCodes)).toHaveLength(1);
+    const proposed = ["B".repeat(43), "C".repeat(43)];
+    const outcomes = await Promise.all(
+      proposed.map((challenge) => requestLoginCode(email, { challenge })),
+    );
+    expect(outcomes.filter((result) => !result.suppressed)).toHaveLength(1);
+    const winner = proposed[outcomes.findIndex((result) => !result.suppressed)];
+    expect(await requestLoginCode(email, { challenge: winner })).toEqual({ suppressed: true });
+    const rows = await db.select().from(loginCodes);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === old.id)?.replacementChallengeHash).toBe(
+      hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, winner),
+    );
+    const successor = rows.find((row) => row.id !== old.id)!;
+    expect(successor.challengeHash).toBe(
+      hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, winner),
+    );
+    const [delivery] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.dedupeKey, `auth-login-code-email:${successor.id}`));
+    expect(JSON.stringify(delivery.payloadJson)).not.toContain(winner);
+    const payload = delivery.payloadJson as { encryptedCode: string };
+    const code = decryptAuthTaskSecret(payload.encryptedCode);
+    await db.update(tasks).set({ status: "succeeded" }).where(eq(tasks.id, delivery.id));
+    await expect(verifyLoginCode(email, code, winner)).resolves.toMatchObject({ email });
+    expect(await isExhaustedLoginCodeChallenge(email, TEST_CHALLENGE)).toBe(true);
+    // Logging out and starting a new login is not a second successor for the
+    // exhausted row and must not be blocked until that row's TTL expires.
+    expect((await requestLoginCode(email, { challenge: "D".repeat(43) })).suppressed).toBe(false);
   });
 });

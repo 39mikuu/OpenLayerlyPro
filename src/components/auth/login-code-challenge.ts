@@ -11,6 +11,8 @@ export const LOGIN_CODE_PENDING_FLOW_TTL_MS = 10 * 60 * 1000;
 type StoredChallenge = {
   email: string;
   challenge: string;
+  exhaustedChallenge?: string;
+  expiresAt?: number;
 };
 
 type PendingLoginCodeFlow = {
@@ -34,7 +36,23 @@ function readStoredChallenge(storage: ChallengeStorage): StoredChallenge | null 
       storage.removeItem(STORAGE_KEY);
       return null;
     }
-    return { email: parsed.email, challenge: parsed.challenge };
+    if (
+      parsed.expiresAt !== undefined &&
+      (typeof parsed.expiresAt !== "number" || parsed.expiresAt <= Date.now())
+    ) {
+      storage.removeItem(STORAGE_KEY);
+      return null;
+    }
+    return {
+      email: parsed.email,
+      challenge: parsed.challenge,
+      exhaustedChallenge:
+        typeof parsed.exhaustedChallenge === "string" &&
+        LOGIN_CODE_CHALLENGE_PATTERN.test(parsed.exhaustedChallenge)
+          ? parsed.exhaustedChallenge
+          : undefined,
+      expiresAt: parsed.expiresAt,
+    };
   } catch {
     storage.removeItem(STORAGE_KEY);
     return null;
@@ -48,7 +66,10 @@ function generateChallenge(cryptoSource: ChallengeCrypto): string {
 }
 
 function persistChallenge(email: string, challenge: string, storage: ChallengeStorage): string {
-  storage.setItem(STORAGE_KEY, JSON.stringify({ email, challenge }));
+  storage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({ email, challenge, expiresAt: Date.now() + LOGIN_CODE_PENDING_FLOW_TTL_MS }),
+  );
   return challenge;
 }
 
@@ -67,7 +88,18 @@ export function getOrCreateLoginCodeChallenge(
 ): string {
   const normalizedEmail = normalizeEmail(email);
   const existing = readStoredChallenge(storage);
-  if (existing?.email === normalizedEmail) return existing.challenge;
+  if (existing?.email === normalizedEmail) {
+    // Persist before sending: a successful resend with a lost response must
+    // not outlive its browser-held challenge. Preserve a pending rotation.
+    storage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...existing,
+        expiresAt: Date.now() + LOGIN_CODE_PENDING_FLOW_TTL_MS,
+      }),
+    );
+    return existing.challenge;
+  }
 
   return persistChallenge(normalizedEmail, generateChallenge(cryptoSource), storage);
 }
@@ -76,9 +108,26 @@ export function rotateLoginCodeChallenge(
   email: string,
   storage: ChallengeStorage = window.sessionStorage,
   cryptoSource: ChallengeCrypto = window.crypto,
+  exhaustedChallenge?: string,
 ): string {
   const normalizedEmail = normalizeEmail(email);
-  return persistChallenge(normalizedEmail, generateChallenge(cryptoSource), storage);
+  const existing = readStoredChallenge(storage);
+  const exhausted = exhaustedChallenge ?? existing?.challenge;
+  if (existing?.email === normalizedEmail && existing.exhaustedChallenge === exhausted) {
+    return existing.challenge;
+  }
+  const replacement = generateChallenge(cryptoSource);
+  if (replacement === exhausted) throw new Error("Challenge rotation failed");
+  storage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      email: normalizedEmail,
+      challenge: replacement,
+      exhaustedChallenge: exhausted,
+      expiresAt: Date.now() + LOGIN_CODE_PENDING_FLOW_TTL_MS,
+    }),
+  );
+  return replacement;
 }
 
 export function clearLoginCodeChallenge(
@@ -157,4 +206,25 @@ export function hasLostLoginCodeChallenge(
     getPendingLoginCodeFlow(email, markerStorage, now) !== null &&
     getStoredLoginCodeChallenge(email, challengeStorage) === null
   );
+}
+
+export function getLoginCodeRecoveryChallenge(
+  email: string,
+  storage: ChallengeStorage = window.sessionStorage,
+): string | null {
+  const stored = readStoredChallenge(storage);
+  return stored?.email === normalizeEmail(email)
+    ? (stored.exhaustedChallenge ?? stored.challenge)
+    : null;
+}
+
+/** Adopt the durable successor only after request-code acknowledges the retry. */
+export function acknowledgeLoginCodeReplacement(
+  email: string,
+  storage: ChallengeStorage = window.sessionStorage,
+): void {
+  const stored = readStoredChallenge(storage);
+  if (stored?.email === normalizeEmail(email)) {
+    persistChallenge(stored.email, stored.challenge, storage);
+  }
 }

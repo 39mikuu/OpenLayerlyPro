@@ -18,6 +18,8 @@ import {
 } from "@/modules/site/public-security";
 import { recordEvent } from "@/modules/system/events";
 
+import { DEFAULT_MEMBERSHIP_TIERS } from "./default-tiers";
+
 export type SocialLink = {
   name: string;
   url: string;
@@ -209,33 +211,6 @@ export async function readAdminSiteInfo(): Promise<AdminSiteInfo> {
   };
 }
 
-const DEFAULT_TIERS = [
-  {
-    name: "支持者",
-    slug: "supporter",
-    priceLabel: "¥9 / 月",
-    level: 10,
-    durationDays: 31,
-    sortOrder: 1,
-  },
-  {
-    name: "高清图会员",
-    slug: "hd-member",
-    priceLabel: "¥29 / 月",
-    level: 20,
-    durationDays: 31,
-    sortOrder: 2,
-  },
-  {
-    name: "素材包会员",
-    slug: "pack-member",
-    priceLabel: "¥59 / 月",
-    level: 30,
-    durationDays: 31,
-    sortOrder: 3,
-  },
-];
-
 export async function setupSite(input: {
   siteName: string;
   artistName: string;
@@ -280,7 +255,7 @@ export async function setupSite(input: {
       })
       .returning({ id: users.id });
     if (!admin) throw new Error("Site setup did not create its administrator");
-    await tx.insert(membershipTiers).values(DEFAULT_TIERS);
+    await tx.insert(membershipTiers).values(DEFAULT_MEMBERSHIP_TIERS);
 
     const settings: Record<string, unknown> = {
       initialized: true,

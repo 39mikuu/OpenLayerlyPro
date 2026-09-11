@@ -3,12 +3,15 @@ import nodemailer, { type Transporter } from "nodemailer";
 import { ApiError } from "@/lib/api";
 import { hmacSha256WithPurpose } from "@/lib/crypto";
 import { formatDate } from "@/lib/dates";
+import { getEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { getSmtpConfig, type ResolvedSmtpConfig } from "@/modules/config";
 import { DEFAULT_LOCALE, type Locale, translate } from "@/modules/i18n";
 import { formatPaymentRejectionReviewNote } from "@/modules/payment/rejection-note";
+import { readPublicSiteInfo } from "@/modules/site";
 
 import { classifyMailError, MailDeliveryError } from "./delivery";
+import { renderTransactionalEmailHtml } from "./html";
 
 export type MailSafeLog = {
   template: string;
@@ -27,6 +30,7 @@ type SendMailInput = {
   to: string;
   subject: string;
   text: string;
+  html?: string;
   headers?: Record<string, string>;
   safeLog?: MailSafeLog;
   assertTaskOwnership?: () => Promise<void>;
@@ -64,6 +68,7 @@ async function sendMail(input: SendMailInput): Promise<void> {
       to: input.to,
       subject: input.subject,
       text: input.text,
+      html: input.html,
       headers: input.headers,
     });
   } catch (error) {
@@ -99,11 +104,64 @@ function mailT(locale: Locale | undefined) {
     translate(locale ?? DEFAULT_LOCALE, key, params);
 }
 
-export function renderLoginCodeEmail(code: string, locale?: Locale) {
+export type EmailBranding = {
+  siteName: string;
+  siteUrl: string;
+};
+
+function getEmailBranding(branding?: EmailBranding): EmailBranding {
+  if (branding) return branding;
+  const env = getEnv();
+  return { siteName: env.APP_NAME.trim() || "Artist Member Site", siteUrl: env.APP_URL };
+}
+
+async function readEmailBranding(): Promise<EmailBranding> {
+  const [site, env] = await Promise.all([readPublicSiteInfo(), Promise.resolve(getEnv())]);
+  return { siteName: site.siteName, siteUrl: env.APP_URL };
+}
+
+function localeLang(locale?: Locale): string {
+  return locale ?? DEFAULT_LOCALE;
+}
+
+function sitePage(siteUrl: string, pathname: string): string {
+  const parsed = new URL(siteUrl);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("APP_URL must use http or https for transactional email links");
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error("APP_URL must not include query or hash for transactional email links");
+  }
+  const basePath = parsed.pathname.replace(/\/+$/, "");
+  parsed.pathname = `${basePath}${pathname}`;
+  return parsed.toString();
+}
+
+export function renderLoginCodeEmail(code: string, locale?: Locale, branding?: EmailBranding) {
   const t = mailT(locale);
+  const brand = getEmailBranding(branding);
+  const loginUrl = sitePage(brand.siteUrl, "/login");
+  const subject = t("mail.loginSubject");
   return {
-    subject: t("mail.loginSubject"),
-    text: [t("mail.loginCode", { code }), "", t("mail.loginExpiry"), t("mail.ignore")].join("\n"),
+    subject,
+    text: [
+      brand.siteName,
+      "",
+      t("mail.loginCode", { code }),
+      "",
+      t("mail.loginExpiry"),
+      `${t("mail.loginAction")}: ${loginUrl}`,
+      t("mail.ignore"),
+    ].join("\n"),
+    html: renderTransactionalEmailHtml({
+      lang: localeLang(locale),
+      siteName: brand.siteName,
+      title: subject,
+      paragraphs: [t("mail.loginCodeIntro"), t("mail.loginExpiry")],
+      callout: code,
+      action: { label: t("mail.loginAction"), url: loginUrl },
+      footer: t("mail.ignore"),
+    }),
   };
 }
 
@@ -113,20 +171,29 @@ export async function sendLoginCodeEmail(
   locale?: Locale,
   options: MailTaskOwnershipOptions = {},
 ): Promise<void> {
-  const message = renderLoginCodeEmail(code, locale);
+  const message = renderLoginCodeEmail(code, locale, await readEmailBranding());
   await sendMail({
     to,
     subject: message.subject,
     text: message.text,
+    html: message.html,
     assertTaskOwnership: options.assertTaskOwnership,
   });
 }
 
-export function renderMagicLinkEmail(confirmUrl: string, locale?: Locale) {
+export function renderMagicLinkEmail(
+  confirmUrl: string,
+  locale?: Locale,
+  branding?: EmailBranding,
+) {
   const t = mailT(locale);
+  const brand = getEmailBranding(branding);
+  const subject = t("mail.magicLinkSubject");
   return {
-    subject: t("mail.magicLinkSubject"),
+    subject,
     text: [
+      brand.siteName,
+      "",
       t("mail.magicLinkIntro"),
       "",
       confirmUrl,
@@ -135,6 +202,18 @@ export function renderMagicLinkEmail(confirmUrl: string, locale?: Locale) {
       t("mail.magicLinkConfirmNote"),
       t("mail.ignore"),
     ].join("\n"),
+    html: renderTransactionalEmailHtml({
+      lang: localeLang(locale),
+      siteName: brand.siteName,
+      title: subject,
+      paragraphs: [
+        t("mail.magicLinkIntro"),
+        t("mail.magicLinkExpiry"),
+        t("mail.magicLinkConfirmNote"),
+      ],
+      action: { label: t("mail.magicLinkAction"), url: confirmUrl },
+      footer: t("mail.ignore"),
+    }),
   };
 }
 
@@ -144,11 +223,12 @@ export async function sendMagicLinkEmail(
   locale?: Locale,
   options: { assertTaskOwnership?: () => Promise<void> } = {},
 ): Promise<void> {
-  const message = renderMagicLinkEmail(confirmUrl, locale);
+  const message = renderMagicLinkEmail(confirmUrl, locale, await readEmailBranding());
   await sendMail({
     to,
     subject: message.subject,
     text: message.text,
+    html: message.html,
     assertTaskOwnership: options.assertTaskOwnership,
   });
 }
@@ -166,11 +246,11 @@ export async function sendMagicLinkEmailWithDeadline(
   deadlineSeconds: number,
   options?: { signal?: AbortSignal },
 ): Promise<void> {
-  const cfg = await getSmtpConfig();
+  const [cfg, branding] = await Promise.all([getSmtpConfig(), readEmailBranding()]);
   if (!cfg.configured) throw new ApiError(500, "mailNotConfigured");
   if (options?.signal?.aborted) throw new MailDeliveryError("transient");
 
-  const message = renderMagicLinkEmail(confirmUrl, locale);
+  const message = renderMagicLinkEmail(confirmUrl, locale, branding);
   const transport = nodemailer.createTransport({
     host: cfg.host,
     port: cfg.port,
@@ -215,6 +295,7 @@ export async function sendMagicLinkEmailWithDeadline(
           to,
           subject: message.subject,
           text: message.text,
+          html: message.html,
         })
         .then(() => {
           finish(resolve);
@@ -236,18 +317,39 @@ export async function sendMagicLinkEmailWithDeadline(
   });
 }
 
-export function renderMembershipActivatedEmail(tierName: string, endsAt: Date, locale?: Locale) {
+export function renderMembershipActivatedEmail(
+  tierName: string,
+  endsAt: Date,
+  locale?: Locale,
+  branding?: EmailBranding,
+) {
   const t = mailT(locale);
+  const brand = getEmailBranding(branding);
+  const membershipUrl = sitePage(brand.siteUrl, "/me");
+  const subject = t("mail.membershipSubject");
+  const tier = t("mail.membershipTier", { tier: tierName });
+  const until = t("mail.membershipUntil", { date: formatDate(endsAt) });
   return {
-    subject: t("mail.membershipSubject"),
+    subject,
     text: [
+      brand.siteName,
+      "",
       t("mail.membershipOpened"),
       "",
-      t("mail.membershipTier", { tier: tierName }),
-      t("mail.membershipUntil", { date: formatDate(endsAt) }),
+      tier,
+      until,
       "",
       t("mail.membershipReady"),
+      `${t("mail.membershipAction")}: ${membershipUrl}`,
     ].join("\n"),
+    html: renderTransactionalEmailHtml({
+      lang: localeLang(locale),
+      siteName: brand.siteName,
+      title: subject,
+      paragraphs: [t("mail.membershipOpened"), tier, until, t("mail.membershipReady")],
+      action: { label: t("mail.membershipAction"), url: membershipUrl },
+      footer: t("mail.membershipFooter"),
+    }),
   };
 }
 
@@ -258,11 +360,17 @@ export async function sendMembershipActivatedEmail(
   locale?: Locale,
   options: MailTaskOwnershipOptions = {},
 ): Promise<void> {
-  const message = renderMembershipActivatedEmail(tierName, endsAt, locale);
+  const message = renderMembershipActivatedEmail(
+    tierName,
+    endsAt,
+    locale,
+    await readEmailBranding(),
+  );
   await sendMail({
     to,
     subject: message.subject,
     text: message.text,
+    html: message.html,
     assertTaskOwnership: options.assertTaskOwnership,
   });
 }

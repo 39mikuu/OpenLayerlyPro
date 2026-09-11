@@ -41,7 +41,7 @@ TRUSTED_PROXY_HEADER=cf-connecting-ip
 
 在标准 Tunnel 拓扑中，源站不直接暴露公网且 Cloudflare 会覆盖 `CF-Connecting-IP`，因此该单值头可以作为可信客户端身份。若 app 仍通过其他入口暴露，必须关闭该入口或改用符合真实拓扑的 XFF/hops 配置。
 
-无法解析可信 IP 时，当前运行时不会落入低阈值全局 `unknown` 桶，而会使用 admin/login/file 等各操作独立的高阈值 unresolved emergency bucket 并记录告警。生产应修复代理配置，不应长期依赖降级路径。
+生产环境无法解析可信 IP 时，认证入口会失败关闭并记录节流告警，不会把不同访客放入共享认证桶；文件读取仍使用各操作独立的高阈值 unresolved emergency bucket。必须在上线前修复并验证代理配置。
 
 生成随机 secret：
 

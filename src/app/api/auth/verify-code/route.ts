@@ -3,13 +3,13 @@ import { z } from "zod";
 
 import { ApiError, getClientIp, getUserAgent, handleApiError, jsonError, jsonOk } from "@/lib/api";
 import {
+  assertProductionAuthClientIdentity,
   resolveClientRateLimitIdentity,
-  warnUnresolvedClientRateLimitIdentity,
 } from "@/lib/client-rate-limit";
 import { getEnv } from "@/lib/env";
 import { isRateLimited, rateLimit } from "@/lib/rate-limit";
 import { assertContentLengthWithinLimit, readJsonWithLimit } from "@/lib/request-body";
-import { verifyLoginCode } from "@/modules/auth/login-code";
+import { isExhaustedLoginCodeChallenge, verifyLoginCode } from "@/modules/auth/login-code";
 import {
   getVerifyCodeCompareRateLimit,
   getVerifyCodeWrongAttemptRateLimits,
@@ -30,13 +30,14 @@ const bodySchema = z.object({
   email: rawEmailSchema,
   code: z.string().min(1).max(RAW_LOGIN_CODE_MAX_LENGTH),
   challenge: z.string().optional(),
+  recoveryOnly: z.boolean().optional(),
 });
 
 export async function POST(req: NextRequest) {
   try {
     const env = getEnv();
     assertContentLengthWithinLimit(req, env.REQUEST_JSON_MAX_BYTES);
-    const { email, code, challenge } = await readJsonWithLimit(
+    const { email, code, challenge, recoveryOnly } = await readJsonWithLimit(
       req,
       env.REQUEST_JSON_MAX_BYTES,
       bodySchema,
@@ -47,12 +48,22 @@ export async function POST(req: NextRequest) {
 
     const clientIp = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(clientIp);
-    if (identity.kind === "unresolved" && env.NODE_ENV === "production") {
-      warnUnresolvedClientRateLimitIdentity({
-        message:
-          "Trusted client IP is unavailable for verify-code. Using verify-code-unresolved emergency rate-limit bucket.",
-      });
+    assertProductionAuthClientIdentity(identity, env.NODE_ENV, "verify-code", {
+      allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
+    });
+
+    if (validatedChallenge) {
+      const source = getVerifyCodeCompareRateLimit({ identity, env });
+      // Separate source-only allowance leaves room to recover the response
+      // after a comparison exhausts its own budget; no target key is involved.
+      if (!rateLimit(`login-code-recovery:${source.key}`, source.max * 2, source.windowMs)) {
+        return jsonError(429, "codeAttemptsExceeded");
+      }
+      if (await isExhaustedLoginCodeChallenge(normalizedEmail, validatedChallenge)) {
+        return jsonError(429, "codeAttemptsExceeded", { challengeRotationRequired: 1 });
+      }
     }
+    if (recoveryOnly) return jsonOk({ accepted: true });
 
     const failureLimits = getVerifyCodeWrongAttemptRateLimits({
       identity,
@@ -91,7 +102,7 @@ export async function POST(req: NextRequest) {
           rateLimit(limit.key, limit.max, limit.windowMs),
         );
         if (allowed.some((value) => !value)) {
-          // Preserve rotateChallenge on a fresh exhaustion that also fills the
+          // Preserve challengeRotationRequired on a fresh exhaustion that also fills the
           // target bucket so the client can still rotate before resend.
           return jsonError(
             429,

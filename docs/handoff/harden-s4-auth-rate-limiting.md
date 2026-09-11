@@ -2,6 +2,8 @@
 
 > **后续设计说明**：产品已确认改用 6 位数字登录码。实现落地时，[6 位数字登录码与请求挑战绑定](login-code-6-digit-challenge.md) 将取代本文“至少 80 bit”和“永不写 `attempt_count`”两项约束；本文的 source-only 比较预算、resolved email+IP 失败桶、投递 fence、加密任务与 SMTP 边界继续生效。在该实现合并前，当前运行代码仍遵守本文的 16 位 Crockford 约束。
 
+> 2026-08-30 follow-up：公网生产认证入口在可信客户端 IP 无法解析时改为失败关闭，不再进入本文的 unresolved 共享 emergency bucket；只有受信任局域网/防火墙后的基础 Compose 直连可显式启用该例外，开发/测试也保留这些 bucket 用于诊断。生产文件读取仍使用独立高阈值降级桶。本文其余 resolved-IP 门禁、比较顺序和持久投递约束不变。
+
 > 自包含实现说明。前置依赖：当前 `main` 已含 #60 client identity helpers、`@/lib/rate-limit`、S1a/#70 请求体有界读取。属 v1.0 安全硬化 S4（epic #64，含 #66）。
 >
 > 2026-06-26 follow-up：原始 S4 实现只在验证码比较失败后计桶，因此已返回 429 的来源仍可继续触发真实比较，且随后提交正确码仍会创建 session。本版锁定双层门禁：目标无关的来源硬预算在比较前消费；resolved email+IP 预算只在失败后消费，但一旦耗尽，后续同一 email+IP 会在比较前被**只读预检**拒绝。这样既阻止继续在线猜测，也不把其他可信 IP 锁死。

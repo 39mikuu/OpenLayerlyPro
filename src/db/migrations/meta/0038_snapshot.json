@@ -1,6 +1,6 @@
 {
-  "id": "5fe73aec-2839-4d57-8f67-a3676f26503f",
-  "prevId": "18ce0fe3-8170-40d0-ab7d-d1850800ddda",
+  "id": "18ce0fe3-8170-40d0-ab7d-d1850800ddda",
+  "prevId": "93385042-e00c-4139-ad8a-51f2925585fd",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -572,18 +572,6 @@
         },
         "user_agent": {
           "name": "user_agent",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "challenge_hash": {
-          "name": "challenge_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "replacement_challenge_hash": {
-          "name": "replacement_challenge_hash",
           "type": "text",
           "primaryKey": false,
           "notNull": false

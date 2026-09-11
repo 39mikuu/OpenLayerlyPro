@@ -4,8 +4,10 @@ import { Mail, ShieldCheck } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 
 import {
+  acknowledgeLoginCodeReplacement,
   clearLoginCodeChallenge,
   clearPendingLoginCodeFlow,
+  getLoginCodeRecoveryChallenge,
   getOrCreateLoginCodeChallenge,
   getStoredLoginCodeChallenge,
   hasLostLoginCodeChallenge,
@@ -289,6 +291,33 @@ export function LoginForm({
                 if (codeSent && requestedEmail && !getStoredLoginCodeChallenge(requestedEmail)) {
                   throw new Error(t("login.challengeMissing"));
                 }
+                const recoveryChallenge = getLoginCodeRecoveryChallenge(targetEmail);
+                if (recoveryChallenge) {
+                  try {
+                    await api("/api/auth/verify-code", {
+                      method: "POST",
+                      body: {
+                        email: targetEmail,
+                        code: "000000",
+                        challenge: recoveryChallenge,
+                        recoveryOnly: true,
+                      },
+                    });
+                  } catch (error) {
+                    if (
+                      error instanceof ApiError &&
+                      error.code === "codeAttemptsExceeded" &&
+                      error.params?.challengeRotationRequired === 1
+                    ) {
+                      rotateLoginCodeChallenge(
+                        targetEmail,
+                        window.sessionStorage,
+                        window.crypto,
+                        recoveryChallenge,
+                      );
+                    } else throw error;
+                  }
+                }
                 const challenge = getOrCreateLoginCodeChallenge(targetEmail);
                 await api("/api/auth/request-code", {
                   method: "POST",
@@ -298,6 +327,7 @@ export function LoginForm({
                     turnstileToken: turnstileToken ?? undefined,
                   },
                 });
+                acknowledgeLoginCodeReplacement(targetEmail);
                 rememberPendingLoginCodeFlow(targetEmail);
                 setFanFlow((current) => acceptFanLoginCodeRequest(current, targetEmail));
                 setMessage(t("login.codeSent"));
@@ -328,15 +358,19 @@ export function LoginForm({
                     body: { email: requestedEmail, code, challenge },
                   });
                 } catch (error) {
-                  // Only a fresh fifth-attempt 429 rotates the stored challenge.
-                  // Rate-limit 429s and already-exhausted retries keep it so a
-                  // still-active code remains verifiable in this browser.
+                  // Fresh exhaustion and bounded recovery both carry this
+                  // instruction; ordinary rate-limit errors never rotate.
                   if (
                     error instanceof ApiError &&
                     error.code === "codeAttemptsExceeded" &&
-                    error.params?.rotateChallenge === 1
+                    error.params?.challengeRotationRequired === 1
                   ) {
-                    rotateLoginCodeChallenge(requestedEmail);
+                    rotateLoginCodeChallenge(
+                      requestedEmail,
+                      window.sessionStorage,
+                      window.crypto,
+                      challenge,
+                    );
                   }
                   throw error;
                 }
