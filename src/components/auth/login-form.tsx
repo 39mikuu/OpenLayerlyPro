@@ -4,6 +4,17 @@ import { Mail, ShieldCheck } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 
 import {
+  acknowledgeLoginCodeReplacement,
+  clearLoginCodeChallenge,
+  clearPendingLoginCodeFlow,
+  getOrCreateLoginCodeChallenge,
+  getStoredLoginCodeChallenge,
+  hasLostLoginCodeChallenge,
+  recoverLoginCodeChallenge,
+  rememberPendingLoginCodeFlow,
+  rotateLoginCodeChallenge,
+} from "@/components/auth/login-code-challenge";
+import {
   acceptFanLoginCodeRequest,
   acceptFanLoginLinkRequest,
   canSubmitFanLoginCode,
@@ -18,8 +29,8 @@ import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api } from "@/lib/client";
-import { normalizeEmail, RAW_LOGIN_CODE_MAX_LENGTH } from "@/modules/auth/input-policy";
+import { api, ApiError } from "@/lib/client";
+import { LEGACY_LOGIN_CODE_MAX_LENGTH, normalizeEmail } from "@/modules/auth/input-policy";
 
 export function LoginForm({
   mode,
@@ -186,6 +197,10 @@ export function LoginForm({
             className="px-0"
             disabled={loading}
             onClick={() => {
+              // Keep the existing challenge while the address is being edited.
+              // getOrCreateLoginCodeChallenge reuses it when the normalized
+              // address is unchanged and rotates it only when a request is
+              // actually sent for a different address.
               setFanFlow((current) => resetFanLoginRequestedEmail(current));
               setMessage(null);
               setTurnstileToken(null);
@@ -202,10 +217,11 @@ export function LoginForm({
           <Label htmlFor="code">{t("login.code")}</Label>
           <Input
             id="code"
-            inputMode="text"
-            autoCapitalize="characters"
+            inputMode="numeric"
+            autoCapitalize="off"
             autoComplete="one-time-code"
-            maxLength={RAW_LOGIN_CODE_MAX_LENGTH}
+            maxLength={LEGACY_LOGIN_CODE_MAX_LENGTH}
+            pattern="[0-9]*"
             placeholder={t("login.codePlaceholder", { length: loginCodeLength })}
             value={code}
             onChange={(event) =>
@@ -269,10 +285,42 @@ export function LoginForm({
             run(async () => {
               try {
                 const targetEmail = requestedEmail ?? normalizeEmail(email);
+                if (hasLostLoginCodeChallenge(targetEmail)) {
+                  throw new Error(t("login.challengeMissing"));
+                }
+                await recoverLoginCodeChallenge(targetEmail, async (recoveryChallenge) => {
+                  try {
+                    await api("/api/auth/verify-code", {
+                      method: "POST",
+                      body: {
+                        email: targetEmail,
+                        code: "000000",
+                        challenge: recoveryChallenge,
+                        recoveryOnly: true,
+                      },
+                    });
+                  } catch (error) {
+                    if (
+                      error instanceof ApiError &&
+                      error.code === "codeAttemptsExceeded" &&
+                      error.params?.challengeRotationRequired === 1
+                    ) {
+                      return true;
+                    } else throw error;
+                  }
+                  return false;
+                });
+                const challenge = getOrCreateLoginCodeChallenge(targetEmail);
                 await api("/api/auth/request-code", {
                   method: "POST",
-                  body: { email: targetEmail, turnstileToken: turnstileToken ?? undefined },
+                  body: {
+                    email: targetEmail,
+                    challenge,
+                    turnstileToken: turnstileToken ?? undefined,
+                  },
                 });
+                acknowledgeLoginCodeReplacement(targetEmail);
+                rememberPendingLoginCodeFlow(targetEmail);
                 setFanFlow((current) => acceptFanLoginCodeRequest(current, targetEmail));
                 setMessage(t("login.codeSent"));
               } finally {
@@ -293,10 +341,33 @@ export function LoginForm({
             disabled={loading || !codeComplete}
             onClick={() =>
               run(async () => {
-                await api("/api/auth/verify-code", {
-                  method: "POST",
-                  body: { email: requestedEmail, code },
-                });
+                if (!requestedEmail) throw new Error(t("login.challengeMissing"));
+                const challenge = getStoredLoginCodeChallenge(requestedEmail);
+                if (!challenge) throw new Error(t("login.challengeMissing"));
+                try {
+                  await api("/api/auth/verify-code", {
+                    method: "POST",
+                    body: { email: requestedEmail, code, challenge },
+                  });
+                } catch (error) {
+                  // Fresh exhaustion and bounded recovery both carry this
+                  // instruction; ordinary rate-limit errors never rotate.
+                  if (
+                    error instanceof ApiError &&
+                    error.code === "codeAttemptsExceeded" &&
+                    error.params?.challengeRotationRequired === 1
+                  ) {
+                    rotateLoginCodeChallenge(
+                      requestedEmail,
+                      window.sessionStorage,
+                      window.crypto,
+                      challenge,
+                    );
+                  }
+                  throw error;
+                }
+                clearLoginCodeChallenge(requestedEmail);
+                clearPendingLoginCodeFlow(requestedEmail);
                 window.location.assign("/me");
               })
             }

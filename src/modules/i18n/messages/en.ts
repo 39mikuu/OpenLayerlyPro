@@ -286,8 +286,10 @@ export const en: Messages = {
     tabAdmin: "Admin",
     email: "Email",
     code: "Code",
-    codePlaceholder: "{length}-character code",
-    codeHint: "The accepted code request is valid for 10 minutes.",
+    codePlaceholder: "{length}-digit code",
+    codeHint: "Enter it in the browser that requested it. The code is valid for 10 minutes.",
+    challengeMissing:
+      "This browser lost the login verification. Use the original browser, or wait up to 10 minutes before requesting a new code. You can also use a magic link or social login.",
     resend: "Resend",
     sendCode: "Send code",
     changeEmail: "Change email",

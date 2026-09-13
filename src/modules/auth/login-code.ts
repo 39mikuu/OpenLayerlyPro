@@ -1,4 +1,6 @@
-import { and, desc, eq, gt, isNull, sql, type SQLWrapper } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+
+import { and, desc, eq, gt, isNotNull, isNull, lt, or, sql, type SQLWrapper } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import { loginCodes, tasks, type User } from "@/db/schema";
@@ -17,8 +19,12 @@ import { logger } from "@/lib/logger";
 import { rateLimit } from "@/lib/rate-limit";
 import {
   getRequestCodeEmailIpRateLimit,
+  isLegacyLoginCode,
+  LOGIN_CODE_MAX_ATTEMPTS,
+  LOGIN_CODE_PATTERN,
   normalizeEmail,
   normalizeLoginCode,
+  validateLoginCodeChallenge,
 } from "@/modules/auth/rate-limit-policy";
 import { getSmtpConfig } from "@/modules/config";
 import type { Locale } from "@/modules/i18n";
@@ -32,8 +38,30 @@ import { findOrCreateUserByEmail, touchLastLogin } from "@/modules/user";
 
 const CODE_TTL_MINUTES = 10;
 const LOGIN_CODE_HMAC_PURPOSE = "auth-login-code";
+const LOGIN_CODE_CHALLENGE_HMAC_PURPOSE = "auth-login-code-challenge";
 
 export type RequestLoginCodeResult = { suppressed: boolean; codeId?: string };
+
+class LoginCodeAttemptsExceededError extends ApiError {
+  readonly freshAttemptExhausted: boolean;
+
+  constructor(freshAttemptExhausted: boolean) {
+    super(
+      429,
+      "codeAttemptsExceeded",
+      freshAttemptExhausted ? { challengeRotationRequired: 1 } : undefined,
+    );
+    this.freshAttemptExhausted = freshAttemptExhausted;
+  }
+}
+
+class LoginCodeComparisonDeferredError extends ApiError {
+  readonly comparisonDeferred = true;
+
+  constructor() {
+    super(400, "codeIncorrect");
+  }
+}
 
 export type LoginCodeEmailTaskPayload = {
   version: 1;
@@ -46,11 +74,13 @@ export type LoginCodeEmailTaskFence = {
   taskId: string;
   lockToken: string | null;
   assertTaskOwnership: () => Promise<void>;
+  signal?: AbortSignal;
 };
 
 export async function requestLoginCode(
   email: string,
-  meta?: {
+  meta: {
+    challenge: string;
     identity?: ClientRateLimitIdentity;
     ip?: string | null;
     userAgent?: string | null;
@@ -58,6 +88,7 @@ export async function requestLoginCode(
   },
 ): Promise<RequestLoginCodeResult> {
   const normalized = normalizeEmail(email);
+  const challenge = validateLoginCodeChallenge(meta.challenge);
   const env = getEnv();
   const identity = meta?.identity ?? { kind: "unresolved" };
 
@@ -70,6 +101,61 @@ export async function requestLoginCode(
   return getDb().transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${normalized}))`);
 
+    // Unconfirmed SMTP may outlive both the code TTL and the task lease.
+    const [unclosed] = await tx
+      .select({ id: loginCodes.id })
+      .from(loginCodes)
+      .where(and(eq(loginCodes.email, normalized), isNotNull(loginCodes.smtpReservationToken)))
+      .limit(1);
+    if (unclosed) return { suppressed: true };
+
+    const challengeHash = hmacLoginCodeChallenge(challenge);
+    const candidates = await executeRows<{
+      id: string;
+      challenge_hash: string | null;
+      attempt_count: number;
+      replacement_challenge_hash: string | null;
+    }>(
+      tx,
+      sql`
+      select id, challenge_hash, attempt_count, replacement_challenge_hash from ${loginCodes}
+      where ${loginCodes.email} = ${normalized}
+        and ${loginCodes.usedAt} is null and ${loginCodes.expiresAt} > now()
+      order by ${loginCodes.createdAt} desc
+      for update
+    `,
+    );
+    // Lock before classifying. A concurrent fifth verification may commit while
+    // this statement waits; PostgreSQL returns its updated attempts under lock.
+    const exhausted = candidates.filter(
+      (row) => row.challenge_hash !== null && row.attempt_count >= LOGIN_CODE_MAX_ATTEMPTS,
+    );
+    // In-flight resends must not reuse an exhausted generation, even if the
+    // browser never received the fifth-attempt response.
+    if (exhausted.some((row) => safeEqualHex(row.challenge_hash!, challengeHash))) {
+      return { suppressed: true };
+    }
+    let predecessor: (typeof exhausted)[number] | undefined = exhausted[0];
+    // Registration commits together with issuance. A registered successor
+    // already exists; matching retries and competing proposals are no-ops.
+    if (predecessor?.replacement_challenge_hash) {
+      const [completed] = await tx
+        .select({ id: loginCodes.id })
+        .from(loginCodes)
+        .where(
+          and(
+            eq(loginCodes.email, normalized),
+            eq(loginCodes.challengeHash, predecessor.replacement_challenge_hash),
+            or(isNotNull(loginCodes.usedAt), sql`${loginCodes.expiresAt} <= now()`),
+          ),
+        )
+        .limit(1);
+      if (!completed) return { suppressed: true };
+      // A completed login permits a fresh independent generation, not a second
+      // successor registration on the old exhausted row.
+      predecessor = undefined;
+    }
+
     const [active] = await executeRows<{ id: string; is_recent: boolean }>(
       tx,
       sql`
@@ -80,6 +166,10 @@ export async function requestLoginCode(
         where ${loginCodes.email} = ${normalized}
           and ${loginCodes.usedAt} is null
           and ${loginCodes.expiresAt} > now()
+          and (
+            ${loginCodes.challengeHash} is null
+            or ${loginCodes.attemptCount} < ${LOGIN_CODE_MAX_ATTEMPTS}
+          )
         order by ${loginCodes.createdAt} desc
         limit 1
         for update
@@ -114,7 +204,6 @@ export async function requestLoginCode(
     const code = generateLoginCode();
     const encryptedCode = encryptAuthTaskSecret(code);
     const codeHash = hmacLoginCode(code);
-
     if (identity.kind === "ip") {
       const emailIpLimit = getRequestCodeEmailIpRateLimit({
         normalizedEmail: normalized,
@@ -126,11 +215,18 @@ export async function requestLoginCode(
       }
     }
 
+    if (predecessor) {
+      await tx
+        .update(loginCodes)
+        .set({ replacementChallengeHash: challengeHash })
+        .where(eq(loginCodes.id, predecessor.id));
+    }
     const [inserted] = await tx
       .insert(loginCodes)
       .values({
         email: normalized,
         codeHash,
+        challengeHash,
         expiresAt: addMinutes(new Date(), CODE_TTL_MINUTES),
         ip: meta?.ip ?? null,
         userAgent: meta?.userAgent ?? null,
@@ -155,57 +251,179 @@ export async function requestLoginCode(
   });
 }
 
-export async function verifyLoginCode(email: string, code: string, locale?: Locale): Promise<User> {
+/** The route bounds this probe independently of code-comparison budgets. */
+export async function isExhaustedLoginCodeChallenge(
+  email: string,
+  challenge: string,
+): Promise<boolean> {
+  const hash = hmacLoginCodeChallenge(validateLoginCodeChallenge(challenge));
+  const rows = await getDb()
+    .select({ challengeHash: loginCodes.challengeHash })
+    .from(loginCodes)
+    .where(
+      and(
+        eq(loginCodes.email, normalizeEmail(email)),
+        isNull(loginCodes.usedAt),
+        gt(loginCodes.expiresAt, sql<Date>`now()`),
+        sql`${loginCodes.attemptCount} >= ${LOGIN_CODE_MAX_ATTEMPTS}`,
+        isNotNull(loginCodes.challengeHash),
+      ),
+    );
+  return rows.some((row) => safeEqualHex(row.challengeHash!, hash));
+}
+
+export async function verifyLoginCode(
+  email: string,
+  code: string,
+  challenge?: string,
+  locale?: Locale,
+): Promise<User> {
   const normalized = normalizeEmail(email);
   const normalizedCode = normalizeLoginCode(code);
+  const candidateChallengeHash = challenge ? hmacLoginCodeChallenge(challenge) : null;
+  const exhaustedChallengeFirst = candidateChallengeHash
+    ? sql`case
+        when ${loginCodes.challengeHash} = ${candidateChallengeHash}
+          and ${loginCodes.attemptCount} >= ${LOGIN_CODE_MAX_ATTEMPTS}
+        then 0
+        else 1
+      end`
+    : sql`1`;
   const db = getDb();
 
-  const outcome = await db.transaction(async (tx): Promise<"correct" | "incorrect"> => {
-    const [record] = await executeRows<{
-      id: string;
-      code_hash: string;
-    }>(
+  const outcome = await db.transaction(
+    async (
       tx,
-      sql`
+    ): Promise<
+      | "correct"
+      | "incorrect"
+      | "delivery_in_progress"
+      | "attempts_exhausted_now"
+      | "attempts_already_exhausted"
+    > => {
+      const [record] = await executeRows<{
+        id: string;
+        code_hash: string;
+        challenge_hash: string | null;
+        attempt_count: number;
+        smtp_reservation_token: string | null;
+      }>(
+        tx,
+        sql`
         select
           ${loginCodes.id} as id,
-          ${loginCodes.codeHash} as code_hash
+          ${loginCodes.codeHash} as code_hash,
+          ${loginCodes.challengeHash} as challenge_hash,
+          ${loginCodes.attemptCount} as attempt_count,
+          ${loginCodes.smtpReservationToken} as smtp_reservation_token
         from ${loginCodes}
         where ${loginCodes.email} = ${normalized}
           and ${loginCodes.usedAt} is null
-          and ${loginCodes.expiresAt} > now()
-        order by ${loginCodes.createdAt} desc
+          and (${loginCodes.expiresAt} > now() or ${loginCodes.smtpReservationToken} is not null)
+        order by
+          case when ${loginCodes.smtpReservationToken} is not null then 0 else 1 end,
+          ${exhaustedChallengeFirst},
+          ${loginCodes.createdAt} desc
         limit 1
         for update
       `,
-    );
+      );
 
-    if (!record) {
-      throw new ApiError(400, "codeExpired");
-    }
+      if (!record) {
+        throw new ApiError(400, "codeExpired");
+      }
 
-    if (!safeEqualHex(hmacLoginCode(normalizedCode), record.code_hash)) {
-      return "incorrect";
-    }
+      // A lease expiring or a task becoming dead does not close an SMTP socket.
+      if (record.smtp_reservation_token) return "delivery_in_progress";
 
-    const used = await executeRows<{ id: string }>(
-      tx,
-      sql`
+      const [deliveryTask] = await tx
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.dedupeKey, `auth-login-code-email:${record.id}`),
+            eq(tasks.status, "processing"),
+            isNotNull(tasks.lockedBy),
+            gt(tasks.leaseUntil, sql<Date>`now()`),
+          ),
+        )
+        .limit(1);
+      if (deliveryTask) return "delivery_in_progress";
+
+      if (record.challenge_hash === null) {
+        if (
+          !isLegacyLoginCode(normalizedCode) ||
+          !safeEqualHex(hmacLoginCode(normalizedCode), record.code_hash)
+        ) {
+          return "incorrect";
+        }
+      } else {
+        const challengeMatches = Boolean(
+          candidateChallengeHash && safeEqualHex(candidateChallengeHash, record.challenge_hash),
+        );
+        // Exhaustion is only distinguishable once the caller proves possession
+        // of the bound challenge. Mismatches take the ordinary incorrect path
+        // (same locked UPDATE, increment 0) so they cannot skip target-bucket
+        // accounting via a 429.
+        if (challengeMatches && record.attempt_count >= LOGIN_CODE_MAX_ATTEMPTS) {
+          return "attempts_already_exhausted";
+        }
+        const codeMatches =
+          challengeMatches &&
+          LOGIN_CODE_PATTERN.test(normalizedCode) &&
+          safeEqualHex(hmacLoginCode(normalizedCode), record.code_hash);
+        if (!challengeMatches || !codeMatches) {
+          // Both new-protocol mismatch paths perform the same locked UPDATE
+          // round trip. A challenge mismatch is a no-op and never compares the
+          // candidate code; a matched challenge increments the durable cap.
+          const increment = challengeMatches ? 1 : 0;
+          const [attempt] = await executeRows<{ attempt_count: number }>(
+            tx,
+            sql`
+            update ${loginCodes}
+            set attempt_count = least(
+              ${loginCodes.attemptCount} + ${increment},
+              ${LOGIN_CODE_MAX_ATTEMPTS}
+            )
+            where ${loginCodes.id} = ${record.id}
+            returning ${loginCodes.attemptCount} as attempt_count
+          `,
+          );
+          if (!challengeMatches) return "incorrect";
+          return (attempt?.attempt_count ?? LOGIN_CODE_MAX_ATTEMPTS) >= LOGIN_CODE_MAX_ATTEMPTS
+            ? "attempts_exhausted_now"
+            : "incorrect";
+        }
+      }
+
+      const used = await executeRows<{ id: string }>(
+        tx,
+        sql`
         update ${loginCodes}
         set used_at = now()
         where ${loginCodes.id} = ${record.id}
           and ${loginCodes.usedAt} is null
         returning ${loginCodes.id} as id
       `,
-    );
-    if (!used[0]) {
-      throw new ApiError(400, "codeExpired");
-    }
-    return "correct";
-  });
+      );
+      if (!used[0]) {
+        throw new ApiError(400, "codeExpired");
+      }
+      return "correct";
+    },
+  );
 
   if (outcome === "incorrect") {
     throw new ApiError(400, "codeIncorrect");
+  }
+  if (outcome === "delivery_in_progress") {
+    throw new LoginCodeComparisonDeferredError();
+  }
+  if (outcome === "attempts_exhausted_now") {
+    throw new LoginCodeAttemptsExceededError(true);
+  }
+  if (outcome === "attempts_already_exhausted") {
+    throw new LoginCodeAttemptsExceededError(false);
   }
 
   const user = await findOrCreateUserByEmail(normalized);
@@ -279,12 +497,27 @@ export async function deliverLoginCodeEmailTask(
         email: loginCodes.email,
         expiresAt: loginCodes.expiresAt,
         usedAt: loginCodes.usedAt,
+        challengeHash: loginCodes.challengeHash,
+        attemptCount: loginCodes.attemptCount,
+        smtpReservationToken: loginCodes.smtpReservationToken,
       })
       .from(loginCodes)
       .where(eq(loginCodes.id, payload.codeId))
-      .limit(1);
+      .limit(1)
+      .for("update");
 
-    if (!record || record.usedAt || record.expiresAt <= new Date()) {
+    if (record?.smtpReservationToken) {
+      throw new PermanentTaskError("Login code SMTP teardown requires operator recovery", {
+        classification: "needs_operator",
+      });
+    }
+
+    if (
+      !record ||
+      record.usedAt ||
+      record.expiresAt <= new Date() ||
+      (record.challengeHash !== null && record.attemptCount >= LOGIN_CODE_MAX_ATTEMPTS)
+    ) {
       return { note: "Login code is no longer active; delivery skipped" } as const;
     }
 
@@ -296,6 +529,10 @@ export async function deliverLoginCodeEmailTask(
           eq(loginCodes.email, record.email),
           isNull(loginCodes.usedAt),
           gt(loginCodes.expiresAt, sql<Date>`now()`),
+          or(
+            isNull(loginCodes.challengeHash),
+            lt(loginCodes.attemptCount, LOGIN_CODE_MAX_ATTEMPTS),
+          ),
         ),
       )
       .orderBy(desc(loginCodes.createdAt))
@@ -312,19 +549,62 @@ export async function deliverLoginCodeEmailTask(
       throw new PermanentTaskError("Login code task payload could not be decrypted");
     }
 
-    return { email: record.email, code } as const;
+    // Serialize reservation publication with reclaim. No SMTP under either lock.
+    const [owner] = await tx
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.id, fence.taskId),
+          eq(tasks.status, "processing"),
+          eq(tasks.lockedBy, lockToken),
+          gt(tasks.leaseUntil, sql<Date>`now()`),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!owner) return { note: "Login code task claim is stale; delivery skipped" } as const;
+    const reservationToken = randomUUID();
+    await tx
+      .update(loginCodes)
+      .set({
+        smtpReservationToken: reservationToken,
+        smtpReservedAt: sql`now()`,
+      })
+      .where(eq(loginCodes.id, record.id));
+    return { email: record.email, code, reservationToken } as const;
   });
 
   if ("note" in delivery) return delivery.note;
 
   // SMTP and config lookup intentionally happen after Tx1 commits, so neither a
   // database connection nor the per-email advisory lock is held during network I/O.
-  await fence.assertTaskOwnership();
+  const releaseReservation = async () => {
+    await getDb()
+      .update(loginCodes)
+      .set({ smtpReservationToken: null, smtpReservedAt: null })
+      .where(
+        and(
+          eq(loginCodes.id, payload.codeId),
+          eq(loginCodes.smtpReservationToken, delivery.reservationToken),
+        ),
+      );
+  };
+  let mailInvoked = false;
   try {
+    await fence.assertTaskOwnership();
+    mailInvoked = true;
     await sendLoginCodeEmail(delivery.email, delivery.code, payload.locale, {
       assertTaskOwnership: fence.assertTaskOwnership,
+      signal: fence.signal,
+      // The old callback can only release its own generation, even after reclaim.
+      onSmtpClosed: releaseReservation,
     });
+    await fence.assertTaskOwnership();
   } catch (error) {
+    // A failed preflight cannot have opened SMTP. Once mail is invoked, only
+    // its positive close callback (or operator recovery) can release the token.
+    if (!mailInvoked) await releaseReservation();
     if (error instanceof TaskOwnershipLostError) throw error;
     const classification = classifyMailError(error);
     if (classification === "transient") {
@@ -342,6 +622,10 @@ export async function deliverLoginCodeEmailTask(
 
 function hmacLoginCode(code: string): string {
   return hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, normalizeLoginCode(code));
+}
+
+function hmacLoginCodeChallenge(challenge: string): string {
+  return hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, challenge);
 }
 
 async function executeRows<T>(

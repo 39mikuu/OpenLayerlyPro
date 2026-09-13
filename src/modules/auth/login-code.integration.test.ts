@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -15,7 +15,7 @@ vi.mock("@/modules/mail", () => ({
 
 import { getDb } from "@/db";
 import { loginCodes, tasks } from "@/db/schema";
-import { hmacSha256WithPurpose } from "@/lib/crypto";
+import { decryptAuthTaskSecret, hmacSha256WithPurpose } from "@/lib/crypto";
 import { __resetRateLimitForTests } from "@/lib/rate-limit";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
 import { runTaskHandler as runTaskHandlerWithOwnership } from "@/modules/tasks/handlers";
@@ -25,13 +25,16 @@ import { claimDueTasks } from "@/modules/tasks/runtime";
 const runTaskHandler = (task: Parameters<typeof runTaskHandlerWithOwnership>[0]) =>
   runTaskHandlerWithOwnership(task, ownedTaskExecutionContext());
 
-import { requestLoginCode, verifyLoginCode } from "./login-code";
+import { isExhaustedLoginCodeChallenge, requestLoginCode, verifyLoginCode } from "./login-code";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
 
 const LOGIN_CODE_HMAC_PURPOSE = "auth-login-code";
-const TEST_CODE = "ABCD1234EFGH5678";
+const LOGIN_CODE_CHALLENGE_HMAC_PURPOSE = "auth-login-code-challenge";
+const LEGACY_TEST_CODE = "ABCD1234EFGH5678";
+const TEST_CODE = "123456";
+const TEST_CHALLENGE = "A".repeat(43);
 
 describeWithDatabase("S4 login-code integration", () => {
   const db = getDb();
@@ -46,14 +49,65 @@ describeWithDatabase("S4 login-code integration", () => {
       secure: false,
       from: "noreply@example.test",
     });
-    mocks.sendLoginCodeEmail.mockResolvedValue(undefined);
+    mocks.sendLoginCodeEmail.mockImplementation(async (_to, _code, _locale, options) => {
+      await options.onSmtpClosed();
+    });
     await resetDatabase(db);
   });
 
-  it("keeps correct codes usable after wrong attempts and high attempt_count", async () => {
+  it("rechecks exhaustion under the code lock when a fifth attempt races an in-flight resend", async () => {
+    const email = "fifth-resend-race@example.com";
+    const [row] = await db
+      .insert(loginCodes)
+      .values({
+        email,
+        codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+        challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+        attemptCount: 4,
+        expiresAt: new Date(Date.now() + 600_000),
+      })
+      .returning();
+    let release!: () => void;
+    let locked!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const fifth = db.transaction(async (tx) => {
+      await tx.update(loginCodes).set({ attemptCount: 5 }).where(eq(loginCodes.id, row.id));
+      locked();
+      await released;
+    });
+    await ready;
+    const resend = requestLoginCode(email, { challenge: TEST_CHALLENGE });
+    try {
+      let waiting = false;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const result = await db.execute<{ waiting: boolean }>(sql`
+          select exists(select 1 from pg_stat_activity
+            where wait_event_type = 'Lock' and query like '%login_codes%') as waiting
+        `);
+        if (result[0]?.waiting) {
+          waiting = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(waiting).toBe(true);
+    } finally {
+      release();
+      await fifth;
+    }
+    expect(await resend).toEqual({ suppressed: true });
+    expect(await db.select().from(loginCodes).where(eq(loginCodes.email, email))).toHaveLength(1);
+  });
+
+  it("keeps legacy codes usable until expiry without changing their attempt_count", async () => {
     await db.insert(loginCodes).values({
       email: "fan@example.com",
-      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, LEGACY_TEST_CODE),
       attemptCount: 50,
       expiresAt: new Date(Date.now() + 10 * 60_000),
     });
@@ -67,12 +121,169 @@ describeWithDatabase("S4 login-code integration", () => {
       code: "codeIncorrect",
     });
 
-    await expect(verifyLoginCode("Fan@Example.com", TEST_CODE, "zh")).resolves.toMatchObject({
-      email: "fan@example.com",
-    });
+    await expect(
+      verifyLoginCode("Fan@Example.com", LEGACY_TEST_CODE, undefined, "zh"),
+    ).resolves.toMatchObject({ email: "fan@example.com" });
 
     const [stored] = await db.select().from(loginCodes);
     expect(stored?.attemptCount).toBe(50);
+    expect(stored?.usedAt).toBeInstanceOf(Date);
+  });
+
+  it("accepts every previously configurable legacy code length", async () => {
+    for (const [index, legacyCode] of ["A".repeat(24), "1".repeat(64)].entries()) {
+      const email = `legacy-${index}@example.com`;
+      await db.insert(loginCodes).values({
+        email,
+        codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, legacyCode),
+        expiresAt: new Date(Date.now() + 10 * 60_000),
+      });
+
+      await expect(verifyLoginCode(email, legacyCode)).resolves.toMatchObject({ email });
+    }
+  });
+
+  it("defers legacy verification only for an actively leased delivery", async () => {
+    const email = "legacy-delivery@example.com";
+    const requested = await requestLoginCode(email, { challenge: TEST_CHALLENGE });
+    await db
+      .update(loginCodes)
+      .set({
+        challengeHash: null,
+        codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, LEGACY_TEST_CODE),
+      })
+      .where(eq(loginCodes.id, requested.codeId!));
+    await db
+      .update(tasks)
+      .set({
+        status: "processing",
+        lockedBy: "legacy-worker",
+        leaseUntil: new Date(Date.now() + 60_000),
+      })
+      .where(eq(tasks.dedupeKey, `auth-login-code-email:${requested.codeId}`));
+
+    await expect(verifyLoginCode(email, LEGACY_TEST_CODE)).rejects.toMatchObject({
+      status: 400,
+      code: "codeIncorrect",
+      comparisonDeferred: true,
+    });
+    const [reserved] = await db.select().from(loginCodes);
+    expect(reserved?.usedAt).toBeNull();
+
+    await db
+      .update(tasks)
+      .set({ leaseUntil: new Date(Date.now() - 1_000) })
+      .where(eq(tasks.dedupeKey, `auth-login-code-email:${requested.codeId}`));
+    await expect(verifyLoginCode(email, LEGACY_TEST_CODE)).resolves.toMatchObject({ email });
+  });
+
+  it("does not consume attempts for a wrong challenge", async () => {
+    await db.insert(loginCodes).values({
+      email: "challenge@example.com",
+      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+      challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+
+    await expect(
+      verifyLoginCode("challenge@example.com", TEST_CODE, "B".repeat(43)),
+    ).rejects.toMatchObject({ status: 400, code: "codeIncorrect" });
+
+    const [stored] = await db.select().from(loginCodes);
+    expect(stored).toMatchObject({ attemptCount: 0, usedAt: null });
+  });
+
+  it("caps challenge-matched wrong guesses at five and blocks a later correct code", async () => {
+    await db.insert(loginCodes).values({
+      email: "attempts@example.com",
+      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+      challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+
+    for (const code of ["000000", "000001", "000002", "000003"]) {
+      await expect(
+        verifyLoginCode("attempts@example.com", code, TEST_CHALLENGE),
+      ).rejects.toMatchObject({ status: 400, code: "codeIncorrect" });
+    }
+    await expect(
+      verifyLoginCode("attempts@example.com", "000004", TEST_CHALLENGE),
+    ).rejects.toMatchObject({
+      status: 429,
+      code: "codeAttemptsExceeded",
+      freshAttemptExhausted: true,
+    });
+    await expect(
+      verifyLoginCode("attempts@example.com", TEST_CODE, TEST_CHALLENGE),
+    ).rejects.toMatchObject({
+      status: 429,
+      code: "codeAttemptsExceeded",
+      freshAttemptExhausted: false,
+    });
+
+    const replacement = await requestLoginCode("attempts@example.com", {
+      challenge: "B".repeat(43),
+    });
+    expect(replacement.suppressed).toBe(false);
+    await expect(
+      verifyLoginCode("attempts@example.com", TEST_CODE, TEST_CHALLENGE),
+    ).rejects.toMatchObject({
+      status: 429,
+      code: "codeAttemptsExceeded",
+      freshAttemptExhausted: false,
+    });
+
+    const stored = await db.select().from(loginCodes).orderBy(asc(loginCodes.createdAt));
+    expect(stored).toHaveLength(2);
+    expect(stored[0]).toMatchObject({ attemptCount: 5, usedAt: null });
+    expect(stored[1]).toMatchObject({ attemptCount: 0, usedAt: null });
+  });
+
+  it("serializes concurrent guesses without losing increments or exceeding the cap", async () => {
+    await db.insert(loginCodes).values({
+      email: "concurrent-attempts@example.com",
+      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+      challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 6 }, (_value, index) =>
+        verifyLoginCode(
+          "concurrent-attempts@example.com",
+          String(index).padStart(6, "0"),
+          TEST_CHALLENGE,
+        ),
+      ),
+    );
+
+    expect(results).toHaveLength(6);
+    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    const errors = results.map((result) =>
+      result.status === "rejected" ? result.reason : undefined,
+    );
+    expect(errors.filter((error) => error?.code === "codeIncorrect")).toHaveLength(4);
+    expect(errors.filter((error) => error?.code === "codeAttemptsExceeded")).toHaveLength(2);
+
+    const [stored] = await db.select().from(loginCodes);
+    expect(stored).toMatchObject({ attemptCount: 5, usedAt: null });
+  });
+
+  it("accepts a correct six-digit code with its matching challenge", async () => {
+    await db.insert(loginCodes).values({
+      email: "correct@example.com",
+      codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+      challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+      attemptCount: 4,
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+
+    await expect(
+      verifyLoginCode("correct@example.com", TEST_CODE, TEST_CHALLENGE, "ja"),
+    ).resolves.toMatchObject({ email: "correct@example.com" });
+
+    const [stored] = await db.select().from(loginCodes);
+    expect(stored?.attemptCount).toBe(4);
     expect(stored?.usedAt).toBeInstanceOf(Date);
   });
 
@@ -80,8 +291,18 @@ describeWithDatabase("S4 login-code integration", () => {
     const identity = { kind: "ip", value: "198.51.100.10" } as const;
 
     const results = await Promise.all([
-      requestLoginCode(" Fan@Example.com ", { identity, ip: identity.value, locale: "zh" }),
-      requestLoginCode("fan@example.com", { identity, ip: identity.value, locale: "zh" }),
+      requestLoginCode(" Fan@Example.com ", {
+        challenge: TEST_CHALLENGE,
+        identity,
+        ip: identity.value,
+        locale: "zh",
+      }),
+      requestLoginCode("fan@example.com", {
+        challenge: TEST_CHALLENGE,
+        identity,
+        ip: identity.value,
+        locale: "zh",
+      }),
     ]);
 
     expect(results.filter((result) => result.suppressed)).toHaveLength(1);
@@ -91,17 +312,30 @@ describeWithDatabase("S4 login-code integration", () => {
     expect(taskRows[0]?.kind).toBe("auth.login_code_email");
     expect(taskRows[0]?.payloadJson).not.toHaveProperty("to");
     expect(JSON.stringify(taskRows[0]?.payloadJson)).not.toContain("fan@example.com");
+    expect(JSON.stringify(taskRows[0]?.payloadJson)).not.toContain(TEST_CHALLENGE);
+    const [storedCode] = await db.select().from(loginCodes);
+    expect(storedCode?.challengeHash).toBe(
+      hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+    );
     expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();
   });
 
   it("suppresses duplicates without minting unseen codes or refreshing the timestamp", async () => {
     const identity = { kind: "ip", value: "198.51.100.20" } as const;
 
-    const first = await requestLoginCode("fan@example.com", { identity, ip: identity.value });
+    const first = await requestLoginCode("fan@example.com", {
+      challenge: TEST_CHALLENGE,
+      identity,
+      ip: identity.value,
+    });
     expect(first.suppressed).toBe(false);
     const [before] = await db.select().from(loginCodes);
 
-    const second = await requestLoginCode(" fan@example.com ", { identity, ip: identity.value });
+    const second = await requestLoginCode(" fan@example.com ", {
+      challenge: TEST_CHALLENGE,
+      identity,
+      ip: identity.value,
+    });
 
     const codeRows = await db.select().from(loginCodes);
     const taskRows = await db.select().from(tasks);
@@ -115,7 +349,11 @@ describeWithDatabase("S4 login-code integration", () => {
   it("keeps suppressing replacement codes after the dedupe window while delivery is retryable", async () => {
     const identity = { kind: "ip", value: "198.51.100.25" } as const;
 
-    await requestLoginCode("retrying@example.com", { identity, ip: identity.value });
+    await requestLoginCode("retrying@example.com", {
+      challenge: TEST_CHALLENGE,
+      identity,
+      ip: identity.value,
+    });
     const [code] = await db.select().from(loginCodes);
     const [task] = await db.select().from(tasks);
     await db
@@ -125,7 +363,11 @@ describeWithDatabase("S4 login-code integration", () => {
     await db.update(tasks).set({ status: "failed" }).where(eq(tasks.id, task!.id));
 
     await expect(
-      requestLoginCode("retrying@example.com", { identity, ip: identity.value }),
+      requestLoginCode("retrying@example.com", {
+        challenge: TEST_CHALLENGE,
+        identity,
+        ip: identity.value,
+      }),
     ).resolves.toEqual({ suppressed: true });
     await expect(db.select().from(loginCodes)).resolves.toHaveLength(1);
     await expect(db.select().from(tasks)).resolves.toHaveLength(1);
@@ -135,7 +377,11 @@ describeWithDatabase("S4 login-code integration", () => {
     const identity = { kind: "ip", value: "198.51.100.26" } as const;
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    await requestLoginCode("missing-task@example.com", { identity, ip: identity.value });
+    await requestLoginCode("missing-task@example.com", {
+      challenge: TEST_CHALLENGE,
+      identity,
+      ip: identity.value,
+    });
     const [code] = await db.select().from(loginCodes);
     await db.delete(tasks);
     await db
@@ -144,7 +390,11 @@ describeWithDatabase("S4 login-code integration", () => {
       .where(eq(loginCodes.id, code!.id));
 
     await expect(
-      requestLoginCode("missing-task@example.com", { identity, ip: identity.value }),
+      requestLoginCode("missing-task@example.com", {
+        challenge: TEST_CHALLENGE,
+        identity,
+        ip: identity.value,
+      }),
     ).resolves.toEqual({ suppressed: true });
     await expect(db.select().from(loginCodes)).resolves.toHaveLength(1);
     await expect(db.select().from(tasks)).resolves.toHaveLength(0);
@@ -155,7 +405,12 @@ describeWithDatabase("S4 login-code integration", () => {
   it("allows a replacement only after terminal delivery and the dedupe window", async () => {
     const identity = { kind: "ip", value: "198.51.100.30" } as const;
 
-    await requestLoginCode("fan@example.com", { identity, ip: identity.value, locale: "zh" });
+    await requestLoginCode("fan@example.com", {
+      challenge: TEST_CHALLENGE,
+      identity,
+      ip: identity.value,
+      locale: "zh",
+    });
     const [firstCode] = await db.select().from(loginCodes);
     const [firstTask] = await db.select().from(tasks);
     await db
@@ -165,6 +420,7 @@ describeWithDatabase("S4 login-code integration", () => {
     await db.update(tasks).set({ status: "succeeded" }).where(eq(tasks.id, firstTask!.id));
 
     const replacement = await requestLoginCode("fan@example.com", {
+      challenge: TEST_CHALLENGE,
       identity,
       ip: identity.value,
       locale: "zh",
@@ -177,7 +433,55 @@ describeWithDatabase("S4 login-code integration", () => {
     await expect(runTaskHandler(claimed!)).resolves.toEqual({});
     expect(mocks.sendLoginCodeEmail).toHaveBeenCalledOnce();
     const sentCode = mocks.sendLoginCodeEmail.mock.calls[0][1] as string;
-    expect(sentCode).toMatch(/^[0-9A-HJKMNP-TV-Z]{16}$/);
+    expect(sentCode).toMatch(/^[0-9]{6}$/);
     expect(JSON.stringify(claimed!.payloadJson)).not.toContain(sentCode);
+  });
+  it("suppresses stale generations and atomically registers exactly one concurrent successor", async () => {
+    const email = "handshake@example.com";
+    const [old] = await db
+      .insert(loginCodes)
+      .values({
+        email,
+        codeHash: hmacSha256WithPurpose(LOGIN_CODE_HMAC_PURPOSE, TEST_CODE),
+        challengeHash: hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, TEST_CHALLENGE),
+        attemptCount: 5,
+        expiresAt: new Date(Date.now() + 600_000),
+      })
+      .returning();
+    expect(await isExhaustedLoginCodeChallenge(email, TEST_CHALLENGE)).toBe(true);
+    expect(await isExhaustedLoginCodeChallenge(email, "B".repeat(43))).toBe(false);
+    expect(await requestLoginCode(email, { challenge: TEST_CHALLENGE })).toEqual({
+      suppressed: true,
+    });
+    expect(await db.select().from(loginCodes)).toHaveLength(1);
+    const proposed = ["B".repeat(43), "C".repeat(43)];
+    const outcomes = await Promise.all(
+      proposed.map((challenge) => requestLoginCode(email, { challenge })),
+    );
+    expect(outcomes.filter((result) => !result.suppressed)).toHaveLength(1);
+    const winner = proposed[outcomes.findIndex((result) => !result.suppressed)];
+    expect(await requestLoginCode(email, { challenge: winner })).toEqual({ suppressed: true });
+    const rows = await db.select().from(loginCodes);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === old.id)?.replacementChallengeHash).toBe(
+      hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, winner),
+    );
+    const successor = rows.find((row) => row.id !== old.id)!;
+    expect(successor.challengeHash).toBe(
+      hmacSha256WithPurpose(LOGIN_CODE_CHALLENGE_HMAC_PURPOSE, winner),
+    );
+    const [delivery] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.dedupeKey, `auth-login-code-email:${successor.id}`));
+    expect(JSON.stringify(delivery.payloadJson)).not.toContain(winner);
+    const payload = delivery.payloadJson as { encryptedCode: string };
+    const code = decryptAuthTaskSecret(payload.encryptedCode);
+    await db.update(tasks).set({ status: "succeeded" }).where(eq(tasks.id, delivery.id));
+    await expect(verifyLoginCode(email, code, winner)).resolves.toMatchObject({ email });
+    expect(await isExhaustedLoginCodeChallenge(email, TEST_CHALLENGE)).toBe(true);
+    // Logging out and starting a new login is not a second successor for the
+    // exhausted row and must not be blocked until that row's TTL expires.
+    expect((await requestLoginCode(email, { challenge: "D".repeat(43) })).suppressed).toBe(false);
   });
 });

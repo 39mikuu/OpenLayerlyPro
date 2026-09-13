@@ -270,13 +270,21 @@ describe("task handlers", () => {
       locale: "zh",
     } as const;
 
-    const result = await runTaskHandler(task(payload, "auth.login_code_email"));
+    const controller = new AbortController();
+    const execution = { ...ownedTaskExecutionContext(), signal: controller.signal };
+    const result = await runTaskHandlerWithOwnership(
+      task(payload, "auth.login_code_email"),
+      execution,
+    );
 
     expect(mocks.deliverLoginCodeEmailTask).toHaveBeenCalledWith(payload, {
       taskId: "11111111-1111-4111-8111-111111111111",
       lockToken: "worker",
       assertTaskOwnership: expect.any(Function),
+      signal: controller.signal,
     });
+    controller.abort();
+    expect(mocks.deliverLoginCodeEmailTask.mock.calls[0][1].signal.aborted).toBe(true);
     expect(JSON.stringify(payload)).not.toContain("@");
     expect(result.note).toContain("superseded");
   });

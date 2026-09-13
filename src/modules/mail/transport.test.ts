@@ -40,6 +40,7 @@ import {
   sendRenewalReminderEmail,
   sendTestEmail,
 } from "./index";
+import { LoginCodeTransport } from "./login-code-transport";
 
 const durableTransactionalSenders: Array<
   [string, (options: MailTaskOwnershipOptions) => Promise<void>]
@@ -117,6 +118,23 @@ describe("SMTP transport", () => {
         socketTimeout: 45_000,
       }),
     );
+  });
+
+  it("does not release or report success when login SMTP close evidence is unknown", async () => {
+    const close = vi.spyOn(LoginCodeTransport.prototype, "closeConfirmed").mockResolvedValue(false);
+    const release = vi.fn();
+    mocks.createTransport.mockReturnValue({ sendMail: mocks.sendMail, close: vi.fn() });
+    try {
+      await expect(
+        sendLoginCodeEmail("fan@example.test", "123456", "en", {
+          assertTaskOwnership: async () => undefined,
+          onSmtpClosed: release,
+        }),
+      ).rejects.toMatchObject({ kind: "needs_operator" });
+      expect(release).not.toHaveBeenCalled();
+    } finally {
+      close.mockRestore();
+    }
   });
 
   it("sends HTML and plain-text alternatives for the core transactional emails", async () => {
