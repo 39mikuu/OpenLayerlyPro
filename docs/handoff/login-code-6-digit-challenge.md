@@ -1,6 +1,6 @@
 # 交接：6 位数字登录码与请求挑战绑定
 
-> 状态：#228 实现收尾中。§3.3 恢复握手已实现，真实 PostgreSQL 验证待 CI；§5.1 的租约与未确认拆除语义存在冲突，仍是合并阻塞，见文末待裁定说明。本文在实现落地后取代 S4 中“登录码至少 80 bit、错误提交永不写 `attempt_count`”两项约束；S4 的来源硬预算、email+IP 失败桶、持久投递 fence、加密任务和 SMTP 边界继续生效。
+> 状态：#228 实现收尾中。§3.3 恢复握手已通过真实 PostgreSQL CI。2026-09-12 用户批准 §5.1 持久 SMTP reservation 窄修订，正在实现和验证；批准设计不代表实现已验收。本文在实现落地后取代 S4 中“登录码至少 80 bit、错误提交永不写 `attempt_count`”两项约束；其他 S4 安全边界继续生效。
 
 ## 1. 目标与威胁模型
 
@@ -126,11 +126,15 @@ active code 被抑制时，不更新其 `challenge_hash`、`attempt_count`、创
 
 对新协议行，`attempt_count >= 5` 表示 code 已耗尽：它不再属于 active-code dedupe/fence 的候选，后续请求可以创建绑定新 challenge 的 code。创建 replacement 必须遵守 §3.3：在同一 per-email 锁与事务内原子登记并消费 replacement challenge，禁止把已耗尽 challenge 绑到新行。该旧 code 对应的 pending、processing 或可重试 failed 投递任务必须在取得任务 ownership 与 per-email fence 后判定为 stale，并成功 no-op；不得再解密或发送已耗尽 code。legacy 行仍只按 `used_at` 与 expiry 判断 active。
 
-`tasks.status='processing'`、非空 current owner 和 `lease_until > now()` 共同构成 SMTP 最后安全点的短期发送预留。worker 在 per-email advisory lock 内重新确认 task ownership 后，必须 `FOR UPDATE` 锁定 code 行并完成 exhausted / superseded 检查；事务提交后 task 在整个 SMTP 调用和 handler 返回前保持有 owner 的未过期 processing claim。验证事务对新旧协议行都必须检查该预留；命中时返回内部 `delivery_in_progress`，对外保持通用 `codeIncorrect`，但不比较 code、不增加 attempts、也不消费 resolved email+IP 失败桶。这样 worker 提交最后检查后，验证不能再消费或耗尽即将发送的 code。只有 status=processing 但 owner 为空或 lease 已过期的 abandoned 行不构成预留，验证不得无限等待 worker reclaim；现有 ownership fencing 负责阻止该过期 worker 开始新的 SMTP。回收后的 worker 重新执行同一检查，不把数据库连接或 advisory lock 跨 SMTP 持有。lease 过期本身不足以结束一次已经开始的 SMTP，见 §5.1。
+SMTP 最后安全点由 per-email advisory lock、code 行锁及 task ownership 行锁排序。有效 claim 与持久 reservation 共同覆盖 SMTP 窗口，详见 §5.1。验证对新旧协议行都检查双重门禁：有效 claim 或未关闭 reservation 任一存在时，返回内部 `delivery_in_progress`、对外通用 `codeIncorrect`，不比较 code、不增加 attempts、不消费目标失败桶。只有不存在持久 reservation 时，无主或过期 claim 才不再阻止验证。任何数据库连接或 advisory lock 都不得跨 SMTP 持有。
 
 ### 5.1 SMTP 预留丢失时的取消
 
-预留定义保持不变：`status=processing` **并且** 非空 `locked_by` **并且** `lease_until > now()`。验证侧仍只按这三项判断 `delivery_in_progress`。
+2026-09-12 批准的窄修订：验证阻塞条件为有效 task claim **或** code 行上非空的 `smtp_reservation_token`，不再只按有限租约判断。`smtp_reserved_at` 记录预留时间，不是自动释放期限。token 是独立的每次发送 UUID generation，不包含 challenge、验证码或收件人。
+
+worker 在 per-email advisory lock、code 行锁和最后的 task ownership 行锁内原子建立 reservation；事务外再次续租确认后才调用独占传输。已有 reservation 时禁止新发送，包括新的 task claim。request-code 对该 email 任意未关闭 reservation 统一抑制，即使 code TTL 已到期。普通 task reclaim/finalize 不得清除 reservation。
+
+只有独占 socket 的 `close` 事件（或尚未创建 socket 且已永久禁止后续创建的确定证据）允许按 code ID + generation CAS 清除 reservation。关闭等待有界；超时、进程崩溃或数据库不可用时保留记录，转人工恢复。传输监听 dispatcher AbortSignal，并设 30 秒硬期限，短于发送前刚续租的 60 秒 task lease；不能依赖 `SMTPTransport.close()`，因为非 pooled transporter 的该方法不关闭活动连接。取消销毁独占 TCP socket，TLS/STARTTLS 仍由 Nodemailer 处理且保留证书校验。
 
 不能假设“processing lease 到期”就等于发送已停。worker 在 SMTP 进行中失去预留（续租失败、lease 过期、ownership 被 reclaim）时，必须取消该次发送，并在取消完成前保持失败关闭。
 
@@ -150,7 +154,7 @@ route 顺序仍为：输入校验 → §3.3 来源有界恢复探测 → target 
 
 replacement 使用耗尽响应后轮换的新 challenge；新 challenge 必须选择最新未耗尽行。只有携带旧 challenge 的请求才会命中上述耗尽行优先规则，因此新邮件中的 code 可以立即验证，不必等待旧行过期。§3.3 握手不改变这一选择规则：耗尽行优先只作用于已耗尽 challenge；replacement challenge 选择新行。
 
-锁定目标行后，先检查其 delivery task 是否持有上述有效 SMTP 预留；命中则按 `delivery_in_progress` 返回。随后按行类型执行：
+锁定目标行后，先检查该行持久 reservation 与其 delivery task 的有效 claim；任一存在则按 `delivery_in_progress` 返回。随后按行类型执行：
 
 ### 6.1 新协议行（`challenge_hash IS NOT NULL`）
 
@@ -181,7 +185,7 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - challenge mismatch 并发不得改变 attempts。
 - 第 5 次错误与同时到达的正确提交按取得行锁的顺序决定；一旦 attempts 已到 5，后到的正确提交必须失败。
 - 第 5 次错误提交后、客户端尚未采纳 replacement 之前，并发 `request-code` 必须走 §3.3 登记/消费，不得创建绑定已耗尽 challenge 的新行。
-- worker 的最后检查与验证通过同一 code 行锁排序；worker 检查通过后由 processing task 预留覆盖 SMTP 窗口，验证只消耗 source budget 并延后比较。不得持有数据库事务或 advisory lock 执行 SMTP。
+- worker 的最后检查与验证通过同一 code 行锁排序；worker 检查通过后由有效 claim 或持久 reservation 覆盖 SMTP 窗口，验证只消耗 source budget 并延后比较。不得持有数据库事务或 advisory lock 执行 SMTP。
 - SMTP 进行中失去预留时按 §5.1 取消独占传输并确认 socket 拆除；歧义状态失败关闭，stale generation 不得 finalize。
 - SMTP / task 重试只携带加密 code；challenge 永不进入 outbox，因此现有敏感数据边界不回退。
 - `SESSION_SECRET` 轮换仍使存量 code HMAC 与在途加密 task 失效，用户重新请求即可。
@@ -208,7 +212,7 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - 并发重发握手：已在途或并行的 `request-code` 不得创建绑定已耗尽 challenge 的 replacement；同一 replacement challenge 幂等，不同新 challenge 不得并起两行；
 - 来源/target 预算已被该次第 5 次错误耗尽时，恢复探测仍能在 S4 比较门禁之前重放轮换指令，且不额外消费 comparison / target 桶；
 - 已耗尽 code 不抑制新 code 创建，其旧投递任务在 SMTP 前成功 no-op；
-- 新旧协议行在 active processing claim 的 SMTP 阻塞期间都不推进 attempts/used_at/target bucket；owner 缺失或 lease 过期后不再延后比较；
+- 新旧协议行在有效 claim 或未关闭 reservation 期间都不推进 attempts/used_at/target bucket；仅当二者均不存在时，owner 缺失或 lease 过期才不再延后比较；
 - SMTP 进行中失去预留时取消独占 per-send 传输（不得只 abort `TaskExecutionContext.signal`），确认 socket 拆除后验证才可消费该 code；
 - stale generation：lease 丢失后的旧 SMTP 回调不得 finalize 新 generation；已耗尽 challenge 不得再作为发码绑定；
 - 拆除结果不明确时失败关闭，走 stuck-reservation 恢复，验证在恢复完成前保持 `delivery_in_progress`；
@@ -237,12 +241,12 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - [ ] 并发重发不得把 replacement 绑到已耗尽 challenge；§6 耗尽行优先只作用于旧 challenge
 - [ ] SMTP 预留丢失时取消独占 per-send 传输，确认 socket 拆除，`sendLoginCodeEmail` 观察取消；歧义状态失败关闭并走 stuck-reservation 恢复
 
-## 11. 2026-09-10 实现状态与待裁定边界
+## 11. 实现状态与恢复边界
 
 已实现的 §3.3 API 恢复探测复用 `POST /api/auth/verify-code`：浏览器提交有效格式的占位 code、challenge 和 `recoveryOnly: true`，只探测耗尽状态，绝不比较占位 code 或创建 session。探测受独立的 source-only 桶约束，上限为现有 comparison 桶的两倍，避免第五次比较刚好耗尽 comparison 桶时同时没有恢复余量。命中返回 `challengeRotationRequired=1`，未命中统一 accepted；普通验证请求也在 S4 门禁前执行该有界探测。
 
 浏览器在单次 `sessionStorage.setItem` 中持久化当前 replacement、原耗尽 challenge、normalized email 和 TTL；错误响应丢失、abort 或重载后可恢复。只有 request-code 确认后才采纳后继并清除旧元组。`localStorage` 的 pending marker 只含 email/expiry，不含 challenge，用于关闭标签后提示 challenge 已丢失。
 
-**仍阻塞：§5.1 同时要求验证侧只依据 processing + owner + 未过期 lease 判断预留，又要求 lease 已过期而 socket 拆除未确认时继续阻止验证。有限 lease 过期后该谓词必然为假；worker 此时若失去数据库连接，不能靠续租或 abort 回调恢复该谓词。因此不能仅增加 AbortSignal 就声称满足该规格。当前分支尚未实现 §5.1，保持 Draft。**
+§5.1 的原有限租约谓词与未确认 socket 拆除时失败关闭存在冲突。2026-09-12 用户明确批准持久 reservation 修订；验收仍要求真实 socket、真实 PostgreSQL、故障路径及独立评审，保持 Draft 直到这些检查完成。
 
-待确认的最小设计修订（尚未采纳，不改变上文已接受规则）：增加持久 SMTP reservation generation 与 teardown 状态；验证条件为有效 task claim **或**未确认关闭的 SMTP reservation。失租取消独占 per-send socket；只在确认关闭后按 generation CAS 释放 reservation。过期任务可被重新领取，但不得在未确认旧连接关闭时开始新发送；无法确认关闭的 reservation 进入显式运维恢复，不随 lease 到期自动释放。只有此窄修订确认后再实现 SMTP 分支及崩溃/失租恢复测试。
+人工 stuck-reservation 恢复：见 [登录码 SMTP 恢复操作](../deployment/login-code-smtp-recovery.md)。必须先停止所有可能持有该连接的 app/worker 并确认 socket 已关闭，再按确切 code ID + generation 做 CAS。不得通过普通任务重试、等待 lease/TTL 或直接清空整表绕过安全门禁。恢复后旧 callback 不得清除新的 generation；恢复不代表邮件已送达。

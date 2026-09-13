@@ -207,6 +207,11 @@ export const RUNTIME_SCHEMA_MIGRATIONS = [
     hash: "4311a02dbbe78490e9fb4d67bc50b6552a4b7a1de24a777e4dd15c829f0127b1",
     createdAt: 1788031323310,
   },
+  {
+    tag: "0041_login_smtp_reservation",
+    hash: "c7215e8de42f116f2979301c9d3ab50ecbf775c40e303d1d34ff3074b8459250",
+    createdAt: 1789234378704,
+  },
 ] as const;
 
 export const RUNTIME_SCHEMA_MIGRATION = RUNTIME_SCHEMA_MIGRATIONS.at(-1)!;

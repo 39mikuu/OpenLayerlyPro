@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { and, desc, eq, gt, isNotNull, isNull, lt, or, sql, type SQLWrapper } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
@@ -72,6 +74,7 @@ export type LoginCodeEmailTaskFence = {
   taskId: string;
   lockToken: string | null;
   assertTaskOwnership: () => Promise<void>;
+  signal?: AbortSignal;
 };
 
 export async function requestLoginCode(
@@ -97,6 +100,14 @@ export async function requestLoginCode(
 
   return getDb().transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${normalized}))`);
+
+    // Unconfirmed SMTP may outlive both the code TTL and the task lease.
+    const [unclosed] = await tx
+      .select({ id: loginCodes.id })
+      .from(loginCodes)
+      .where(and(eq(loginCodes.email, normalized), isNotNull(loginCodes.smtpReservationToken)))
+      .limit(1);
+    if (unclosed) return { suppressed: true };
 
     const challengeHash = hmacLoginCodeChallenge(challenge);
     const candidates = await executeRows<{
@@ -295,6 +306,7 @@ export async function verifyLoginCode(
         code_hash: string;
         challenge_hash: string | null;
         attempt_count: number;
+        smtp_reservation_token: string | null;
       }>(
         tx,
         sql`
@@ -302,12 +314,14 @@ export async function verifyLoginCode(
           ${loginCodes.id} as id,
           ${loginCodes.codeHash} as code_hash,
           ${loginCodes.challengeHash} as challenge_hash,
-          ${loginCodes.attemptCount} as attempt_count
+          ${loginCodes.attemptCount} as attempt_count,
+          ${loginCodes.smtpReservationToken} as smtp_reservation_token
         from ${loginCodes}
         where ${loginCodes.email} = ${normalized}
           and ${loginCodes.usedAt} is null
-          and ${loginCodes.expiresAt} > now()
+          and (${loginCodes.expiresAt} > now() or ${loginCodes.smtpReservationToken} is not null)
         order by
+          case when ${loginCodes.smtpReservationToken} is not null then 0 else 1 end,
           ${exhaustedChallengeFirst},
           ${loginCodes.createdAt} desc
         limit 1
@@ -318,6 +332,9 @@ export async function verifyLoginCode(
       if (!record) {
         throw new ApiError(400, "codeExpired");
       }
+
+      // A lease expiring or a task becoming dead does not close an SMTP socket.
+      if (record.smtp_reservation_token) return "delivery_in_progress";
 
       const [deliveryTask] = await tx
         .select({ id: tasks.id })
@@ -482,11 +499,18 @@ export async function deliverLoginCodeEmailTask(
         usedAt: loginCodes.usedAt,
         challengeHash: loginCodes.challengeHash,
         attemptCount: loginCodes.attemptCount,
+        smtpReservationToken: loginCodes.smtpReservationToken,
       })
       .from(loginCodes)
       .where(eq(loginCodes.id, payload.codeId))
       .limit(1)
       .for("update");
+
+    if (record?.smtpReservationToken) {
+      throw new PermanentTaskError("Login code SMTP teardown requires operator recovery", {
+        classification: "needs_operator",
+      });
+    }
 
     if (
       !record ||
@@ -525,19 +549,62 @@ export async function deliverLoginCodeEmailTask(
       throw new PermanentTaskError("Login code task payload could not be decrypted");
     }
 
-    return { email: record.email, code } as const;
+    // Serialize reservation publication with reclaim. No SMTP under either lock.
+    const [owner] = await tx
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.id, fence.taskId),
+          eq(tasks.status, "processing"),
+          eq(tasks.lockedBy, lockToken),
+          gt(tasks.leaseUntil, sql<Date>`now()`),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!owner) return { note: "Login code task claim is stale; delivery skipped" } as const;
+    const reservationToken = randomUUID();
+    await tx
+      .update(loginCodes)
+      .set({
+        smtpReservationToken: reservationToken,
+        smtpReservedAt: sql`now()`,
+      })
+      .where(eq(loginCodes.id, record.id));
+    return { email: record.email, code, reservationToken } as const;
   });
 
   if ("note" in delivery) return delivery.note;
 
   // SMTP and config lookup intentionally happen after Tx1 commits, so neither a
   // database connection nor the per-email advisory lock is held during network I/O.
-  await fence.assertTaskOwnership();
+  const releaseReservation = async () => {
+    await getDb()
+      .update(loginCodes)
+      .set({ smtpReservationToken: null, smtpReservedAt: null })
+      .where(
+        and(
+          eq(loginCodes.id, payload.codeId),
+          eq(loginCodes.smtpReservationToken, delivery.reservationToken),
+        ),
+      );
+  };
+  let mailInvoked = false;
   try {
+    await fence.assertTaskOwnership();
+    mailInvoked = true;
     await sendLoginCodeEmail(delivery.email, delivery.code, payload.locale, {
       assertTaskOwnership: fence.assertTaskOwnership,
+      signal: fence.signal,
+      // The old callback can only release its own generation, even after reclaim.
+      onSmtpClosed: releaseReservation,
     });
+    await fence.assertTaskOwnership();
   } catch (error) {
+    // A failed preflight cannot have opened SMTP. Once mail is invoked, only
+    // its positive close callback (or operator recovery) can release the token.
+    if (!mailInvoked) await releaseReservation();
     if (error instanceof TaskOwnershipLostError) throw error;
     const classification = classifyMailError(error);
     if (classification === "transient") {

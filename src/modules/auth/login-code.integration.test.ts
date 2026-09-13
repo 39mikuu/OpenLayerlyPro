@@ -49,7 +49,9 @@ describeWithDatabase("S4 login-code integration", () => {
       secure: false,
       from: "noreply@example.test",
     });
-    mocks.sendLoginCodeEmail.mockResolvedValue(undefined);
+    mocks.sendLoginCodeEmail.mockImplementation(async (_to, _code, _locale, options) => {
+      await options.onSmtpClosed();
+    });
     await resetDatabase(db);
   });
 

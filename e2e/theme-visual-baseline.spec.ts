@@ -429,7 +429,9 @@ for (const theme of themes) {
 
             await page.goto(pageCase.path);
             await expect(
-              page.locator("body").getByText(pageCase.expectedText, { exact: true }),
+              pageCase.id === "post-detail"
+                ? page.getByRole("heading", { level: 1, name: pageCase.expectedText, exact: true })
+                : page.locator("body").getByText(pageCase.expectedText, { exact: true }),
             ).toBeVisible();
             if (pageCase.expectTaxonomy) {
               await expect(page.getByText(CATEGORY_NAME).first()).toBeVisible();
@@ -490,7 +492,11 @@ test.describe("wordpress theme preset and mobile baselines", () => {
       ]);
 
       await page.goto(pageCase.path);
-      await expect(page.getByText(pageCase.expectedText)).toBeVisible();
+      await expect(
+        pageCase.id === "post-detail"
+          ? page.getByRole("heading", { level: 1, name: pageCase.expectedText, exact: true })
+          : page.getByText(pageCase.expectedText),
+      ).toBeVisible();
       await expect(page).toHaveScreenshot(`wordpress-mobile-${pageCase.id}.png`, {
         animations: "disabled",
         fullPage: true,

@@ -47,7 +47,7 @@ describeWithDatabase("auth login-code SMTP failure redaction", () => {
   beforeEach(async () => {
     __resetRateLimitForTests();
     vi.clearAllMocks();
-    mocks.createTransport.mockReturnValue({ sendMail: mocks.sendMail });
+    mocks.createTransport.mockReturnValue({ sendMail: mocks.sendMail, close: vi.fn() });
     await resetDatabase(db);
     await setStoredGroup("smtp", {
       host: "smtp.example.test",
