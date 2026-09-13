@@ -56,10 +56,20 @@ export async function POST(req: NextRequest) {
       const source = getVerifyCodeCompareRateLimit({ identity, env });
       // Separate source-only allowance leaves room to recover the response
       // after a comparison exhausts its own budget; no target key is involved.
-      if (!rateLimit(`login-code-recovery:${source.key}`, source.max * 2, source.windowMs)) {
+      const probeAllowed = rateLimit(
+        `login-code-recovery:${source.key}`,
+        source.max * 2,
+        source.windowMs,
+      );
+      if (!probeAllowed && recoveryOnly) {
         return jsonError(429, "codeAttemptsExceeded");
       }
-      if (await isExhaustedLoginCodeChallenge(normalizedEmail, validatedChallenge)) {
+      // Exhausting the auxiliary probe allowance must not add a new gate to
+      // ordinary verification; its existing source/target limits still apply.
+      if (
+        probeAllowed &&
+        (await isExhaustedLoginCodeChallenge(normalizedEmail, validatedChallenge))
+      ) {
         return jsonError(429, "codeAttemptsExceeded", { challengeRotationRequired: 1 });
       }
     }

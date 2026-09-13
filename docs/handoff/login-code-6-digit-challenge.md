@@ -1,6 +1,6 @@
 # 交接：6 位数字登录码与请求挑战绑定
 
-> 状态：#228 实现收尾中。§3.3 恢复握手已通过真实 PostgreSQL CI。2026-09-12 用户批准 §5.1 持久 SMTP reservation 窄修订，正在实现和验证；批准设计不代表实现已验收。本文在实现落地后取代 S4 中“登录码至少 80 bit、错误提交永不写 `attempt_count`”两项约束；其他 S4 安全边界继续生效。
+> 状态：#228 已实现，最终验收中。§3.3 恢复握手已通过真实 PostgreSQL CI；重复标签页与辅助探测额度的审查修正正在重新验证。2026-09-12 用户批准的 §5.1 持久 SMTP reservation 窄修订已实现；批准设计不代表最终验收通过。本文取代 S4 中“登录码至少 80 bit、错误提交永不写 `attempt_count`”两项约束；其他 S4 安全边界继续生效。§10 为最终验收清单，最新提交的完整 CI 和独立审查通过前保持未勾选。
 
 ## 1. 目标与威胁模型
 
@@ -245,7 +245,13 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 
 已实现的 §3.3 API 恢复探测复用 `POST /api/auth/verify-code`：浏览器提交有效格式的占位 code、challenge 和 `recoveryOnly: true`，只探测耗尽状态，绝不比较占位 code 或创建 session。探测受独立的 source-only 桶约束，上限为现有 comparison 桶的两倍，避免第五次比较刚好耗尽 comparison 桶时同时没有恢复余量。命中返回 `challengeRotationRequired=1`，未命中统一 accepted；普通验证请求也在 S4 门禁前执行该有界探测。
 
-浏览器在单次 `sessionStorage.setItem` 中持久化当前 replacement、原耗尽 challenge、normalized email 和 TTL；错误响应丢失、abort 或重载后可恢复。只有 request-code 确认后才采纳后继并清除旧元组。`localStorage` 的 pending marker 只含 email/expiry，不含 challenge，用于关闭标签后提示 challenge 已丢失。
+浏览器在单次 `sessionStorage.setItem` 中持久化当前 replacement、原耗尽 challenge、normalized email 和 TTL；错误响应丢失、abort 或重载后可恢复。request-code 的统一 accepted 不证明本标签页提出的后继已登记，不能据此清除旧元组；重复标签页竞争时双方都保留原耗尽元组和各自 proposal，重试仍复用原 proposal。登录成功、显式取消、改向另一邮箱发码或本地 TTL 结束时清理；当前 replacement 本身收到精确耗尽指令时，才以它作为下一轮的原耗尽元组。`localStorage` 的 pending marker 只含 email/expiry，不含 challenge，用于关闭标签后提示 challenge 已丢失。
+
+恢复探测额度耗尽时，`recoveryOnly` 请求返回通用 429；普通验证跳过数据库探测，继续执行既有 source comparison 和 target failure 门禁。辅助恢复额度不得成为正常比较的额外封锁条件。
+
+重发恢复先探测当前 replacement，再探测不同的原耗尽 challenge（每次最多两次，均消费既有恢复预算），命中后立即停止并幂等轮换。这样 replacement 自身也耗尽且第五次响应丢失时，可由当前代推进下一代，而不会一直重放更早一代。
+
+同页重发的 challenge 丢失提示以未过期 pending marker 为界；marker 与 challenge 的本地 TTL 结束后允许创建新 challenge，无需刷新页面或更换邮箱。不得用不带期限的 `codeSent` 状态永久阻止重发；服务端 active-code 与 SMTP reservation fence 仍保留。
 
 §5.1 的原有限租约谓词与未确认 socket 拆除时失败关闭存在冲突。2026-09-12 用户明确批准持久 reservation 修订；验收仍要求真实 socket、真实 PostgreSQL、故障路径及独立评审，保持 Draft 直到这些检查完成。
 

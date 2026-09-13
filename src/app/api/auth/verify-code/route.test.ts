@@ -352,4 +352,40 @@ describe("verify-code route budgets", () => {
     expect(mocks.isExhaustedLoginCodeChallenge).not.toHaveBeenCalled();
     expect(mocks.verifyLoginCode).not.toHaveBeenCalled();
   });
+
+  it("allows normal verification when only the recovery allowance is exhausted", async () => {
+    mocks.rateLimit.mockImplementation((key: string) => !key.startsWith("login-code-recovery:"));
+    const response = await POST(
+      request(
+        { email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE },
+        { "x-forwarded-for": "198.51.100.10" },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.isExhaustedLoginCodeChallenge).not.toHaveBeenCalled();
+    expect(mocks.isRateLimited).toHaveBeenCalledOnce();
+    expect(mocks.rateLimit).toHaveBeenCalledWith("verify-code-ip:198.51.100.10", 30, 600_000);
+    expect(mocks.verifyLoginCode).toHaveBeenCalledOnce();
+    expect(mocks.createSession).toHaveBeenCalledOnce();
+  });
+
+  it.each(["source", "target"])(
+    "keeps the %s gate when the recovery allowance is exhausted",
+    async (gate) => {
+      mocks.rateLimit.mockImplementation(
+        (key: string) => gate !== "source" && !key.startsWith("login-code-recovery:"),
+      );
+      mocks.isRateLimited.mockReturnValue(gate === "target");
+      const response = await POST(
+        request(
+          { email: "fan@example.com", code: "123456", challenge: TEST_CHALLENGE },
+          { "x-forwarded-for": "198.51.100.10" },
+        ),
+      );
+      expect(response.status).toBe(429);
+      expect(mocks.isExhaustedLoginCodeChallenge).not.toHaveBeenCalled();
+      expect(mocks.verifyLoginCode).not.toHaveBeenCalled();
+      expect(mocks.createSession).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -10,6 +10,7 @@ import {
   getStoredLoginCodeChallenge,
   hasLostLoginCodeChallenge,
   LOGIN_CODE_PENDING_FLOW_TTL_MS,
+  recoverLoginCodeChallenge,
   rememberPendingLoginCodeFlow,
   rotateLoginCodeChallenge,
 } from "./login-code-challenge";
@@ -136,6 +137,33 @@ describe("login code browser challenge", () => {
     expect(marker.removeItem).toHaveBeenCalled();
   });
 
+  it("allows same-page resend after TTL while blocking challenge loss before TTL", async () => {
+    const clock = vi.spyOn(Date, "now");
+    const session = storage();
+    const marker = storage();
+    const crypto = cryptoSource();
+    const start = 1_700_000_000_000;
+    try {
+      clock.mockReturnValue(start);
+      const original = getOrCreateLoginCodeChallenge("fan@example.com", session, crypto);
+      rememberPendingLoginCodeFlow("fan@example.com", marker, start);
+      clearLoginCodeChallenge("fan@example.com", session);
+      clock.mockReturnValue(start + LOGIN_CODE_PENDING_FLOW_TTL_MS - 1);
+      expect(hasLostLoginCodeChallenge("fan@example.com", session, marker, Date.now())).toBe(true);
+
+      clock.mockReturnValue(start + LOGIN_CODE_PENDING_FLOW_TTL_MS);
+      expect(hasLostLoginCodeChallenge("fan@example.com", session, marker, Date.now())).toBe(false);
+      const probe = vi.fn(async () => false);
+      await recoverLoginCodeChallenge("fan@example.com", probe, session, crypto);
+      expect(probe).not.toHaveBeenCalled();
+      const next = getOrCreateLoginCodeChallenge("fan@example.com", session, crypto);
+      expect(next).not.toBe(original);
+      expect(getStoredLoginCodeChallenge("fan@example.com", session)).toBe(next);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("detects challenge loss when the pending marker survives without the secret", () => {
     const session = storage();
     const marker = storage();
@@ -162,12 +190,61 @@ describe("login code browser challenge", () => {
     );
     expect(crypto.getRandomValues).toHaveBeenCalledTimes(2);
     acknowledgeLoginCodeReplacement("fan@example.com", session);
-    expect(getLoginCodeRecoveryChallenge("fan@example.com", session)).toBe(replacement);
+    expect(getLoginCodeRecoveryChallenge("fan@example.com", session)).toBe(original);
     const next = rotateLoginCodeChallenge("fan@example.com", session, crypto, replacement);
     expect(next).not.toBe(replacement);
     expect(getLoginCodeRecoveryChallenge("fan@example.com", session)).toBe(replacement);
     clearLoginCodeChallenge("fan@example.com", session);
     expect(getLoginCodeRecoveryChallenge("fan@example.com", session)).toBeNull();
+  });
+
+  it("retains both duplicated tabs' recovery tuples after uniform accepted responses", async () => {
+    const first = storage();
+    const second = storage();
+    const original = getOrCreateLoginCodeChallenge("fan@example.com", first, cryptoSource());
+    second.setItem("auth.login-code-challenge", first.getItem("auth.login-code-challenge")!);
+    const firstCrypto = cryptoSource(2);
+    const secondCrypto = cryptoSource(3);
+    const winner = rotateLoginCodeChallenge("fan@example.com", first, firstCrypto, original);
+    const loser = rotateLoginCodeChallenge("fan@example.com", second, secondCrypto, original);
+    expect(winner).not.toBe(loser);
+
+    // The server registers only one, but both tabs receive the same accepted.
+    for (const session of [first, second]) {
+      acknowledgeLoginCodeReplacement("fan@example.com", session);
+      expect(getLoginCodeRecoveryChallenge("fan@example.com", session)).toBe(original);
+    }
+    // Reload/retry reuses the losing proposal without discarding the old tuple.
+    const probe = vi.fn(async (challenge: string) => challenge === original);
+    await recoverLoginCodeChallenge("fan@example.com", probe, second, secondCrypto);
+    expect(probe.mock.calls.map(([challenge]) => challenge)).toEqual([loser, original]);
+    expect(getStoredLoginCodeChallenge("fan@example.com", second)).toBe(loser);
+    expect(secondCrypto.getRandomValues).toHaveBeenCalledOnce();
+    clearLoginCodeChallenge("fan@example.com", first);
+    expect(getLoginCodeRecoveryChallenge("fan@example.com", first)).toBeNull();
+    expect(getLoginCodeRecoveryChallenge("fan@example.com", second)).toBe(original);
+  });
+
+  it("recovers a lost fifth-error response for a second generation after reload", async () => {
+    const session = storage();
+    const crypto = cryptoSource();
+    const original = getOrCreateLoginCodeChallenge("fan@example.com", session, crypto);
+    const replacement = rotateLoginCodeChallenge("fan@example.com", session, crypto, original);
+    acknowledgeLoginCodeReplacement("fan@example.com", session);
+    const reloaded = storage();
+    reloaded.setItem("auth.login-code-challenge", session.getItem("auth.login-code-challenge")!);
+    // Both generations are exhausted; the current one must win the probe.
+    const probe = vi.fn(async (challenge: string) => [original, replacement].includes(challenge));
+    await recoverLoginCodeChallenge("fan@example.com", probe, reloaded, crypto);
+    expect(probe).toHaveBeenCalledExactlyOnceWith(replacement);
+    const next = getStoredLoginCodeChallenge("fan@example.com", reloaded);
+    expect(next).not.toBe(replacement);
+    expect(next).not.toBe(original);
+    expect(getLoginCodeRecoveryChallenge("fan@example.com", reloaded)).toBe(replacement);
+    acknowledgeLoginCodeReplacement("fan@example.com", reloaded);
+    await recoverLoginCodeChallenge("fan@example.com", probe, reloaded, crypto);
+    expect(getStoredLoginCodeChallenge("fan@example.com", reloaded)).toBe(next);
+    expect(getLoginCodeRecoveryChallenge("fan@example.com", reloaded)).toBe(replacement);
   });
 
   it("never replaces stored state when persisting the rotation fails", () => {

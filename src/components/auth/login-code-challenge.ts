@@ -218,13 +218,36 @@ export function getLoginCodeRecoveryChallenge(
     : null;
 }
 
-/** Adopt the durable successor only after request-code acknowledges the retry. */
+/** Probe the current proposal first so a lost exhaustion response can advance
+ * another generation even while its predecessor tuple is still retained. */
+export async function recoverLoginCodeChallenge(
+  email: string,
+  probe: (challenge: string) => Promise<boolean>,
+  storage: ChallengeStorage = window.sessionStorage,
+  cryptoSource: ChallengeCrypto = window.crypto,
+): Promise<void> {
+  const candidates = new Set([
+    getStoredLoginCodeChallenge(email, storage),
+    getLoginCodeRecoveryChallenge(email, storage),
+  ]);
+  for (const challenge of candidates) {
+    if (challenge && (await probe(challenge))) {
+      rotateLoginCodeChallenge(email, storage, cryptoSource, challenge);
+      return;
+    }
+  }
+}
+
+/** Accepted is deliberately uniform, not proof that this successor won. */
 export function acknowledgeLoginCodeReplacement(
   email: string,
   storage: ChallengeStorage = window.sessionStorage,
 ): void {
   const stored = readStoredChallenge(storage);
   if (stored?.email === normalizeEmail(email)) {
-    persistChallenge(stored.email, stored.challenge, storage);
+    storage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ ...stored, expiresAt: Date.now() + LOGIN_CODE_PENDING_FLOW_TTL_MS }),
+    );
   }
 }

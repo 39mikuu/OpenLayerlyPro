@@ -7,10 +7,10 @@ import {
   acknowledgeLoginCodeReplacement,
   clearLoginCodeChallenge,
   clearPendingLoginCodeFlow,
-  getLoginCodeRecoveryChallenge,
   getOrCreateLoginCodeChallenge,
   getStoredLoginCodeChallenge,
   hasLostLoginCodeChallenge,
+  recoverLoginCodeChallenge,
   rememberPendingLoginCodeFlow,
   rotateLoginCodeChallenge,
 } from "@/components/auth/login-code-challenge";
@@ -288,11 +288,7 @@ export function LoginForm({
                 if (hasLostLoginCodeChallenge(targetEmail)) {
                   throw new Error(t("login.challengeMissing"));
                 }
-                if (codeSent && requestedEmail && !getStoredLoginCodeChallenge(requestedEmail)) {
-                  throw new Error(t("login.challengeMissing"));
-                }
-                const recoveryChallenge = getLoginCodeRecoveryChallenge(targetEmail);
-                if (recoveryChallenge) {
+                await recoverLoginCodeChallenge(targetEmail, async (recoveryChallenge) => {
                   try {
                     await api("/api/auth/verify-code", {
                       method: "POST",
@@ -309,15 +305,11 @@ export function LoginForm({
                       error.code === "codeAttemptsExceeded" &&
                       error.params?.challengeRotationRequired === 1
                     ) {
-                      rotateLoginCodeChallenge(
-                        targetEmail,
-                        window.sessionStorage,
-                        window.crypto,
-                        recoveryChallenge,
-                      );
+                      return true;
                     } else throw error;
                   }
-                }
+                  return false;
+                });
                 const challenge = getOrCreateLoginCodeChallenge(targetEmail);
                 await api("/api/auth/request-code", {
                   method: "POST",
