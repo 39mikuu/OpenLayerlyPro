@@ -254,6 +254,7 @@ validate archive paths
 → transactionally neutralize/re-arm tasks and payment-provider events (dist/restore-neutralize.mjs)
 → one-off DB↔storage convergence (dist/restore-converge.mjs)
 → post-restore config encryption key decrypt probe (dist/restore-config-key-probe.mjs)
+→ reject any outstanding login-code SMTP reservation (dist/restore-login-code-smtp-check.mjs)
 → start normal app/dispatcher
 → /api/ready
 ```
@@ -269,6 +270,7 @@ Key invariants:
 - missing objects become quarantine/410, not storage 500;
 - only convergence may re-enqueue deletion for confirmed orphans;
 - any migrator/backfill/neutralization/convergence error prevents normal app startup;
+- any outstanding login-code SMTP reservation prevents app startup until an operator proves all source/target sockets closed and follows [exact-generation recovery](login-code-smtp-recovery.md); after recovery, rerun the one-off check and start the app without re-importing the archive;
 - v3/v4 `CONFIG_ENCRYPTION_KEY_SHA256` and `CONFIG_ENCRYPTION_KEY_FORMAT` are checked against the archived key file before the official database, secrets, or uploads are replaced. This is complementary to the decrypt probe: fingerprint mismatch means archive integrity failure; decrypt failure means the archived key cannot read archived ciphertext;
 - archive-vs-target runtime app version, source commit, and image ID mismatches are warnings only. Migration identity remains the hard compatibility gate. If an existing target app container sets `APP_VERSION`, `SOURCE_COMMIT`, or `BUILD_TIMESTAMP` to values that conflict with non-`unknown` image labels, backup/restore fails loudly because the container environment is overriding the image build identity;
 - before replacing the official database, restore extracts archived `app_settings` rows into an isolated scratch database and verifies the archived config key can decrypt every encrypted setting. Missing or empty `app_settings` data logs an explicit skip. After convergence, restore runs the same probe against the restored database to verify the active runtime key and fully restored state before app startup;
@@ -290,6 +292,7 @@ dist/restore-neutralize.mjs
 dist/restore-converge.mjs
 dist/restore-schema-check.mjs
 dist/restore-config-key-probe.mjs
+dist/restore-login-code-smtp-check.mjs
 ```
 
 The script refuses a target that sets `CONFIG_ENCRYPTION_KEY` directly because the env value would override the restored file. Restore the matching external key through the secret manager or remove the override before retrying.

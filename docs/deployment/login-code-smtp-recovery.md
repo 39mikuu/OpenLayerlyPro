@@ -29,7 +29,8 @@ BEGIN;
 SELECT id FROM login_codes
 WHERE id = :'code_id'::uuid AND smtp_reservation_token = :'generation'::uuid
 FOR UPDATE;
-UPDATE tasks SET status = 'dead', locked_by = NULL, lease_until = NULL,
+UPDATE tasks SET status = 'dead', locked_at = NULL, locked_by = NULL,
+  lease_until = NULL,
   updated_at = now(), last_error = 'SMTP reservation recovered by operator'
 WHERE dedupe_key = 'auth-login-code-email:' || :'code_id'
   AND (status <> 'processing' OR locked_by IS NULL OR lease_until <= now());
@@ -37,7 +38,8 @@ UPDATE login_codes SET smtp_reservation_token = NULL, smtp_reserved_at = NULL
 WHERE id = :'code_id'::uuid AND smtp_reservation_token = :'generation'::uuid
   AND EXISTS (SELECT 1 FROM tasks
     WHERE dedupe_key = 'auth-login-code-email:' || :'code_id'
-      AND status = 'dead' AND locked_by IS NULL);
+      AND status = 'dead' AND locked_at IS NULL AND locked_by IS NULL
+      AND lease_until IS NULL);
 -- Only after checking both row counts and termination evidence:
 COMMIT;
 ```
@@ -51,3 +53,19 @@ does not promise exactly-once SMTP. Never clear a replacement generation using a
 For restoring backups containing reservations, keep the application stopped and apply
 the same termination-evidence procedure before reopening login-code delivery. Restoring
 a database alone cannot prove that sockets in the source deployment have closed.
+The restore script checks for **any** non-null `smtp_reservation_token` after migration,
+neutralization, convergence and the config-key probe, before starting the app. If the
+check fails, the archive has already been imported and the app stays stopped. Do not
+rerun the archive: that would bring the reservation back. After proving that all source
+and target SMTP owners have exited and their sockets closed, recover every outstanding
+generation with the transaction above. Then, using the same Compose project, files and
+environment as the restore, run the check and start the app:
+
+```bash
+docker compose run --rm --no-deps -T --entrypoint node app /app/dist/restore-login-code-smtp-check.mjs
+docker compose up -d --force-recreate app
+curl -fsS http://localhost:3000/api/ready
+```
+
+Only start the app if the check exits successfully. If it still fails, leave the app
+stopped and investigate remaining reservations or database access errors.
