@@ -57,7 +57,7 @@ wait_ready() {
 mirror_bucket() {
   src_port=$1
   dst_port=$2
-  sudo -n docker run --rm --network host --entrypoint /bin/sh minio/mc:latest -c "
+  sudo -n docker run --rm --network host --entrypoint /bin/sh quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 -c "
       set -eu
       mc alias set src http://127.0.0.1:${src_port} ${MINIO_USER} ${MINIO_PASSWORD}
       mc alias set dst http://127.0.0.1:${dst_port} ${MINIO_USER} ${MINIO_PASSWORD}
@@ -70,7 +70,7 @@ mirror_bucket() {
 object_exists() {
   oe_port=$1
   oe_key=$2
-  sudo -n docker run --rm --network host --entrypoint /bin/sh minio/mc:latest -c "
+  sudo -n docker run --rm --network host --entrypoint /bin/sh quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 -c "
       mc alias set chk http://127.0.0.1:${oe_port} ${MINIO_USER} ${MINIO_PASSWORD} >/dev/null 2>&1
       mc stat chk/${MINIO_BUCKET}/${oe_key} >/dev/null 2>&1
     "
@@ -280,7 +280,7 @@ DELETE_TASK_COUNT=$(
 [ "$DELETE_TASK_COUNT" -ge 2 ] || fail "expected orphan cleanup delete tasks (count=$DELETE_TASK_COUNT)"
 
 echo "Verifying out-of-prefix sentinel object was left untouched..."
-sudo -n docker run --rm --network host --entrypoint /bin/sh minio/mc:latest -c "
+sudo -n docker run --rm --network host --entrypoint /bin/sh quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 -c "
     set -eu
     mc alias set dst http://127.0.0.1:${RESTORE_MINIO_PORT} ${MINIO_USER} ${MINIO_PASSWORD}
     mc stat dst/${MINIO_BUCKET}/${SENTINEL_OBJECT_KEY} >/dev/null
@@ -380,7 +380,7 @@ mirror_bucket "$SOURCE_MINIO_PORT" 9008
 # creating a directory at the host path.
 sudo -n docker run --rm --network host \
   --mount "type=bind,source=$POLICY_JSON,target=/policy.json,readonly" \
-  --entrypoint /bin/sh minio/mc:latest -c "
+  --entrypoint /bin/sh quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 -c "
     set -eu
     mc alias set adm http://127.0.0.1:9008 ${MINIO_USER} ${MINIO_PASSWORD}
     mc admin policy create adm s7getonly /policy.json

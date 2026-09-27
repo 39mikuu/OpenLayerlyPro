@@ -395,6 +395,16 @@ Local nested-upload drill (explicit backup stop/restart success and failure clea
 
 MinIO/S3 drill (bucket mirror, missing-object quarantine, orphan cleanup enqueue, truncated enumeration fail-closed):
 
+The drill-only Compose override pins the MinIO server and `mc` client to multi-platform
+manifest digests in the official `quay.io/minio` repositories. Docker Hub's unpinned
+`minio/minio:latest` became unavailable during CI; do not bypass the S3 drill on a pull
+failure. The pinned public manifests were checked on 2026-09-12 and include Linux
+amd64 and arm64. Updating either digest requires running the complete S3 drill again.
+These are legacy community images: [upstream](https://github.com/minio/minio#source-only-distribution)
+states that legacy binaries no longer receive updates and the repository is no longer
+maintained. They are isolated test fixtures, not a production storage recommendation.
+Do not expose the drill's fixed test credentials or ports beyond the local test host.
+
 ```bash
 ./scripts/test-restore-s3-e2e.sh
 ```
