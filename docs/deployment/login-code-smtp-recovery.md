@@ -53,19 +53,32 @@ does not promise exactly-once SMTP. Never clear a replacement generation using a
 For restoring backups containing reservations, keep the application stopped and apply
 the same termination-evidence procedure before reopening login-code delivery. Restoring
 a database alone cannot prove that sockets in the source deployment have closed.
-The restore script checks for **any** non-null `smtp_reservation_token` after migration,
-neutralization, convergence and the config-key probe, before starting the app. If the
-check fails, the archive has already been imported and the app stays stopped. Do not
+The restore script checks for other live database clients and **any** non-null
+`smtp_reservation_token` after migration, neutralization, convergence and the
+config-key probe, before starting the app. Stop every source and target app/worker
+owner, including other Compose projects or hosts, and prove their SMTP sockets closed
+before the check; an empty database-session snapshot cannot rule out later reconnects.
+If the check fails, the archive has already been imported and the app stays stopped. Do not
 rerun the archive: that would bring the reservation back. After proving that all source
 and target SMTP owners have exited and their sockets closed, recover every outstanding
-generation with the transaction above. Then, using the same Compose project, files and
-environment as the restore, run the check and start the app:
+generation with the transaction above. Close any other database client connections.
+Then set the **same target** Compose project, file list, environment file and ready URL
+used by restore (an inline `COMPOSE_PROJECT_NAME=... ./scripts/restore.sh` assignment
+does not persist), run the check and start the app:
 
 ```bash
-docker compose run --rm --no-deps -T --entrypoint node app /app/dist/restore-login-code-smtp-check.mjs
-docker compose up -d --force-recreate app
-curl -fsS http://localhost:3000/api/ready
+COMPOSE_PROJECT_NAME=your-restore-project
+COMPOSE_FILE=docker-compose.yml:your-restore-overlay.yml
+COMPOSE_ENV_FILE=.env
+READY_URL=http://127.0.0.1:3000/api/ready
+export COMPOSE_PROJECT_NAME COMPOSE_FILE
+docker compose --env-file "$COMPOSE_ENV_FILE" run --rm --no-deps -T --entrypoint node app /app/dist/restore-login-code-smtp-check.mjs
+docker compose --env-file "$COMPOSE_ENV_FILE" up -d --force-recreate app
+curl -fsS "$READY_URL"
 ```
 
-Only start the app if the check exits successfully. If it still fails, leave the app
-stopped and investigate remaining reservations or database access errors.
+Replace every example value with the actual restore target, including additional
+Compose overlays. If no overlay was used, set `COMPOSE_FILE=docker-compose.yml`.
+Only start the app if the check exits successfully and all other owners remain
+stopped. If it still fails, leave the app stopped and investigate remaining
+connections, reservations or database access errors.
