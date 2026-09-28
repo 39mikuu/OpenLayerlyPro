@@ -10,8 +10,10 @@ import {
   completeOAuthLogin,
   getOAuthBrowserBindingCookie,
   getOAuthCookiePath,
+  getOAuthReturnCookie,
 } from "@/modules/auth/oauth";
 import { getOAuthStartRateLimit } from "@/modules/auth/rate-limit-policy";
+import { normalizeMagicLinkRedirectPath } from "@/modules/auth/redirect-path";
 import { createSession, setSessionCookie } from "@/modules/auth/session";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
 import { resolveLocale } from "@/modules/i18n/server";
@@ -30,12 +32,20 @@ function clearBindingCookie(response: NextResponse): NextResponse {
     path: getOAuthCookiePath(),
     maxAge: 0,
   });
+  response.cookies.set(getOAuthReturnCookie("google"), "", {
+    httpOnly: true,
+    secure: getEnv().APP_URL.startsWith("https://"),
+    sameSite: "lax",
+    path: getOAuthCookiePath(),
+    maxAge: 0,
+  });
   return response;
 }
 
-function failureRedirect(code: string, clearCookie = true): NextResponse {
+function failureRedirect(code: string, next: string | null, clearCookie = true): NextResponse {
   const url = absoluteUrl("/login");
   url.searchParams.set("oauth_error", code);
+  if (next) url.searchParams.set("next", next);
   const response = NextResponse.redirect(url, {
     status: 303,
     headers: {
@@ -47,6 +57,9 @@ function failureRedirect(code: string, clearCookie = true): NextResponse {
 }
 
 export async function GET(req: NextRequest) {
+  const retryPath = normalizeMagicLinkRedirectPath(
+    req.cookies.get(getOAuthReturnCookie("google"))?.value,
+  );
   try {
     // Bound unauthenticated callback attempts before invalid states can amplify
     // into unbounded audit-event writes. Use a distinct namespace from starts.
@@ -56,13 +69,13 @@ export async function GET(req: NextRequest) {
     if (!rateLimit(limit.key, limit.max, limit.windowMs)) {
       // No state has been validated or consumed yet. Preserve the binding
       // cookie so a pending legitimate provider callback can still complete.
-      return failureRedirect("rate_limited", false);
+      return failureRedirect("rate_limited", retryPath, false);
     }
     const state = req.nextUrl.searchParams.get("state") ?? "";
     const browserBinding = req.cookies.get(getOAuthBrowserBindingCookie("google"))?.value ?? null;
     if (req.nextUrl.searchParams.get("error")) {
       await cancelOAuthLogin("google", { state, browserBinding });
-      return failureRedirect("denied");
+      return failureRedirect("denied", retryPath);
     }
     const code = req.nextUrl.searchParams.get("code") ?? "";
     const locale = await resolveLocale();
@@ -91,9 +104,13 @@ export async function GET(req: NextRequest) {
         oauthProviderError: "provider",
         oauthInvalidCallback: "callback",
       };
-      return failureRedirect(map[error.code] ?? "failed", error.code !== "oauthInvalidState");
+      return failureRedirect(
+        map[error.code] ?? "failed",
+        retryPath,
+        error.code !== "oauthInvalidState",
+      );
     }
     handleApiError(error);
-    return failureRedirect("failed");
+    return failureRedirect("failed", retryPath);
   }
 }

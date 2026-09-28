@@ -42,7 +42,9 @@ export default async function MagicLinkConfirmPage({
   // relative action or href would escape a /base-scoped reverse proxy.
   const publicBaseUrl = getPublicBaseUrl(getEnv().APP_URL);
   const confirmAction = buildPublicUrl(publicBaseUrl, "/api/auth/magic-link/confirm");
-  const loginHref = buildPublicUrl(publicBaseUrl, "/login");
+  const loginUrl = new URL(buildPublicUrl(publicBaseUrl, "/login"));
+  if (verification.redirectPath) loginUrl.searchParams.set("next", verification.redirectPath);
+  const loginHref = loginUrl.toString();
 
   return (
     <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center px-6 py-12">
@@ -59,6 +61,9 @@ export default async function MagicLinkConfirmPage({
         {valid ? (
           <form className="mt-6" action={confirmAction} method="post">
             <input type="hidden" name="token" value={token} />
+            {verification.redirectPath && (
+              <input type="hidden" name="next" value={verification.redirectPath} />
+            )}
             <Button type="submit">{t("magicLink.confirmAction")}</Button>
           </form>
         ) : (

@@ -25,6 +25,7 @@ export function CheckoutForm({ tierId, methods }: { tierId: string; methods: Met
   const proofInputId = useId();
   const [methodId, setMethodId] = useState<string | null>(methods[0]?.id ?? null);
   const [proofFile, setProofFile] = useState<File | null>(null);
+  const [draggingProof, setDraggingProof] = useState(false);
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,41 +72,56 @@ export function CheckoutForm({ tierId, methods }: { tierId: string; methods: Met
 
   return (
     <div className="space-y-7">
-      <div className="grid gap-3 sm:grid-cols-2">
-        {methods.map((method) => {
-          const isSelected = method.id === methodId;
-          return (
-            <button
-              key={method.id}
-              type="button"
-              aria-pressed={isSelected}
-              onClick={() => setMethodId(method.id)}
-              className={cn(
-                "relative min-w-0 rounded-xl border bg-card p-4 text-left transition",
-                "hover:border-primary/40 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
-                isSelected && "border-primary bg-blue-50/50 shadow-sm dark:bg-blue-950/20",
-              )}
-            >
-              <span className="block pr-7 font-semibold">{method.name}</span>
-              {method.description && (
-                <span className="mt-1 block line-clamp-2 text-sm leading-5 text-muted-foreground">
-                  {method.description}
-                </span>
-              )}
-              <span
+      <fieldset>
+        <legend className="mb-3 text-sm font-semibold">{t("checkout.selectMethod")}</legend>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {methods.map((method) => {
+            const isSelected = method.id === methodId;
+            return (
+              <label
+                key={method.id}
                 className={cn(
-                  "absolute right-3 top-3 flex size-5 items-center justify-center rounded-full border",
-                  isSelected
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-muted-foreground/30",
+                  "relative min-w-0 cursor-pointer rounded-xl border bg-card p-4 text-left transition focus-within:outline-none focus-within:ring-3 focus-within:ring-ring/50",
+                  "hover:border-primary/40",
+                  isSelected && "border-primary bg-blue-50/50 shadow-sm dark:bg-blue-950/20",
                 )}
               >
-                {isSelected && <Check className="size-3" />}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+                <input
+                  type="radio"
+                  name="payment-method"
+                  className="sr-only"
+                  value={method.id}
+                  checked={isSelected}
+                  disabled={loading}
+                  onChange={() => setMethodId(method.id)}
+                />
+                <span className="block pr-7 font-semibold">{method.name}</span>
+                {method.description && (
+                  <span className="mt-1 block line-clamp-2 text-sm leading-5 text-muted-foreground">
+                    {method.description}
+                  </span>
+                )}
+                {isSelected && (
+                  <span className="mt-2 block text-xs font-medium text-primary">
+                    {t("checkout.selected")}
+                  </span>
+                )}
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "absolute right-3 top-3 flex size-5 items-center justify-center rounded-full border",
+                    isSelected
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-muted-foreground/30",
+                  )}
+                >
+                  {isSelected && <Check className="size-3" />}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </fieldset>
 
       {selected && (
         <div className="rounded-xl border bg-card p-5 sm:p-6">
@@ -147,11 +163,43 @@ export function CheckoutForm({ tierId, methods }: { tierId: string; methods: Met
 
         <div className="space-y-2">
           <Label htmlFor={proofInputId}>{t("checkout.uploadProof")}</Label>
+          <Input
+            id={proofInputId}
+            type="file"
+            accept=".jpg,.jpeg,.png,.webp"
+            className="peer sr-only"
+            disabled={loading}
+            aria-describedby={`${proofInputId}-formats`}
+            onChange={(event) => {
+              setProofFile(event.currentTarget.files?.[0] ?? null);
+              event.currentTarget.value = "";
+            }}
+          />
           <Label
             htmlFor={proofInputId}
-            className="flex min-h-28 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-center hover:border-primary/40 hover:bg-blue-50/30 dark:hover:bg-blue-950/10"
+            className={cn(
+              "flex min-h-28 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-center hover:border-primary/40 hover:bg-blue-50/30 dark:hover:bg-blue-950/10",
+              "peer-focus-visible:outline-none peer-focus-visible:ring-3 peer-focus-visible:ring-ring/60",
+              draggingProof && "border-primary bg-blue-50/50 dark:bg-blue-950/20",
+            )}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setDraggingProof(true);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDraggingProof(true);
+            }}
+            onDragLeave={() => setDraggingProof(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDraggingProof(false);
+              if (!loading) setProofFile(event.dataTransfer.files[0] ?? null);
+            }}
           >
-            {proofFile ? (
+            {draggingProof ? (
+              <span className="text-sm font-medium">{t("checkout.dropProof")}</span>
+            ) : proofFile ? (
               <>
                 <FileImage className="size-6 text-primary" />
                 <span className="max-w-full truncate text-sm font-medium">{proofFile.name}</span>
@@ -163,19 +211,15 @@ export function CheckoutForm({ tierId, methods }: { tierId: string; methods: Met
               <>
                 <ImageUp className="size-6 text-primary" />
                 <span className="text-sm font-medium">{t("checkout.chooseProof")}</span>
-                <span className="text-xs font-normal text-muted-foreground">
-                  {t("checkout.proofFormats")}
-                </span>
               </>
             )}
           </Label>
-          <Input
-            id={proofInputId}
-            type="file"
-            accept=".jpg,.jpeg,.png,.webp"
-            className="sr-only"
-            onChange={(event) => setProofFile(event.target.files?.[0] ?? null)}
-          />
+          <p id={`${proofInputId}-formats`} className="text-xs text-muted-foreground">
+            {t("checkout.proofFormats")}
+          </p>
+          <p role="status" aria-live="polite" className="sr-only">
+            {proofFile ? proofFile.name : ""}
+          </p>
         </div>
 
         <div className="space-y-2">
@@ -198,9 +242,17 @@ export function CheckoutForm({ tierId, methods }: { tierId: string; methods: Met
           </p>
         )}
 
-        <Button className="w-full sm:w-auto" disabled={loading || !proofFile} onClick={submit}>
+        <Button
+          className="w-full sm:w-auto"
+          aria-busy={loading}
+          disabled={loading || !proofFile}
+          onClick={submit}
+        >
           {loading ? t("checkout.submitting") : t("checkout.submit")}
         </Button>
+        <p role="status" aria-live="polite" className="sr-only">
+          {loading ? t("checkout.submitting") : ""}
+        </p>
         <p className="text-xs leading-5 text-muted-foreground">{t("checkout.submitNotice")}</p>
       </div>
     </div>

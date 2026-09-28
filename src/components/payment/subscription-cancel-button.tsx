@@ -13,17 +13,21 @@ export function SubscriptionCancelButton({ subscriptionId }: { subscriptionId: s
   const t = useT();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState("");
 
   async function cancelSubscription() {
     setLoading(true);
     setError(null);
+    setStatus(t("me.cancelingSubscription"));
     try {
       await api("/api/me/subscription/cancel", {
         method: "POST",
         body: { subscriptionId },
       });
+      setStatus(t("me.subscriptionCancelled"));
       router.refresh();
     } catch (err) {
+      setStatus("");
       setError(err instanceof Error ? err.message : t("me.cancelSubscriptionFailed"));
       setLoading(false);
     }
@@ -31,11 +35,16 @@ export function SubscriptionCancelButton({ subscriptionId }: { subscriptionId: s
 
   return (
     <div className="space-y-2">
-      <Button variant="outline" disabled={loading} onClick={cancelSubscription}>
+      <Button variant="outline" aria-busy={loading} disabled={loading} onClick={cancelSubscription}>
         <XCircle className="size-4" />
         {loading ? t("me.cancelingSubscription") : t("me.cancelSubscription")}
       </Button>
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      <p role="status" aria-live="polite" className="sr-only">
+        {status}
+      </p>
+      <p role="alert" className={error ? "text-sm text-destructive" : "sr-only"}>
+        {error}
+      </p>
     </div>
   );
 }
