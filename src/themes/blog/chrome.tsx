@@ -25,6 +25,12 @@ export function Chrome({
 
   return (
     <div className="site-theme flex min-h-screen flex-col bg-background text-foreground">
+      <a
+        href="#site-main"
+        className="sr-only z-[60] rounded-md bg-background px-3 py-2 text-sm font-medium text-foreground shadow focus:fixed focus:left-3 focus:top-3 focus:not-sr-only focus:outline-none focus:ring-2 focus:ring-ring"
+      >
+        {t("nav.skipToContent")}
+      </a>
       <header className="border-b">
         <div className="mx-auto flex min-h-14 w-full max-w-2xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-5 py-3">
           <a href="/" className="min-w-0 truncate text-base font-bold tracking-tight">
@@ -62,7 +68,9 @@ export function Chrome({
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-2xl flex-1 px-5 py-10">{children}</main>
+      <main id="site-main" tabIndex={-1} className="mx-auto w-full max-w-2xl flex-1 px-5 py-10">
+        {children}
+      </main>
 
       <footer className="border-t py-8">
         <div className="mx-auto flex max-w-2xl flex-col items-center gap-2 px-5 text-center">

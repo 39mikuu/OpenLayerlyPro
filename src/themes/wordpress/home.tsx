@@ -42,9 +42,12 @@ export function Home({ view, t }: { view: HomeView; t: Translate }) {
             </Button>
           </div>
           {view.latestPosts.length === 0 ? (
-            <p className="rounded-2xl border bg-card py-12 text-center text-sm text-muted-foreground">
-              {t("home.empty")}
-            </p>
+            <div className="rounded-2xl border bg-card py-12 text-center">
+              <p className="text-sm text-muted-foreground">{t("home.empty")}</p>
+              <Button asChild variant="outline" size="sm" className="mt-4">
+                <Link href="/tiers">{t("home.explorePlans")}</Link>
+              </Button>
+            </div>
           ) : (
             <div className="space-y-5">
               {view.latestPosts.map((post) => (

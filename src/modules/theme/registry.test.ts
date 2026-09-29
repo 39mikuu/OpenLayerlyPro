@@ -33,7 +33,7 @@ vi.mock("@/themes/builtin", () => ({
     ],
     defaultColorPresetId: "neutral",
     colorVarsFromHue: (hue: number) => ({
-      light: { "--primary": `oklch(0.55 0.2 ${hue})` },
+      light: { "--primary": `oklch(0.46 0.16 ${hue})` },
       dark: { "--primary": `oklch(0.7 0.16 ${hue})` },
     }),
   },
@@ -55,7 +55,7 @@ vi.mock("@/themes/blog", () => ({
     ],
     defaultColorPresetId: "ink",
     colorVarsFromHue: (hue: number) => ({
-      light: { "--primary": `oklch(0.55 0.2 ${hue})` },
+      light: { "--primary": `oklch(0.46 0.16 ${hue})` },
       dark: { "--primary": `oklch(0.7 0.16 ${hue})` },
     }),
   },
@@ -155,7 +155,7 @@ describe("theme registry", () => {
     expect(css).not.toBeNull();
     expect(css).toContain(".site-theme{");
     expect(css).toContain(".dark .site-theme{");
-    expect(css).toContain("--primary: oklch(0.55 0.2 42);");
+    expect(css).toContain("--primary: oklch(0.46 0.16 42);");
     expect(css).not.toMatch(/NaN|undefined|null|:root|html/);
   });
 

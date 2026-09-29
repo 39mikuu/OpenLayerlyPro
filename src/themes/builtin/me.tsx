@@ -36,7 +36,7 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
             <Mail className="size-4" />
           </span>
           <div className="min-w-0">
-            <p className="text-xs font-medium text-muted-foreground">{t("me.accountInfo")}</p>
+            <h2 className="text-xs font-medium text-muted-foreground">{t("me.accountInfo")}</h2>
             <p className="mt-1 truncate font-medium">{view.email}</p>
             <Badge variant="secondary" className="mt-2">
               {view.isAdmin ? t("me.roleAdmin") : t("me.roleFan")}
@@ -51,7 +51,7 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
             <UserRound className="size-4" />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold">{t("me.displayNameTitle")}</p>
+            <h2 className="text-sm font-semibold">{t("me.displayNameTitle")}</h2>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
               {t("me.displayNameDescription")}
             </p>
@@ -69,7 +69,7 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
               <Bell className="size-4" />
             </span>
             <div>
-              <p className="text-sm font-semibold">{t("me.newPostEmailTitle")}</p>
+              <h2 className="text-sm font-semibold">{t("me.newPostEmailTitle")}</h2>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
                 {t("me.newPostEmailDescription")}
               </p>
@@ -94,7 +94,7 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
             <HeartHandshake className="size-4" />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold">{t("me.supporterWallTitle")}</p>
+            <h2 className="text-sm font-semibold">{t("me.supporterWallTitle")}</h2>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
               {t("me.supporterWallDescription")}
             </p>
@@ -113,9 +113,9 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
         <section className="rounded-xl border border-blue-100 bg-blue-50/40 p-5 dark:border-blue-900 dark:bg-blue-950/15 sm:p-6">
           <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="text-sm font-medium text-muted-foreground">{t("me.memberStatus")}</p>
+              <h2 className="text-sm font-medium text-muted-foreground">{t("me.memberStatus")}</h2>
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                <h2 className="text-xl font-semibold">{view.membership.tierName}</h2>
+                <h3 className="text-xl font-semibold">{view.membership.tierName}</h3>
                 <Badge>{t("me.active")}</Badge>
               </div>
               <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
@@ -124,7 +124,7 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
               </p>
               {view.membership.entitlements && view.membership.entitlements.length > 0 && (
                 <div className="mt-4">
-                  <p className="text-sm font-medium">{t("me.entitlements")}</p>
+                  <h3 className="text-sm font-medium">{t("me.entitlements")}</h3>
                   <ul className="mt-2 space-y-2 text-sm text-muted-foreground">
                     {view.membership.entitlements.map((entitlement) => (
                       <li key={entitlement.key}>
@@ -162,11 +162,11 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
         <section className="rounded-xl border bg-card p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)] sm:p-6">
           <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="text-sm font-medium text-muted-foreground">
+              <h2 className="text-sm font-medium text-muted-foreground">
                 {t("me.subscriptionStatus")}
-              </p>
+              </h2>
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                <h2 className="text-lg font-semibold">{view.subscription.tierName}</h2>
+                <h3 className="text-lg font-semibold">{view.subscription.tierName}</h3>
                 <Badge variant={view.subscription.status === "past_due" ? "secondary" : "default"}>
                   {t(`me.subscription${view.subscription.status}`)}
                 </Badge>

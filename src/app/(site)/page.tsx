@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { getOAuthApiBasePath } from "@/modules/auth/oauth";
 import { getCurrentUser } from "@/modules/auth/session";
 import { listPublishedPostsPage, localizePostCards, POSTS_PAGE_SIZE } from "@/modules/content";
 import { buildSiteMetadata } from "@/modules/content/seo";
@@ -51,6 +52,7 @@ export default async function HomePage() {
     <Home
       t={t}
       view={{
+        publicBasePath: getOAuthApiBasePath(),
         siteName: site.siteName,
         artistName: site.artistName,
         bio: site.artistBio,

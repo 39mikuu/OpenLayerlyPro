@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { getOAuthApiBasePath } from "@/modules/auth/oauth";
 import { getCurrentUser } from "@/modules/auth/session";
 import { buildListPageSeoCopy, buildSiteMetadata } from "@/modules/content/seo";
 import { getT } from "@/modules/i18n/server";
@@ -38,6 +39,7 @@ export default async function TiersPage() {
     <Tiers
       t={t}
       view={{
+        publicBasePath: getOAuthApiBasePath(),
         isLoggedIn: !!user,
         activeMembership: active
           ? {

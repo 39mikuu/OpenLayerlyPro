@@ -7,9 +7,9 @@ import type { ThemeColorPreset } from "@/modules/theme/types";
 export function colorVarsFromHue(hue: number) {
   return {
     light: {
-      "--primary": `oklch(0.55 0.2 ${hue})`,
+      "--primary": `oklch(0.46 0.16 ${hue})`,
       "--primary-foreground": "oklch(0.985 0 0)",
-      "--ring": `oklch(0.55 0.2 ${hue})`,
+      "--ring": `oklch(0.46 0.16 ${hue})`,
       "--accent": `oklch(0.95 0.03 ${hue})`,
       "--accent-foreground": `oklch(0.35 0.12 ${hue})`,
     },
