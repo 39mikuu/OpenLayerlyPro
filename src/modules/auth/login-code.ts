@@ -156,11 +156,16 @@ export async function requestLoginCode(
       predecessor = undefined;
     }
 
-    const [active] = await executeRows<{ id: string; is_recent: boolean }>(
+    const [active] = await executeRows<{
+      id: string;
+      challenge_hash: string | null;
+      is_recent: boolean;
+    }>(
       tx,
       sql`
         select
           ${loginCodes.id} as id,
+          ${loginCodes.challengeHash} as challenge_hash,
           (${loginCodes.createdAt} > now() - (${dedupeWindowMs} * interval '1 millisecond')) as is_recent
         from ${loginCodes}
         where ${loginCodes.email} = ${normalized}
@@ -177,6 +182,11 @@ export async function requestLoginCode(
     );
 
     if (active) {
+      // A different browser cannot invalidate an unexpired challenge-bound
+      // code, even after delivery finishes and the resend window elapses.
+      if (active.challenge_hash !== null && !safeEqualHex(active.challenge_hash, challengeHash)) {
+        return { suppressed: true };
+      }
       const [deliveryTask] = await tx
         .select({ status: tasks.status })
         .from(tasks)

@@ -124,6 +124,8 @@ replacement_challenge_hash text null
 
 active code 被抑制时，不更新其 `challenge_hash`、`attempt_count`、创建时间或 task。客户端复用原 challenge 是协议的一部分。
 
+未耗尽的新协议 active code 只允许持有相同 challenge 的浏览器按既有 terminal-task + dedupe-window 策略重发；不同 challenge 的请求在该 code 被消费或过期前统一 suppressed，即使投递已 succeeded/dead 且 dedupe 窗口结束。不得用仅知道邮箱的新浏览器请求使旧 code 失效。legacy 行保留既有迁移窗口行为。
+
 对新协议行，`attempt_count >= 5` 表示 code 已耗尽：它不再属于 active-code dedupe/fence 的候选，后续请求可以创建绑定新 challenge 的 code。创建 replacement 必须遵守 §3.3：在同一 per-email 锁与事务内原子登记并消费 replacement challenge，禁止把已耗尽 challenge 绑到新行。该旧 code 对应的 pending、processing 或可重试 failed 投递任务必须在取得任务 ownership 与 per-email fence 后判定为 stale，并成功 no-op；不得再解密或发送已耗尽 code。legacy 行仍只按 `used_at` 与 expiry 判断 active。
 
 SMTP 最后安全点由 per-email advisory lock、code 行锁及 task ownership 行锁排序。有效 claim 与持久 reservation 共同覆盖 SMTP 窗口，详见 §5.1。验证对新旧协议行都检查双重门禁：有效 claim 或未关闭 reservation 任一存在时，返回内部 `delivery_in_progress`、对外通用 `codeIncorrect`，不比较 code、不增加 attempts、不消费目标失败桶。只有不存在持久 reservation 时，无主或过期 claim 才不再阻止验证。任何数据库连接或 advisory lock 都不得跨 SMTP 持有。

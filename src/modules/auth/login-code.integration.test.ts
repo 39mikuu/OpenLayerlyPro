@@ -402,7 +402,44 @@ describeWithDatabase("S4 login-code integration", () => {
     warning.mockRestore();
   });
 
-  it("allows a replacement only after terminal delivery and the dedupe window", async () => {
+  for (const status of ["succeeded", "dead"] as const) {
+    it(`preserves an active code against foreign challenges after ${status} delivery`, async () => {
+      const email = "foreign-challenge@example.com";
+      await requestLoginCode(email, { challenge: TEST_CHALLENGE });
+      const [original] = await db.select().from(loginCodes);
+      const [delivery] = await db.select().from(tasks);
+      const code = decryptAuthTaskSecret(
+        (delivery!.payloadJson as { encryptedCode: string }).encryptedCode,
+      );
+      await db
+        .update(loginCodes)
+        .set({ createdAt: new Date(Date.now() - 61_000) })
+        .where(eq(loginCodes.id, original!.id));
+      await db.update(tasks).set({ status }).where(eq(tasks.id, delivery!.id));
+      const [before] = await db.select().from(loginCodes);
+
+      const attempts = await Promise.all(
+        ["B", "C", "D"].map((value) => requestLoginCode(email, { challenge: value.repeat(43) })),
+      );
+      expect(attempts).toEqual(Array(3).fill({ suppressed: true }));
+      await expect(db.select().from(loginCodes)).resolves.toEqual([before]);
+      await expect(db.select().from(tasks)).resolves.toHaveLength(1);
+      await expect(verifyLoginCode(email, code, TEST_CHALLENGE)).resolves.toMatchObject({
+        email,
+      });
+    });
+  }
+
+  it("permits a fresh browser challenge once the original code has expired", async () => {
+    const email = "expired-browser@example.com";
+    await requestLoginCode(email, { challenge: TEST_CHALLENGE });
+    await db.update(loginCodes).set({ expiresAt: new Date(Date.now() - 1_000) });
+    const replacement = await requestLoginCode(email, { challenge: "B".repeat(43) });
+    expect(replacement.suppressed).toBe(false);
+    await expect(db.select().from(loginCodes)).resolves.toHaveLength(2);
+  });
+
+  it("allows a same-challenge replacement only after terminal delivery and the dedupe window", async () => {
     const identity = { kind: "ip", value: "198.51.100.30" } as const;
 
     await requestLoginCode("fan@example.com", {
