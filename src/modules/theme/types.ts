@@ -40,6 +40,8 @@ export type SiteChromeView = {
 export type HomePostView = PostCardView;
 
 export type HomeView = {
+  /** APP_URL path prefix, if the site is deployed below the origin root. */
+  publicBasePath?: string;
   siteName: string;
   artistName: string;
   bio: string;
@@ -109,6 +111,7 @@ export type TierCardView = {
 };
 
 export type TiersView = {
+  publicBasePath?: string;
   isLoggedIn: boolean;
   activeMembership: MembershipSummary | null;
   tiers: TierCardView[];

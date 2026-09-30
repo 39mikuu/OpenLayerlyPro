@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { SubscriptionCheckoutButton } from "@/components/payment/subscription-checkout-button";
 import { Button } from "@/components/ui/button";
+import { withSiteBasePath } from "@/modules/auth/redirect-path";
 import type { Translate } from "@/modules/i18n";
 import type { HomeView } from "@/modules/theme/types";
 
@@ -67,7 +68,10 @@ export function Home({ view, t }: { view: HomeView; t: Translate }) {
 
         {view.tiers.length === 0 ? (
           <div className="rounded-xl border border-dashed bg-card px-5 py-8 text-center">
-            <p className="text-sm text-muted-foreground">{t("home.noPlans")}</p>
+            <p className="text-sm text-muted-foreground">{t("home.plansClosed")}</p>
+            <Button asChild variant="outline" className="mt-4">
+              <Link href="/posts">{t("nav.posts")}</Link>
+            </Button>
           </div>
         ) : (
           <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-4">
@@ -106,7 +110,16 @@ export function Home({ view, t }: { view: HomeView; t: Translate }) {
                       <SubscriptionCheckoutButton tierId={tier.id} />
                     )}
                     <Button className="w-full" asChild>
-                      <a href={view.isLoggedIn ? `/checkout/${tier.id}` : "/login"}>
+                      <a
+                        href={
+                          view.isLoggedIn
+                            ? withSiteBasePath(
+                                `/checkout/${encodeURIComponent(tier.id)}`,
+                                view.publicBasePath,
+                              )
+                            : `${withSiteBasePath("/login", view.publicBasePath)}?next=${encodeURIComponent(`/checkout/${encodeURIComponent(tier.id)}`)}`
+                        }
+                      >
                         {view.isLoggedIn ? t("tiers.open") : t("tiers.loginToOpen")}
                       </a>
                     </Button>
@@ -139,6 +152,9 @@ export function Home({ view, t }: { view: HomeView; t: Translate }) {
         {view.latestPosts.length === 0 ? (
           <div className="rounded-xl border border-dashed bg-card px-5 py-8 text-center">
             <p className="text-sm text-muted-foreground">{t("home.empty")}</p>
+            <Button asChild variant="outline" className="mt-4">
+              <Link href="/tiers">{t("home.explorePlans")}</Link>
+            </Button>
           </div>
         ) : (
           <div className="space-y-3">
