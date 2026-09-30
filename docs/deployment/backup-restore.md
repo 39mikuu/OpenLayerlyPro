@@ -395,6 +395,16 @@ Local nested-upload drill (explicit backup stop/restart success and failure clea
 
 MinIO/S3 drill (bucket mirror, missing-object quarantine, orphan cleanup enqueue, truncated enumeration fail-closed):
 
+The drill-only Compose override pins the server and `mc` client to multi-platform
+manifest digests of [`pgsty/minio`](https://hub.docker.com/r/pgsty/minio/tags) release
+`RELEASE.2026-08-04T00-00-00Z` and [`pgsty/mc`](https://hub.docker.com/r/pgsty/mc/tags)
+release `RELEASE.2026-09-16T00-00-00Z`. Docker Hub lists Linux amd64 and arm64 for
+both manifests. These are independent, community-maintained forks of MinIO and mc;
+they are isolated test fixtures, not a production storage recommendation. The prior
+Quay digests became unauthorized during CI. Do not bypass the S3 drill on a pull
+failure; updating either digest requires running the complete S3 drill again.
+Do not expose the drill's fixed test credentials or ports beyond the local test host.
+
 ```bash
 ./scripts/test-restore-s3-e2e.sh
 ```

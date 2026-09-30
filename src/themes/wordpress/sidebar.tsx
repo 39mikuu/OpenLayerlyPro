@@ -58,7 +58,7 @@ export function AuthorSidebar({ view, t }: { view: HomeView; t: Translate }) {
         )}
       </section>
 
-      {view.tiers.length > 0 && (
+      {view.tiers.length > 0 ? (
         <section className="rounded-2xl border bg-card p-5 shadow-sm">
           <p className="text-sm font-semibold">{t("home.supportPlans")}</p>
           <div className="mt-3 space-y-2">
@@ -73,6 +73,14 @@ export function AuthorSidebar({ view, t }: { view: HomeView; t: Translate }) {
           </div>
           <Button asChild className="mt-4 w-full">
             <Link href="/tiers">{t("home.becomeMember")}</Link>
+          </Button>
+        </section>
+      ) : (
+        <section className="rounded-2xl border bg-card p-5 shadow-sm">
+          <h2 className="text-sm font-semibold">{t("home.supportPlans")}</h2>
+          <p className="mt-2 text-sm text-muted-foreground">{t("home.plansClosed")}</p>
+          <Button asChild variant="outline" size="sm" className="mt-4">
+            <Link href="/posts">{t("nav.posts")}</Link>
           </Button>
         </section>
       )}

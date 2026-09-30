@@ -20,6 +20,12 @@ export function Chrome({
 
   return (
     <div className="site-theme flex min-h-screen flex-col bg-background text-foreground">
+      <a
+        href="#site-main"
+        className="sr-only z-[60] rounded-md bg-background px-3 py-2 text-sm font-medium text-foreground shadow focus:fixed focus:left-3 focus:top-3 focus:not-sr-only focus:outline-none focus:ring-2 focus:ring-ring"
+      >
+        {t("nav.skipToContent")}
+      </a>
       <header className="border-b bg-card/90 backdrop-blur supports-[backdrop-filter]:bg-card/75">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-5 py-5">
           <div className="flex flex-wrap items-center justify-between gap-4">
@@ -78,7 +84,13 @@ export function Chrome({
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-6xl flex-1 px-5 py-8 sm:py-10">{children}</main>
+      <main
+        id="site-main"
+        tabIndex={-1}
+        className="mx-auto w-full max-w-6xl flex-1 px-5 py-8 sm:py-10"
+      >
+        {children}
+      </main>
 
       <footer className="border-t bg-card/60 py-8">
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-5 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">

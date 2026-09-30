@@ -30,6 +30,9 @@ export const OAUTH_BROWSER_BINDING_COOKIE_PREFIX = "olp_oauth_bind";
 export function getOAuthBrowserBindingCookie(provider: OAuthProviderId): string {
   return `${OAUTH_BROWSER_BINDING_COOKIE_PREFIX}_${provider}`;
 }
+export function getOAuthReturnCookie(provider: OAuthProviderId): string {
+  return `olp_oauth_next_${provider}`;
+}
 export type OAuthStartResult = { authorizationUrl: string; browserBinding: string };
 export type OAuthCallbackSuccess = {
   user: User;

@@ -33,6 +33,7 @@ import {
   recordMagicLinkDispositionIfV2,
 } from "@/modules/auth/magic-link-fence";
 import { getRequestCodeEmailIpRateLimit, normalizeEmail } from "@/modules/auth/rate-limit-policy";
+import { normalizeMagicLinkRedirectPath } from "@/modules/auth/redirect-path";
 import { createSession } from "@/modules/auth/session";
 import { getSmtpConfig } from "@/modules/config";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
@@ -52,7 +53,10 @@ const TOKEN_VERSION = "v1";
 const MAC_PURPOSE = "auth.magic_link:v1";
 const KEY_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const TOKEN_SECRET_PATTERN = /^[A-Za-z0-9_-]{32,64}$/;
-export const MAGIC_LINK_REDIRECT_MAX_LENGTH = 512;
+export {
+  MAGIC_LINK_REDIRECT_MAX_LENGTH,
+  normalizeMagicLinkRedirectPath,
+} from "@/modules/auth/redirect-path";
 export const RAW_MAGIC_LINK_TOKEN_MAX_LENGTH = 256;
 
 export type RequestMagicLinkResult = { suppressed: boolean; tokenId?: string };
@@ -87,8 +91,8 @@ export type MagicLinkEmailTaskFence = {
 export type MagicLinkRejectionReason = "invalid" | "expired" | "replayed";
 
 export type MagicLinkVerification =
-  | { status: "valid"; tokenId: string }
-  | { status: MagicLinkRejectionReason };
+  | { status: "valid"; tokenId: string; redirectPath?: string }
+  | { status: MagicLinkRejectionReason; redirectPath?: string };
 
 export type MagicLinkConsumption =
   | {
@@ -101,24 +105,6 @@ export type MagicLinkConsumption =
 
 export function isMagicLinkConfigured(): boolean {
   return tryGetMagicLinkKeys() !== null;
-}
-
-/**
- * 登录后跳转只允许站内相对路径:必须以单个 "/" 开头,拒绝 "//"、反斜杠与控制
- * 字符,query/fragment 一律剥离(结果 URL 不携带原始 query)。非法输入返回 null,
- * 调用方回落到默认跳转。
- */
-export function normalizeMagicLinkRedirectPath(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const withoutQuery = raw.split(/[?#]/, 1)[0];
-  if (withoutQuery.length === 0 || withoutQuery.length > MAGIC_LINK_REDIRECT_MAX_LENGTH) {
-    return null;
-  }
-  if (!withoutQuery.startsWith("/")) return null;
-  if (withoutQuery.startsWith("//") || withoutQuery.startsWith("/\\")) return null;
-  // 反斜杠会被浏览器当作 "/"，控制字符与空白可能被中间层重新解释，一律拒绝。
-  if (/[\u0000-\u001f\u007f\\\s]/.test(withoutQuery)) return null;
-  return withoutQuery;
 }
 
 function signToken(secretPart: string, key: MagicLinkKey): string {
@@ -1504,6 +1490,7 @@ export async function verifyMagicLinkToken(token: string): Promise<MagicLinkVeri
       deliveryState: magicLinkTokens.deliveryState,
       deliveredAt: magicLinkTokens.deliveredAt,
       tokenHash: magicLinkTokens.tokenHash,
+      redirectPath: magicLinkTokens.redirectPath,
     })
     .from(magicLinkTokens)
     .where(
@@ -1517,10 +1504,13 @@ export async function verifyMagicLinkToken(token: string): Promise<MagicLinkVeri
   if (!record || !safeEqualHex(record.tokenHash, resolved.tokenHash)) {
     return { status: "invalid" };
   }
-  if (record.consumedAt) return { status: "replayed" };
-  if (record.deliveryState !== "active" || !record.deliveredAt) return { status: "invalid" };
-  if (record.expiresAt <= new Date()) return { status: "expired" };
-  return { status: "valid", tokenId: record.id };
+  const redirectPath = normalizeMagicLinkRedirectPath(record.redirectPath);
+  const redirect = redirectPath ? { redirectPath } : {};
+  if (record.consumedAt) return { status: "replayed", ...redirect };
+  if (record.deliveryState !== "active" || !record.deliveredAt)
+    return { status: "invalid", ...redirect };
+  if (record.expiresAt <= new Date()) return { status: "expired", ...redirect };
+  return { status: "valid", tokenId: record.id, ...redirect };
 }
 
 /**

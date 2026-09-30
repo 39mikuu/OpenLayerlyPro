@@ -1,6 +1,9 @@
+import Link from "next/link";
+
 import { SubscriptionCheckoutButton } from "@/components/payment/subscription-checkout-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { withSiteBasePath } from "@/modules/auth/redirect-path";
 import type { Translate } from "@/modules/i18n";
 import type { TiersView } from "@/modules/theme/types";
 
@@ -26,9 +29,12 @@ export function Tiers({ view, t }: { view: TiersView; t: Translate }) {
       </header>
 
       {view.tiers.length === 0 ? (
-        <p className="rounded-xl border bg-card px-5 py-10 text-center text-sm text-muted-foreground">
-          {t("tiers.empty")}
-        </p>
+        <div className="rounded-xl border bg-card px-5 py-10 text-center">
+          <p className="text-sm text-muted-foreground">{t("tiers.empty")}</p>
+          <Button asChild variant="outline" className="mt-5">
+            <Link href="/">{t("tiers.returnHome")}</Link>
+          </Button>
+        </div>
       ) : (
         <div className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-4">
           {view.tiers.map((tier) => (
@@ -64,7 +70,16 @@ export function Tiers({ view, t }: { view: TiersView; t: Translate }) {
                     <SubscriptionCheckoutButton tierId={tier.id} />
                   )}
                   <Button className="w-full" asChild>
-                    <a href={view.isLoggedIn ? `/checkout/${tier.id}` : "/login"}>
+                    <a
+                      href={
+                        view.isLoggedIn
+                          ? withSiteBasePath(
+                              `/checkout/${encodeURIComponent(tier.id)}`,
+                              view.publicBasePath,
+                            )
+                          : `${withSiteBasePath("/login", view.publicBasePath)}?next=${encodeURIComponent(`/checkout/${encodeURIComponent(tier.id)}`)}`
+                      }
+                    >
                       {view.isLoggedIn ? t("tiers.open") : t("tiers.loginToOpen")}
                     </a>
                   </Button>

@@ -12,6 +12,7 @@ import {
   beginOAuthLogin,
   getOAuthBrowserBindingCookie,
   getOAuthCookiePath,
+  getOAuthReturnCookie,
   OAUTH_STATE_TTL_MINUTES,
 } from "@/modules/auth/oauth";
 import { getOAuthStartRateLimit } from "@/modules/auth/rate-limit-policy";
@@ -23,13 +24,15 @@ function absoluteUrl(path: string): URL {
   return new URL(buildPublicUrl(getPublicBaseUrl(getEnv().APP_URL), path));
 }
 
-function rateLimitedRedirect(): NextResponse {
+function rateLimitedRedirect(next: string | null): NextResponse {
   const url = absoluteUrl("/login");
   url.searchParams.set("oauth_error", "rate_limited");
+  if (next) url.searchParams.set("next", next);
   return NextResponse.redirect(url, { status: 303 });
 }
 
 export async function GET(req: NextRequest) {
+  const next = normalizeMagicLinkRedirectPath(req.nextUrl.searchParams.get("next"));
   try {
     const env = getEnv();
     const ip = getClientIp(req);
@@ -40,10 +43,9 @@ export async function GET(req: NextRequest) {
     // Unauthenticated: bound oauth_states row creation per source before it happens.
     const limit = getOAuthStartRateLimit("github", identity, env);
     if (!rateLimit(limit.key, limit.max, limit.windowMs)) {
-      return rateLimitedRedirect();
+      return rateLimitedRedirect(next);
     }
 
-    const next = normalizeMagicLinkRedirectPath(req.nextUrl.searchParams.get("next"));
     const { authorizationUrl, browserBinding } = await beginOAuthLogin("github", {
       redirectPath: next,
       ip,
@@ -57,12 +59,20 @@ export async function GET(req: NextRequest) {
       path: getOAuthCookiePath(),
       maxAge: OAUTH_STATE_TTL_MINUTES * 60,
     });
+    response.cookies.set(getOAuthReturnCookie("github"), next ?? "", {
+      httpOnly: true,
+      secure: getEnv().APP_URL.startsWith("https://"),
+      sameSite: "lax",
+      path: getOAuthCookiePath(),
+      maxAge: next ? OAUTH_STATE_TTL_MINUTES * 60 : 0,
+    });
     return response;
   } catch (error) {
     const response = handleApiError(error);
     if (response.status >= 400) {
       const url = absoluteUrl("/login");
       url.searchParams.set("oauth_error", "start");
+      if (next) url.searchParams.set("next", next);
       return NextResponse.redirect(url, { status: 303 });
     }
     return response;
