@@ -8,6 +8,7 @@ import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/client";
+import { huePrimaryContrast } from "@/themes/builtin/color-contrast";
 
 export type ThemePresetOption = { id: string; name: string };
 
@@ -36,15 +37,26 @@ export function ThemeAppearanceForm({
   >(() => Object.fromEntries(options.map((option) => [option.id, option.initial])));
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageIsError, setMessageIsError] = useState(false);
 
   const selected = options.find((option) => option.id === themeId) ?? options[0];
   const config = configs[selected.id] ?? selected.initial;
+  const contrast =
+    config.colorPreset === "custom" && selected.supportsCustomColor
+      ? huePrimaryContrast(config.customHue)
+      : null;
+  const contrastValid = !contrast || (contrast.light >= 4.5 && contrast.dark >= 4.5);
 
   function patchConfig(patch: Partial<{ colorPreset: string; customHue: number }>) {
     setConfigs((prev) => ({ ...prev, [selected.id]: { ...config, ...patch } }));
   }
 
   async function save() {
+    if (!contrastValid) {
+      setMessageIsError(true);
+      setMessage(t("admin.site.contrastFail"));
+      return;
+    }
     setLoading(true);
     setMessage(null);
     try {
@@ -52,9 +64,11 @@ export function ThemeAppearanceForm({
         method: "PUT",
         body: { theme: selected.id, colorPreset: config.colorPreset, customHue: config.customHue },
       });
+      setMessageIsError(false);
       setMessage(t("admin.site.savedLive"));
       router.refresh();
     } catch (err) {
+      setMessageIsError(true);
       setMessage(err instanceof Error ? err.message : t("admin.common.saveFailed"));
     } finally {
       setLoading(false);
@@ -118,14 +132,27 @@ export function ThemeAppearanceForm({
             max="359"
             step="1"
             value={config.customHue}
+            aria-describedby="custom-hue-contrast"
             onChange={(event) => patchConfig({ customHue: Number(event.target.value) })}
             className="w-full accent-primary"
           />
           <p className="text-xs text-muted-foreground">{t("admin.site.hueHelp")}</p>
+          <p
+            id="custom-hue-contrast"
+            role="status"
+            aria-live="polite"
+            className={contrastValid ? "text-xs text-muted-foreground" : "text-xs text-destructive"}
+          >
+            {t("admin.site.contrastRatio", {
+              light: contrast?.light.toFixed(2) ?? "0.00",
+              dark: contrast?.dark.toFixed(2) ?? "0.00",
+            })}{" "}
+            {contrastValid ? t("admin.site.contrastPass") : t("admin.site.contrastFail")}
+          </p>
         </div>
       ) : null}
-      {message && <Notice>{message}</Notice>}
-      <Button disabled={loading} onClick={save}>
+      {message && <Notice variant={messageIsError ? "error" : "success"}>{message}</Notice>}
+      <Button disabled={loading || !contrastValid} onClick={save}>
         {t("admin.common.save")}
       </Button>
     </div>

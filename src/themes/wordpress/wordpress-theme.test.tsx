@@ -111,7 +111,8 @@ describe("wordpress theme home", () => {
 
     expect(html).toContain("home.empty");
     expect(html).toContain(">C<");
-    expect(html).not.toContain("home.supportPlans");
+    expect(html).toContain("home.plansClosed");
+    expect(html).toContain('href="/posts"');
   });
 
   it("keeps mobile DOM order with content before sidebar", () => {

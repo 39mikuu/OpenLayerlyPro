@@ -9,7 +9,12 @@ import {
 import { getEnv } from "@/lib/env";
 import { rateLimit } from "@/lib/rate-limit";
 import { readFormDataWithLimit } from "@/lib/request-body";
-import { consumeMagicLinkToken, RAW_MAGIC_LINK_TOKEN_MAX_LENGTH } from "@/modules/auth/magic-link";
+import {
+  consumeMagicLinkToken,
+  MAGIC_LINK_REDIRECT_MAX_LENGTH,
+  normalizeMagicLinkRedirectPath,
+  RAW_MAGIC_LINK_TOKEN_MAX_LENGTH,
+} from "@/modules/auth/magic-link";
 import { getVerifyCodeCompareRateLimit } from "@/modules/auth/rate-limit-policy";
 import { setSessionCookie } from "@/modules/auth/session";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
@@ -19,6 +24,7 @@ export const runtime = "nodejs";
 
 const bodySchema = z.object({
   token: z.string().min(1).max(RAW_MAGIC_LINK_TOKEN_MAX_LENGTH),
+  next: z.string().max(MAGIC_LINK_REDIRECT_MAX_LENGTH).optional(),
 });
 
 function tokenHeaders(): Headers {
@@ -34,9 +40,10 @@ function absoluteUrl(path: string): URL {
   return new URL(buildPublicUrl(getPublicBaseUrl(getEnv().APP_URL), path));
 }
 
-function resultUrl(status: "expired" | "replayed" | "invalid"): URL {
+function resultUrl(status: "expired" | "replayed" | "invalid", next: string | null): URL {
   const url = absoluteUrl("/login/magic/result");
   url.searchParams.set("status", status);
+  if (next) url.searchParams.set("next", next);
   return url;
 }
 
@@ -58,7 +65,10 @@ export async function POST(req: NextRequest) {
     }
 
     const form = await readFormDataWithLimit(req, env.REQUEST_JSON_MAX_BYTES);
-    const { token } = bodySchema.parse({ token: form.get("token") });
+    const { token, next } = bodySchema.parse({
+      token: form.get("token"),
+      next: form.get("next") ?? undefined,
+    });
 
     const result = await consumeMagicLinkToken(token, {
       locale: await resolveLocale(),
@@ -66,7 +76,7 @@ export async function POST(req: NextRequest) {
       userAgent: getUserAgent(req),
     });
     if (result.status !== "consumed") {
-      return NextResponse.redirect(resultUrl(result.status), {
+      return NextResponse.redirect(resultUrl(result.status, normalizeMagicLinkRedirectPath(next)), {
         status: 303,
         headers: tokenHeaders(),
       });

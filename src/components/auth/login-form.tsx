@@ -1,7 +1,7 @@
 "use client";
 
 import { Mail, ShieldCheck } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   acknowledgeLoginCodeReplacement,
@@ -31,6 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, ApiError } from "@/lib/client";
 import { LEGACY_LOGIN_CODE_MAX_LENGTH, normalizeEmail } from "@/modules/auth/input-policy";
+import { normalizeMagicLinkRedirectPath, withSiteBasePath } from "@/modules/auth/redirect-path";
 
 export function LoginForm({
   mode,
@@ -63,24 +64,133 @@ export function LoginForm({
   const { email, requestedEmail, code, codeSent, linkSent } = fanFlow;
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
+  const codeInputRef = useRef<HTMLInputElement>(null);
   const [adminEmail, setAdminEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
   const codeRegex = useMemo(() => new RegExp(loginCodePattern), [loginCodePattern]);
   const codeComplete = canSubmitFanLoginCode(fanFlow, loginCodeLength, codeRegex);
   const normalizedOAuthError = normalizeOAuthErrorCode(oauthError);
+  const postLoginPath = normalizeMagicLinkRedirectPath(magicLinkNext ?? oauthNext) ?? "/me";
 
-  async function run(fn: () => Promise<void>) {
+  useEffect(() => {
+    if (codeSent) codeInputRef.current?.focus();
+  }, [codeSent]);
+
+  async function run(fn: () => Promise<void>, progress: string) {
     setLoading(true);
-    setMessage(null);
+    setStatus(progress);
+    setError("");
     try {
       await fn();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : t("common.opFailed"));
+      setStatus("");
+      setError(err instanceof Error ? err.message : t("common.opFailed"));
     } finally {
       setLoading(false);
     }
+  }
+
+  function sendCode() {
+    void run(async () => {
+      try {
+        const targetEmail = requestedEmail ?? normalizeEmail(email);
+        if (hasLostLoginCodeChallenge(targetEmail)) {
+          throw new Error(t("login.challengeMissing"));
+        }
+        await recoverLoginCodeChallenge(targetEmail, async (recoveryChallenge) => {
+          try {
+            await api(withSiteBasePath("/api/auth/verify-code", oauthBasePath), {
+              method: "POST",
+              body: {
+                email: targetEmail,
+                code: "000000",
+                challenge: recoveryChallenge,
+                recoveryOnly: true,
+              },
+            });
+          } catch (error) {
+            if (
+              error instanceof ApiError &&
+              error.code === "codeAttemptsExceeded" &&
+              error.params?.challengeRotationRequired === 1
+            ) {
+              return true;
+            }
+            throw error;
+          }
+          return false;
+        });
+        const challenge = getOrCreateLoginCodeChallenge(targetEmail);
+        // The server may commit a code even if its response is lost. Keep the
+        // non-secret marker before sending so a reopened tab detects the loss.
+        rememberPendingLoginCodeFlow(targetEmail);
+        await api(withSiteBasePath("/api/auth/request-code", oauthBasePath), {
+          method: "POST",
+          body: { email: targetEmail, challenge, turnstileToken: turnstileToken ?? undefined },
+        });
+        acknowledgeLoginCodeReplacement(targetEmail);
+        rememberPendingLoginCodeFlow(targetEmail);
+        setFanFlow((current) => acceptFanLoginCodeRequest(current, targetEmail));
+        setStatus(t("login.codeSent"));
+      } finally {
+        if (turnstileSiteKey) {
+          turnstileRef.current?.reset();
+          setTurnstileToken(null);
+        }
+      }
+    }, t("login.sendingCode"));
+  }
+
+  function sendMagicLink() {
+    void run(async () => {
+      try {
+        const targetEmail = requestedEmail ?? normalizeEmail(email);
+        await api(withSiteBasePath("/api/auth/magic-link/request", oauthBasePath), {
+          method: "POST",
+          body: {
+            email: targetEmail,
+            turnstileToken: turnstileToken ?? undefined,
+            next: postLoginPath,
+          },
+        });
+        setFanFlow((current) => acceptFanLoginLinkRequest(current, targetEmail));
+        setStatus(t("login.magicLinkSent"));
+      } finally {
+        if (turnstileSiteKey) {
+          turnstileRef.current?.reset();
+          setTurnstileToken(null);
+        }
+      }
+    }, t("login.sendingMagicLink"));
+  }
+
+  function verifyCode() {
+    void run(async () => {
+      if (!requestedEmail) throw new Error(t("login.challengeMissing"));
+      const challenge = getStoredLoginCodeChallenge(requestedEmail);
+      if (!challenge) throw new Error(t("login.challengeMissing"));
+      try {
+        await api(withSiteBasePath("/api/auth/verify-code", oauthBasePath), {
+          method: "POST",
+          body: { email: requestedEmail, code, challenge },
+        });
+      } catch (error) {
+        if (
+          error instanceof ApiError &&
+          error.code === "codeAttemptsExceeded" &&
+          error.params?.challengeRotationRequired === 1
+        ) {
+          rotateLoginCodeChallenge(requestedEmail, window.sessionStorage, window.crypto, challenge);
+        }
+        throw error;
+      }
+      clearLoginCodeChallenge(requestedEmail);
+      clearPendingLoginCodeFlow(requestedEmail);
+      window.location.assign(withSiteBasePath(postLoginPath, oauthBasePath));
+    }, t("login.verifyingCode"));
   }
 
   if (mode === "admin") {
@@ -90,42 +200,56 @@ export function LoginForm({
           <ShieldCheck className="mt-0.5 size-4 shrink-0" />
           <span>{t("login.adminHint")}</span>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="admin-email">{t("login.adminEmail")}</Label>
-          <Input
-            id="admin-email"
-            type="email"
-            autoComplete="username"
-            value={adminEmail}
-            onChange={(event) => setAdminEmail(event.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="admin-password">{t("login.password")}</Label>
-          <Input
-            id="admin-password"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
-        </div>
-        <Button
-          className="w-full"
-          disabled={loading || !adminEmail || !password}
-          onClick={() =>
-            run(async () => {
-              await api("/api/auth/admin/login", {
+        <form
+          className="space-y-5"
+          aria-busy={loading}
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run(async () => {
+              await api(withSiteBasePath("/api/auth/admin/login", oauthBasePath), {
                 method: "POST",
                 body: { email: adminEmail, password },
               });
-              window.location.assign("/admin");
-            })
-          }
+              window.location.assign(withSiteBasePath("/admin", oauthBasePath));
+            }, t("login.signingIn"));
+          }}
         >
-          {t("login.adminSignin")}
-        </Button>
-        {message && <p className="text-sm text-muted-foreground">{message}</p>}
+          <div className="space-y-2">
+            <Label htmlFor="admin-email">{t("login.adminEmail")}</Label>
+            <Input
+              id="admin-email"
+              type="email"
+              autoComplete="username"
+              required
+              value={adminEmail}
+              onChange={(event) => setAdminEmail(event.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="admin-password">{t("login.password")}</Label>
+            <Input
+              id="admin-password"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </div>
+          <Button type="submit" className="w-full" disabled={loading || !adminEmail || !password}>
+            {t("login.adminSignin")}
+          </Button>
+        </form>
+        <p
+          role="status"
+          aria-live="polite"
+          className={status ? "text-sm text-muted-foreground" : "sr-only"}
+        >
+          {status}
+        </p>
+        <p role="alert" className={error ? "text-sm text-destructive" : "sr-only"}>
+          {error}
+        </p>
       </div>
     );
   }
@@ -138,7 +262,7 @@ export function LoginForm({
       </div>
 
       {normalizedOAuthError && (
-        <p className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive">
           {t(`login.oauthError.${normalizedOAuthError}` as "login.oauthError.failed")}
         </p>
       )}
@@ -149,9 +273,9 @@ export function LoginForm({
             <Button className="w-full" variant="outline" asChild>
               <a
                 href={
-                  oauthNext
-                    ? `${oauthBasePath ?? ""}/api/auth/oauth/google/start?next=${encodeURIComponent(oauthNext)}`
-                    : `${oauthBasePath ?? ""}/api/auth/oauth/google/start`
+                  postLoginPath !== "/me"
+                    ? `${withSiteBasePath("/api/auth/oauth/google/start", oauthBasePath)}?next=${encodeURIComponent(postLoginPath)}`
+                    : withSiteBasePath("/api/auth/oauth/google/start", oauthBasePath)
                 }
               >
                 {t("login.continueWithGoogle")}
@@ -162,9 +286,9 @@ export function LoginForm({
             <Button className="w-full" variant="outline" asChild>
               <a
                 href={
-                  oauthNext
-                    ? `${oauthBasePath ?? ""}/api/auth/oauth/github/start?next=${encodeURIComponent(oauthNext)}`
-                    : `${oauthBasePath ?? ""}/api/auth/oauth/github/start`
+                  postLoginPath !== "/me"
+                    ? `${withSiteBasePath("/api/auth/oauth/github/start", oauthBasePath)}?next=${encodeURIComponent(postLoginPath)}`
+                    : withSiteBasePath("/api/auth/oauth/github/start", oauthBasePath)
                 }
               >
                 {t("login.continueWithGithub")}
@@ -177,207 +301,125 @@ export function LoginForm({
         </div>
       )}
 
-      <div className="space-y-2">
-        <Label htmlFor="email">{t("login.email")}</Label>
-        <Input
-          id="email"
-          type="email"
-          autoComplete="email"
-          placeholder="you@example.com"
-          value={email}
-          disabled={requestedEmail !== null}
-          onChange={(event) =>
-            setFanFlow((current) => changeFanLoginEmail(current, event.target.value))
+      <form
+        className="space-y-5"
+        aria-busy={loading}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (codeSent) {
+            if (codeComplete && !loading) verifyCode();
+          } else if (email && !loading && (!turnstileSiteKey || turnstileToken)) {
+            sendCode();
           }
-        />
-        {requestedEmail && (
-          <Button
-            variant="link"
-            size="sm"
-            className="px-0"
-            disabled={loading}
-            onClick={() => {
-              // Keep the existing challenge while the address is being edited.
-              // getOrCreateLoginCodeChallenge reuses it when the normalized
-              // address is unchanged and rotates it only when a request is
-              // actually sent for a different address.
-              setFanFlow((current) => resetFanLoginRequestedEmail(current));
-              setMessage(null);
-              setTurnstileToken(null);
-              turnstileRef.current?.reset();
-            }}
-          >
-            {t("login.changeEmail")}
-          </Button>
-        )}
-      </div>
-
-      {codeSent && (
+        }}
+      >
         <div className="space-y-2">
-          <Label htmlFor="code">{t("login.code")}</Label>
+          <Label htmlFor="email">{t("login.email")}</Label>
           <Input
-            id="code"
-            inputMode="numeric"
-            autoCapitalize="off"
-            autoComplete="one-time-code"
-            maxLength={LEGACY_LOGIN_CODE_MAX_LENGTH}
-            pattern="[0-9]*"
-            placeholder={t("login.codePlaceholder", { length: loginCodeLength })}
-            value={code}
+            id="email"
+            type="email"
+            autoComplete="email"
+            placeholder="you@example.com"
+            required
+            value={email}
+            disabled={requestedEmail !== null}
             onChange={(event) =>
-              setFanFlow((current) => changeFanLoginCode(current, event.target.value))
+              setFanFlow((current) => changeFanLoginEmail(current, event.target.value))
             }
           />
-          <p className="text-xs text-muted-foreground">{t("login.codeHint")}</p>
+          {requestedEmail && (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="px-0"
+              disabled={loading}
+              onClick={() => {
+                setFanFlow((current) => resetFanLoginRequestedEmail(current));
+                setStatus("");
+                setError("");
+                setTurnstileToken(null);
+                turnstileRef.current?.reset();
+              }}
+            >
+              {t("login.changeEmail")}
+            </Button>
+          )}
         </div>
-      )}
 
-      {turnstileSiteKey && (
-        <TurnstileWidget
-          ref={turnstileRef}
-          siteKey={turnstileSiteKey}
-          onToken={setTurnstileToken}
-        />
-      )}
-
-      {magicLinkEnabled && (
-        <Button
-          className="w-full"
-          variant={linkSent ? "outline" : "default"}
-          disabled={loading || !email || (Boolean(turnstileSiteKey) && !turnstileToken)}
-          onClick={() =>
-            run(async () => {
-              try {
-                const targetEmail = requestedEmail ?? normalizeEmail(email);
-                await api("/api/auth/magic-link/request", {
-                  method: "POST",
-                  body: {
-                    email: targetEmail,
-                    turnstileToken: turnstileToken ?? undefined,
-                    next: magicLinkNext,
-                  },
-                });
-                setFanFlow((current) => acceptFanLoginLinkRequest(current, targetEmail));
-                setMessage(t("login.magicLinkSent"));
-              } finally {
-                // Token is single-use, so reset it after every request attempt.
-                if (turnstileSiteKey) {
-                  turnstileRef.current?.reset();
-                  setTurnstileToken(null);
-                }
-              }
-            })
-          }
-        >
-          {linkSent ? t("login.magicLinkResend") : t("login.sendMagicLink")}
-        </Button>
-      )}
-
-      {/* The Button base class carries `shrink-0`, so two `w-full` buttons in the
-          `sm:` row would each keep 100% width and push past the card edge;
-          `sm:flex-1` (basis 0 + grow) makes them share the row instead. */}
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <Button
-          className="w-full sm:flex-1"
-          variant={codeSent || magicLinkEnabled ? "outline" : "default"}
-          disabled={loading || !email || (Boolean(turnstileSiteKey) && !turnstileToken)}
-          onClick={() =>
-            run(async () => {
-              try {
-                const targetEmail = requestedEmail ?? normalizeEmail(email);
-                if (hasLostLoginCodeChallenge(targetEmail)) {
-                  throw new Error(t("login.challengeMissing"));
-                }
-                await recoverLoginCodeChallenge(targetEmail, async (recoveryChallenge) => {
-                  try {
-                    await api("/api/auth/verify-code", {
-                      method: "POST",
-                      body: {
-                        email: targetEmail,
-                        code: "000000",
-                        challenge: recoveryChallenge,
-                        recoveryOnly: true,
-                      },
-                    });
-                  } catch (error) {
-                    if (
-                      error instanceof ApiError &&
-                      error.code === "codeAttemptsExceeded" &&
-                      error.params?.challengeRotationRequired === 1
-                    ) {
-                      return true;
-                    } else throw error;
-                  }
-                  return false;
-                });
-                const challenge = getOrCreateLoginCodeChallenge(targetEmail);
-                await api("/api/auth/request-code", {
-                  method: "POST",
-                  body: {
-                    email: targetEmail,
-                    challenge,
-                    turnstileToken: turnstileToken ?? undefined,
-                  },
-                });
-                acknowledgeLoginCodeReplacement(targetEmail);
-                rememberPendingLoginCodeFlow(targetEmail);
-                setFanFlow((current) => acceptFanLoginCodeRequest(current, targetEmail));
-                setMessage(t("login.codeSent"));
-              } finally {
-                // Token is single-use, so reset it after every request attempt.
-                if (turnstileSiteKey) {
-                  turnstileRef.current?.reset();
-                  setTurnstileToken(null);
-                }
-              }
-            })
-          }
-        >
-          {codeSent ? t("login.resend") : t("login.sendCode")}
-        </Button>
         {codeSent && (
+          <div className="space-y-2">
+            <Label htmlFor="code">{t("login.code")}</Label>
+            <Input
+              ref={codeInputRef}
+              id="code"
+              inputMode="numeric"
+              autoCapitalize="off"
+              autoComplete="one-time-code"
+              maxLength={LEGACY_LOGIN_CODE_MAX_LENGTH}
+              placeholder={t("login.codePlaceholder", { length: loginCodeLength })}
+              value={code}
+              onChange={(event) =>
+                setFanFlow((current) => changeFanLoginCode(current, event.target.value))
+              }
+            />
+            <p className="text-xs text-muted-foreground">{t("login.codeHint")}</p>
+          </div>
+        )}
+
+        {turnstileSiteKey && (
+          <TurnstileWidget
+            ref={turnstileRef}
+            siteKey={turnstileSiteKey}
+            onToken={setTurnstileToken}
+          />
+        )}
+
+        {magicLinkEnabled && (
           <Button
-            className="w-full sm:flex-1"
-            disabled={loading || !codeComplete}
-            onClick={() =>
-              run(async () => {
-                if (!requestedEmail) throw new Error(t("login.challengeMissing"));
-                const challenge = getStoredLoginCodeChallenge(requestedEmail);
-                if (!challenge) throw new Error(t("login.challengeMissing"));
-                try {
-                  await api("/api/auth/verify-code", {
-                    method: "POST",
-                    body: { email: requestedEmail, code, challenge },
-                  });
-                } catch (error) {
-                  // Fresh exhaustion and bounded recovery both carry this
-                  // instruction; ordinary rate-limit errors never rotate.
-                  if (
-                    error instanceof ApiError &&
-                    error.code === "codeAttemptsExceeded" &&
-                    error.params?.challengeRotationRequired === 1
-                  ) {
-                    rotateLoginCodeChallenge(
-                      requestedEmail,
-                      window.sessionStorage,
-                      window.crypto,
-                      challenge,
-                    );
-                  }
-                  throw error;
-                }
-                clearLoginCodeChallenge(requestedEmail);
-                clearPendingLoginCodeFlow(requestedEmail);
-                window.location.assign("/me");
-              })
-            }
+            type="button"
+            className="w-full"
+            variant="outline"
+            disabled={loading || !email || (Boolean(turnstileSiteKey) && !turnstileToken)}
+            onClick={sendMagicLink}
           >
-            {t("login.signin")}
+            {linkSent ? t("login.magicLinkResend") : t("login.sendMagicLink")}
           </Button>
         )}
-      </div>
 
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+        {codeSent && (
+          <Button
+            type="button"
+            className="w-full"
+            variant="outline"
+            disabled={loading || !email || (Boolean(turnstileSiteKey) && !turnstileToken)}
+            onClick={sendCode}
+          >
+            {t("login.resend")}
+          </Button>
+        )}
+        <Button
+          type="submit"
+          className="w-full"
+          disabled={
+            loading ||
+            (codeSent ? !codeComplete : !email || (Boolean(turnstileSiteKey) && !turnstileToken))
+          }
+        >
+          {codeSent ? t("login.signin") : t("login.sendCode")}
+        </Button>
+      </form>
+
+      <p
+        role="status"
+        aria-live="polite"
+        className={status ? "text-sm text-muted-foreground" : "sr-only"}
+      >
+        {status}
+      </p>
+      <p role="alert" className={error ? "text-sm text-destructive" : "sr-only"}>
+        {error}
+      </p>
     </div>
   );
 }

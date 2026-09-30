@@ -28,11 +28,21 @@ export function AutoCheckoutButton({ tierId }: { tierId: string }) {
 
   return (
     <div className="space-y-2">
-      <Button className="w-full sm:w-auto" disabled={loading} onClick={startCheckout}>
+      <Button
+        className="w-full sm:w-auto"
+        aria-busy={loading}
+        disabled={loading}
+        onClick={startCheckout}
+      >
         {loading ? t("checkout.redirecting") : t("checkout.payOnline")}
       </Button>
       <p className="text-xs text-muted-foreground">{t("checkout.stripeHosted")}</p>
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      <p role="status" aria-live="polite" className="sr-only">
+        {loading ? t("checkout.redirecting") : ""}
+      </p>
+      <p role="alert" className={error ? "text-sm text-destructive" : "sr-only"}>
+        {error}
+      </p>
     </div>
   );
 }

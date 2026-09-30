@@ -2,6 +2,7 @@ import type { Messages } from "./zh";
 
 export const en: Messages = {
   nav: {
+    skipToContent: "Skip to main content",
     home: "Home",
     posts: "Works",
     tiers: "Membership",
@@ -46,11 +47,13 @@ export const en: Messages = {
     supportPlans: "Support plans",
     supportPlansHint: "Choose a membership tier and support the creator's ongoing work.",
     noPlans: "No support plans are available yet.",
+    plansClosed: "Support plans are not open yet. Explore the creator's posts for now.",
     planFallback: "Support the creator's continued work and updates.",
     latest: "Recent posts",
     latestHint: "See the creator's latest updates.",
     all: "View all",
     empty: "No works published yet.",
+    explorePlans: "Explore support plans",
   },
   posts: {
     title: "Works",
@@ -58,6 +61,7 @@ export const en: Messages = {
     seoTitle: "Works",
     seoDescription: "Browse the creator's latest public posts and membership updates.",
     empty: "No works published yet.",
+    browsePlans: "Browse support plans",
     nextPage: "Next page",
   },
   post: {
@@ -86,7 +90,8 @@ export const en: Messages = {
     currentPrefix: "Current membership: ",
     validUntil: ", valid until {date}",
     duration: "Valid for {days} days",
-    empty: "No membership tiers are available yet.",
+    empty: "Support plans are not open yet.",
+    returnHome: "Return home",
     descriptionFallback: "Support the creator's continued work and updates.",
     open: "Become a member",
     loginToOpen: "Sign in to join",
@@ -176,6 +181,7 @@ export const en: Messages = {
     subscriptionEndsOn: "Auto-renewal canceled, access until {date}",
     cancelSubscription: "Cancel auto-renewal",
     cancelingSubscription: "Canceling…",
+    subscriptionCancelled: "Auto-renewal canceled.",
     cancelSubscriptionFailed: "Failed to cancel subscription",
     enableRenewalReminder: "Email me before this membership expires",
     disableRenewalReminder: "Turn off expiry reminder",
@@ -217,6 +223,12 @@ export const en: Messages = {
     rejectReason: "Reason: {note}",
     cancel: "Cancel request",
     resubmit: "Resubmit screenshot",
+    resubmitting: "Resubmitting…",
+    resubmitted: "Resubmitted for review.",
+    canceling: "Canceling…",
+    cancelled: "Request canceled.",
+    proofLabel: "Select new payment proof for {tier}",
+    proofSelected: "Selected: {name}",
     paymentProcessing: "Payment confirmation is processing",
     paymentProcessingHint:
       "Stripe will notify the site after payment. Refresh shortly to see the activated membership.",
@@ -256,6 +268,7 @@ export const en: Messages = {
     noMethods:
       "The creator hasn’t set up a payment method yet. Contact the creator or try again later.",
     selectMethod: "Choose a payment method",
+    selected: "Selected",
     completePayment: "Complete your payment using the information below.",
     qrAlt: "{name} payment QR",
     noQr: "This method has no QR code. Follow the payment instructions instead.",
@@ -265,6 +278,7 @@ export const en: Messages = {
     uploadProof: "Upload payment screenshot (jpg / png / webp, max 10MB)",
     chooseProof: "Choose payment screenshot",
     changeProof: "Click to choose another screenshot",
+    dropProof: "Drop the screenshot here",
     proofFormats: "JPG, JPEG, PNG or WEBP, up to 10MB",
     note: "Note (optional)",
     notePlaceholder: "e.g. last 4 digits of your payment account, to help the artist verify",
@@ -294,6 +308,10 @@ export const en: Messages = {
     sendCode: "Send code",
     changeEmail: "Change email",
     codeSent: "Code request accepted. Check your inbox; delivery may be slightly delayed.",
+    sendingCode: "Sending code…",
+    verifyingCode: "Verifying code…",
+    sendingMagicLink: "Sending login link…",
+    signingIn: "Signing in…",
     magicLinkHint:
       "Enter your email to receive a one-time login link, or sign in with an email code instead.",
     sendMagicLink: "Send login link",
@@ -980,6 +998,9 @@ export const en: Messages = {
       hue: "Hue",
       hueHelp:
         "The server generates a complete light and dark palette from this hue using the theme template.",
+      contrastRatio: "Text contrast: light {light}:1, dark {dark}:1.",
+      contrastPass: "Meets AA (at least 4.5:1).",
+      contrastFail: "Contrast is below AA. Choose another color.",
       savedLive: "Saved; the public site updates immediately",
     },
     settings: {

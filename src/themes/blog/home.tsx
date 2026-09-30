@@ -53,7 +53,7 @@ export function Home({ view, t }: { view: HomeView; t: Translate }) {
         )}
       </section>
 
-      {view.tiers.length > 0 && (
+      {view.tiers.length > 0 ? (
         <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3">
           <p className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
             <span className="font-semibold">{t("home.supportPlans")}</span>
@@ -63,6 +63,13 @@ export function Home({ view, t }: { view: HomeView; t: Translate }) {
           </p>
           <Button size="sm" asChild>
             <Link href="/tiers">{t("home.becomeMember")}</Link>
+          </Button>
+        </section>
+      ) : (
+        <section className="rounded-lg border px-4 py-4 text-sm">
+          <p className="text-muted-foreground">{t("home.plansClosed")}</p>
+          <Button asChild variant="outline" size="sm" className="mt-3">
+            <Link href="/posts">{t("nav.posts")}</Link>
           </Button>
         </section>
       )}
@@ -79,7 +86,12 @@ export function Home({ view, t }: { view: HomeView; t: Translate }) {
         </div>
 
         {view.latestPosts.length === 0 ? (
-          <p className="py-10 text-center text-sm text-muted-foreground">{t("home.empty")}</p>
+          <div className="py-10 text-center">
+            <p className="text-sm text-muted-foreground">{t("home.empty")}</p>
+            <Button asChild variant="outline" size="sm" className="mt-4">
+              <Link href="/tiers">{t("home.explorePlans")}</Link>
+            </Button>
+          </div>
         ) : (
           <div className="divide-y border-t">
             {view.latestPosts.map((post) => (

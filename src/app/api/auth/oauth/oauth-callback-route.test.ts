@@ -151,6 +151,34 @@ describe("OAuth callback API routes", () => {
     expect(res.headers.get("Location")).toBe("http://localhost:3000/login?oauth_error=email");
   });
 
+  it.each(["google", "github"] as const)(
+    "keeps a safe checkout target after a %s callback failure",
+    async (provider) => {
+      mocks.completeOAuthLogin.mockRejectedValueOnce(new ApiError(400, "oauthEmailUnverified"));
+      const req = new NextRequest(
+        `http://localhost:3000/api/auth/oauth/${provider}/callback?code=c&state=s`,
+        { headers: { cookie: `olp_oauth_next_${provider}=%2Fcheckout%2Ftier-1` } },
+      );
+      const res =
+        provider === "google" ? await googleCallbackGET(req) : await githubCallbackGET(req);
+
+      expect(res.headers.get("Location")).toBe(
+        "http://localhost:3000/login?oauth_error=email&next=%2Fcheckout%2Ftier-1",
+      );
+      expect(res.cookies.get(`olp_oauth_next_${provider}`)?.value).toBe("");
+    },
+  );
+
+  it("drops an external retry target from a callback cookie", async () => {
+    mocks.completeOAuthLogin.mockRejectedValueOnce(new ApiError(400, "oauthEmailUnverified"));
+    const req = new NextRequest(
+      "http://localhost:3000/api/auth/oauth/google/callback?code=c&state=s",
+      { headers: { cookie: "olp_oauth_next_google=https%3A%2F%2Fevil.example" } },
+    );
+    const res = await googleCallbackGET(req);
+    expect(res.headers.get("Location")).toBe("http://localhost:3000/login?oauth_error=email");
+  });
+
   it("handles other errors by mapping to generic failed", async () => {
     mocks.completeOAuthLogin.mockRejectedValueOnce(new Error("network fail"));
     const req = new NextRequest(
