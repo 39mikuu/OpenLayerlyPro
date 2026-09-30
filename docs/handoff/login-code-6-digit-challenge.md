@@ -1,6 +1,6 @@
 # 交接：6 位数字登录码与请求挑战绑定
 
-> 状态：#228 已实现，最终验收中。§3.3 恢复握手已通过真实 PostgreSQL CI；重复标签页与辅助探测额度的审查修正正在重新验证。2026-09-12 用户批准的 §5.1 持久 SMTP reservation 窄修订已实现；批准设计不代表最终验收通过。本文取代 S4 中“登录码至少 80 bit、错误提交永不写 `attempt_count`”两项约束；其他 S4 安全边界继续生效。§10 为最终验收清单，最新提交的完整 CI 和独立审查通过前保持未勾选。
+> 状态：#228 已实现。§3.3 恢复握手、重复标签页与辅助探测额度修正，以及 2026-09-12 用户批准的 §5.1 持久 SMTP reservation 窄修订均已实现；批准设计不代表最终验收通过。完整 CI、独立审查证据及最终合并状态以 [PR #228](https://github.com/39mikuu/OpenLayerlyPro/pull/228) 的最新记录为准。本文取代 S4 中“登录码至少 80 bit、错误提交永不写 `attempt_count`”两项约束；其他 S4 安全边界继续生效。§10 列出最终验收要求。
 
 ## 1. 目标与威胁模型
 
@@ -227,21 +227,21 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 - 日志、task、audit、API 响应不出现 raw email、challenge 或 code；
 - lint、format、类型、真实 PostgreSQL 集成测试、build 与完整 CI 全绿。
 
-## 10. 验收清单
+## 10. 验收要求
 
-- [ ] 固定 6 位 decimal，旧 env 值不再控制生成策略
-- [ ] 32-byte challenge 由浏览器 CSPRNG 生成并在同一邮箱重发时复用
-- [ ] 数据库只存 purpose-separated challenge HMAC
-- [ ] challenge mismatch 不比较 code、不写 attempts
-- [ ] attempts 仅在 challenge-matched code mismatch 后增加，最大 5
-- [ ] 正确 code 仍受 attempts 上限、source gate 与 target gate 约束
-- [ ] legacy 16–64 位行只在自然过期窗口兼容
-- [ ] active-code dedupe 不替换 challenge
-- [ ] durable task、SMTP、日志和审计不泄露 challenge/code
-- [ ] 迁移和部署说明明确旧实例不能验证新 6 位码
-- [ ] 耗尽轮换与 replacement 走 §3.3 原子/幂等握手：sessionStorage 同时保留已耗尽元组与 replacement challenge，数据库登记并消费唯一后继，丢失 429 可由来源有界探测恢复
-- [ ] 并发重发不得把 replacement 绑到已耗尽 challenge；§6 耗尽行优先只作用于旧 challenge
-- [ ] SMTP 预留丢失时取消独占 per-send 传输，确认 socket 拆除，`sendLoginCodeEmail` 观察取消；歧义状态失败关闭并走 stuck-reservation 恢复
+- 固定 6 位 decimal，旧 env 值不再控制生成策略
+- 32-byte challenge 由浏览器 CSPRNG 生成并在同一邮箱重发时复用
+- 数据库只存 purpose-separated challenge HMAC
+- challenge mismatch 不比较 code、不写 attempts
+- attempts 仅在 challenge-matched code mismatch 后增加，最大 5
+- 正确 code 仍受 attempts 上限、source gate 与 target gate 约束
+- legacy 16–64 位行只在自然过期窗口兼容
+- active-code dedupe 不替换 challenge
+- durable task、SMTP、日志和审计不泄露 challenge/code
+- 迁移和部署说明明确旧实例不能验证新 6 位码
+- 耗尽轮换与 replacement 走 §3.3 原子/幂等握手：sessionStorage 同时保留已耗尽元组与 replacement challenge，数据库登记并消费唯一后继，丢失 429 可由来源有界探测恢复
+- 并发重发不得把 replacement 绑到已耗尽 challenge；§6 耗尽行优先只作用于旧 challenge
+- SMTP 预留丢失时取消独占 per-send 传输，确认 socket 拆除，`sendLoginCodeEmail` 观察取消；歧义状态失败关闭并走 stuck-reservation 恢复
 
 ## 11. 实现状态与恢复边界
 
@@ -255,6 +255,6 @@ route 的原始 code schema 在迁移窗口内可接受 `^[0-9]{6}$` 或 legacy 
 
 同页重发的 challenge 丢失提示以未过期 pending marker 为界；marker 与 challenge 的本地 TTL 结束后允许创建新 challenge，无需刷新页面或更换邮箱。不得用不带期限的 `codeSent` 状态永久阻止重发；服务端 active-code 与 SMTP reservation fence 仍保留。
 
-§5.1 的原有限租约谓词与未确认 socket 拆除时失败关闭存在冲突。2026-09-12 用户明确批准持久 reservation 修订；验收仍要求真实 socket、真实 PostgreSQL、故障路径及独立评审，保持 Draft 直到这些检查完成。
+§5.1 的原有限租约谓词与未确认 socket 拆除时失败关闭存在冲突。2026-09-12 用户明确批准持久 reservation 修订；验收要求真实 socket、真实 PostgreSQL、故障路径及独立评审；这些检查及完整 CI 通过后方可标记 Ready 并合并。
 
 人工 stuck-reservation 恢复：见 [登录码 SMTP 恢复操作](../deployment/login-code-smtp-recovery.md)。必须先停止所有可能持有该连接的 app/worker 并确认 socket 已关闭，再按确切 code ID + generation 做 CAS。不得通过普通任务重试、等待 lease/TTL 或直接清空整表绕过安全门禁。恢复后旧 callback 不得清除新的 generation；恢复不代表邮件已送达。
