@@ -4,7 +4,7 @@ import { installClientMessages } from "@/modules/i18n/client";
 import { en } from "@/modules/i18n/messages/en";
 import { ja } from "@/modules/i18n/messages/ja";
 
-import { api } from "./client";
+import { api, ApiError } from "./client";
 
 function jsonResponse(body: unknown, status = 400): Response {
   return new Response(JSON.stringify(body), {
@@ -59,5 +59,32 @@ describe("client API localization", () => {
     );
 
     await expect(api("/api/test")).rejects.toThrow("兼容错误信息");
+  });
+
+  it("exposes the stable error code so callers need not match localized text", async () => {
+    installClientMessages(en);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            ok: false,
+            code: "codeAttemptsExceeded",
+            params: { rotateChallenge: 1 },
+            error: "尝试次数过多。请稍后再试。",
+          },
+          429,
+        ),
+      ),
+    );
+
+    const rejected = api("/api/test");
+    await expect(rejected).rejects.toBeInstanceOf(ApiError);
+    await expect(rejected).rejects.toMatchObject({
+      status: 429,
+      code: "codeAttemptsExceeded",
+      params: { rotateChallenge: 1 },
+    });
+    await expect(rejected).rejects.toThrow("Too many incorrect attempts. Please try again later.");
   });
 });

@@ -4,6 +4,17 @@ import { Mail, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  acknowledgeLoginCodeReplacement,
+  clearLoginCodeChallenge,
+  clearPendingLoginCodeFlow,
+  getOrCreateLoginCodeChallenge,
+  getStoredLoginCodeChallenge,
+  hasLostLoginCodeChallenge,
+  recoverLoginCodeChallenge,
+  rememberPendingLoginCodeFlow,
+  rotateLoginCodeChallenge,
+} from "@/components/auth/login-code-challenge";
+import {
   acceptFanLoginCodeRequest,
   acceptFanLoginLinkRequest,
   canSubmitFanLoginCode,
@@ -18,8 +29,8 @@ import { useT } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api } from "@/lib/client";
-import { normalizeEmail, RAW_LOGIN_CODE_MAX_LENGTH } from "@/modules/auth/input-policy";
+import { api, ApiError } from "@/lib/client";
+import { LEGACY_LOGIN_CODE_MAX_LENGTH, normalizeEmail } from "@/modules/auth/input-policy";
 import { normalizeMagicLinkRedirectPath, withSiteBasePath } from "@/modules/auth/redirect-path";
 
 export function LoginForm({
@@ -86,10 +97,42 @@ export function LoginForm({
     void run(async () => {
       try {
         const targetEmail = requestedEmail ?? normalizeEmail(email);
+        if (hasLostLoginCodeChallenge(targetEmail)) {
+          throw new Error(t("login.challengeMissing"));
+        }
+        await recoverLoginCodeChallenge(targetEmail, async (recoveryChallenge) => {
+          try {
+            await api(withSiteBasePath("/api/auth/verify-code", oauthBasePath), {
+              method: "POST",
+              body: {
+                email: targetEmail,
+                code: "000000",
+                challenge: recoveryChallenge,
+                recoveryOnly: true,
+              },
+            });
+          } catch (error) {
+            if (
+              error instanceof ApiError &&
+              error.code === "codeAttemptsExceeded" &&
+              error.params?.challengeRotationRequired === 1
+            ) {
+              return true;
+            }
+            throw error;
+          }
+          return false;
+        });
+        const challenge = getOrCreateLoginCodeChallenge(targetEmail);
+        // The server may commit a code even if its response is lost. Keep the
+        // non-secret marker before sending so a reopened tab detects the loss.
+        rememberPendingLoginCodeFlow(targetEmail);
         await api(withSiteBasePath("/api/auth/request-code", oauthBasePath), {
           method: "POST",
-          body: { email: targetEmail, turnstileToken: turnstileToken ?? undefined },
+          body: { email: targetEmail, challenge, turnstileToken: turnstileToken ?? undefined },
         });
+        acknowledgeLoginCodeReplacement(targetEmail);
+        rememberPendingLoginCodeFlow(targetEmail);
         setFanFlow((current) => acceptFanLoginCodeRequest(current, targetEmail));
         setStatus(t("login.codeSent"));
       } finally {
@@ -126,10 +169,26 @@ export function LoginForm({
 
   function verifyCode() {
     void run(async () => {
-      await api(withSiteBasePath("/api/auth/verify-code", oauthBasePath), {
-        method: "POST",
-        body: { email: requestedEmail, code },
-      });
+      if (!requestedEmail) throw new Error(t("login.challengeMissing"));
+      const challenge = getStoredLoginCodeChallenge(requestedEmail);
+      if (!challenge) throw new Error(t("login.challengeMissing"));
+      try {
+        await api(withSiteBasePath("/api/auth/verify-code", oauthBasePath), {
+          method: "POST",
+          body: { email: requestedEmail, code, challenge },
+        });
+      } catch (error) {
+        if (
+          error instanceof ApiError &&
+          error.code === "codeAttemptsExceeded" &&
+          error.params?.challengeRotationRequired === 1
+        ) {
+          rotateLoginCodeChallenge(requestedEmail, window.sessionStorage, window.crypto, challenge);
+        }
+        throw error;
+      }
+      clearLoginCodeChallenge(requestedEmail);
+      clearPendingLoginCodeFlow(requestedEmail);
       window.location.assign(withSiteBasePath(postLoginPath, oauthBasePath));
     }, t("login.verifyingCode"));
   }
@@ -294,10 +353,10 @@ export function LoginForm({
             <Input
               ref={codeInputRef}
               id="code"
-              inputMode="text"
-              autoCapitalize="characters"
+              inputMode="numeric"
+              autoCapitalize="off"
               autoComplete="one-time-code"
-              maxLength={RAW_LOGIN_CODE_MAX_LENGTH}
+              maxLength={LEGACY_LOGIN_CODE_MAX_LENGTH}
               placeholder={t("login.codePlaceholder", { length: loginCodeLength })}
               value={code}
               onChange={(event) =>
