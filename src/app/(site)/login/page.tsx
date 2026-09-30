@@ -5,6 +5,7 @@ import { getEnv } from "@/lib/env";
 import { isMagicLinkConfigured, normalizeMagicLinkRedirectPath } from "@/modules/auth/magic-link";
 import { getOAuthApiBasePath } from "@/modules/auth/oauth";
 import { getLoginCodePolicy } from "@/modules/auth/rate-limit-policy";
+import { resolveSignedInLoginPath, withSiteBasePath } from "@/modules/auth/redirect-path";
 import { getCurrentUser } from "@/modules/auth/session";
 import { getTurnstileConfig, isOAuthProviderLoginEnabled } from "@/modules/config";
 import { getT } from "@/modules/i18n/server";
@@ -20,11 +21,19 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<{ admin?: string; next?: string; oauth_error?: string }>;
 }) {
-  const user = await getCurrentUser();
-  if (user) redirect("/me");
   const { admin, next, oauth_error: oauthError } = await searchParams;
-  const loginCodePolicy = getLoginCodePolicy(getEnv());
   const redirectPath = normalizeMagicLinkRedirectPath(next) ?? undefined;
+  const siteBasePath = getOAuthApiBasePath();
+  const user = await getCurrentUser();
+  if (user) {
+    redirect(
+      withSiteBasePath(
+        resolveSignedInLoginPath(user.role, admin === "1", redirectPath),
+        siteBasePath,
+      ),
+    );
+  }
+  const loginCodePolicy = getLoginCodePolicy(getEnv());
   const [turnstile, theme, t, googleOAuthEnabled, githubOAuthEnabled] = await Promise.all([
     getTurnstileConfig(),
     getActiveTheme(),
@@ -47,7 +56,7 @@ export default async function LoginPage({
         githubOAuthEnabled,
         oauthNext: redirectPath,
         oauthError: oauthError ?? null,
-        oauthBasePath: getOAuthApiBasePath(),
+        oauthBasePath: siteBasePath,
       }}
     />
   );

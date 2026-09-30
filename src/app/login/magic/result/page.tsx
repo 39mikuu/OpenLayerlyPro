@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { getEnv } from "@/lib/env";
+import { normalizeMagicLinkRedirectPath } from "@/modules/auth/redirect-path";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
 import { getT } from "@/modules/i18n/server";
 
@@ -25,12 +26,15 @@ function normalizeStatus(value: string | undefined): ResultStatus {
 export default async function MagicLinkResultPage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: string }>;
+  searchParams: Promise<{ status?: string; next?: string }>;
 }) {
   const [params, t] = await Promise.all([searchParams, getT()]);
   const status = normalizeStatus(params.status);
   // Keep an APP_URL path prefix on the login link (subpath deployments).
-  const loginHref = buildPublicUrl(getPublicBaseUrl(getEnv().APP_URL), "/login");
+  const next = normalizeMagicLinkRedirectPath(params.next);
+  const loginUrl = new URL(buildPublicUrl(getPublicBaseUrl(getEnv().APP_URL), "/login"));
+  if (next) loginUrl.searchParams.set("next", next);
+  const loginHref = loginUrl.toString();
 
   return (
     <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center px-6 py-12">

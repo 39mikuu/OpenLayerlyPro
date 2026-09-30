@@ -2,6 +2,7 @@ import type { Messages } from "./zh";
 
 export const ja: Messages = {
   nav: {
+    skipToContent: "メインコンテンツへ移動",
     home: "ホーム",
     posts: "作品",
     tiers: "メンバーシップ",
@@ -46,11 +47,13 @@ export const ja: Messages = {
     supportPlans: "支援プラン",
     supportPlansHint: "プランを選んで、クリエイターの継続的な活動を支援できます。",
     noPlans: "利用できる支援プランはまだありません。",
+    plansClosed: "支援プランはまだ公開されていません。先に投稿をご覧ください。",
     planFallback: "クリエイターの継続的な制作と更新を支援します。",
     latest: "最近の投稿",
     latestHint: "クリエイターの最新の更新を確認できます。",
     all: "すべて見る",
     empty: "公開されている作品はまだありません。",
+    explorePlans: "支援プランを見る",
   },
   posts: {
     title: "作品",
@@ -58,6 +61,7 @@ export const ja: Messages = {
     seoTitle: "作品",
     seoDescription: "クリエイターの最新の公開投稿やメンバー向け更新を確認できます。",
     empty: "公開されている作品はまだありません。",
+    browsePlans: "支援プランを見る",
     nextPage: "次のページ",
   },
   post: {
@@ -86,7 +90,8 @@ export const ja: Messages = {
     currentPrefix: "現在のメンバーシップ：",
     validUntil: "、{date} まで有効",
     duration: "{days} 日間有効",
-    empty: "利用できるメンバーシッププランはまだありません。",
+    empty: "支援プランはまだ公開されていません。",
+    returnHome: "ホームに戻る",
     descriptionFallback: "クリエイターの継続的な制作と更新を支援します。",
     open: "メンバーになる",
     loginToOpen: "ログインして申し込む",
@@ -175,6 +180,7 @@ export const ja: Messages = {
     subscriptionEndsOn: "自動更新をキャンセル済み。有効期限：{date}",
     cancelSubscription: "自動更新をキャンセル",
     cancelingSubscription: "キャンセル中…",
+    subscriptionCancelled: "自動更新をキャンセルしました。",
     cancelSubscriptionFailed: "サブスクリプションをキャンセルできませんでした",
     enableRenewalReminder: "有効期限前にメールで知らせる",
     disableRenewalReminder: "期限通知をオフにする",
@@ -216,6 +222,12 @@ export const ja: Messages = {
     rejectReason: "理由：{note}",
     cancel: "申請をキャンセル",
     resubmit: "スクリーンショットを再送信",
+    resubmitting: "再送信中…",
+    resubmitted: "再送信しました。審査をお待ちください。",
+    canceling: "キャンセル中…",
+    cancelled: "申請をキャンセルしました。",
+    proofLabel: "「{tier}」の新しい支払い証明を選択",
+    proofSelected: "選択済み：{name}",
     paymentProcessing: "支払いを確認しています",
     paymentProcessingHint:
       "Stripe から確認通知が届くとメンバーシップが有効になります。しばらくしてから更新してください。",
@@ -254,6 +266,7 @@ export const ja: Messages = {
     noMethods:
       "支払い方法がまだ設定されていません。クリエイターに連絡するか、しばらくしてから再度お試しください。",
     selectMethod: "支払い方法を選択",
+    selected: "選択中",
     completePayment: "以下の情報を使って支払いを完了してください。",
     qrAlt: "{name} の支払い QR コード",
     noQr: "この支払い方法には QR コードがありません。支払い説明に従ってください。",
@@ -262,6 +275,7 @@ export const ja: Messages = {
     uploadProof: "支払いスクリーンショットをアップロード（jpg / png / webp、最大 10MB）",
     chooseProof: "支払いスクリーンショットを選択",
     changeProof: "クリックして別の画像を選択",
+    dropProof: "ここにスクリーンショットをドロップ",
     proofFormats: "JPG、JPEG、PNG、WEBP、最大 10MB",
     note: "メモ（任意）",
     notePlaceholder: "例：確認用に支払いアカウントの下4桁",
@@ -289,6 +303,10 @@ export const ja: Messages = {
     sendCode: "認証コードを送信",
     changeEmail: "メールアドレスを変更",
     codeSent: "認証コードのリクエストを受け付けました。配信が少し遅れる場合があります。",
+    sendingCode: "認証コードを送信中…",
+    verifyingCode: "認証中…",
+    sendingMagicLink: "ログインリンクを送信中…",
+    signingIn: "ログイン中…",
     magicLinkHint:
       "メールアドレスを入力するとワンタイムログインリンクを送信できます。認証コードでのログインも利用できます。",
     sendMagicLink: "ログインリンクを送信",
@@ -970,6 +988,9 @@ export const ja: Messages = {
       colorScope: "公開サイトにのみ適用されます。ライト・ダークモードは訪問者が選択できます。",
       hue: "色相",
       hueHelp: "テーマテンプレートを使用し、この色相からライト・ダーク両方のパレットを生成します。",
+      contrastRatio: "文字のコントラスト比：ライト {light}:1、ダーク {dark}:1。",
+      contrastPass: "AA 基準（4.5:1 以上）に適合します。",
+      contrastFail: "コントラスト比が AA 基準未満です。別の色を選んでください。",
       savedLive: "保存しました。公開サイトにすぐ反映されます",
     },
     settings: {

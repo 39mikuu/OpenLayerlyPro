@@ -38,9 +38,10 @@ const env = {
 
 const TOKEN = "olp_mlk.v1.current.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-function request(token: string | null, headers: HeadersInit = {}) {
+function request(token: string | null, headers: HeadersInit = {}, next?: string) {
   const body = new URLSearchParams();
   if (token !== null) body.set("token", token);
+  if (next) body.set("next", next);
   return new NextRequest("https://site.example/base/api/auth/magic-link/confirm", {
     method: "POST",
     body: body.toString(),
@@ -136,6 +137,18 @@ describe("magic-link confirm route", () => {
       expect(mocks.setSessionCookie).not.toHaveBeenCalled();
     },
   );
+
+  it("preserves only a safe retry path when consumption expires", async () => {
+    mocks.consumeMagicLinkToken.mockResolvedValue({ status: "expired" });
+    const safe = await POST(request(TOKEN, {}, "/checkout/tier-1"));
+    expect(safe.headers.get("location")).toBe(
+      "https://site.example/base/login/magic/result?status=expired&next=%2Fcheckout%2Ftier-1",
+    );
+    const external = await POST(request(TOKEN, {}, "https://evil.example"));
+    expect(external.headers.get("location")).toBe(
+      "https://site.example/base/login/magic/result?status=expired",
+    );
+  });
 
   it("shares the verify-code comparison budget and keeps token headers on 429", async () => {
     mocks.rateLimit.mockReturnValue(false);

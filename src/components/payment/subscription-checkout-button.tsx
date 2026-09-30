@@ -29,11 +29,22 @@ export function SubscriptionCheckoutButton({ tierId }: { tierId: string }) {
 
   return (
     <div className="space-y-2">
-      <Button className="w-full" variant="secondary" disabled={loading} onClick={startSubscription}>
+      <Button
+        className="w-full"
+        variant="secondary"
+        aria-busy={loading}
+        disabled={loading}
+        onClick={startSubscription}
+      >
         <RefreshCw className="size-4" />
         {loading ? t("tiers.subscribing") : t("tiers.subscribe")}
       </Button>
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      <p role="status" aria-live="polite" className="sr-only">
+        {loading ? t("tiers.subscribing") : ""}
+      </p>
+      <p role="alert" className={error ? "text-sm text-destructive" : "sr-only"}>
+        {error}
+      </p>
     </div>
   );
 }

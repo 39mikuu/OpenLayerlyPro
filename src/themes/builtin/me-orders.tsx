@@ -136,7 +136,11 @@ export function MeOrders({ view, t }: { view: MeOrdersView; t: Translate }) {
                 )}
 
                 <div className="mt-4">
-                  <OrderActions requestId={order.id} status={order.status} />
+                  <OrderActions
+                    requestId={order.id}
+                    status={order.status}
+                    tierName={order.tierName}
+                  />
                 </div>
               </article>
             );

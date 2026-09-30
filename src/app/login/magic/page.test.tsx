@@ -94,4 +94,55 @@ describe("magic link confirm and result pages", () => {
 
     expect(html).toContain("magicLink.resultTitleinvalid");
   });
+
+  it("keeps a validated checkout target when an email link has expired", async () => {
+    mocks.verifyMagicLinkToken.mockResolvedValue({
+      status: "expired",
+      redirectPath: "/checkout/tier-1",
+    });
+    const confirmHtml = renderToStaticMarkup(
+      createElement(
+        await MagicLinkConfirmPage({ params: Promise.resolve({ token: TOKEN }) }).then(
+          (node) => () => node,
+        ),
+      ),
+    );
+    expect(confirmHtml).toContain("/login?next=%2Fcheckout%2Ftier-1");
+
+    const resultHtml = renderToStaticMarkup(
+      createElement(
+        await MagicLinkResultPage({
+          searchParams: Promise.resolve({ status: "expired", next: "/checkout/tier-1" }),
+        }).then((node) => () => node),
+      ),
+    );
+    expect(resultHtml).toContain("/login?next=%2Fcheckout%2Ftier-1");
+  });
+
+  it("keeps the checkout target when a matching link is no longer active", async () => {
+    mocks.verifyMagicLinkToken.mockResolvedValue({
+      status: "invalid",
+      redirectPath: "/checkout/tier-1",
+    });
+    const html = renderToStaticMarkup(
+      createElement(
+        await MagicLinkConfirmPage({ params: Promise.resolve({ token: TOKEN }) }).then(
+          (node) => () => node,
+        ),
+      ),
+    );
+    expect(html).toContain('href="https://artist.example/base/login?next=%2Fcheckout%2Ftier-1"');
+    expect(html).not.toContain("method=");
+  });
+
+  it("rejects an external retry target", async () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        await MagicLinkResultPage({
+          searchParams: Promise.resolve({ status: "expired", next: "https://evil.example" }),
+        }).then((node) => () => node),
+      ),
+    );
+    expect(html).toContain('href="https://artist.example/base/login"');
+  });
 });

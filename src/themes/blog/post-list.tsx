@@ -15,7 +15,17 @@ export function PostList({ view, t }: { view: PostListView; t: Translate }) {
       </header>
 
       {view.posts.length === 0 ? (
-        <p className="py-10 text-center text-sm text-muted-foreground">{t("posts.empty")}</p>
+        <div className="py-10 text-center">
+          <p className="text-sm text-muted-foreground">{t("posts.empty")}</p>
+          <div className="mt-5 flex flex-wrap justify-center gap-2">
+            <Button asChild variant="outline">
+              <Link href="/">{t("tiers.returnHome")}</Link>
+            </Button>
+            <Button asChild>
+              <Link href="/tiers">{t("posts.browsePlans")}</Link>
+            </Button>
+          </div>
+        </div>
       ) : (
         <div className="divide-y">
           {view.posts.map((post) => (
