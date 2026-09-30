@@ -274,6 +274,20 @@
       "when": 1788030397614,
       "tag": "0038_preset_tier_commerce",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1788031323310,
+      "tag": "0040_login_code_challenge",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1789234378704,
+      "tag": "0041_login_smtp_reservation",
+      "breakpoints": true
     }
   ]
 }

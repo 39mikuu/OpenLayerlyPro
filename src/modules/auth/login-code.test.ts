@@ -23,25 +23,39 @@ vi.mock("@/modules/system/events", () => ({
   recordEvent: mocks.recordEvent,
 }));
 
+const TEST_CHALLENGE = "A".repeat(43);
+const OTHER_CHALLENGE = "B".repeat(43);
+const NEW_PROTOCOL_CODE = "123456";
+
+function mockTxSelect(rows: unknown[] = []) {
+  const limit = vi.fn(async () => rows);
+  const where = vi.fn(() => ({ limit }));
+  const from = vi.fn(() => ({ where }));
+  return vi.fn(() => ({ from }));
+}
+
 function dbWithExecuteQueues(queues: unknown[][]) {
   const updateWhere = vi.fn(async () => []);
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
+  const executes: ReturnType<typeof vi.fn>[] = [];
   const transaction = vi.fn(
     async (
       callback: (tx: {
         execute: ReturnType<typeof vi.fn>;
         update: ReturnType<typeof vi.fn>;
+        select: ReturnType<typeof vi.fn>;
       }) => Promise<unknown>,
     ) => {
       const queue = queues.shift();
       if (!queue) throw new Error("missing execute queue");
       const execute = vi.fn(async () => queue.shift() ?? []);
-      return callback({ execute, update });
+      executes.push(execute);
+      return callback({ execute, update, select: mockTxSelect() });
     },
   );
   mocks.getDb.mockReturnValue({ transaction });
-  return { transaction, update, updateSet, updateWhere };
+  return { transaction, update, updateSet, updateWhere, executes };
 }
 
 describe("verifyLoginCode", () => {
@@ -54,40 +68,69 @@ describe("verifyLoginCode", () => {
 
   it("attemptCount 已很高时正确验证码仍可登录", async () => {
     dbWithExecuteQueues([
-      [[{ id: "code-1", code_hash: "hash:123456", attempt_count: 99 }], [{ id: "code-1" }]],
+      [
+        [
+          {
+            id: "code-1",
+            code_hash: "hash:ABCD1234EFGH5678",
+            challenge_hash: null,
+            attempt_count: 99,
+          },
+        ],
+        [{ id: "code-1" }],
+      ],
     ]);
     const { verifyLoginCode } = await import("./login-code");
 
-    await expect(verifyLoginCode("fan@example.com", "123456")).resolves.toMatchObject({
+    await expect(verifyLoginCode("fan@example.com", "ABCD1234EFGH5678")).resolves.toMatchObject({
       id: "user-1",
     });
     expect(mocks.findOrCreateUserByEmail).toHaveBeenCalledWith("fan@example.com");
   });
 
   it("错误验证码返回 codeIncorrect 且不写 attempt_count", async () => {
-    const { transaction } = dbWithExecuteQueues([
-      [[{ id: "code-1", code_hash: "hash:123456", attempt_count: 1 }]],
+    const { transaction, executes } = dbWithExecuteQueues([
+      [
+        [
+          {
+            id: "code-1",
+            code_hash: "hash:ABCD1234EFGH5678",
+            challenge_hash: null,
+            attempt_count: 1,
+          },
+        ],
+      ],
     ]);
     const { verifyLoginCode } = await import("./login-code");
 
-    await expect(verifyLoginCode("fan@example.com", "000000")).rejects.toMatchObject({
+    await expect(verifyLoginCode("fan@example.com", "0000000000000000")).rejects.toMatchObject({
       status: 400,
       code: "codeIncorrect",
     });
-    const tx = transaction.mock.calls[0][0];
-    expect(tx).toBeTypeOf("function");
+    expect(transaction.mock.calls[0][0]).toBeTypeOf("function");
+    expect(executes[0]).toHaveBeenCalledOnce();
     expect(mocks.findOrCreateUserByEmail).not.toHaveBeenCalled();
   });
 
   it("正确验证码会设置 usedAt 并登录用户", async () => {
     dbWithExecuteQueues([
-      [[{ id: "code-1", code_hash: "hash:123456", attempt_count: 1 }], [{ id: "code-1" }]],
+      [
+        [
+          {
+            id: "code-1",
+            code_hash: "hash:ABCD1234EFGH5678",
+            challenge_hash: null,
+            attempt_count: 1,
+          },
+        ],
+        [{ id: "code-1" }],
+      ],
     ]);
     const { verifyLoginCode } = await import("./login-code");
 
-    await expect(verifyLoginCode(" Fan@Example.com ", "123456", "ja")).resolves.toMatchObject({
-      id: "user-1",
-    });
+    await expect(
+      verifyLoginCode(" Fan@Example.com ", "ABCD1234EFGH5678", undefined, "ja"),
+    ).resolves.toMatchObject({ id: "user-1" });
     expect(mocks.findOrCreateUserByEmail).toHaveBeenCalledWith("fan@example.com");
     expect(mocks.touchLastLogin).toHaveBeenCalledWith("user-1", "ja");
     expect(mocks.recordEvent).toHaveBeenCalledWith("user_login", { userId: "user-1" });
@@ -97,7 +140,7 @@ describe("verifyLoginCode", () => {
     dbWithExecuteQueues([[[], []]]);
     const { verifyLoginCode } = await import("./login-code");
 
-    await expect(verifyLoginCode("fan@example.com", "123456")).rejects.toMatchObject({
+    await expect(verifyLoginCode("fan@example.com", "ABCD1234EFGH5678")).rejects.toMatchObject({
       status: 400,
       code: "codeExpired",
     });
@@ -109,14 +152,26 @@ describe("verifyLoginCode", () => {
       (() => {
         let chain: Promise<unknown> = Promise.resolve();
         return async (
-          callback: (tx: { execute: ReturnType<typeof vi.fn> }) => Promise<unknown>,
+          callback: (tx: {
+            execute: ReturnType<typeof vi.fn>;
+            select: ReturnType<typeof vi.fn>;
+          }) => Promise<unknown>,
         ) => {
           const run = chain.then(async () => {
             let call = 0;
             const execute = vi.fn(async () => {
               call += 1;
               if (call === 1) {
-                return used ? [] : [{ id: "code-1", code_hash: "hash:123456", attempt_count: 1 }];
+                return used
+                  ? []
+                  : [
+                      {
+                        id: "code-1",
+                        code_hash: "hash:ABCD1234EFGH5678",
+                        challenge_hash: null,
+                        attempt_count: 1,
+                      },
+                    ];
               }
               if (!used) {
                 used = true;
@@ -124,7 +179,7 @@ describe("verifyLoginCode", () => {
               }
               return [];
             });
-            return callback({ execute });
+            return callback({ execute, select: mockTxSelect() });
           });
           chain = run.catch(() => {});
           return run;
@@ -135,8 +190,8 @@ describe("verifyLoginCode", () => {
     const { verifyLoginCode } = await import("./login-code");
 
     const results = await Promise.allSettled([
-      verifyLoginCode("fan@example.com", "123456"),
-      verifyLoginCode("fan@example.com", "123456"),
+      verifyLoginCode("fan@example.com", "ABCD1234EFGH5678"),
+      verifyLoginCode("fan@example.com", "ABCD1234EFGH5678"),
     ]);
 
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
@@ -152,6 +207,7 @@ describe("verifyLoginCode", () => {
           callback: (tx: {
             execute: ReturnType<typeof vi.fn>;
             update: ReturnType<typeof vi.fn>;
+            select: ReturnType<typeof vi.fn>;
           }) => Promise<unknown>,
         ) => {
           const run = chain.then(async () => {
@@ -159,8 +215,16 @@ describe("verifyLoginCode", () => {
             const execute = vi.fn(async () => {
               call += 1;
               if (call === 1) {
-                return [{ id: "code-1", code_hash: "hash:123456" }];
+                return [
+                  {
+                    id: "code-1",
+                    code_hash: "hash:ABCD1234EFGH5678",
+                    challenge_hash: null,
+                    attempt_count: 0,
+                  },
+                ];
               }
+              attemptUpdates += 1;
               return [];
             });
             const update = vi.fn(() => ({
@@ -171,7 +235,7 @@ describe("verifyLoginCode", () => {
                 }),
               })),
             }));
-            return callback({ execute, update });
+            return callback({ execute, update, select: mockTxSelect() });
           });
           chain = run.catch(() => {});
           return run;
@@ -182,8 +246,8 @@ describe("verifyLoginCode", () => {
     const { verifyLoginCode } = await import("./login-code");
 
     const results = await Promise.allSettled([
-      verifyLoginCode("fan@example.com", "000000"),
-      verifyLoginCode("fan@example.com", "000000"),
+      verifyLoginCode("fan@example.com", "0000000000000000"),
+      verifyLoginCode("fan@example.com", "0000000000000000"),
     ]);
 
     expect(results).toHaveLength(2);
@@ -195,5 +259,135 @@ describe("verifyLoginCode", () => {
       ),
     ).toBe(true);
     expect(attemptUpdates).toBe(0);
+  });
+
+  it("新协议错误码在 challenge 匹配时写入 attempt_count", async () => {
+    const { executes } = dbWithExecuteQueues([
+      [
+        [
+          {
+            id: "code-1",
+            code_hash: `hash:${NEW_PROTOCOL_CODE}`,
+            challenge_hash: `hash:${TEST_CHALLENGE}`,
+            attempt_count: 0,
+          },
+        ],
+        [{ attempt_count: 1 }],
+      ],
+    ]);
+    const { verifyLoginCode } = await import("./login-code");
+
+    await expect(
+      verifyLoginCode("fan@example.com", "000000", TEST_CHALLENGE),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "codeIncorrect",
+    });
+    expect(executes[0]).toHaveBeenCalledTimes(2);
+    expect(mocks.findOrCreateUserByEmail).not.toHaveBeenCalled();
+  });
+
+  it("新协议第 5 次匹配错误返回 fresh codeAttemptsExceeded", async () => {
+    dbWithExecuteQueues([
+      [
+        [
+          {
+            id: "code-1",
+            code_hash: `hash:${NEW_PROTOCOL_CODE}`,
+            challenge_hash: `hash:${TEST_CHALLENGE}`,
+            attempt_count: 4,
+          },
+        ],
+        [{ attempt_count: 5 }],
+      ],
+    ]);
+    const { verifyLoginCode } = await import("./login-code");
+
+    await expect(
+      verifyLoginCode("fan@example.com", "000000", TEST_CHALLENGE),
+    ).rejects.toMatchObject({
+      status: 429,
+      code: "codeAttemptsExceeded",
+      freshAttemptExhausted: true,
+      params: { challengeRotationRequired: 1 },
+    });
+    expect(mocks.findOrCreateUserByEmail).not.toHaveBeenCalled();
+  });
+
+  it("新协议高 attemptCount 时正确码不可登录", async () => {
+    const { executes } = dbWithExecuteQueues([
+      [
+        [
+          {
+            id: "code-1",
+            code_hash: `hash:${NEW_PROTOCOL_CODE}`,
+            challenge_hash: `hash:${TEST_CHALLENGE}`,
+            attempt_count: 5,
+          },
+        ],
+      ],
+    ]);
+    const { verifyLoginCode } = await import("./login-code");
+
+    await expect(
+      verifyLoginCode("fan@example.com", NEW_PROTOCOL_CODE, TEST_CHALLENGE),
+    ).rejects.toMatchObject({
+      status: 429,
+      code: "codeAttemptsExceeded",
+      freshAttemptExhausted: false,
+    });
+    expect(executes[0]).toHaveBeenCalledOnce();
+    expect(mocks.findOrCreateUserByEmail).not.toHaveBeenCalled();
+  });
+
+  it("新协议 challenge 不匹配走普通错误且不增加 attempts", async () => {
+    dbWithExecuteQueues([
+      [
+        [
+          {
+            id: "code-1",
+            code_hash: `hash:${NEW_PROTOCOL_CODE}`,
+            challenge_hash: `hash:${TEST_CHALLENGE}`,
+            attempt_count: 2,
+          },
+        ],
+        [{ attempt_count: 2 }],
+      ],
+    ]);
+    const { verifyLoginCode } = await import("./login-code");
+
+    await expect(
+      verifyLoginCode("fan@example.com", NEW_PROTOCOL_CODE, OTHER_CHALLENGE),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "codeIncorrect",
+    });
+    expect(mocks.findOrCreateUserByEmail).not.toHaveBeenCalled();
+  });
+
+  it("已耗尽行在 challenge 不匹配时不返回 attempts_already_exhausted", async () => {
+    const { executes } = dbWithExecuteQueues([
+      [
+        [
+          {
+            id: "code-1",
+            code_hash: `hash:${NEW_PROTOCOL_CODE}`,
+            challenge_hash: `hash:${TEST_CHALLENGE}`,
+            attempt_count: 5,
+          },
+        ],
+        [{ attempt_count: 5 }],
+      ],
+    ]);
+    const { verifyLoginCode } = await import("./login-code");
+
+    await expect(
+      verifyLoginCode("fan@example.com", "000000", OTHER_CHALLENGE),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "codeIncorrect",
+    });
+    expect(executes[0]).toHaveBeenCalledTimes(2);
+    expect(mocks.findOrCreateUserByEmail).not.toHaveBeenCalled();
   });
 });

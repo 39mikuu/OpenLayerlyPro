@@ -12,6 +12,7 @@ import { readPublicSiteInfo } from "@/modules/site";
 
 import { classifyMailError, MailDeliveryError } from "./delivery";
 import { renderTransactionalEmailHtml } from "./html";
+import { LoginCodeTransport } from "./login-code-transport";
 
 export type MailSafeLog = {
   template: string;
@@ -24,6 +25,8 @@ export type MailSafeLog = {
 
 export type MailTaskOwnershipOptions = {
   assertTaskOwnership?: () => Promise<void>;
+  signal?: AbortSignal;
+  onSmtpClosed?: () => Promise<void>;
 };
 
 type SendMailInput = {
@@ -171,14 +174,24 @@ export async function sendLoginCodeEmail(
   locale?: Locale,
   options: MailTaskOwnershipOptions = {},
 ): Promise<void> {
-  const message = renderLoginCodeEmail(code, locale, await readEmailBranding());
-  await sendMail({
-    to,
-    subject: message.subject,
-    text: message.text,
-    html: message.html,
-    assertTaskOwnership: options.assertTaskOwnership,
-  });
+  // Durable login-code tasks require positive socket-close evidence. Other mail
+  // templates keep their existing transport; no shared socket is cancelled here.
+  if (options.onSmtpClosed) {
+    const transport = new LoginCodeTransport();
+    try {
+      const message = renderLoginCodeEmail(code, locale, await readEmailBranding());
+      const cfg = await getSmtpConfig();
+      if (!cfg.configured) throw new ApiError(500, "mailNotConfigured");
+      await options.assertTaskOwnership?.();
+      await transport.send(cfg, { to, ...message }, options.signal, options.assertTaskOwnership);
+    } finally {
+      if (!(await transport.closeConfirmed())) throw new MailDeliveryError("needs_operator");
+      await options.onSmtpClosed();
+    }
+  } else {
+    const message = renderLoginCodeEmail(code, locale, await readEmailBranding());
+    await sendMail({ to, ...message, assertTaskOwnership: options.assertTaskOwnership });
+  }
 }
 
 export function renderMagicLinkEmail(

@@ -9,8 +9,7 @@ import {
   timingSafeEqual,
 } from "crypto";
 
-import { getEnv } from "@/lib/env";
-import { CROCKFORD_BASE32_ALPHABET, getLoginCodeAlphabet } from "@/modules/auth/input-policy";
+import { CROCKFORD_BASE32_ALPHABET, LOGIN_CODE_LENGTH } from "@/modules/auth/input-policy";
 import { getConfigEncryptionKey } from "@/modules/security/config-key";
 import { getSessionSecret } from "@/modules/security/session-secret";
 
@@ -48,12 +47,7 @@ export function safeEqualHex(a: string, b: string): boolean {
 }
 
 export function generateLoginCode(): string {
-  const env = getEnv();
-  const alphabet = getLoginCodeAlphabet(env.LOGIN_CODE_ALPHABET);
-  return Array.from(
-    { length: env.LOGIN_CODE_LENGTH },
-    () => alphabet[randomInt(0, alphabet.length)],
-  ).join("");
+  return Array.from({ length: LOGIN_CODE_LENGTH }, () => randomInt(0, 10)).join("");
 }
 
 export async function hashPassword(password: string): Promise<string> {

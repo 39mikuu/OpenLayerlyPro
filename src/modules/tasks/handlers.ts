@@ -395,6 +395,7 @@ export async function runTaskHandler(
         taskId: task.id,
         lockToken: task.lockedBy,
         assertTaskOwnership: execution.assertOwnership,
+        signal: execution.signal,
       });
       return note ? { note } : {};
     }

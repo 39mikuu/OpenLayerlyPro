@@ -65,6 +65,7 @@ jobs:
           node --check dist/restore-neutralize.mjs
           node --check dist/restore-converge.mjs
           node --check dist/restore-schema-check.mjs
+          node --check dist/restore-login-code-smtp-check.mjs
       - name: Test backup app state machine
         run: sh scripts/test-backup-app-state.sh
       - name: Test backup recovery evidence

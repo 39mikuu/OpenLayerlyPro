@@ -31,10 +31,12 @@ import {
   deliverLoginCodeEmailTask,
   type LoginCodeEmailTaskPayload,
   requestLoginCode,
+  verifyLoginCode,
 } from "./login-code";
 
 const describeWithDatabase =
   process.env.RUN_DB_INTEGRATION_TESTS === "true" ? describe : describe.skip;
+const TEST_CHALLENGE = "A".repeat(43);
 
 function payloadOf(task: typeof tasks.$inferSelect): LoginCodeEmailTaskPayload {
   return task.payloadJson as LoginCodeEmailTaskPayload;
@@ -60,7 +62,9 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
   beforeEach(async () => {
     __resetRateLimitForTests();
     vi.clearAllMocks();
-    mocks.sendLoginCodeEmail.mockResolvedValue(undefined);
+    mocks.sendLoginCodeEmail.mockImplementation(async (_to, _code, _locale, options) => {
+      await options.onSmtpClosed();
+    });
     await resetDatabase(db);
     // Exercise the real getSmtpConfig() -> getStoredGroup() -> global DB client path.
     await setStoredGroup("smtp", {
@@ -73,7 +77,10 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
 
   it("completes at least ten concurrent distinct requests without exhausting the DB pool", async () => {
     const requests = Array.from({ length: 10 }, (_, index) =>
-      requestLoginCode(`fan-${index}@example.com`, { locale: "en" }),
+      requestLoginCode(`fan-${index}@example.com`, {
+        challenge: `${"A".repeat(42)}${index}`,
+        locale: "en",
+      }),
     );
 
     const results = await withTimeout(Promise.all(requests), 5_000);
@@ -86,7 +93,7 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
 
   it("releases the per-email advisory lock before slow SMTP and suppresses a concurrent resend", async () => {
     const email = "slow@example.com";
-    await requestLoginCode(email, { locale: "en" });
+    await requestLoginCode(email, { challenge: TEST_CHALLENGE, locale: "en" });
     const [claimed] = await claimDueTasks(1, { lockToken: "slow-worker" });
     expect(claimed).toBeDefined();
 
@@ -98,9 +105,10 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
     const blocked = new Promise<void>((resolve) => {
       releaseSmtp = resolve;
     });
-    mocks.sendLoginCodeEmail.mockImplementation(async () => {
+    mocks.sendLoginCodeEmail.mockImplementation(async (_to, _code, _locale, options) => {
       smtpEntered();
       await blocked;
+      await options.onSmtpClosed();
     });
 
     const dispatch = dispatchClaimedTask(claimed!);
@@ -111,7 +119,15 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
     );
     expect(lockResult[0]?.acquired).toBe(true);
 
-    const resend = await requestLoginCode(email, { locale: "en" });
+    await expect(verifyLoginCode(email, "000000", TEST_CHALLENGE)).rejects.toMatchObject({
+      status: 400,
+      code: "codeIncorrect",
+      comparisonDeferred: true,
+    });
+    const [whileSending] = await db.select().from(loginCodes);
+    expect(whileSending?.attemptCount).toBe(0);
+
+    const resend = await requestLoginCode(email, { challenge: TEST_CHALLENGE, locale: "en" });
     expect(resend).toEqual({ suppressed: true });
     await expect(db.select().from(loginCodes)).resolves.toHaveLength(1);
     await expect(db.select().from(tasks)).resolves.toHaveLength(1);
@@ -123,7 +139,7 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
   }, 10_000);
 
   it("does not send for a wrong token or an expired lease", async () => {
-    await requestLoginCode("fence@example.com", { locale: "en" });
+    await requestLoginCode("fence@example.com", { challenge: TEST_CHALLENGE, locale: "en" });
     const [claimed] = await claimDueTasks(1, { lockToken: "current-worker" });
     expect(claimed).toBeDefined();
 
@@ -150,8 +166,35 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
     expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();
   });
 
+  it("retires an exhausted code and no-ops its queued delivery", async () => {
+    const email = "exhausted@example.com";
+    const first = await requestLoginCode(email, { challenge: TEST_CHALLENGE, locale: "en" });
+    expect(first.suppressed).toBe(false);
+    await db.update(loginCodes).set({ attemptCount: 5 }).where(eq(loginCodes.id, first.codeId!));
+
+    const [claimed] = await claimDueTasks(1, { lockToken: "exhausted-worker" });
+    expect(claimed).toBeDefined();
+    await expect(
+      deliverLoginCodeEmailTask(payloadOf(claimed!), {
+        taskId: claimed!.id,
+        lockToken: "exhausted-worker",
+        assertTaskOwnership: async () => undefined,
+      }),
+    ).resolves.toContain("no longer active");
+    expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();
+
+    const replacement = await requestLoginCode(email, {
+      challenge: "B".repeat(43),
+      locale: "en",
+    });
+    expect(replacement).toMatchObject({ suppressed: false });
+    expect(replacement.codeId).not.toBe(first.codeId);
+    await expect(db.select().from(loginCodes)).resolves.toHaveLength(2);
+    await expect(db.select().from(tasks)).resolves.toHaveLength(2);
+  });
+
   it("allows a reclaimed worker to repeat the same code after a pre-completion crash", async () => {
-    await requestLoginCode("retry@example.com", { locale: "en" });
+    await requestLoginCode("retry@example.com", { challenge: TEST_CHALLENGE, locale: "en" });
     const [firstClaim] = await claimDueTasks(1, { lockToken: "worker-a" });
     expect(firstClaim).toBeDefined();
 
@@ -180,7 +223,10 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
   });
 
   it("revalidates task ownership immediately before SMTP", async () => {
-    await requestLoginCode("lost-before-smtp@example.com", { locale: "en" });
+    await requestLoginCode("lost-before-smtp@example.com", {
+      challenge: TEST_CHALLENGE,
+      locale: "en",
+    });
     const [claimed] = await claimDueTasks(1, { lockToken: "worker-a" });
     expect(claimed).toBeDefined();
 
@@ -208,7 +254,10 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
   });
 
   it("successfully no-ops a manually retried old task after a newer active code exists", async () => {
-    await requestLoginCode("superseded@example.com", { locale: "en" });
+    await requestLoginCode("superseded@example.com", {
+      challenge: TEST_CHALLENGE,
+      locale: "en",
+    });
     const [oldClaim] = await claimDueTasks(1, { lockToken: "retry-worker" });
     expect(oldClaim).toBeDefined();
 
@@ -226,5 +275,134 @@ describeWithDatabase("S4 persistent login-code delivery fence", () => {
       }),
     ).resolves.toContain("superseded");
     expect(mocks.sendLoginCodeEmail).not.toHaveBeenCalled();
+  });
+
+  it("keeps unknown teardown across lease expiry, reclaim and code expiry", async () => {
+    const email = "unknown-close@example.com";
+    await requestLoginCode(email, { challenge: TEST_CHALLENGE });
+    const [a] = await claimDueTasks(1, { lockToken: "reservation-a" });
+    mocks.sendLoginCodeEmail.mockRejectedValue(new TaskOwnershipLostError());
+    await expect(
+      deliverLoginCodeEmailTask(payloadOf(a!), {
+        taskId: a!.id,
+        lockToken: a!.lockedBy,
+        assertTaskOwnership: async () => undefined,
+      }),
+    ).rejects.toBeInstanceOf(TaskOwnershipLostError);
+    const [reserved] = await db.select().from(loginCodes);
+    expect(reserved.smtpReservationToken).toBeTruthy();
+    await db
+      .update(tasks)
+      .set({ leaseUntil: new Date(Date.now() - 1000) })
+      .where(eq(tasks.id, a!.id));
+    await expect(verifyLoginCode(email, "000000", TEST_CHALLENGE)).rejects.toMatchObject({
+      comparisonDeferred: true,
+    });
+    const [b] = await claimDueTasks(1, { lockToken: "reservation-b" });
+    await expect(
+      deliverLoginCodeEmailTask(payloadOf(b!), {
+        taskId: b!.id,
+        lockToken: b!.lockedBy,
+        assertTaskOwnership: async () => undefined,
+      }),
+    ).rejects.toThrow("operator recovery");
+    expect(mocks.sendLoginCodeEmail).toHaveBeenCalledTimes(1);
+    const [unchanged] = await db.select().from(loginCodes);
+    expect(unchanged.attemptCount).toBe(0);
+    expect(unchanged.usedAt).toBeNull();
+    await db
+      .update(loginCodes)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(loginCodes.id, reserved.id));
+    await expect(verifyLoginCode(email, "000000", TEST_CHALLENGE)).rejects.toMatchObject({
+      code: "codeIncorrect",
+      comparisonDeferred: true,
+    });
+    await expect(requestLoginCode(email, { challenge: "B".repeat(43) })).resolves.toEqual({
+      suppressed: true,
+    });
+  });
+
+  it("a delayed close callback cannot release a newer reservation generation", async () => {
+    await requestLoginCode("generation@example.com", { challenge: TEST_CHALLENGE });
+    const [a] = await claimDueTasks(1, { lockToken: "generation-a" });
+    let closeOld!: () => Promise<void>;
+    mocks.sendLoginCodeEmail.mockImplementation(async (_to, _code, _locale, options) => {
+      closeOld = options.onSmtpClosed;
+      throw new TaskOwnershipLostError();
+    });
+    await expect(
+      deliverLoginCodeEmailTask(payloadOf(a!), {
+        taskId: a!.id,
+        lockToken: a!.lockedBy,
+        assertTaskOwnership: async () => undefined,
+      }),
+    ).rejects.toThrow();
+    const [code] = await db.select().from(loginCodes);
+    const replacement = "11111111-2222-4333-8444-555555555555";
+    // Simulate completed operator recovery followed by a new worker reservation.
+    await db
+      .update(loginCodes)
+      .set({ smtpReservationToken: replacement })
+      .where(eq(loginCodes.id, code.id));
+    await closeOld();
+    const [stillReserved] = await db.select().from(loginCodes);
+    expect(stillReserved.smtpReservationToken).toBe(replacement);
+  });
+
+  it("retains the generation when the database rejects release after confirmed teardown", async () => {
+    await requestLoginCode("release-db-failure@example.com", { challenge: TEST_CHALLENGE });
+    const [a] = await claimDueTasks(1, { lockToken: "release-failure" });
+    await db.execute(sql`create function reject_smtp_release_test() returns trigger language plpgsql as $$
+      begin
+        if old.smtp_reservation_token is not null and new.smtp_reservation_token is null then
+          raise exception 'injected release failure';
+        end if;
+        return new;
+      end $$`);
+    await db.execute(sql`create trigger reject_smtp_release_test before update on login_codes
+      for each row execute function reject_smtp_release_test()`);
+    try {
+      await expect(
+        deliverLoginCodeEmailTask(payloadOf(a!), {
+          taskId: a!.id,
+          lockToken: a!.lockedBy,
+          assertTaskOwnership: async () => undefined,
+        }),
+      ).rejects.toThrow("SMTP delivery failed");
+      const [row] = await db.select().from(loginCodes);
+      expect(row.smtpReservationToken).toBeTruthy();
+      expect(row.usedAt).toBeNull();
+      expect(row.attemptCount).toBe(0);
+      await db
+        .update(tasks)
+        .set({ status: "dead", lockedBy: null, leaseUntil: null })
+        .where(eq(tasks.id, a!.id));
+      await expect(verifyLoginCode(row.email, "000000", TEST_CHALLENGE)).rejects.toMatchObject({
+        comparisonDeferred: true,
+      });
+    } finally {
+      await db.execute(sql`drop trigger reject_smtp_release_test on login_codes`);
+      await db.execute(sql`drop function reject_smtp_release_test()`);
+    }
+  });
+
+  it("confirmed teardown releases the reservation even after the claim is lost, without stale finalization", async () => {
+    await requestLoginCode("closed-after-loss@example.com", { challenge: TEST_CHALLENGE });
+    const [a] = await claimDueTasks(1, { lockToken: "close-a" });
+    mocks.sendLoginCodeEmail.mockImplementation(async (_to, _code, _locale, options) => {
+      await db
+        .update(tasks)
+        .set({ lockedBy: "close-b", leaseUntil: new Date(Date.now() + 60_000) })
+        .where(eq(tasks.id, a!.id));
+      await options.onSmtpClosed();
+      throw new TaskOwnershipLostError();
+    });
+    await dispatchClaimedTask(a!);
+    const [code] = await db.select().from(loginCodes);
+    expect(code.smtpReservationToken).toBeNull();
+    const [task] = await db.select().from(tasks);
+    expect(task.lockedBy).toBe("close-b");
+    expect(task.status).toBe("processing");
   });
 });

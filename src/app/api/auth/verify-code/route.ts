@@ -9,7 +9,7 @@ import {
 import { getEnv } from "@/lib/env";
 import { isRateLimited, rateLimit } from "@/lib/rate-limit";
 import { assertContentLengthWithinLimit, readJsonWithLimit } from "@/lib/request-body";
-import { verifyLoginCode } from "@/modules/auth/login-code";
+import { isExhaustedLoginCodeChallenge, verifyLoginCode } from "@/modules/auth/login-code";
 import {
   getVerifyCodeCompareRateLimit,
   getVerifyCodeWrongAttemptRateLimits,
@@ -18,6 +18,7 @@ import {
   RAW_LOGIN_CODE_MAX_LENGTH,
   rawEmailSchema,
   validateLoginCode,
+  validateLoginCodeChallenge,
   validateNormalizedEmail,
 } from "@/modules/auth/rate-limit-policy";
 import { createSession, setSessionCookie } from "@/modules/auth/session";
@@ -28,21 +29,51 @@ export const runtime = "nodejs";
 const bodySchema = z.object({
   email: rawEmailSchema,
   code: z.string().min(1).max(RAW_LOGIN_CODE_MAX_LENGTH),
+  challenge: z.string().optional(),
+  recoveryOnly: z.boolean().optional(),
 });
 
 export async function POST(req: NextRequest) {
   try {
     const env = getEnv();
     assertContentLengthWithinLimit(req, env.REQUEST_JSON_MAX_BYTES);
-    const { email, code } = await readJsonWithLimit(req, env.REQUEST_JSON_MAX_BYTES, bodySchema);
+    const { email, code, challenge, recoveryOnly } = await readJsonWithLimit(
+      req,
+      env.REQUEST_JSON_MAX_BYTES,
+      bodySchema,
+    );
     const normalizedEmail = validateNormalizedEmail(normalizeEmail(email));
     const normalizedCode = validateLoginCode(normalizeLoginCode(code), env);
+    const validatedChallenge = challenge ? validateLoginCodeChallenge(challenge) : undefined;
 
     const clientIp = getClientIp(req);
     const identity = resolveClientRateLimitIdentity(clientIp);
     assertProductionAuthClientIdentity(identity, env.NODE_ENV, "verify-code", {
       allowUnresolved: env.AUTH_ALLOW_UNRESOLVED_CLIENT_IP,
     });
+
+    if (validatedChallenge) {
+      const source = getVerifyCodeCompareRateLimit({ identity, env });
+      // Separate source-only allowance leaves room to recover the response
+      // after a comparison exhausts its own budget; no target key is involved.
+      const probeAllowed = rateLimit(
+        `login-code-recovery:${source.key}`,
+        source.max * 2,
+        source.windowMs,
+      );
+      if (!probeAllowed && recoveryOnly) {
+        return jsonError(429, "codeAttemptsExceeded");
+      }
+      // Exhausting the auxiliary probe allowance must not add a new gate to
+      // ordinary verification; its existing source/target limits still apply.
+      if (
+        probeAllowed &&
+        (await isExhaustedLoginCodeChallenge(normalizedEmail, validatedChallenge))
+      ) {
+        return jsonError(429, "codeAttemptsExceeded", { challengeRotationRequired: 1 });
+      }
+    }
+    if (recoveryOnly) return jsonOk({ accepted: true });
 
     const failureLimits = getVerifyCodeWrongAttemptRateLimits({
       identity,
@@ -64,11 +95,16 @@ export async function POST(req: NextRequest) {
     const locale = await resolveLocale();
     let user: Awaited<ReturnType<typeof verifyLoginCode>>;
     try {
-      user = await verifyLoginCode(normalizedEmail, normalizedCode, locale);
+      user = await verifyLoginCode(normalizedEmail, normalizedCode, validatedChallenge, locale);
     } catch (error) {
       if (
         error instanceof ApiError &&
-        (error.code === "codeIncorrect" || error.code === "codeExpired")
+        ((error.code === "codeIncorrect" &&
+          (error as ApiError & { comparisonDeferred?: boolean }).comparisonDeferred !== true) ||
+          error.code === "codeExpired" ||
+          (error.code === "codeAttemptsExceeded" &&
+            (error as ApiError & { freshAttemptExhausted?: boolean }).freshAttemptExhausted ===
+              true))
       ) {
         // Target-scoped accounting remains post-comparison so another source
         // cannot pre-fill an email-only bucket and block the account owner.
@@ -76,7 +112,13 @@ export async function POST(req: NextRequest) {
           rateLimit(limit.key, limit.max, limit.windowMs),
         );
         if (allowed.some((value) => !value)) {
-          return jsonError(429, "codeAttemptsExceeded");
+          // Preserve challengeRotationRequired on a fresh exhaustion that also fills the
+          // target bucket so the client can still rotate before resend.
+          return jsonError(
+            429,
+            "codeAttemptsExceeded",
+            error instanceof ApiError ? error.params : undefined,
+          );
         }
       }
       throw error;

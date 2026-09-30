@@ -688,6 +688,10 @@ run_one_off /app/dist/restore-converge.mjs $CONVERGE_ARGS || fail "restore conve
 echo "Verifying restored config encryption key against encrypted settings..."
 run_one_off /app/dist/restore-config-key-probe.mjs || fail "restored config encryption key cannot decrypt encrypted settings"
 
+echo "Checking restored login-code SMTP reservations before app startup..."
+run_one_off /app/dist/restore-login-code-smtp-check.mjs \
+  || fail "app remains stopped; stop other database clients or recover outstanding SMTP reservations using docs/deployment/login-code-smtp-recovery.md, then rerun the check and start the app without re-importing the archive"
+
 echo "Starting application..."
 compose up -d --force-recreate app
 

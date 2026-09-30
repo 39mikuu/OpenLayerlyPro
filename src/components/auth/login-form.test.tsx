@@ -6,7 +6,7 @@ vi.mock("@/components/i18n-provider", () => ({ useT: () => (key: string) => key 
 
 import { LoginForm } from "./login-form";
 
-const codePolicy = { loginCodeLength: 16, loginCodePattern: "^[0-9A-HJKMNP-TV-Z]{16}$" };
+const codePolicy = { loginCodeLength: 6, loginCodePattern: "^[0-9]{6}$" };
 
 describe("login form semantics", () => {
   it("submits admin credentials through one form", () => {

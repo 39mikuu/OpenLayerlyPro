@@ -11,6 +11,7 @@ const artifacts =
         "restore-converge.mjs",
         "restore-schema-check.mjs",
         "restore-config-key-probe.mjs",
+        "restore-login-code-smtp-check.mjs",
       ].map((name) => new URL(`../dist/${name}`, import.meta.url));
 
 for (const artifact of artifacts) {
