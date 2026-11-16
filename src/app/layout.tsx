@@ -8,8 +8,10 @@ import {
   IntegrationScriptElements,
   VerificationMetaElements,
 } from "@/components/public-security-elements";
+import { getEnv } from "@/lib/env";
+import { isPublishedPublicBlogArticle } from "@/modules/blog/public-article";
 import { buildRootMetadataFromSite, ROOT_DEFAULT_METADATA } from "@/modules/content/root-metadata";
-import { getClientMessages, resolveLocale } from "@/modules/i18n/server";
+import { getBlogLocale, getClientMessages, resolveLocale } from "@/modules/i18n/server";
 import { getPublicSiteInfo } from "@/modules/site";
 import {
   canRenderIntegrationRevision,
@@ -38,13 +40,25 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const [cookieStore, requestHeaders] = await Promise.all([cookies(), headers()]);
-  const htmlClass = darkClassFromMode(cookieStore.get(THEME_MODE_COOKIE)?.value);
-  const locale = await resolveLocale();
+  const requestHeaders = await headers();
+  const publicBlog =
+    getEnv().PERSONAL_BLOG_MODE && requestHeaders.get("x-personal-blog-document") === "1";
+  const htmlClass = publicBlog
+    ? ""
+    : darkClassFromMode((await cookies()).get(THEME_MODE_COOKIE)?.value);
+  const locale = publicBlog ? getBlogLocale() : await resolveLocale();
   const messages = getClientMessages(locale);
   const nonce = requestHeaders.get("x-nonce");
   const requestRevision = requestHeaders.get("x-csp-config-revision");
-  const renderPublicSecurity = requestHeaders.get("x-public-security-render") === "1";
+  let renderPublicSecurity = requestHeaders.get("x-public-security-render") === "1";
+  const slug = requestHeaders.get("x-personal-blog-slug");
+  if (renderPublicSecurity && slug) {
+    try {
+      renderPublicSecurity = await isPublishedPublicBlogArticle(slug);
+    } catch {
+      renderPublicSecurity = false;
+    }
+  }
 
   // 颜色预设为站点级配置；读取失败（如 DB 暂不可用）时回落无覆盖，绝不阻断页面渲染。
   let presetCss: string | null = null;

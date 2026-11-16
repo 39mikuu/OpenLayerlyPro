@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
+import { getEnv } from "@/lib/env";
 import { getCurrentUser } from "@/modules/auth/session";
+import { canEnterInside } from "@/modules/blog/access";
+import { requireInsidePage } from "@/modules/blog/reader-page";
 import { getT } from "@/modules/i18n/server";
 import { getActiveMembership } from "@/modules/membership";
 import { describeEntitlements } from "@/modules/membership/entitlements";
@@ -17,8 +20,10 @@ export const metadata: Metadata = {
 };
 
 export default async function MePage() {
-  const user = await getCurrentUser();
+  const readerArea = getEnv().PERSONAL_BLOG_MODE;
+  const user = readerArea ? await requireInsidePage("/inside/me", false) : await getCurrentUser();
   if (!user) redirect("/login");
+  const canSubscribe = !readerArea || (await canEnterInside(user));
   const [
     active,
     subscription,
@@ -43,6 +48,8 @@ export default async function MePage() {
     <Me
       t={t}
       view={{
+        readerArea,
+        canSubscribe,
         email: user.email,
         displayName: user.displayName,
         isAdmin: user.role === "admin",

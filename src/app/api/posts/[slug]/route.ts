@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 
 import { handleApiError, jsonError, jsonOk } from "@/lib/api";
+import { getEnv } from "@/lib/env";
 import { getCurrentUser } from "@/modules/auth/session";
 import {
   canAccessPost,
@@ -15,8 +16,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ slug: stri
   try {
     const { slug } = await ctx.params;
     const post = await getPublishedPostBySlug(slug);
-    const user = await getCurrentUser();
-    if (!post) {
+    const user = getEnv().PERSONAL_BLOG_MODE ? null : await getCurrentUser();
+    if (!post || (getEnv().PERSONAL_BLOG_MODE && post.visibility !== "public")) {
       return jsonError(404, "postNotFound");
     }
     const allowed = await canAccessPost(user, post);

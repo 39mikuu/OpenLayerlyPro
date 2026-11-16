@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
-import { DEFAULT_LOCALE } from "@/modules/i18n/config";
+import { getEnv } from "@/lib/env";
+import { DEFAULT_LOCALE, type Locale } from "@/modules/i18n/config";
 import { readPublicSiteInfoWithMetadata } from "@/modules/site";
 
 import {
@@ -42,7 +43,8 @@ type PublicFeedRow = {
   translationPublishedAt: Date | string | null;
 };
 
-export const PUBLIC_ATOM_FEED_SQL = sql<PublicFeedRow>`
+function publicAtomFeedQuery(locale: Locale) {
+  return sql<PublicFeedRow>`
   select
     feed_posts.id,
     feed_posts.slug,
@@ -76,10 +78,13 @@ export const PUBLIC_ATOM_FEED_SQL = sql<PublicFeedRow>`
   ) feed_posts
   left join post_translations
     on post_translations.post_id = feed_posts.id
-    and post_translations.locale = ${DEFAULT_LOCALE}
+    and post_translations.locale = ${locale}
     and post_translations.status = 'published'
   order by feed_posts.published_at desc, feed_posts.id desc
 `;
+}
+
+export const PUBLIC_ATOM_FEED_SQL = publicAtomFeedQuery(DEFAULT_LOCALE);
 
 export function publicAtomFeedSqlText(): string {
   return PUBLIC_ATOM_FEED_SQL.queryChunks
@@ -165,7 +170,10 @@ function rowToFeedEntry(row: PublicFeedRow): PublicAtomFeedEntry {
 export async function listPublicAtomFeedEntries(
   dbc: DbClient = getDb(),
 ): Promise<PublicAtomFeedEntry[]> {
-  const rows = (await dbc.execute(PUBLIC_ATOM_FEED_SQL)) as PublicFeedRow[];
+  const env = getEnv();
+  const rows = (await dbc.execute(
+    env.PERSONAL_BLOG_MODE ? publicAtomFeedQuery(env.BLOG_LOCALE) : PUBLIC_ATOM_FEED_SQL,
+  )) as PublicFeedRow[];
   return rows.map(rowToFeedEntry);
 }
 
@@ -251,6 +259,7 @@ export function isPublicAtomFeedNotModified(headers: Headers, feed: PublicAtomFe
   if (headers.get("if-none-match")) {
     return isPublicHttpResourceNotModified(headers, { body: feed.xml, etag: feed.etag });
   }
+  if (getEnv().PERSONAL_BLOG_MODE) return false;
   const ifModifiedSince = headers.get("if-modified-since");
   if (!ifModifiedSince) return false;
   const since = Date.parse(ifModifiedSince);
@@ -260,6 +269,6 @@ export function isPublicAtomFeedNotModified(headers: Headers, feed: PublicAtomFe
 
 export function publicAtomFeedHeaders(feed: PublicAtomFeed): Headers {
   const headers = publicXmlHeaders({ body: feed.xml, etag: feed.etag }, PUBLIC_ATOM_CONTENT_TYPE);
-  headers.set("last-modified", feed.lastModified);
+  if (!getEnv().PERSONAL_BLOG_MODE) headers.set("last-modified", feed.lastModified);
   return headers;
 }

@@ -9,6 +9,7 @@ import { addMinutes } from "@/lib/dates";
 import { getEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { normalizeMagicLinkRedirectPath } from "@/modules/auth/magic-link";
+import { mayCreateReaderAccount } from "@/modules/blog/access";
 import {
   clearOAuthProviderConfig,
   getOAuthProviderAdminView,
@@ -374,6 +375,8 @@ async function resolveUserFromProfile(
       if (existing) {
         user = existing;
       } else {
+        if (!(await mayCreateReaderAccount(emailNorm, tx)))
+          throw new ApiError(400, "oauthBindFailed");
         const [created] = await tx
           .insert(users)
           .values({ email: emailNorm, role: "member" })

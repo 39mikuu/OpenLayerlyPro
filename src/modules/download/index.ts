@@ -5,10 +5,12 @@ import { getDb } from "@/db";
 import { downloadLogs, type FileRecord, files, type Post, type User, users } from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import { getEnv } from "@/lib/env";
+import { canEnterInside } from "@/modules/blog/access";
 import {
   canAccessPost,
   listPostIdsWithPublishedInlineImageReference,
   listPostLinksForFile,
+  listPostsForCover,
   listPostsForFile,
 } from "@/modules/content";
 import { authoritativeDownloadName } from "@/modules/file/authoritativeName";
@@ -66,10 +68,21 @@ async function resolveFileAccess(user: User | null, file: FileRecord): Promise<F
 
   switch (file.purpose) {
     case "artist_avatar":
-    case "payment_qr":
-    case "cover":
-    case "thumbnail":
       return { allowed: true, postId: null, visibility: null };
+    case "payment_qr":
+      if (getEnv().PERSONAL_BLOG_MODE && !(await canEnterInside(user))) {
+        return { allowed: false, errorCode: "accessDenied" };
+      }
+      return { allowed: true, postId: null, visibility: null };
+    case "cover":
+    case "thumbnail": {
+      if (!getEnv().PERSONAL_BLOG_MODE) return { allowed: true, postId: null, visibility: null };
+      const linkedPosts = await listPostsForFile(file.id);
+      const coverPosts = file.purpose === "cover" ? await listPostsForCover(file.id) : [];
+      const post = await findGrantingPost(user, [...linkedPosts, ...coverPosts]);
+      if (post) return { allowed: true, postId: post.id, visibility: post.visibility };
+      return { allowed: false, errorCode: "accessDenied" };
+    }
     case "payment_proof": {
       if (!user) return { allowed: false, errorCode: "authRequired" };
       if (file.createdBy === user.id) {
@@ -205,7 +218,8 @@ export async function prepareAuthorizedDownload(input: {
   const storage = await getStorageForDriver(file.storageDriver);
   const downloadName = authoritativeDownloadName(file);
   const video = file.purpose === "content_attachment" && isInlineVideoMime(file.mimeType);
-  if (file.storageDriver === "s3" && storage.createSignedDownloadUrl) {
+  const appPrivate = getEnv().PERSONAL_BLOG_MODE && file.purpose !== "artist_avatar";
+  if (!appPrivate && file.storageDriver === "s3" && storage.createSignedDownloadUrl) {
     if (video && input.inline && access.visibility === "public") {
       const url = await storage.createSignedDownloadUrl({
         objectKey: file.objectKey,

@@ -9,6 +9,7 @@ import {
   encodeAdminListCursor,
   normalizeAdminPageSize,
 } from "@/modules/admin/pagination";
+import { mayCreateReaderAccount } from "@/modules/blog/access";
 import type { Locale } from "@/modules/i18n";
 
 export async function findUserByEmail(
@@ -31,10 +32,13 @@ export async function findUserById(id: string): Promise<User | null> {
 export async function findOrCreateUserByEmail(
   email: string,
   client: DbClient = getDb(),
+  options: { adminProvisioning?: boolean } = {},
 ): Promise<User> {
   const normalized = email.trim().toLowerCase();
   const existing = await findUserByEmail(normalized, client);
   if (existing) return existing;
+  if (!options.adminProvisioning && !(await mayCreateReaderAccount(normalized, client)))
+    throw new ApiError(403, "invalidCredentials");
   const [created] = await client
     .insert(users)
     .values({ email: normalized, role: "member" })

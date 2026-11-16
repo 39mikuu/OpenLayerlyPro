@@ -48,6 +48,7 @@ export function expansionRecipientQuery(input: {
   cursorUserId: string | null;
   limit: number;
   requiredTierLevel: number | null;
+  invitedOnly?: boolean;
 }): SQL {
   const memberFilter =
     input.requiredTierLevel === null
@@ -63,13 +64,16 @@ export function expansionRecipientQuery(input: {
           AND m.ends_at > now()
           AND mt.level >= ${input.requiredTierLevel}
       )`;
+  const invitationFilter = input.invitedOnly
+    ? sql`AND EXISTS (SELECT 1 FROM reader_invitations i WHERE i.redeemed_by = u.id AND i.revoked_at IS NULL)`
+    : sql``;
   return sql`
     SELECT u.id AS user_id
     FROM users u
     INNER JOIN notification_preferences np
       ON np.user_id = u.id
      AND np.new_post_email_enabled = true
-    WHERE (${input.cursorUserId}::uuid IS NULL OR u.id > ${input.cursorUserId}::uuid)${memberFilter}
+    WHERE (${input.cursorUserId}::uuid IS NULL OR u.id > ${input.cursorUserId}::uuid)${memberFilter}${invitationFilter}
     ORDER BY u.id ASC
     LIMIT ${input.limit}
   `;
@@ -84,12 +88,14 @@ async function selectRecipientCandidates(
     limit: number;
   },
 ): Promise<RecipientCandidate[]> {
+  const invitedOnly = getEnv().PERSONAL_BLOG_MODE && input.visibility !== "public";
   if (input.visibility !== "member") {
     return tx.execute<RecipientCandidate>(
       expansionRecipientQuery({
         cursorUserId: input.cursorUserId,
         limit: input.limit,
         requiredTierLevel: null,
+        invitedOnly,
       }),
     );
   }
@@ -107,6 +113,7 @@ async function selectRecipientCandidates(
       cursorUserId: input.cursorUserId,
       limit: input.limit,
       requiredTierLevel: requiredTier.level,
+      invitedOnly,
     }),
   );
 }

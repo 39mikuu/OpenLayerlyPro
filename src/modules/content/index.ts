@@ -1,4 +1,17 @@
-import { and, asc, desc, eq, exists, getTableColumns, inArray, lt, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  exists,
+  getTableColumns,
+  ilike,
+  inArray,
+  lt,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 
 import { type DbClient, getDb, type TxClient } from "@/db";
 import {
@@ -19,11 +32,14 @@ import {
   type User,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import { getEnv } from "@/lib/env";
+import { canEnterInside } from "@/modules/blog/access";
 import { lockFileReferences } from "@/modules/file/references";
 import { isLocale, type Locale } from "@/modules/i18n";
 import { resolveMembershipAccess } from "@/modules/membership";
 import { setPostCategories, setPostTags } from "@/modules/taxonomy";
 
+import { canReadPostAudience } from "./audience";
 import {
   assertPostFilePurpose,
   type AttachablePostFileKind,
@@ -328,6 +344,9 @@ export async function listPublishedPostsPage(opts: {
   cursor?: string | null;
   categorySlug?: string;
   tagSlug?: string;
+  audience?: "public" | "inside";
+  search?: string;
+  searchLocale?: Locale;
 }): Promise<{ posts: Post[]; nextCursor: string | null }> {
   const db = getDb();
   const requestedLimit = opts.limit ?? POSTS_PAGE_SIZE;
@@ -339,9 +358,42 @@ export async function listPublishedPostsPage(opts: {
     ${posts.publishedAt} at time zone 'UTC',
     'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
   )`;
+  const search = opts.search
+    ? `%${opts.search.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`
+    : null;
   const conditions = [
     eq(posts.status, "published"),
     ...taxonomyFilterConditions(opts),
+    ...(opts.audience === "public" ? [eq(posts.visibility, "public")] : []),
+    ...(opts.audience === "inside" ? [ne(posts.visibility, "public")] : []),
+    ...(search
+      ? [
+          or(
+            ilike(posts.title, search),
+            ilike(posts.summary, search),
+            ...(opts.searchLocale
+              ? [
+                  exists(
+                    db
+                      .select({ id: postTranslations.id })
+                      .from(postTranslations)
+                      .where(
+                        and(
+                          eq(postTranslations.postId, posts.id),
+                          eq(postTranslations.locale, opts.searchLocale),
+                          eq(postTranslations.status, "published"),
+                          or(
+                            ilike(postTranslations.title, search),
+                            ilike(postTranslations.summary, search),
+                          ),
+                        ),
+                      ),
+                  ),
+                ]
+              : []),
+          )!,
+        ]
+      : []),
     ...(cursor
       ? [
           or(
@@ -697,19 +749,15 @@ export async function deleteDraftTranslation(
 /** 用户是否可访问内容（admin 直通；published 状态由调用方决定是否要求） */
 export async function canAccessPost(user: User | null, post: Post): Promise<boolean> {
   if (user?.role === "admin") return true;
-  if (post.visibility === "public") return true;
-  if (!user) return false;
-  if (post.visibility === "login") return true;
-  // member 内容
-  if (!post.requiredTierId) return false;
-  const [requiredTier] = await getDb()
-    .select()
-    .from(membershipTiers)
-    .where(eq(membershipTiers.id, post.requiredTierId))
-    .limit(1);
+  if (!user || post.visibility === "public")
+    return canReadPostAudience(post.visibility, "guest", undefined);
+  if (getEnv().PERSONAL_BLOG_MODE && !(await canEnterInside(user))) return false;
+  if (post.visibility === "login") return canReadPostAudience(post.visibility, "reader", undefined);
+
+  const requiredTier = await getRequiredTier(post);
   if (!requiredTier) return false;
   const access = await resolveMembershipAccess(user.id);
-  return access.level >= requiredTier.level;
+  return canReadPostAudience(post.visibility, { level: access.level }, requiredTier.level);
 }
 
 export async function getRequiredTier(post: Post): Promise<MembershipTier | null> {
@@ -828,6 +876,10 @@ export async function listPostLinksForFile(fileId: string): Promise<PostLinkForF
 }
 
 /** 文件所关联的 posts（保留旧接口，避免破坏现有调用方） */
+export async function listPostsForCover(fileId: string): Promise<Post[]> {
+  return getDb().select().from(posts).where(eq(posts.coverFileId, fileId));
+}
+
 export async function listPostsForFile(fileId: string): Promise<Post[]> {
   const rows = await listPostLinksForFile(fileId);
   return rows.map((row) => row.post);

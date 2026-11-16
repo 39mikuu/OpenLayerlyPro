@@ -37,6 +37,10 @@ Current release: **v1.1.0**, published on 2026-07-17. Acceptance evidence is arc
 - Docker Compose 部署
 - Cloudflare Tunnel 支持，无公网 IP 家庭服务器友好
 
+## 个人博客模式
+
+可选 `PERSONAL_BLOG_MODE=true`。公开站展示博客，受邀读者从 `/inside` 阅读限定内容、管理订阅与订单。详见 [个人博客部署](docs/deployment/personal-blog.md)。
+
 ## 适合谁
 
 - 想自托管单画师或单创作者会员站的个人创作者。

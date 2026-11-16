@@ -566,3 +566,17 @@ export async function sendNewPostNotificationEmail(
     assertTaskOwnership: options.assertTaskOwnership,
   });
 }
+
+export async function sendReaderInvitationEmail(input: {
+  email: string;
+  link: string;
+  subject: string;
+  instructions: string;
+}): Promise<void> {
+  await sendMail({
+    to: input.email,
+    subject: input.subject,
+    text: `${input.instructions}\n\n${input.link}`,
+    safeLog: { template: "reader_invitation", category: "transactional" },
+  });
+}

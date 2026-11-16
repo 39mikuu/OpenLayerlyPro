@@ -1,6 +1,7 @@
 import { Download, LockKeyhole } from "lucide-react";
 import Link from "next/link";
 
+import { CodeCopy } from "@/components/blog/code-copy";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Translate } from "@/modules/i18n";
@@ -20,11 +21,20 @@ export function PostDetail({ view, t }: { view: PostDetailView; t: Translate }) 
       ? t("post.memberVisible", { tier: view.requiredTierName })
       : undefined;
 
+  const body = view.bodyHtml && (
+    <div
+      className="prose-content text-[15px] leading-8 sm:text-base"
+      dangerouslySetInnerHTML={{ __html: view.bodyHtml }}
+    />
+  );
+
   return (
     <article className="mx-auto max-w-3xl">
       <header className="space-y-4 border-b pb-7">
         <div className="flex flex-wrap items-center gap-2">
-          <PostVisibilityBadge visibility={view.visibility} t={t} memberLabel={memberLabel} />
+          {(!view.blogArticle || view.visibility !== "public") && (
+            <PostVisibilityBadge visibility={view.visibility} t={t} memberLabel={memberLabel} />
+          )}
           {view.machineTranslated && (
             <Badge variant="outline" className="font-normal text-muted-foreground">
               {t("post.machineTranslated")}
@@ -45,7 +55,7 @@ export function PostDetail({ view, t }: { view: PostDetailView; t: Translate }) 
             {view.summary}
           </p>
         )}
-        {(view.categories.length > 0 || view.tags.length > 0) && (
+        {!view.readerArea && (view.categories.length > 0 || view.tags.length > 0) && (
           <div className="flex flex-wrap gap-2">
             {view.categories.map((category) => (
               <Link
@@ -87,18 +97,36 @@ export function PostDetail({ view, t }: { view: PostDetailView; t: Translate }) 
                 })}
           </p>
           <Button asChild className="mt-5">
-            <a href={view.isLoggedIn ? "/tiers" : "/login"}>
+            <a href={view.readerArea ? "/inside/tiers" : view.isLoggedIn ? "/tiers" : "/login"}>
               {view.isLoggedIn ? t("post.openMembership") : t("post.goLogin")}
             </a>
           </Button>
         </section>
       ) : (
         <div className="mt-8 space-y-9">
-          {view.bodyHtml && (
-            <div
-              className="prose-content text-[15px] leading-8 sm:text-base"
-              dangerouslySetInnerHTML={{ __html: view.bodyHtml }}
-            />
+          {view.blogArticle && view.blogArticle.toc.length > 1 && (
+            <details className="rounded-lg border px-4 py-3">
+              <summary className="cursor-pointer font-medium">{view.blogArticle.tocLabel}</summary>
+              <nav aria-label={view.blogArticle.tocLabel} className="mt-2">
+                <ul className="space-y-2 text-sm">
+                  {view.blogArticle.toc.map((entry) => (
+                    <li key={entry.id} className={entry.level === 3 ? "pl-3" : ""}>
+                      <a
+                        href={`#${entry.id}`}
+                        className="break-words underline-offset-4 hover:underline"
+                      >
+                        {entry.title}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </nav>
+            </details>
+          )}
+          {view.blogArticle ? (
+            <CodeCopy labels={view.blogArticle.codeLabels}>{body}</CodeCopy>
+          ) : (
+            body
           )}
 
           {view.images.length > 0 && (

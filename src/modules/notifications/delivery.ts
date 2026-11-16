@@ -19,6 +19,7 @@ import {
   users,
 } from "@/db/schema";
 import { getEnv } from "@/lib/env";
+import { hasInvitationGrant } from "@/modules/blog/access";
 import { getSmtpConfig } from "@/modules/config";
 import {
   buildPostUrl,
@@ -68,7 +69,12 @@ type DeliveryOutcome =
   | "preference_disabled_skip"
   | "user_missing_skip";
 
+class RecipientAccessChanged extends Error {}
+
 type PreparedMessage = {
+  postId: string;
+  recipientUserId: string;
+  privatePost: boolean;
   attemptId: string;
   attemptNumber: number;
   taskId: string;
@@ -293,6 +299,8 @@ async function hasCurrentAccessTx(
   post: typeof posts.$inferSelect,
   userId: string,
 ): Promise<boolean> {
+  if (post.visibility === "public") return true;
+  if (getEnv().PERSONAL_BLOG_MODE && !(await hasInvitationGrant(userId, tx))) return false;
   if (post.visibility !== "member") return true;
   if (!post.requiredTierId) return false;
   const [requiredTier] = await tx
@@ -650,7 +658,10 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
       publicBaseUrl,
       `/api/notifications/unsubscribe/${encodeURIComponent(token)}`,
     );
-    const postUrl = buildPostUrl(publicBaseUrl, post.slug);
+    const postUrl =
+      getEnv().PERSONAL_BLOG_MODE && post.visibility !== "public"
+        ? buildPublicUrl(publicBaseUrl, `/inside/posts/${encodeURIComponent(post.slug)}`)
+        : buildPostUrl(publicBaseUrl, post.slug);
     const siteName = getEnv().APP_NAME;
     const rendered = renderNewPostNotificationEmail(
       {
@@ -726,6 +737,9 @@ async function prepareDeliveryTx(task: Task, userId: string): Promise<DeliveryPr
     return {
       kind: "send",
       message: {
+        postId: post.id,
+        recipientUserId: user.id,
+        privatePost: post.visibility !== "public",
         attemptId: attempt.id,
         attemptNumber: attempt.attemptNumber,
         taskId: task.id,
@@ -810,6 +824,38 @@ async function isLatestAttemptHeldByTaskTx(
     .limit(1)
     .for("update");
   return Boolean(delivery && delivery.attemptCount === message.attemptNumber);
+}
+
+async function finishAudienceChanged(message: PreparedMessage): Promise<TaskHandlerResult> {
+  await getDb().transaction(async (tx) => {
+    const active = await isLatestAttemptHeldByTaskTx(tx, message);
+    await tx
+      .update(notificationDeliveryAttempts)
+      .set({
+        outcome: "access_lost_skip",
+        smtpAttempted: false,
+        completedAt: sql`now()`,
+      })
+      .where(
+        and(
+          eq(notificationDeliveryAttempts.id, message.attemptId),
+          isNull(notificationDeliveryAttempts.completedAt),
+        ),
+      );
+    if (!active) return;
+    await tx
+      .update(notificationDeliveries)
+      .set({
+        status: "skipped",
+        lastOutcome: "access_lost_skip",
+        lastError: "article access changed before SMTP",
+        nextAttemptAfter: null,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(notificationDeliveries.id, message.deliveryId));
+    await enqueueCampaignFinalizeForDeliveryTx(tx, message.campaignId);
+  });
+  return {};
 }
 
 async function finishAcceptedTx(message: PreparedMessage): Promise<void> {
@@ -1192,9 +1238,30 @@ export async function handleNotificationDeliveryTask(
         attemptId: message.attemptId,
         recipientDigest: message.recipientDigest,
       },
-      { assertTaskOwnership: execution.assertOwnership },
+      {
+        assertTaskOwnership: async () => {
+          if (getEnv().PERSONAL_BLOG_MODE) {
+            const db = getDb();
+            const [post] = await db
+              .select()
+              .from(posts)
+              .where(eq(posts.id, message.postId))
+              .limit(1);
+            if (
+              !post ||
+              post.status !== "published" ||
+              (post.visibility !== "public") !== message.privatePost ||
+              !(await hasCurrentAccessTx(db, post, message.recipientUserId))
+            ) {
+              throw new RecipientAccessChanged();
+            }
+          }
+          await execution.assertOwnership();
+        },
+      },
     );
   } catch (error) {
+    if (error instanceof RecipientAccessChanged) return finishAudienceChanged(message);
     if (error instanceof TaskOwnershipLostError) {
       // Preserve the ownership error even if best-effort ledger convergence
       // fails; the reclaiming worker closes any remaining open started row.

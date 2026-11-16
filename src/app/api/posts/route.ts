@@ -1,11 +1,14 @@
 import { handleApiError, jsonOk } from "@/lib/api";
-import { listPosts } from "@/modules/content";
+import { getEnv } from "@/lib/env";
+import { listPosts, listPublishedPostsPage } from "@/modules/content";
 
 export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    const posts = await listPosts({ publishedOnly: true });
+    const posts = getEnv().PERSONAL_BLOG_MODE
+      ? (await listPublishedPostsPage({ audience: "public" })).posts
+      : await listPosts({ publishedOnly: true });
     // 列表只返回元信息，正文在详情页按权限返回
     return jsonOk(
       posts.map((p) => ({

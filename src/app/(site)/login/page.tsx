@@ -7,6 +7,7 @@ import { getOAuthApiBasePath } from "@/modules/auth/oauth";
 import { getLoginCodePolicy } from "@/modules/auth/rate-limit-policy";
 import { resolveSignedInLoginPath, withSiteBasePath } from "@/modules/auth/redirect-path";
 import { getCurrentUser } from "@/modules/auth/session";
+import { insideLoginDestination } from "@/modules/blog/paths";
 import { getTurnstileConfig, isOAuthProviderLoginEnabled } from "@/modules/config";
 import { getT } from "@/modules/i18n/server";
 import { getActiveTheme } from "@/modules/theme";
@@ -22,7 +23,11 @@ export default async function LoginPage({
   searchParams: Promise<{ admin?: string; next?: string; oauth_error?: string }>;
 }) {
   const { admin, next, oauth_error: oauthError } = await searchParams;
-  const redirectPath = normalizeMagicLinkRedirectPath(next) ?? undefined;
+  const target = normalizeMagicLinkRedirectPath(next);
+  const redirectPath =
+    getEnv().PERSONAL_BLOG_MODE && admin !== "1"
+      ? insideLoginDestination(target)
+      : (target ?? undefined);
   const siteBasePath = getOAuthApiBasePath();
   const user = await getCurrentUser();
   if (user) {

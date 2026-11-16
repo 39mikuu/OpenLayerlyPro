@@ -2,8 +2,10 @@ import { notFound } from "next/navigation";
 
 import { PostEditor } from "@/components/admin/post-editor";
 import { Badge } from "@/components/ui/badge";
+import { getEnv } from "@/lib/env";
+import { getBlogCopy } from "@/modules/blog/copy";
 import { getPostById, listPostFiles } from "@/modules/content";
-import { getT } from "@/modules/i18n/server";
+import { getT, resolveLocale } from "@/modules/i18n/server";
 import { listTiers } from "@/modules/membership";
 import { getPostTaxonomy, listCategories, listTags } from "@/modules/taxonomy";
 
@@ -34,6 +36,7 @@ export default async function EditPostPage({ params }: { params: Promise<{ id: s
         {t("admin.posts.editTitle")} <Badge variant="outline">{t(STATUS_KEYS[post.status])}</Badge>
       </h1>
       <PostEditor
+        blogCopy={getEnv().PERSONAL_BLOG_MODE ? getBlogCopy(await resolveLocale()) : undefined}
         post={{
           id: post.id,
           title: post.title,

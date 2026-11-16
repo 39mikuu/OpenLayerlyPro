@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 
 import { type DbClient, getDb } from "@/db";
 import { membershipTiers } from "@/db/schema";
+import { getEnv } from "@/lib/env";
 import { DEFAULT_LOCALE } from "@/modules/i18n";
 import { readPublicSiteInfoWithMetadata } from "@/modules/site";
 import { getSupporterWallSettings, getSupporterWallSitemapState } from "@/modules/supporter-wall";
@@ -160,11 +161,12 @@ export async function buildStaticSitemapResource(
   } = {},
 ): Promise<PublicHttpResource> {
   const baseUrl = getPublicSeoRootUrl(opts.baseUrl);
+  const personalBlog = getEnv().PERSONAL_BLOG_MODE;
   const [site, latestPostUpdatedAt, latestTierUpdatedAt, wallSettings] = await Promise.all([
     readPublicSiteInfoWithMetadata(),
     readPublicPostSitemapLastModified(),
-    readPublicTierSitemapLastModified(),
-    getSupporterWallSettings(),
+    personalBlog ? null : readPublicTierSitemapLastModified(),
+    personalBlog ? null : getSupporterWallSettings(),
   ]);
   const listLastModifiedAt = maxPublicDateOrNull(site.feedIdentityUpdatedAt, latestPostUpdatedAt);
   const tiersLastModifiedAt = maxPublicDateOrNull(site.feedIdentityUpdatedAt, latestTierUpdatedAt);
@@ -177,12 +179,14 @@ export async function buildStaticSitemapResource(
   const entries: SitemapEntry[] = [
     { loc: buildPublicUrl(baseUrl, "/"), lastmod: homeLastModifiedAt },
     { loc: buildPublicUrl(baseUrl, "/posts"), lastmod: listLastModifiedAt },
-    { loc: buildPublicUrl(baseUrl, "/tiers"), lastmod: tiersLastModifiedAt },
+    ...(!personalBlog
+      ? [{ loc: buildPublicUrl(baseUrl, "/tiers"), lastmod: tiersLastModifiedAt }]
+      : []),
   ];
   // /supporters only exists publicly while the wall is enabled (404 when
   // off), so its sitemap entry is conditional; no lastmod — the wall's
   // content is derived per request from membership state.
-  if (wallSettings.enabled) {
+  if (wallSettings?.enabled) {
     entries.push({ loc: buildPublicUrl(baseUrl, "/supporters") });
   }
   return buildPublicHttpResource(renderSitemapUrlSet(entries));
@@ -236,6 +240,9 @@ export function buildRobotsTxt(baseUrl = getPublicSeoRootUrl()): PublicHttpResou
     // allow that subtree (longest-match wins) before disallowing the rest of
     // the API; the download routes stay auth-gated regardless of crawling.
     "Allow: /api/files/",
+    ...(getEnv().PERSONAL_BLOG_MODE
+      ? ["Disallow: /inside", "Disallow: /tiers", "Disallow: /supporters"]
+      : []),
     ...ROBOTS_DISALLOW_PATHS.map((path) => `Disallow: ${path}`),
     `Sitemap: ${buildPublicUrl(publicBaseUrl, "/sitemap.xml")}`,
     "",

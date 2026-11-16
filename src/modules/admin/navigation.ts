@@ -15,6 +15,7 @@ export type AdminNavItemKey =
   | "files"
   | "users"
   | "memberships"
+  | "invitations"
   | "tiers"
   | "paymentReviews"
   | "paymentMethods"

@@ -12,6 +12,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, uploadFile, uploadStreamFile } from "@/lib/client";
+import type { getBlogCopy } from "@/modules/blog/copy";
+import { canReadPostAudience } from "@/modules/content/audience";
 
 type TierOption = { id: string; name: string; level: number };
 type TaxonomyOption = { id: string; name: string };
@@ -68,6 +70,7 @@ export function PostEditor({
   tags,
   selectedCategoryIds,
   selectedTagIds,
+  blogCopy,
 }: {
   post: PostData | null;
   tiers: TierOption[];
@@ -76,9 +79,11 @@ export function PostEditor({
   tags: TaxonomyOption[];
   selectedCategoryIds: string[];
   selectedTagIds: string[];
+  blogCopy?: ReturnType<typeof getBlogCopy>;
 }) {
   const router = useRouter();
   const t = useT();
+  const [previewAudience, setPreviewAudience] = useState("owner");
   const isNew = !post;
   const isPublished = post?.status === "published";
   const [form, setForm] = useState<EditablePostForm>({
@@ -90,6 +95,16 @@ export function PostEditor({
     requiredTierId: post?.requiredTierId ?? "",
     coverFileId: post?.coverFileId ?? null,
   });
+  const previewTier = tiers.find((tier) => tier.id === previewAudience);
+  const requiredPreviewTier = tiers.find((tier) => tier.id === form.requiredTierId);
+  const simulatedAudience = previewTier
+    ? { level: previewTier.level }
+    : previewAudience === "public"
+      ? "guest"
+      : "reader";
+  const previewAllowed =
+    previewAudience === "owner" ||
+    canReadPostAudience(form.visibility, simulatedAudience, requiredPreviewTier?.level);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [categoryIds, setCategoryIds] = useState(selectedCategoryIds);
@@ -552,6 +567,63 @@ export function PostEditor({
             onUploadImage={post ? uploadInlineImage : undefined}
             disabled={loading}
             ariaLabel={t("admin.posts.body")}
+            previewRestricted={Boolean(blogCopy && !previewAllowed)}
+            audiencePreview={
+              blogCopy && (
+                <div className="mb-4 space-y-3 border-b pb-3">
+                  <label className="flex flex-wrap items-center gap-2 text-sm">
+                    {blogCopy.previewAudience}
+                    <select
+                      value={previewAudience}
+                      onChange={(event) => setPreviewAudience(event.target.value)}
+                      className="rounded-md border bg-background px-2 py-1"
+                    >
+                      <option value="owner">{t("admin.title")}</option>
+                      <option value="public">{blogCopy.publicAudience}</option>
+                      <option value="login">{blogCopy.inviteAudience}</option>
+                      {tiers.map((tier) => (
+                        <option key={tier.id} value={tier.id}>
+                          {tier.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {!previewAllowed && (
+                    <p role="status" className="text-sm text-muted-foreground">
+                      {blogCopy.previewRestricted}
+                    </p>
+                  )}
+                  {previewAllowed && form.coverFileId && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={`/api/files/${form.coverFileId}/download`}
+                      alt=""
+                      className="max-h-48 max-w-full rounded-md border object-contain"
+                    />
+                  )}
+                  {previewAllowed &&
+                    attachedFiles
+                      .filter((file) => file.kind === "image")
+                      .map((file) => (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          key={file.fileId}
+                          src={`/api/files/${file.fileId}/download`}
+                          alt={file.originalName}
+                          className="max-h-48 max-w-full rounded-md border object-contain"
+                        />
+                      ))}
+                  {previewAllowed &&
+                    attachedFiles
+                      .filter((file) => file.kind === "attachment")
+                      .map((file) => (
+                        <p key={file.fileId} className="break-all text-sm">
+                          {file.originalName}
+                        </p>
+                      ))}
+                </div>
+              )
+            }
           />
         </FormField>
         <div className="grid min-w-0 gap-3 sm:grid-cols-2" data-testid="post-editor-access-row">
@@ -564,9 +636,9 @@ export function PostEditor({
                 setForm({ ...form, visibility: e.target.value as typeof form.visibility })
               }
             >
-              <option value="public">{t("admin.posts.public")}</option>
-              <option value="login">{t("admin.posts.login")}</option>
-              <option value="member">{t("admin.posts.member")}</option>
+              <option value="public">{blogCopy?.publicAudience ?? t("admin.posts.public")}</option>
+              <option value="login">{blogCopy?.inviteAudience ?? t("admin.posts.login")}</option>
+              <option value="member">{blogCopy?.memberAudience ?? t("admin.posts.member")}</option>
             </select>
           </FormField>
           {form.visibility === "member" && (

@@ -73,6 +73,12 @@ export type PostAttachmentView = {
  * （日期/大小格式化、locked 文案、布局）。
  */
 export type PostDetailView = {
+  readerArea?: boolean;
+  blogArticle?: {
+    toc: { id: string; title: string; level: number }[];
+    tocLabel: string;
+    codeLabels: { copy: string; copied: string; copyFailed: string };
+  };
   title: string;
   publishedAt: Date | null;
   visibility: PostVisibility;
@@ -111,6 +117,7 @@ export type TierCardView = {
 };
 
 export type TiersView = {
+  readerArea?: boolean;
   publicBasePath?: string;
   isLoggedIn: boolean;
   activeMembership: MembershipSummary | null;
@@ -135,6 +142,8 @@ export type LoginView = {
 };
 
 export type MeView = {
+  readerArea?: boolean;
+  canSubscribe?: boolean;
   email: string;
   displayName: string | null;
   isAdmin: boolean;
@@ -182,6 +191,8 @@ export type OrderView = {
 };
 
 export type MeOrdersView = {
+  readerArea?: boolean;
+  canSubscribe?: boolean;
   orders: OrderView[];
   paymentProcessing?: boolean;
 };

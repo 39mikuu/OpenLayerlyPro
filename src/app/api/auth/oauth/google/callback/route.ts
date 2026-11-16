@@ -46,7 +46,7 @@ function clearBindingCookie(response: NextResponse): NextResponse {
 }
 
 function failureRedirect(code: string, next: string | null, clearCookie = true): NextResponse {
-  const url = absoluteUrl("/login");
+  const url = absoluteUrl(getEnv().PERSONAL_BLOG_MODE ? "/inside/login" : "/login");
   url.searchParams.set("oauth_error", code);
   if (next) url.searchParams.set("next", next);
   const response = NextResponse.redirect(url, {

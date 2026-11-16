@@ -39,6 +39,21 @@ export const users = pgTable(
   (table) => [index("users_created_id_idx").on(table.createdAt.desc(), table.id.desc())],
 );
 
+export const readerInvitations = pgTable(
+  "reader_invitations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").notNull(),
+    tokenHash: text("token_hash").unique().notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
+    redeemedBy: uuid("redeemed_by").references(() => users.id, { onDelete: "cascade" }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => [index("reader_invitations_redeemed_by_idx").on(table.redeemedBy)],
+);
+
 export const sessions = pgTable(
   "sessions",
   {

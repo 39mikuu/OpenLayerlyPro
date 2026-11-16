@@ -1,6 +1,8 @@
 import { cookies, headers } from "next/headers";
 import { cache } from "react";
 
+import { getEnv } from "@/lib/env";
+
 import { DEFAULT_LOCALE, isLocale, type Locale, LOCALE_COOKIE } from "./config";
 import {
   getClientMessages as getMessagesForClient,
@@ -26,4 +28,12 @@ export const getT = cache(async (): Promise<Translate> => {
 /** Active locale only, with default-locale fallback merged before the RSC boundary. */
 export function getClientMessages(locale: Locale) {
   return getMessagesForClient(locale);
+}
+
+export function getBlogLocale(): Locale {
+  return getEnv().BLOG_LOCALE;
+}
+
+export function getBlogT(): Translate {
+  return (key, params) => translate(getBlogLocale(), key, params);
 }

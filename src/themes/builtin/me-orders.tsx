@@ -71,9 +71,11 @@ export function MeOrders({ view, t }: { view: MeOrdersView; t: Translate }) {
           <FileText className="mx-auto size-7 text-muted-foreground" />
           <h2 className="mt-3 font-semibold">{t("order.noneTitle")}</h2>
           <p className="mt-2 text-sm text-muted-foreground">{t("order.none")}</p>
-          <Button className="mt-5" asChild>
-            <a href="/tiers">{t("order.browseTiers")}</a>
-          </Button>
+          {view.canSubscribe !== false && (
+            <Button className="mt-5" asChild>
+              <a href={view.readerArea ? "/inside/tiers" : "/tiers"}>{t("order.browseTiers")}</a>
+            </Button>
+          )}
         </section>
       ) : (
         <div className="space-y-4">

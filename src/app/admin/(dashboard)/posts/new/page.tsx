@@ -1,5 +1,7 @@
 import { PostEditor } from "@/components/admin/post-editor";
-import { getT } from "@/modules/i18n/server";
+import { getEnv } from "@/lib/env";
+import { getBlogCopy } from "@/modules/blog/copy";
+import { getT, resolveLocale } from "@/modules/i18n/server";
 import { listTiers } from "@/modules/membership";
 import { listCategories, listTags } from "@/modules/taxonomy";
 
@@ -16,6 +18,7 @@ export default async function NewPostPage() {
     <div className="space-y-6">
       <h1 className="text-xl font-bold">{t("admin.posts.new")}</h1>
       <PostEditor
+        blogCopy={getEnv().PERSONAL_BLOG_MODE ? getBlogCopy(await resolveLocale()) : undefined}
         post={null}
         tiers={tiers.map((t) => ({ id: t.id, name: t.name, level: t.level }))}
         attachedFiles={[]}

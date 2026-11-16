@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 
 import { getDb } from "@/db";
 import { posts } from "@/db/schema";
+import { getEnv } from "@/lib/env";
 import { DEFAULT_LOCALE, type Locale, translate } from "@/modules/i18n";
 import { type PublicSiteInfo, readPublicSiteInfo } from "@/modules/site";
 
@@ -75,10 +76,13 @@ export async function buildSiteMetadata(
   return buildSiteMetadataFromInfo(site, { ...options, canonicalPath });
 }
 
-export function buildListPageSeoCopy(page: "posts" | "tiers" | "supporters") {
+export function buildListPageSeoCopy(
+  page: "posts" | "tiers" | "supporters",
+  locale: Locale = DEFAULT_LOCALE,
+) {
   return {
-    title: translate(DEFAULT_LOCALE, `${page}.seoTitle`),
-    description: translate(DEFAULT_LOCALE, `${page}.seoDescription`),
+    title: translate(locale, `${page}.seoTitle`),
+    description: translate(locale, `${page}.seoDescription`),
   };
 }
 
@@ -104,6 +108,7 @@ export async function buildPublicPostMetadata(slug: string): Promise<Metadata> {
   ]);
   const canonicalPath = `/posts/${encodeURIComponent(slug)}`;
   if (visibility !== "public") {
+    if (getEnv().PERSONAL_BLOG_MODE) return { robots: { index: false, follow: false } };
     return buildSiteMetadataFromInfo(site, {
       canonicalPath,
       title: siteTitle(site),
@@ -113,7 +118,12 @@ export async function buildPublicPostMetadata(slug: string): Promise<Metadata> {
     });
   }
 
-  const post = await getPublicPostProjectionBySlug(slug);
+  const env = getEnv();
+  const post = await getPublicPostProjectionBySlug(
+    slug,
+    undefined,
+    env.PERSONAL_BLOG_MODE ? env.BLOG_LOCALE : DEFAULT_LOCALE,
+  );
   if (!post) {
     return buildSiteMetadataFromInfo(site, {
       canonicalPath,

@@ -31,6 +31,7 @@ function secureStreamHeaders(input: {
   inline: boolean;
   contentLength: number;
   contentRange?: string;
+  cachePublicBrandImage?: boolean;
 }): HeadersInit {
   return {
     "Content-Type": input.mimeType,
@@ -38,7 +39,9 @@ function secureStreamHeaders(input: {
     "Content-Disposition": `${input.inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(input.downloadName)}`,
     "Accept-Ranges": "bytes",
     ...(input.contentRange ? { "Content-Range": input.contentRange } : {}),
-    "Cache-Control": "private, no-store",
+    "Cache-Control": input.cachePublicBrandImage
+      ? "public, max-age=0, s-maxage=86400"
+      : "private, no-store",
     "Content-Security-Policy":
       "default-src 'none'; script-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox",
     "X-Content-Type-Options": "nosniff",
@@ -145,12 +148,19 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       });
     }
 
+    const cachePublicBrandImage =
+      env.PERSONAL_BLOG_MODE &&
+      !user &&
+      !req.nextUrl.search &&
+      file.purpose === "artist_avatar" &&
+      file.mimeType.startsWith("image/");
     return new NextResponse(Readable.toWeb(result.stream) as ReadableStream, {
       headers: secureStreamHeaders({
         mimeType: file.mimeType,
         downloadName,
         inline,
         contentLength: file.sizeBytes,
+        cachePublicBrandImage,
       }),
     });
   } catch (err) {
