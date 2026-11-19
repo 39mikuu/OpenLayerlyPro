@@ -366,7 +366,7 @@ HASH_FAILURE_ARCHIVE="$TEST_DIR/openlayerly-backup-20260824-125000.tar.gz"
 tar -czf "$HASH_FAILURE_ARCHIVE" -C "$TEST_DIR/payload" .
 BASELINE_SHA256=$(sha256sum "$LATEST_EVIDENCE" | awk '{print $1}')
 if (
-  # shellcheck disable=SC2317 # Invoked indirectly by publish_backup_evidence in this subshell.
+  # shellcheck disable=SC2317,SC2329 # Invoked indirectly by publish_backup_evidence in this subshell.
   sha256sum() { return 1; }
   publish_backup_evidence "$HASH_FAILURE_ARCHIVE" "$TEST_DIR"
 ) >/dev/null 2>&1; then
