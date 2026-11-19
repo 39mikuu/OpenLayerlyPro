@@ -21,6 +21,9 @@ vi.mock("./providers", async (importOriginal) => {
   };
 });
 
+import { NextRequest } from "next/server";
+
+import { POST as cancelSubscription } from "@/app/api/me/subscription/cancel/route";
 import { getDb } from "@/db";
 import {
   auditEvents,
@@ -28,11 +31,19 @@ import {
   membershipTiers,
   paymentProviderEvents,
   paymentRequests,
+  readerInvitations,
   subscriptions,
   tasks,
   users,
 } from "@/db/schema";
+import { __resetEnvForTests } from "@/lib/env";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
+import * as session from "@/modules/auth/session";
+import {
+  createReaderInvitation,
+  redeemReaderInvitation,
+  revokeReaderInvitation,
+} from "@/modules/blog/invitations";
 import { getActiveMembership, grantMembershipForPeriod } from "@/modules/membership";
 import { retryTask } from "@/modules/tasks/admin";
 import { dispatchClaimedTask } from "@/modules/tasks/dispatcher";
@@ -130,6 +141,54 @@ describeWithDatabase("Stripe subscription integration", () => {
       .returning();
     return { user, tier, subscription: subscription! };
   }
+
+  it("lets a revoked reader cancel only their own subscription at period end", async () => {
+    vi.stubEnv("PERSONAL_BLOG_MODE", "true");
+    __resetEnvForTests();
+    const currentUser = vi.spyOn(session, "requireUser");
+    try {
+      const { user, subscription } = await seedSubscription();
+      await db
+        .update(subscriptions)
+        .set({ status: "active" })
+        .where(eq(subscriptions.id, subscription.id));
+      const [admin] = await db
+        .insert(users)
+        .values({ email: `admin-${randomUUID()}@example.test`, role: "admin" })
+        .returning();
+      const token = await createReaderInvitation(user.email, admin.id);
+      expect(await redeemReaderInvitation(token, user)).toBe(true);
+      const [grant] = await db
+        .select()
+        .from(readerInvitations)
+        .where(eq(readerInvitations.redeemedBy, user.id));
+      await revokeReaderInvitation(grant.id, admin.id);
+      const cancel = () =>
+        cancelSubscription(
+          new NextRequest("http://localhost/api/me/subscription/cancel", {
+            method: "POST",
+            body: JSON.stringify({ subscriptionId: subscription.id }),
+          }),
+        );
+      currentUser.mockResolvedValue(admin);
+      expect((await cancel()).status).toBe(404);
+      expect(providerMocks.cancelSubscription).not.toHaveBeenCalled();
+      currentUser.mockResolvedValue(user);
+      expect((await cancel()).status).toBe(200);
+      expect(providerMocks.cancelSubscription).toHaveBeenCalledWith("sub_123", {
+        atPeriodEnd: true,
+      });
+      const [updated] = await db
+        .select()
+        .from(subscriptions)
+        .where(eq(subscriptions.id, subscription.id));
+      expect(updated.cancelAtPeriodEnd).toBe(true);
+    } finally {
+      currentUser.mockRestore();
+      vi.unstubAllEnvs();
+      __resetEnvForTests();
+    }
+  });
 
   function paidInvoiceEvent(overrides: Partial<Parameters<typeof applyPaidInvoice>[2]> = {}) {
     return {
