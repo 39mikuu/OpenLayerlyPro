@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
 import { getEnv } from "@/lib/env";
+import { LOGIN_CODE_LENGTH, LOGIN_CODE_PATTERN } from "@/modules/auth/input-policy";
 import { isMagicLinkConfigured, normalizeMagicLinkRedirectPath } from "@/modules/auth/magic-link";
 import { getOAuthApiBasePath } from "@/modules/auth/oauth";
-import { getLoginCodePolicy } from "@/modules/auth/rate-limit-policy";
 import { resolveSignedInLoginPath, withSiteBasePath } from "@/modules/auth/redirect-path";
 import { getCurrentUser } from "@/modules/auth/session";
 import { insideLoginDestination } from "@/modules/blog/paths";
@@ -38,7 +38,6 @@ export default async function LoginPage({
       ),
     );
   }
-  const loginCodePolicy = getLoginCodePolicy(getEnv());
   const [turnstile, theme, t, googleOAuthEnabled, githubOAuthEnabled] = await Promise.all([
     getTurnstileConfig(),
     getActiveTheme(),
@@ -53,8 +52,8 @@ export default async function LoginPage({
       view={{
         mode: admin === "1" ? "admin" : "fan",
         turnstileSiteKey: turnstile.enabled ? (turnstile.siteKey ?? undefined) : undefined,
-        loginCodeLength: loginCodePolicy.length,
-        loginCodePattern: loginCodePolicy.pattern.source,
+        loginCodeLength: LOGIN_CODE_LENGTH,
+        loginCodePattern: LOGIN_CODE_PATTERN.source,
         magicLinkEnabled: isMagicLinkConfigured(),
         magicLinkNext: redirectPath,
         googleOAuthEnabled,

@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
       bodySchema,
     );
     const normalizedEmail = validateNormalizedEmail(normalizeEmail(email));
-    const normalizedCode = validateLoginCode(normalizeLoginCode(code), env);
+    const normalizedCode = validateLoginCode(normalizeLoginCode(code));
     const validatedChallenge = challenge ? validateLoginCodeChallenge(challenge) : undefined;
 
     const clientIp = getClientIp(req);
