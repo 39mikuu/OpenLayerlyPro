@@ -47,3 +47,15 @@ Report-Only 观察和 enforce 切换由 `SECURITY_CSP_MODE` 控制。
 ## 备份与可恢复性
 
 CDN 缓存不是备份。使用 S3/R2 时仍需 bucket versioning、snapshot 或 provider backup，并在恢复时与数据库备份时点对齐。详见 [备份与恢复](deployment/backup-restore.md)和 S7 #87。
+
+### 个人博客模式
+
+开启 `PERSONAL_BLOG_MODE=true` 后，公开页面的服务端界面使用 `BLOG_LOCALE`，不会按登录
+状态渲染订阅和账号入口。沿用带指纹资源的缓存规则。公开 feed、sitemap 和 robots.txt 使用 ETag 重新验证，无共享新鲜期。可额外允许
+`/api/files/<id>/download` 缓存源站明确标为 public 的完整、匿名站点头像和标志图片响应。
+规则必须遵守源站 Cache-Control，绕过携带账号 Cookie、Range、查询参数和非 200 的响应。
+替换品牌图会产生新文件 ID。如需立即撤回已公开的旧图，清理对应的 CDN URL。
+
+博客 HTML 继续使用逐请求 CSP nonce，源站动态渲染。里站、带订单和会话的响应、文章图片、
+附件和支付凭证继续绕过 CDN 共享缓存。公开文章日后可能转为邀请可读，避免给可变更受众的
+媒体设共享缓存。个人博客模式下文章文件由应用代理，现有通用模式已签发的对象链接会在其原定有效期结束后失效。启用模式前，清理原有 feed、sitemap 与其他公开缓存，确保新的验证规则生效。

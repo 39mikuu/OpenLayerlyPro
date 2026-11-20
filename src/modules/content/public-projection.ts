@@ -527,6 +527,7 @@ export async function listPublicSitemapShard(opts: {
 export async function getPublicPostProjectionBySlug(
   slug: string,
   dbc: DbClient = getDb(),
+  locale: Locale = DEFAULT_LOCALE,
 ): Promise<PublicPostProjectionRow | null> {
   const [row] = await dbc
     .select({
@@ -552,7 +553,7 @@ export async function getPublicPostProjectionBySlug(
       postTranslations,
       and(
         eq(postTranslations.postId, posts.id),
-        eq(postTranslations.locale, DEFAULT_LOCALE),
+        eq(postTranslations.locale, locale),
         eq(postTranslations.status, "published"),
       ),
     )
@@ -596,7 +597,9 @@ export function isPublicHttpResourceNotModified(
 export function publicXmlHeaders(resource: PublicHttpResource, contentType: string): Headers {
   return new Headers({
     "content-type": contentType,
-    "cache-control": PUBLIC_SEO_CACHE_CONTROL,
+    "cache-control": getEnv().PERSONAL_BLOG_MODE
+      ? "public, no-cache, must-revalidate"
+      : PUBLIC_SEO_CACHE_CONTROL,
     etag: resource.etag,
     "x-content-type-options": "nosniff",
   });

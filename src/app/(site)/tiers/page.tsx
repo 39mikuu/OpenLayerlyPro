@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 
+import { getEnv } from "@/lib/env";
 import { getOAuthApiBasePath } from "@/modules/auth/oauth";
 import { getCurrentUser } from "@/modules/auth/session";
+import { requireInsidePage } from "@/modules/blog/reader-page";
 import { buildListPageSeoCopy, buildSiteMetadata } from "@/modules/content/seo";
 import { getT } from "@/modules/i18n/server";
 import { getActiveMembership, listTiers } from "@/modules/membership";
@@ -15,7 +17,9 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function TiersPage() {
-  const user = await getCurrentUser();
+  const user = getEnv().PERSONAL_BLOG_MODE
+    ? await requireInsidePage("/inside/tiers")
+    : await getCurrentUser();
   const [tiers, active, theme, t] = await Promise.all([
     listTiers({ activeOnly: true }),
     user ? getActiveMembership(user.id) : Promise.resolve(null),
@@ -41,6 +45,7 @@ export default async function TiersPage() {
       view={{
         publicBasePath: getOAuthApiBasePath(),
         isLoggedIn: !!user,
+        readerArea: getEnv().PERSONAL_BLOG_MODE,
         activeMembership: active
           ? {
               tierName: active.tier.name,

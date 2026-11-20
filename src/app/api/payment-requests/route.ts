@@ -5,6 +5,7 @@ import { handleApiError, jsonOk } from "@/lib/api";
 import { getEnv } from "@/lib/env";
 import { readJsonWithLimit } from "@/lib/request-body";
 import { requireUser } from "@/modules/auth/session";
+import { requireBlogReaderAccess } from "@/modules/blog/access";
 import { createPaymentRequest } from "@/modules/payment";
 import { serializePaymentRequestForApi } from "@/modules/payment/rejection-note";
 
@@ -20,6 +21,7 @@ const bodySchema = z.object({
 export async function POST(req: NextRequest) {
   try {
     const user = await requireUser();
+    await requireBlogReaderAccess(user);
     const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const request = await createPaymentRequest({ userId: user.id, ...input });
     return jsonOk(serializePaymentRequestForApi(request));

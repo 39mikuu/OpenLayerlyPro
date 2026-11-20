@@ -23,6 +23,9 @@ import type { Translate } from "@/modules/i18n";
 import type { MeView } from "@/modules/theme/types";
 
 export function Me({ view, t }: { view: MeView; t: Translate }) {
+  const canSubscribe = view.canSubscribe !== false;
+  const plansPath = view.readerArea ? "/inside/tiers" : "/tiers";
+  const ordersPath = view.readerArea ? "/inside/me/orders" : "/me/orders";
   return (
     <div className="mx-auto max-w-3xl space-y-7">
       <header className="border-b pb-6">
@@ -88,26 +91,28 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
         </div>
       </section>
 
-      <section className="rounded-xl border bg-card p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)] sm:p-6">
-        <div className="flex items-start gap-3">
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-pink-50 text-pink-700 dark:bg-pink-950/40 dark:text-pink-300">
-            <HeartHandshake className="size-4" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold">{t("me.supporterWallTitle")}</h2>
-            <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              {t("me.supporterWallDescription")}
-            </p>
-            <div className="mt-4">
-              <SupporterWallControls
-                displayName={view.displayName}
-                initialEntry={view.supporterWall.entry}
-                settings={view.supporterWall.settings}
-              />
+      {!view.readerArea && (
+        <section className="rounded-xl border bg-card p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)] sm:p-6">
+          <div className="flex items-start gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-pink-50 text-pink-700 dark:bg-pink-950/40 dark:text-pink-300">
+              <HeartHandshake className="size-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold">{t("me.supporterWallTitle")}</h2>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                {t("me.supporterWallDescription")}
+              </p>
+              <div className="mt-4">
+                <SupporterWallControls
+                  displayName={view.displayName}
+                  initialEntry={view.supporterWall.entry}
+                  settings={view.supporterWall.settings}
+                />
+              </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       {view.membership ? (
         <section className="rounded-xl border border-blue-100 bg-blue-50/40 p-5 dark:border-blue-900 dark:bg-blue-950/15 sm:p-6">
@@ -137,9 +142,11 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
               )}
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
-              <Button asChild>
-                <a href="/tiers">{t("me.renew")}</a>
-              </Button>
+              {canSubscribe && (
+                <Button asChild>
+                  <a href={plansPath}>{t("me.renew")}</a>
+                </Button>
+              )}
               <RenewalReminderToggle
                 tierId={view.membership.tierId}
                 enabled={view.membership.renewalReminderEnabled}
@@ -152,9 +159,11 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
           <Sparkles className="size-5 text-pink-600 dark:text-pink-300" />
           <h2 className="mt-3 font-semibold">{t("me.noMemberTitle")}</h2>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">{t("me.noMember")}</p>
-          <Button className="mt-4" asChild>
-            <a href="/tiers">{t("me.open")}</a>
-          </Button>
+          {canSubscribe && (
+            <Button className="mt-4" asChild>
+              <a href={plansPath}>{t("me.open")}</a>
+            </Button>
+          )}
         </section>
       )}
 
@@ -198,8 +207,8 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
         <h2 className="font-semibold">{t("me.quickLinks")}</h2>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           {[
-            { href: "/me/orders", label: t("me.myOrders"), icon: FileText },
-            { href: "/tiers", label: t("nav.tiers"), icon: Sparkles },
+            { href: ordersPath, label: t("me.myOrders"), icon: FileText },
+            ...(canSubscribe ? [{ href: plansPath, label: t("nav.tiers"), icon: Sparkles }] : []),
             { href: "/posts", label: t("nav.posts"), icon: Newspaper },
             { href: "/", label: t("nav.home"), icon: Home },
           ].map((item) => {
@@ -211,7 +220,7 @@ export function Me({ view, t }: { view: MeView; t: Translate }) {
             );
             const className =
               "flex items-center gap-3 rounded-xl border bg-card px-4 py-3 text-sm font-medium transition hover:border-primary/30 hover:text-primary";
-            return item.href === "/me/orders" ? (
+            return item.href === ordersPath ? (
               <Link key={item.href} href={item.href} className={className}>
                 {content}
               </Link>

@@ -1,6 +1,9 @@
 import { redirect } from "next/navigation";
 
+import { getEnv } from "@/lib/env";
 import { getCurrentUser } from "@/modules/auth/session";
+import { canEnterInside } from "@/modules/blog/access";
+import { requireInsidePage } from "@/modules/blog/reader-page";
 import { getT } from "@/modules/i18n/server";
 import { listMyPaymentRequestDetails } from "@/modules/payment";
 import { formatPaymentRejectionReviewNote } from "@/modules/payment/rejection-note";
@@ -13,8 +16,12 @@ export default async function MyOrdersPage({
 }: {
   searchParams: Promise<{ paid?: string }>;
 }) {
-  const user = await getCurrentUser();
+  const readerArea = getEnv().PERSONAL_BLOG_MODE;
+  const user = readerArea
+    ? await requireInsidePage("/inside/me/orders", false)
+    : await getCurrentUser();
   if (!user) redirect("/login");
+  const canSubscribe = !readerArea || (await canEnterInside(user));
   const [orders, theme, t] = await Promise.all([
     listMyPaymentRequestDetails(user.id),
     getActiveTheme(),
@@ -35,5 +42,10 @@ export default async function MyOrdersPage({
 
   const { paid } = await searchParams;
   const MeOrders = theme.components.MeOrders;
-  return <MeOrders view={{ orders: orderViews, paymentProcessing: paid === "1" }} t={t} />;
+  return (
+    <MeOrders
+      view={{ readerArea, canSubscribe, orders: orderViews, paymentProcessing: paid === "1" }}
+      t={t}
+    />
+  );
 }

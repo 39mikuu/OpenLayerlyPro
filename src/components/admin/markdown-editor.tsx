@@ -35,6 +35,8 @@ type MarkdownEditorProps = {
   rows?: number;
   ariaLabel?: string;
   id?: string;
+  audiencePreview?: React.ReactNode;
+  previewRestricted?: boolean;
 };
 
 export function MarkdownEditor({
@@ -47,6 +49,8 @@ export function MarkdownEditor({
   rows = 12,
   ariaLabel,
   id,
+  audiencePreview,
+  previewRestricted = false,
 }: MarkdownEditorProps) {
   const t = useT();
   const generatedId = useId();
@@ -68,7 +72,7 @@ export function MarkdownEditor({
   const [videoError, setVideoError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (mode !== "preview") return;
+    if (mode !== "preview" || previewRestricted) return;
     let active = true;
     setPreviewHtml("");
     const timer = window.setTimeout(() => {
@@ -93,10 +97,10 @@ export function MarkdownEditor({
       active = false;
       window.clearTimeout(timer);
     };
-  }, [mode, t, value]);
+  }, [mode, previewRestricted, t, value]);
 
   useEffect(() => {
-    if (mode !== "preview" || !previewHtml) return;
+    if (mode !== "preview" || previewRestricted || !previewHtml) return;
     const container = previewRef.current;
     if (!container) return;
 
@@ -136,7 +140,7 @@ export function MarkdownEditor({
 
     container.addEventListener("click", handleClick);
     return () => container.removeEventListener("click", handleClick);
-  }, [mode, previewHtml, t]);
+  }, [mode, previewHtml, previewRestricted, t]);
 
   function commitValue(nextValue: string) {
     valueRef.current = nextValue;
@@ -425,7 +429,8 @@ export function MarkdownEditor({
           />
         ) : (
           <div className="min-h-64 min-w-0 overflow-x-auto p-4">
-            {previewLoading ? (
+            {audiencePreview}
+            {previewRestricted ? null : previewLoading ? (
               <p className="text-sm text-muted-foreground">
                 {t("admin.markdown.renderingPreview")}
               </p>

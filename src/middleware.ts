@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getEnv } from "@/lib/env";
 import {
+  blogArticleSlug,
+  isInsidePath,
+  isLegacyReaderPath,
+  isPublicBlogDocument,
+  readerPath,
+} from "@/modules/blog/paths";
+import { isPublishedPublicBlogArticle } from "@/modules/blog/public-article";
+import {
   buildContentSecurityPolicy,
   type CspSourceGroups,
   DOCUMENT_SECURITY_HEADERS,
@@ -47,7 +55,29 @@ function isHttpsUrl(value: string): boolean {
 
 export async function middleware(request: NextRequest) {
   const env = getEnv();
-  const publicIntegrationDocument = isPublicIntegrationDocument(request.nextUrl.pathname);
+  const pathname = request.nextUrl.pathname;
+  const inside = isInsidePath(pathname);
+  if (
+    env.PERSONAL_BLOG_MODE &&
+    (isLegacyReaderPath(pathname) ||
+      (pathname === "/login" && request.nextUrl.searchParams.get("admin") !== "1"))
+  ) {
+    const target = request.nextUrl.clone();
+    target.pathname = readerPath(pathname, true);
+    return NextResponse.redirect(target, {
+      headers: { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex, nofollow" },
+    });
+  }
+  const publicBlogDocument = env.PERSONAL_BLOG_MODE && isPublicBlogDocument(pathname);
+  let publicIntegrationDocument = !env.PERSONAL_BLOG_MODE && isPublicIntegrationDocument(pathname);
+  if (publicBlogDocument) {
+    const slug = blogArticleSlug(pathname);
+    try {
+      publicIntegrationDocument = slug ? await isPublishedPublicBlogArticle(slug) : true;
+    } catch {
+      publicIntegrationDocument = false;
+    }
+  }
   const nonce = generateNonce();
   let effectiveMode: EffectiveCspMode = "enforce";
   let revision = "fail-closed";
@@ -94,6 +124,11 @@ export async function middleware(request: NextRequest) {
   });
   const requestHeaders = new Headers(request.headers);
   requestHeaders.delete("x-public-security-render");
+  requestHeaders.delete("x-personal-blog-document");
+  requestHeaders.delete("x-personal-blog-slug");
+  const publicSlug = publicBlogDocument ? blogArticleSlug(pathname) : null;
+  if (publicSlug) requestHeaders.set("x-personal-blog-slug", publicSlug);
+  if (publicBlogDocument) requestHeaders.set("x-personal-blog-document", "1");
   requestHeaders.set("x-nonce", nonce);
   requestHeaders.set("x-csp-config-revision", revision);
   requestHeaders.set("Content-Security-Policy", policy);
@@ -111,7 +146,7 @@ export async function middleware(request: NextRequest) {
   if (env.SECURITY_HSTS_ENABLED) {
     response.headers.set("Strict-Transport-Security", HSTS_HEADER_VALUE);
   }
-  if (isTokenBearingDocument(request.nextUrl.pathname)) {
+  if (inside || isTokenBearingDocument(pathname)) {
     response.headers.set("Cache-Control", "no-store");
     response.headers.set("Referrer-Policy", "no-referrer");
     response.headers.set("X-Robots-Tag", "noindex, nofollow");

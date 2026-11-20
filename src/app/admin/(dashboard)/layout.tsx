@@ -2,9 +2,11 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
 import { AdminShell } from "@/components/admin/admin-shell";
+import { getEnv } from "@/lib/env";
 import { adminNavGroups } from "@/modules/admin/navigation";
 import { getCurrentUser } from "@/modules/auth/session";
-import { getT } from "@/modules/i18n/server";
+import { getBlogCopy } from "@/modules/blog/copy";
+import { getT, resolveLocale } from "@/modules/i18n/server";
 import { isInitialized } from "@/modules/site";
 
 export const dynamic = "force-dynamic";
@@ -17,14 +19,18 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   const user = await getCurrentUser();
   if (!user || user.role !== "admin") redirect("/login?admin=1");
   const t = await getT();
+  const invitationLabel = getEnv().PERSONAL_BLOG_MODE
+    ? getBlogCopy(await resolveLocale()).invite
+    : null;
   const navGroups = adminNavGroups.map((group) => ({
     key: group.key,
     label: t(group.labelKey),
-    items: group.items.map((item) => ({
-      key: item.key,
-      href: item.href,
-      label: t(item.labelKey),
-    })),
+    items: [
+      ...group.items.map((item) => ({ key: item.key, href: item.href, label: t(item.labelKey) })),
+      ...(group.key === "members" && invitationLabel
+        ? [{ key: "invitations" as const, href: "/admin/invitations", label: invitationLabel }]
+        : []),
+    ],
   }));
 
   return (

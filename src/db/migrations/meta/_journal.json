@@ -288,6 +288,13 @@
       "when": 1789234378704,
       "tag": "0041_login_smtp_reservation",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794850549423,
+      "tag": "0042_reader_invitations",
+      "breakpoints": true
     }
   ]
 }

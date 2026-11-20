@@ -35,6 +35,7 @@ import {
 import { getRequestCodeEmailIpRateLimit, normalizeEmail } from "@/modules/auth/rate-limit-policy";
 import { normalizeMagicLinkRedirectPath } from "@/modules/auth/redirect-path";
 import { createSession } from "@/modules/auth/session";
+import { mayCreateReaderAccount } from "@/modules/blog/access";
 import { getSmtpConfig } from "@/modules/config";
 import { buildPublicUrl, getPublicBaseUrl } from "@/modules/content/public-projection";
 import { type Locale, SUPPORTED_LOCALES } from "@/modules/i18n";
@@ -1603,6 +1604,16 @@ export async function consumeMagicLinkToken(
       };
     }
 
+    if (!lockedUser && !(await mayCreateReaderAccount(consumed.email, tx))) {
+      return {
+        result: { status: "invalid" } satisfies MagicLinkConsumption,
+        rejectionEvent: {
+          reason: "invalid" as const,
+          tokenId: consumed.id,
+          keyId: resolved.keyId,
+        },
+      };
+    }
     const user = await findOrCreateUserByEmail(consumed.email, tx);
     // The conflict path in findOrCreateUserByEmail re-selects without a row
     // lock. Lock the final row before deciding whether login metadata/session

@@ -65,7 +65,12 @@ export function AdminShell({
   userEmail: string;
 }) {
   const pathname = usePathname();
-  const activeHref = matchAdminNavItem(pathname)?.href ?? null;
+  const selectedInvitationPage =
+    pathname.replace(/\/$/, "") === "/admin/invitations" &&
+    navGroups.some((group) => group.items.some((item) => item.key === "invitations"));
+  const activeHref = selectedInvitationPage
+    ? "/admin/invitations"
+    : (matchAdminNavItem(pathname)?.href ?? null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const shouldRestoreFocusRef = useRef(false);

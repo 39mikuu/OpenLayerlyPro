@@ -156,6 +156,9 @@ export function sanitizeMarkdownHtml(html: string): string {
       "button",
     ],
     allowedAttributes: {
+      h1: ["id"],
+      h2: ["id"],
+      h3: ["id"],
       a: ["href", "title", "target", "rel"],
       img: ["src", "alt", "title"],
       th: ["align"],
@@ -172,6 +175,15 @@ export function sanitizeMarkdownHtml(html: string): string {
     allowProtocolRelative: false,
     allowedIframeHostnames: [...EMBED_HOSTS],
     transformTags: {
+      ...Object.fromEntries(
+        ["h1", "h2", "h3"].map((tagName) => [
+          tagName,
+          (_tag: string, attribs: Record<string, string>) => ({
+            tagName,
+            attribs: /^section-[1-9][0-9]*$/.test(attribs.id ?? "") ? { id: attribs.id } : {},
+          }),
+        ]),
+      ),
       a: (_tagName, attribs) => {
         if (!attribs.href || !isSafeLink(attribs.href)) {
           const rest = { ...attribs };
@@ -240,6 +252,28 @@ export function renderMarkdown(
   if (!source) return "";
   const embedMode = options.embedMode ?? "public";
   return sanitizeMarkdownHtml(createMarkdown(embedMode).render(source));
+}
+
+export function renderBlogArticle(source: string | null | undefined) {
+  const md = createMarkdown("public");
+  const toc: { id: string; title: string; level: number }[] = [];
+  md.core.ruler.push("blog_headings", (state) => {
+    for (const [index, token] of state.tokens.entries()) {
+      if (token.type !== "heading_open" || token.level !== 0) continue;
+      const level = Number(token.tag.slice(1));
+      if (level > 3) continue;
+      const inline = state.tokens[index + 1];
+      const title = inline?.children
+        ?.map((child) => child.content || "")
+        .join("")
+        .trim();
+      if (!title) continue;
+      const id = `section-${toc.length + 1}`;
+      token.attrSet("id", id);
+      toc.push({ id, title, level });
+    }
+  });
+  return { html: sanitizeMarkdownHtml(md.render(source ?? "")), toc };
 }
 
 export function extractInternalImageFileIds(source: string | null | undefined): Set<string> {

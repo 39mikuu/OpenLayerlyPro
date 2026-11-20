@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
+import { NextRequest } from "next/server";
 import { Readable } from "stream";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,6 +19,7 @@ vi.mock("@/modules/storage", () => ({
   })),
 }));
 
+import { GET as downloadFile } from "@/app/api/files/[id]/download/route";
 import { getDb } from "@/db";
 import {
   appEvents,
@@ -29,10 +31,18 @@ import {
   postFiles,
   posts,
   postTranslations,
+  readerInvitations,
   type User,
   users,
 } from "@/db/schema";
+import { __resetEnvForTests } from "@/lib/env";
 import { resetDatabase } from "@/modules/__invariants__/db-reset";
+import * as session from "@/modules/auth/session";
+import {
+  createReaderInvitation,
+  redeemReaderInvitation,
+  revokeReaderInvitation,
+} from "@/modules/blog/invitations";
 import { canAccessPost } from "@/modules/content";
 import { getActiveMembership } from "@/modules/membership";
 
@@ -53,7 +63,7 @@ describeWithDatabase("private file download authorization integration", () => {
   beforeEach(async () => {
     await resetDatabase(db);
     vi.clearAllMocks();
-    storageMocks.getObject.mockResolvedValue(Readable.from(["file body"]));
+    storageMocks.getObject.mockResolvedValue(Readable.from([Buffer.from("file body")]));
     storageMocks.createSignedDownloadUrl.mockResolvedValue("https://storage.example/signed");
   });
 
@@ -193,6 +203,44 @@ describeWithDatabase("private file download authorization integration", () => {
       .returning();
     return translation!;
   }
+
+  it("stops serving a private S3 attachment when the reader invitation is revoked", async () => {
+    vi.stubEnv("PERSONAL_BLOG_MODE", "true");
+    __resetEnvForTests();
+    const currentUser = vi.spyOn(session, "getCurrentUser");
+    try {
+      const { admin, owner } = await seedUsers();
+      const { post, file } = await seedPostFile({ visibility: "login", storageDriver: "s3" });
+      const token = await createReaderInvitation(owner.email, admin.id);
+      expect(await redeemReaderInvitation(token, owner)).toBe(true);
+      const fetchFile = () =>
+        downloadFile(new NextRequest(`http://localhost/api/files/${file.id}/download`), {
+          params: Promise.resolve({ id: file.id }),
+        });
+      currentUser.mockResolvedValue(owner);
+      expect(await canAccessPost(owner, post)).toBe(true);
+      const allowed = await fetchFile();
+      expect(allowed.status).toBe(200);
+      expect(allowed.headers.get("cache-control")).toBe("private, no-store");
+      expect(await allowed.text()).toBe("file body");
+      expect(storageMocks.createSignedDownloadUrl).not.toHaveBeenCalled();
+
+      const [grant] = await db
+        .select()
+        .from(readerInvitations)
+        .where(eq(readerInvitations.redeemedBy, owner.id));
+      await revokeReaderInvitation(grant.id, admin.id);
+      expect(await canAccessPost(owner, post)).toBe(false);
+      expect((await fetchFile()).status).toBe(403);
+      currentUser.mockResolvedValue(null);
+      expect((await fetchFile()).status).toBe(401);
+      expect(storageMocks.getObject).toHaveBeenCalledTimes(1);
+    } finally {
+      currentUser.mockRestore();
+      vi.unstubAllEnvs();
+      __resetEnvForTests();
+    }
+  });
 
   it("allows anonymous access to public-purpose assets", async () => {
     for (const purpose of ["artist_avatar", "payment_qr", "cover", "thumbnail"] as const) {

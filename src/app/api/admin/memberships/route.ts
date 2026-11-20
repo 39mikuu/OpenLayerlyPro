@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
     const admin = await requireAdmin();
     const input = await readJsonWithLimit(req, getEnv().REQUEST_JSON_MAX_BYTES, bodySchema);
     const user = input.createUserIfMissing
-      ? await findOrCreateUserByEmail(input.userEmail)
+      ? await findOrCreateUserByEmail(input.userEmail, undefined, { adminProvisioning: true })
       : await findUserByEmail(input.userEmail);
     if (!user) return jsonError(404, "userNotFound");
     const result = await grantMembership({

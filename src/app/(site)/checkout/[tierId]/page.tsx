@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 
+import { getEnv } from "@/lib/env";
 import { getOAuthApiBasePath } from "@/modules/auth/oauth";
 import { withSiteBasePath } from "@/modules/auth/redirect-path";
 import { getCurrentUser } from "@/modules/auth/session";
+import { requireInsidePage } from "@/modules/blog/reader-page";
 import { getStripeConfig } from "@/modules/config";
 import { getT } from "@/modules/i18n/server";
 import { getTierById } from "@/modules/membership";
@@ -17,7 +19,9 @@ export const metadata: Metadata = {
 
 export default async function CheckoutPage({ params }: { params: Promise<{ tierId: string }> }) {
   const { tierId } = await params;
-  const user = await getCurrentUser();
+  const user = getEnv().PERSONAL_BLOG_MODE
+    ? await requireInsidePage(`/inside/checkout/${encodeURIComponent(tierId)}`)
+    : await getCurrentUser();
   if (!user) {
     const next = `/checkout/${encodeURIComponent(tierId)}`;
     redirect(

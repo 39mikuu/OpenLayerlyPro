@@ -4,6 +4,7 @@ import { SubscriptionCheckoutButton } from "@/components/payment/subscription-ch
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { withSiteBasePath } from "@/modules/auth/redirect-path";
+import { readerPath } from "@/modules/blog/paths";
 import type { Translate } from "@/modules/i18n";
 import type { TiersView } from "@/modules/theme/types";
 
@@ -32,7 +33,7 @@ export function Tiers({ view, t }: { view: TiersView; t: Translate }) {
         <div className="rounded-xl border bg-card px-5 py-10 text-center">
           <p className="text-sm text-muted-foreground">{t("tiers.empty")}</p>
           <Button asChild variant="outline" className="mt-5">
-            <Link href="/">{t("tiers.returnHome")}</Link>
+            <Link href={view.readerArea ? "/inside" : "/"}>{t("tiers.returnHome")}</Link>
           </Button>
         </div>
       ) : (
@@ -74,7 +75,10 @@ export function Tiers({ view, t }: { view: TiersView; t: Translate }) {
                       href={
                         view.isLoggedIn
                           ? withSiteBasePath(
-                              `/checkout/${encodeURIComponent(tier.id)}`,
+                              readerPath(
+                                `/checkout/${encodeURIComponent(tier.id)}`,
+                                Boolean(view.readerArea),
+                              ),
                               view.publicBasePath,
                             )
                           : `${withSiteBasePath("/login", view.publicBasePath)}?next=${encodeURIComponent(`/checkout/${encodeURIComponent(tier.id)}`)}`

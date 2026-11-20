@@ -12,6 +12,11 @@ const TASK_BATCH_SIZE = 20;
 
 const envSchema = z.object({
   APP_URL: z.string().default("http://localhost:3000"),
+  PERSONAL_BLOG_MODE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  BLOG_LOCALE: z.enum(["zh", "en", "ja"]).default("zh"),
   APP_NAME: z.string().default("Artist Member Site"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   APP_INSTANCE_COUNT: z.coerce.number().int().min(1).max(1_000).default(1),
