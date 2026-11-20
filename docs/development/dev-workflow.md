@@ -11,7 +11,7 @@ pnpm db:migrate
 pnpm dev
 ```
 
-- 开发模式未配置 SMTP 时，验证码输出在服务端控制台。
+- 开发时请将 SMTP 指向本地测试收件箱，在收件箱中查看验证码。
 - `SESSION_SECRET` 强校验只在 `NODE_ENV=production` 运行时生效，不影响开发。
 - Turnstile 默认关闭，开发无需配置。
 
@@ -39,7 +39,7 @@ pnpm build
 - `dist/files-backfill.mjs`；
 - `dist/admin-reset.mjs`。
 - `dist/magic-link-rollback.mjs`。
-- `dist/restore-pre-scan.mjs`、`dist/restore-neutralize.mjs`、`dist/restore-converge.mjs`、`dist/restore-schema-check.mjs` 与 `dist/restore-config-key-probe.mjs`。
+- `dist/restore-pre-scan.mjs`、`dist/restore-neutralize.mjs`、`dist/restore-converge.mjs`、`dist/restore-schema-check.mjs`、`dist/restore-config-key-probe.mjs` 与 `dist/restore-login-code-smtp-check.mjs`。
 
 当前 Dockerfile 会显式构建并复制这些 bundle。当前 CI 已运行 lint、format、request-body、auth-before-body、task-boundary、tsc、migration、tests、运行时 one-off bundle build 与 Next build；发布验收不能只依赖 Dockerfile 间接覆盖。
 
