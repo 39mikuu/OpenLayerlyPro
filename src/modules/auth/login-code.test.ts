@@ -9,7 +9,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/db", () => ({ getDb: mocks.getDb }));
 vi.mock("@/lib/crypto", () => ({
-  CROCKFORD_BASE32_ALPHABET: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
   generateLoginCode: () => "123456",
   hmacSha256: (input: string) => `hash:${input}`,
   hmacSha256WithPurpose: (_purpose: string, input: string) => `hash:${input}`,

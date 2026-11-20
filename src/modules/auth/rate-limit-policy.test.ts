@@ -7,23 +7,15 @@ vi.hoisted(() => {
   });
 });
 
-import type { Env } from "@/lib/env";
-
 import {
   authEmailRateLimitDigest,
-  getLoginCodePolicy,
+  LOGIN_CODE_PATTERN,
   normalizeEmail,
   normalizeLoginCode,
   validateLoginCode,
   validateLoginCodeChallenge,
   validateNormalizedEmail,
 } from "./rate-limit-policy";
-
-const env = {
-  LOGIN_CODE_LENGTH: 6,
-  LOGIN_CODE_ALPHABET: "decimal",
-  SESSION_SECRET: "auth-rate-policy-test-secret",
-} as unknown as Env;
 
 describe("auth rate-limit and login-code policy", () => {
   it("normalizes email before validation", () => {
@@ -32,22 +24,22 @@ describe("auth rate-limit and login-code policy", () => {
 
   it("normalizes and validates six-digit codes", () => {
     const code = normalizeLoginCode(" 012345 ");
-    expect(validateLoginCode(code, env)).toBe("012345");
-    expect(getLoginCodePolicy(env).pattern.test(code)).toBe(true);
+    expect(validateLoginCode(code)).toBe("012345");
+    expect(LOGIN_CODE_PATTERN.test(code)).toBe(true);
   });
 
   it("accepts legacy Crockford candidates during the migration window", () => {
-    expect(validateLoginCode("ABCD1234EFGH5678", env)).toBe("ABCD1234EFGH5678");
-    expect(validateLoginCode("A".repeat(24), env)).toBe("A".repeat(24));
-    expect(validateLoginCode("1".repeat(64), env)).toBe("1".repeat(64));
-    expect(getLoginCodePolicy(env).pattern.test("ABCD1234EFGH5678")).toBe(false);
+    expect(validateLoginCode("ABCD1234EFGH5678")).toBe("ABCD1234EFGH5678");
+    expect(validateLoginCode("A".repeat(24))).toBe("A".repeat(24));
+    expect(validateLoginCode("1".repeat(64))).toBe("1".repeat(64));
+    expect(LOGIN_CODE_PATTERN.test("ABCD1234EFGH5678")).toBe(false);
   });
 
   it("rejects malformed new and legacy candidates", () => {
-    expect(() => validateLoginCode("12345", env)).toThrow();
-    expect(() => validateLoginCode("12345A", env)).toThrow();
-    expect(() => validateLoginCode("ABCD1234EFGH567O", env)).toThrow();
-    expect(() => validateLoginCode("A".repeat(65), env)).toThrow();
+    expect(() => validateLoginCode("12345")).toThrow();
+    expect(() => validateLoginCode("12345A")).toThrow();
+    expect(() => validateLoginCode("ABCD1234EFGH567O")).toThrow();
+    expect(() => validateLoginCode("A".repeat(65))).toThrow();
   });
 
   it("accepts only unpadded 32-byte base64url challenges", () => {

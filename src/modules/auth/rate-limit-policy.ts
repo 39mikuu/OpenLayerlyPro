@@ -2,18 +2,11 @@ import type { ClientRateLimitIdentity } from "@/lib/client-rate-limit";
 import { hmacSha256WithPurpose } from "@/lib/crypto";
 import type { Env } from "@/lib/env";
 
-export type { LoginCodeAlphabet } from "@/modules/auth/input-policy";
 export {
-  CROCKFORD_BASE32_ALPHABET,
-  DECIMAL_LOGIN_CODE_ALPHABET,
-  getLoginCodeAlphabet,
-  getLoginCodePolicy,
   isLegacyLoginCode,
   isLoginCodeComplete,
-  LEGACY_LOGIN_CODE_LENGTH,
   LEGACY_LOGIN_CODE_MAX_LENGTH,
   LEGACY_LOGIN_CODE_PATTERN,
-  LOGIN_CODE_ALPHABETS,
   LOGIN_CODE_CHALLENGE_BYTES,
   LOGIN_CODE_CHALLENGE_LENGTH,
   LOGIN_CODE_CHALLENGE_PATTERN,
