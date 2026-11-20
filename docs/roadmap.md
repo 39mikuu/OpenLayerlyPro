@@ -13,7 +13,7 @@ v1.1.0 发布完成 ✅
 → M1 邮件 Magic Link ✅（#168；后续安全边界 #183 / #197）
 → M2 Google / GitHub OAuth ✅（#170；主要面向粉丝/会员；已有管理员可经公共流程匹配，邮箱 + 密码仍是管理员专用主入口）
 → M3 Membership Bundle ✅（#171；`membership_tiers` 白名单 entitlements，Core-only）
-→ M4 债务包 ✅（#172；G5 CI actions、G7 Plausible parity；dispatcher baseline 回归保持绿）
+→ M4 债务包 ✅（#172；G5 CI actions、G7 Plausible parity；任务分发器的基线回归测试通过）
 → M5 验收收尾与发布准备 ✅（#174；正式发布待单独判断，不包含 G3 legacy removal）
 ```
 
@@ -48,14 +48,14 @@ v1.1.0 发布完成 ✅
 ## Phase 4：Integration v1 基座 ✅
 
 - 第一方 Integration 注册表、状态页与统一测试契约。
-- SMTP、Storage、Stripe、Turnstile、Tunnel、Translation、Google/GitHub OAuth 与 Plausible/Umami 状态收口。
+- 管理员可在系统状态页统一查看 SMTP、Storage、Stripe、Turnstile、Tunnel、Translation、Google/GitHub OAuth 和 Plausible/Umami 的状态。
 - Stripe payment adapter 与 Translation provider 已存在，但它们是应用内第一方能力，不是通用第三方 Plugin runtime。
 
 **⏸ 后续：** 只在出现真实统一需求时再评估通用启停开关；不规划第三方集成生命周期。
 
 ## Phase 5：Theme v1 基座 ✅
 
-- 主题数据契约、内置主题与全部公开页面契约化。
+- 主题数据契约、内置主题与通用会员站公开页面契约化。
 - 明暗模式、字体、颜色预设与受约束自由取色。
 - Theme 不负责权限、数据库访问或服务端 secret。
 
