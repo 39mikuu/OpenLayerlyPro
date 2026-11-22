@@ -8,7 +8,7 @@
 **Q: 粉丝收不到验证码邮件？**
 1. 后台 → 系统状态 → 发送测试邮件，确认 SMTP 配置正确；
 2. 检查垃圾箱；
-3. 同一邮箱 60 秒内只能发送一次，每小时最多 5 次。
+3. 默认发码去重窗口为 60 秒。能识别来源 IP 时，同一邮箱与来源 IP 组合默认每小时最多发码 5 次，来源 IP 另有限额。管理员可通过 `REQUEST_CODE_SEND_DEDUPE_SECONDS`、`REQUEST_CODE_EMAIL_IP_RATE_MAX` 和 `REQUEST_CODE_RATE_WINDOW_MS` 调整去重时间、组合限额和限流窗口。
 
 **Q: 管理员密码忘了怎么办？**
 不要把 `site_settings.initialized` 改回 `false`，也不要重新开放 `/admin/setup`。这样会重新暴露未认证初始化入口，并可能与已有默认数据冲突。
@@ -29,7 +29,7 @@ docker compose exec \
 **Q: 上传大文件失败？**
 - 默认单文件上限 500MB，可调 `MAX_UPLOAD_SIZE_MB`；内容附件会流式上传，不再整文件读入内存；
 - 图片和付款截图仍会缓冲以校验尺寸，应继续使用较小的图片上传限制；
-- 经 Cloudflare Tunnel 上传可能受边缘单请求大小限制，大文件建议在局域网内操作后台，或使用 S3/R2 存储；
+- 经 Cloudflare Tunnel 上传可能受边缘单请求大小限制，可通过受信任的局域网入口上传大文件。选择 S3/R2 后，浏览器仍先将附件传给应用，经 Tunnel 上传时仍受同一边缘限制；
 - 反向代理（Nginx 等）需同步调大 `client_max_body_size`；
 - 使用 S3/R2 时请配置清理未完成 multipart upload 的生命周期规则。
 

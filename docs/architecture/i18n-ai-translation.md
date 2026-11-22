@@ -1,6 +1,6 @@
 # i18n 与 AI Translation 架构
 
-> Phase 6 UI i18n 与 Phase 7 Content i18n + AI Translation（7·0–7·4）均已实现。后续范围包括 SEO/hreflang、posts 之外的内容翻译、archived 历史策略，以及真正可强制执行的 provider 用量/预算控制。
+> Phase 6 UI i18n 与 Phase 7 Content i18n + AI Translation（7·0–7·4）均已实现。公开文章已支持 canonical、Open Graph 和 sitemap。后续范围包括多语言 URL 与 hreflang、posts 之外的内容翻译、archived 历史策略，以及真正可强制执行的 provider 用量/预算控制。
 
 ## Phase 6：UI i18n v1 ✅
 
@@ -103,7 +103,7 @@ UI i18n 不会自动翻译创作者录入的作品、等级或付款说明；内
 
 ## 后续范围
 
-- SEO / hreflang / 路径式 locale：当前 locale 通过 cookie/协商，不在 URL 中。
+- 多语言 URL 与 hreflang：当前 locale 通过 cookie/协商，不在 URL 中。
 - tier 名/描述、付款方式说明等 posts 之外的数据多语言。
 - archived 译文的历史查看/恢复与长期 retention；低优先级 #58 需在增加历史恢复前处理。
 - 可审计的 AI 用量账本、月份边界、并发安全预留/扣减和调用前 hard quota enforcement；实现前不得把 `monthlyCharLimit` 宣传为预算保证。

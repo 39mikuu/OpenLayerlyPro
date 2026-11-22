@@ -18,7 +18,7 @@ SMTP is required for production fan email-code login and for transactional notif
 - SMTP passwords are stored through encrypted admin config when configured in the dashboard.
 - Admin read APIs return only masked/set-state information, never the password.
 - Do not commit SMTP credentials to `.env` or expose them through `NEXT_PUBLIC_*` variables.
-- Development mode may log verification codes only when SMTP is not configured. Production does not use this fallback.
+- Configure a test SMTP inbox to receive login codes during local development. Without SMTP, login-code delivery fails.
 
 ## Recipient Data Boundary
 

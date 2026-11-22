@@ -32,7 +32,7 @@ Core 是系统的不可拆卸核心，负责：
 - **付款与订阅**：人工凭证审核、Stripe 一次性 Checkout、Stripe 自动订阅、手动周期提醒、provider-event inbox/dispatcher、退款/拒付/reconcile。✅
 - **通知**：新内容邮件通知默认关闭、粉丝显式 opt-in、一键退订、按收件人 locale 渲染、campaign/delivery 账本、通知预算/pacing、同步 SMTP permanent rejection 抑制，以及后台安全聚合观测。✅
 - **赞助者鸣谢墙（WP5）**：默认关闭、粉丝显式 opt-in 的公开支持者页；资格按 effective active membership 每次请求派生（不缓存、无定时下墙任务），重叠会员取最高等级；展示显示名与等级、不展示金额/邮箱；一次性纯文本献词先审后展示、URL 不链接化；创作者可关闭、按等级限制、批准/隐藏；每用户一条 entry 由数据库唯一约束保证，状态转换与审核动作全部入审计。✅
-- **Session / Auth**：HMAC 会话、管理员账号维护、粉丝高熵验证码、邮件 Magic Link、Google / GitHub OAuth、Turnstile、可信 IP 与 S4 限流。✅
+- **Session / Auth**：HMAC 会话、管理员账号维护、与发码浏览器绑定的 6 位数字验证码、邮件 Magic Link、Google / GitHub OAuth、Turnstile、可信 IP 与 S4 限流。✅
 - **配置中心**：`app_settings` 加密配置、revision/CAS 并发保护，以及后台 SMTP/Turnstile/S3/上传/Stripe/Google OAuth/GitHub OAuth/Translation 管理；按各组契约支持 DB、环境变量与默认值。✅
 - **审计与任务**：统一 `audit_events` 因果链、`app_events` 运维事件、durable task/outbox、lease/fencing、有界重试与后台重试视图。✅
 
@@ -46,7 +46,7 @@ Core 边界原则：
 ## 4. Theme 主题系统 ▶
 
 - Theme 只负责表现层，不负责业务逻辑，不直接访问数据库。
-- 全部公开站点页面已通过 Core view-model 契约由内置主题渲染；明暗模式、字体、颜色预设和安全自由 hue 已实现。✅
+- 通用会员站的公开页面由活动主题按 Core 提供的数据渲染。个人博客模式使用专用的公开文章列表。明暗模式、字体、颜色预设和安全自由 hue 已实现。✅
 - 第二主题（博客主题：文字优先阅读形态，交易页复用内置实现）与后台活动主题选择器已实现；各主题配色按主题分键独立保存。✅
 - WP5 起主题契约含必选 `SupporterWall` 组件槽，三内置主题同步实现；主题仍只消费 Core 派生的 view-model，不旁路取数。✅
 - 详见 [architecture/theme-system.md](architecture/theme-system.md)。
@@ -83,7 +83,7 @@ Integration 是官方内置的第三方服务对接，随 Core 发布、由项�
 - `posts.original_locale` + 版本化 `post_translations` 支持 draft/published/archived、manual/machine、published 唯一约束与原文回落。
 - 后台支持手动译文 CRUD、预览/审核/发布/撤回和 stale-source 提示。
 - OpenAI-compatible AI 翻译默认关闭，仅管理员显式触发；默认保存 machine draft，direct publish 必须创作者显式开启，访客不能触发成本。
-- SEO/hreflang、posts 之外的内容翻译和 archived 历史恢复仍属后续。
+- 公开文章已支持 canonical、Open Graph 和 sitemap。多语言 URL 与 hreflang、posts 之外的内容翻译和 archived 历史恢复仍属后续。
 - 详见 [architecture/i18n-ai-translation.md](architecture/i18n-ai-translation.md)。
 
 ## 8. Deployment & Network Edge

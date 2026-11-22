@@ -16,7 +16,7 @@ pnpm db:migrate
 pnpm dev
 ```
 
-Development mode can log email login codes when SMTP is not configured. Production must use real SMTP.
+Configure a test SMTP inbox to receive email login codes during local development. Production must use real SMTP.
 
 ## Validation
 
@@ -38,7 +38,7 @@ pnpm build:restore-tools
 pnpm build
 ```
 
-`pnpm build` only builds the Next application. It does not replace the explicit one-off artifact builds. Recovery/upgrade work must verify that `dist/migrate.mjs`, `dist/files-backfill.mjs`, `dist/admin-reset.mjs`, `dist/magic-link-rollback.mjs`, and the five `dist/restore-*.mjs` tools are produced and included in the target image.
+`pnpm build` only builds the Next application. It does not replace the explicit one-off artifact builds. Recovery/upgrade work must verify that `dist/migrate.mjs`, `dist/files-backfill.mjs`, `dist/admin-reset.mjs`, `dist/magic-link-rollback.mjs`, and the six `dist/restore-*.mjs` tools are produced and included in the target image.
 
 Security/payment/file/task changes that depend on PostgreSQL behavior must also run the real database suite:
 
