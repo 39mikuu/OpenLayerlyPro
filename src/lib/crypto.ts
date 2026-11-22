@@ -9,11 +9,9 @@ import {
   timingSafeEqual,
 } from "crypto";
 
-import { CROCKFORD_BASE32_ALPHABET, LOGIN_CODE_LENGTH } from "@/modules/auth/input-policy";
+import { LOGIN_CODE_LENGTH } from "@/modules/auth/input-policy";
 import { getConfigEncryptionKey } from "@/modules/security/config-key";
 import { getSessionSecret } from "@/modules/security/session-secret";
-
-export { CROCKFORD_BASE32_ALPHABET };
 
 export function generateSessionToken(): string {
   return randomBytes(32).toString("base64url");

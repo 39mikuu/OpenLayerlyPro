@@ -1,15 +1,5 @@
 import { z } from "zod";
 
-export const CROCKFORD_BASE32_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-export const DECIMAL_LOGIN_CODE_ALPHABET = "0123456789";
-
-export const LOGIN_CODE_ALPHABETS = {
-  decimal: DECIMAL_LOGIN_CODE_ALPHABET,
-  "crockford-base32": CROCKFORD_BASE32_ALPHABET,
-} as const;
-
-export type LoginCodeAlphabet = keyof typeof LOGIN_CODE_ALPHABETS;
-
 export const RAW_EMAIL_MAX_LENGTH = 512;
 export const NORMALIZED_EMAIL_MAX_LENGTH = 254;
 export const RAW_LOGIN_CODE_MAX_LENGTH = 128;
@@ -17,7 +7,6 @@ export const LOGIN_CODE_LENGTH = 6;
 export const LOGIN_CODE_MAX_ATTEMPTS = 5;
 export const LOGIN_CODE_CHALLENGE_BYTES = 32;
 export const LOGIN_CODE_CHALLENGE_LENGTH = 43;
-export const LEGACY_LOGIN_CODE_LENGTH = 16;
 export const LEGACY_LOGIN_CODE_MAX_LENGTH = 64;
 
 export const LOGIN_CODE_PATTERN = /^[0-9]{6}$/;
@@ -41,32 +30,11 @@ export function sanitizeLoginCodeInput(code: string): string {
   return normalized.replace(/[^0-9A-HJKMNP-TV-Z]/g, "").slice(0, LEGACY_LOGIN_CODE_MAX_LENGTH);
 }
 
-export function getLoginCodeAlphabet(alphabet: LoginCodeAlphabet): string {
-  return LOGIN_CODE_ALPHABETS[alphabet];
-}
-
-export function getLoginCodePolicy(config?: {
-  LOGIN_CODE_ALPHABET: LoginCodeAlphabet;
-  LOGIN_CODE_LENGTH: number;
-}) {
-  void config;
-  return {
-    alphabet: DECIMAL_LOGIN_CODE_ALPHABET,
-    alphabetName: "decimal" as const,
-    length: LOGIN_CODE_LENGTH,
-    pattern: LOGIN_CODE_PATTERN,
-  };
-}
-
 export function validateNormalizedEmail(email: string): string {
   return normalizedEmailSchema.parse(email);
 }
 
-export function validateLoginCode(
-  code: string,
-  config?: { LOGIN_CODE_ALPHABET: LoginCodeAlphabet; LOGIN_CODE_LENGTH: number },
-): string {
-  void config;
+export function validateLoginCode(code: string): string {
   return z
     .string()
     .refine(

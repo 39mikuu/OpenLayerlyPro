@@ -17,10 +17,6 @@ vi.mock("@/modules/admin/navigation", () => ({
   adminNavGroups: [],
 }));
 
-vi.mock("@/modules/auth/rate-limit-policy", () => ({
-  getLoginCodePolicy: vi.fn(() => ({ length: 6, pattern: /^\d{6}$/ })),
-}));
-
 vi.mock("@/modules/auth/session", () => ({
   getCurrentUser: vi.fn(),
 }));
