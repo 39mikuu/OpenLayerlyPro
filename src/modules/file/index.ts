@@ -634,9 +634,7 @@ export async function deleteFile(id: string): Promise<void> {
       settingRefs > 0;
 
     if (isReferenced) {
-      // Deletion is blocked. Only now compute exact reference counts for the
-      // fileInUse error, preserving the counted error contract (S1b handoff).
-      // These counts are index-backed and only run on the rejected path.
+      // Deletion is blocked; compute index-backed reference counts for the fileInUse error.
       const [[postFile], [qr], [cover], [proof]] = await Promise.all([
         tx.select({ c: count() }).from(postFiles).where(eq(postFiles.fileId, id)),
         tx.select({ c: count() }).from(paymentMethods).where(eq(paymentMethods.qrFileId, id)),

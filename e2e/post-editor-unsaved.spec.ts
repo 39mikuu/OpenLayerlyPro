@@ -354,21 +354,8 @@ test("dirty guard pushes only its own marker, without re-copying stale history.s
 }) => {
   await openDraftEditor(page);
 
-  // Verified by direct instrumentation (see investigation notes in
-  // post-editor.tsx): this app's Next.js App Router client runtime
-  // globally patches window.history.pushState so that EVERY call --
-  // including this component's -- has __NA and
-  // __PRIVATE_NEXTJS_INTERNALS_TREE attached before it reaches the real
-  // browser API, regardless of what the caller passes in. That means no
-  // component-level code in this app can push a history entry that omits
-  // Next's route-tree payload; a true byte-for-byte "minimal" entry is not
-  // achievable without patching Next's own history integration, which is
-  // out of scope here (and would risk breaking App Router back/forward).
-  //
-  // What IS within this component's control, and what changed here: the
-  // guard no longer manually re-spreads whatever was in window.history.state
-  // at push time into a new object. Confirm the guard-detection contract
-  // still holds regardless of Next's own state-augmentation.
+  // Verify the dirty-guard marker is present on history.state alongside
+  // Next.js's own patched pushState metadata.
   await page.getByRole("textbox", { name: "正文", exact: true }).fill("最小化历史状态验证正文");
   await expect(page.getByText("有未保存更改。保存后再发布或离开页面。")).toBeVisible();
 
@@ -387,13 +374,7 @@ test("dirty guard pushes only its own marker, without re-copying stale history.s
 test("a real guarded-anchor click still shows the unsaved-changes dialog even with an active text selection", async ({
   page,
 }) => {
-  // Regression test for a bypass found in independent review: an earlier
-  // revision of the click handler skipped the guard entirely whenever any
-  // text selection was active, which would let a real "leave the page"
-  // click on a guarded link through unconfirmed if the user happened to
-  // have unrelated text selected. The selection check must only affect the
-  // popstate handler (iOS edge-swipe-back noise), never a genuine click on
-  // a guarded anchor.
+  // Active text selection suppresses only spurious popstate events, never real anchor clicks.
   await openDraftEditor(page);
   const textarea = page.getByRole("textbox", { name: "正文", exact: true });
   await textarea.fill("验证有选区时真实链接点击仍会弹出未保存提示");
@@ -417,16 +398,7 @@ test("a real guarded-anchor click still shows the unsaved-changes dialog even wi
 });
 
 test("a same-entry selection popstate does not stack a duplicate guard entry", async ({ page }) => {
-  // Regression test for a P2 found in independent PR review
-  // (github.com/39mikuu/OpenLayerlyPro/pull/159#discussion_r3563500275):
-  // the selection-tolerant popstate branch used to unconditionally push a
-  // fresh guard entry, even when the popstate never actually moved
-  // window.history.state off the guard entry (e.g. a synthetic/same-entry
-  // popstate fired during a selection gesture). That stacked a duplicate
-  // same-URL guard entry, so a later confirmed Back would only collapse the
-  // top duplicate and leave the user stuck on the editor for one extra
-  // back/confirm cycle. Only a pop that actually left the guard entry
-  // should trigger a fresh push.
+  // A selection-time popstate that stays on the guard entry must not stack a duplicate entry.
   await openDraftEditor(page);
   const textarea = page.getByRole("textbox", { name: "正文", exact: true });
   await textarea.fill("验证同一历史记录条目上的选区弹出不会堆叠重复守卫");

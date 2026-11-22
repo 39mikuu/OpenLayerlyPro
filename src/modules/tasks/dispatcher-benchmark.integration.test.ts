@@ -7,15 +7,7 @@ import { tasks } from "@/db/schema";
 import { claimDueTasks } from "./runtime";
 
 /**
- * Issue #101 — task claim throughput / latency benchmark (evidence only).
- *
- * Gated behind RUN_TASK_BENCHMARK=true so it never runs in normal CI. It seeds a
- * realistic 100k mixed-state task table and measures the cost of the production
- * claim path (`claimDueTasks`, which runs the per-transaction final-attempt sweep
- * followed by the OR claim SELECT with FOR UPDATE SKIP LOCKED).
- *
- * No production code is changed. Captured numbers are recorded in
- * docs/audit/issue-101-dispatcher-design.md.
+ * Opt-in task claim throughput and latency benchmark (gated by RUN_TASK_BENCHMARK=true).
  */
 
 const runBenchmark = process.env.RUN_TASK_BENCHMARK === "true" ? describe : describe.skip;

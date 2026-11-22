@@ -14,12 +14,8 @@ import { zh } from "./messages/zh";
 import { translate } from "./translate";
 
 /**
- * en.ts/ja.ts already declare `: Messages` (the type derived from zh.ts's own
- * shape via `typeof zh`), so tsc's excess-property + missing-property checks
- * already reject any key drift at compile time. This test formalizes that
- * invariant as an explicit, named, CI-visible check (issue #101 known-gaps G4)
- * with diagnostics that list every missing/extra path at once, rather than
- * tsc's first-divergence-only error.
+ * Verifies zh/en/ja translation catalogs have identical key paths and reports
+ * all missing or extra keys at once.
  */
 function collectKeyPaths(value: unknown, prefix = ""): string[] {
   if (typeof value !== "object" || value === null) return [prefix];

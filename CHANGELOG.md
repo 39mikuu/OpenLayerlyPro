@@ -195,7 +195,7 @@ The 2026-06-29 release-candidate report was gathered at commit `4768aafa`; the f
 
 ## v0.2.0 (unreleased historical candidate; superseded)
 
-This section records the earlier candidate scope for automatic one-time payments and production-scale content delivery. It was superseded by the broader v1.0 line and is not the current release gate. The old `docs/release-v0.2-checklist.md` is retained only as a historical pointer; use `docs/release-v1.0-checklist.md` instead.
+This section records the earlier candidate scope for automatic one-time payments and production-scale content delivery. It was superseded by the broader v1.0 line and is not the current release gate. The old `docs/release-v0.2-checklist.md` was superseded and removed; use `docs/release-v1.0-checklist.md` instead.
 
 ### Stripe One-Time Checkout
 

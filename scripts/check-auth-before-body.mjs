@@ -65,7 +65,7 @@ const ALLOWLIST = [
     method: "POST",
     kind: "public-body",
     reason:
-      "This is an intentionally unauthenticated first-time initialization entry point; its risk and the semantics of 'first admin creation' are owned by the existing setup design itself, not by this PR's definition of a 'protected write route'.",
+      "Unauthenticated first-time site initialization endpoint; protected by setup-state gating rather than session auth.",
   },
   {
     file: "src/app/api/payments/webhook/stripe/route.ts",
