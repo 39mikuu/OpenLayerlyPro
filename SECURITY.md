@@ -2,9 +2,9 @@
 
 ## Supported Versions
 
-OpenLayerlyPro's current published and security-supported release is **v1.1.0** (released on 2026-07-17; see `docs/releases/v1.1.0-release-notes.md`). Security fixes land on `main`. The v1.0.0 and older preview documentation is historical and is not the current release or security-support gate.
+OpenLayerlyPro's current release is **v1.1.0** (released on 2026-07-17; see `docs/releases/v1.1.0-release-notes.md`). Security fixes land on `main`.
 
-Self-hosters running an older commit should reproduce against the latest `main` or upgrade through the documented migration/remediation flow before assuming a fix can be backported safely.
+Self-hosters running an older commit should reproduce against the latest `main` or upgrade through `docs/deployment/upgrade.md` before assuming a fix can be backported safely.
 
 ## Reporting a Vulnerability
 
@@ -26,40 +26,31 @@ If private vulnerability reporting is temporarily unavailable, contact the maint
 
 ## Self-Hosting Security Checklist
 
-- Docker Compose atomically generates a strong file-backed `SESSION_SECRET`; advanced deployments may provide an external env value or mounted file.
+- Docker Compose automatically creates a persistent `SESSION_SECRET` file; advanced deployments may provide an external env value or mounted file.
 - Back up the config encryption key file or Docker `secrets` volume. Losing it can make encrypted settings unrecoverable.
-- Preserve the same `SESSION_SECRET` for session/login-task recovery. Replacing or deleting it intentionally invalidates sessions and can make in-flight encrypted login-code tasks undecryptable. File-backed values are archived; external values remain the operator's responsibility.
-- Never run `docker compose down -v` without a tested recovery point for the secrets volume.
-- Run the app behind HTTPS using Cloudflare Tunnel, Caddy, Nginx, Traefik, or another trusted edge.
+- Preserve `SESSION_SECRET` across restarts and restores. Replacing or deleting it invalidates existing sessions and in-flight encrypted login-code tasks. File-backed secrets are archived automatically; external env secrets must be backed up separately.
+- Do not run `docker compose down -v` without a verified backup of the `secrets` volume.
+- Serve the app over HTTPS behind Cloudflare Tunnel, Caddy, Nginx, Traefik, or another trusted reverse proxy.
 - Configure `TRUSTED_PROXY_HEADER` and `TRUSTED_PROXY_HOPS` only for proxy layers you control.
-- Do not expose the origin port directly when trusting single-value headers such as `cf-connecting-ip`.
-- Use one app instance unless a shared rate-limit backend has been implemented; the current limiter is process-local.
-- Configure SMTP before allowing fan login in production, and monitor failed/dead/deferred mail tasks plus the delivery ledger.
-- Keep attachment and payment-proof upload limits aligned with reverse-proxy and storage limits. Content attachments stream to local or S3/R2 storage; image purposes are buffered for bounded validation and mandatory raster normalization.
+- Do not expose port `3000` directly to the public internet when trusting single-value headers such as `cf-connecting-ip`.
+- Run a single app instance; rate limits are currently process-local.
+- Configure SMTP before enabling fan login in production, and monitor failed or deferred mail tasks in the admin dashboard.
+- Align attachment and payment-proof upload limits with reverse-proxy and storage limits. Content attachments stream to local or S3/R2 storage; images are buffered for size validation and re-encoding.
 - Use S3/R2 for large production files when possible, and configure an abort-incomplete-multipart lifecycle rule.
-- Keep payment proof files private. They are only accessible to the submitting user and admins through the download API.
-- Keep Stripe secret keys and webhook secrets encrypted, use HTTPS for webhook delivery, and never grant membership from browser redirects alone.
+- Keep payment proof files private; they are accessible only to the submitting user and admins through the download API.
+- Keep Stripe secret keys and webhook secrets encrypted, use HTTPS for webhook delivery, and rely on signed webhooks rather than browser redirects to grant membership.
 - Enable only trusted AI translation providers; visitors cannot trigger paid translation calls.
-- Use safe footer markup and structured verification/integration records. Review
-  custom integration code and exact CSP origins before saving them; custom
-  scripts remain trusted administrator code.
-- Follow `docs/deployment/upgrade.md`; do not replace the documented remediation/backfill flow with a plain `git pull && docker compose up`.
-- Run periodic isolated restore drills using the S7 archive-integrity, schema-probing, restored-task neutralization, file-safety remediation, and DB↔storage convergence pipeline.
+- Review custom integration code and CSP origins carefully before saving them in admin settings; custom scripts run as trusted administrator code.
+- Follow `docs/deployment/upgrade.md` when upgrading instead of running a plain `git pull && docker compose up`.
+- Periodically test backups in an isolated environment using `./scripts/restore.sh` (see `docs/deployment/backup-restore.md`).
 
 ## Public Integration Code Risk
 
-The legacy mixed-purpose custom footer has been replaced by sanitized footer
-markup, structured verification records, and nonce-authorized public
-integrations. Existing legacy values remain available in the admin page for
-explicit copy, download, safe migration, or clearing.
+Custom footer HTML has been separated into sanitized footer markup, structured verification records, and nonce-authorized public integrations. Existing legacy footer values remain available in the admin page for inspection, migration, or removal.
 
-Only add trusted custom integration code. A bad or hostile script can affect
-visitors, leak analytics data, break pages, or degrade performance. Custom code
-and its precise HTTPS origins must never be populated from fan or post content.
+Only add trusted custom integration code. A hostile script can affect visitors, leak analytics data, or break pages. Custom code and allowed HTTPS origins must come only from administrators, never from fan or post content.
 
-Production `script-src` uses per-request nonces and does not allow
-`unsafe-inline`, `unsafe-eval`, wildcard script sources, bare schemes, or
-administrator-supplied nonce attributes.
+Production `script-src` uses per-request nonces and disallows `unsafe-inline`, `unsafe-eval`, wildcard script sources, bare schemes, and administrator-supplied nonce attributes.
 
 ## Secrets
 

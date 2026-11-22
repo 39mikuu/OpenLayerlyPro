@@ -4,17 +4,8 @@ import postgres from "postgres";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 /**
- * Issue #103 — deterministic reproduction of concurrent first-time initialization.
- *
- * `setupSite()` checks `isInitialized()` before opening its transaction and never
- * rechecks inside it, so two concurrent callers can both pass the precheck. This
- * file establishes what actually happens when they race, using:
- *   1. an end-to-end race of the real `setupSite()` (same and different emails), and
- *   2. a barrier-controlled two-connection reproduction that forces both callers
- *      through the precheck window before either commits.
- *
- * No production code is changed. The tests assert the observed, constraint-enforced
- * outcome so the file is a living record of the race resolution.
+ * PostgreSQL integration tests for concurrent first-time site initialization,
+ * covering end-to-end setupSite() races and barrier-synchronized transactions.
  */
 import { getDb } from "@/db";
 import {

@@ -1340,25 +1340,10 @@ export async function reconcileSubscriptions(): Promise<number> {
     if (!providerSubscriptionRef || !subscription.providerPriceRef) continue;
 
     const remote = await provider.retrieveSubscription(providerSubscriptionRef);
-    // Advance the ordering fence to the provider-clock observation fence
-    // (`observedAt`), in the same clock domain as webhook `providerCreatedAt`
-    // (issue #112 / reproduced in #102). Both sides are second-granularity Stripe
-    // timestamps, anchored at opposite ends of their second: webhook
-    // `providerCreatedAt` is `event.created * 1000`, the START of its second
-    // (S.000), while `observedAt` arrives here already normalized by
-    // `getPaymentProvider()` to the END of the observed second (S.999, see
-    // `providerObservationFence`).
-    //
-    // The guard is a STRICT `<` evaluated against the live row at update time, but
-    // it is subordinate to each state-machine transition. Webhooks that move a row
-    // out of a guarded state first can make later observations ineligible through
-    // the status CAS. If an observation commits first, its S.999 fence blocks
-    // same-second S.000 webhooks; only a later provider second can cross it. The
-    // timestamp predicate does not make observations unconditional.
-    //
-    // Fail closed if the provider gives no observation timestamp: skip the
-    // status/fence write rather than fall back to local time (which would mix clock
-    // domains). Invoice reconciliation below still runs.
+    // Advance statusEventAt to the provider-clock observation fence (S.999) so it
+    // stays in the same clock domain as webhook providerCreatedAt (S.000).
+    // The strict `<` guard blocks same-second webhooks from overwriting a newer
+    // observation; skip status writes (fail closed) if observedAt is missing.
     if (remote.observedAt) {
       await getDb()
         .update(subscriptions)

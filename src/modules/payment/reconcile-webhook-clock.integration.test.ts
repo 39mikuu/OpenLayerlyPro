@@ -3,21 +3,8 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * Issue #112 — regression guard for the reconcile / webhook clock ordering fix
- * (defect reproduced under #102).
- *
- * Clock model — a single provider (Stripe) clock domain:
- * - webhook ordering uses `providerCreatedAt` (provider event time, whole seconds);
- * - reconcile advances `statusEventAt` to `retrieveSubscription().observedAt`, a
- *   provider-clock fence through the end of the Stripe response Date second.
- *
- * Because Stripe event.created and the HTTP Date header are both second-granularity,
- * their order inside one second is unknowable. The deterministic fail-closed policy is
- * therefore: the provider observation wins the represented second; a same-second
- * webhook cannot directly overwrite it and the next provider reconciliation converges
- * any genuinely later same-second change. A webhook from the next provider second is
- * still accepted normally. Missing observation timestamps never fall back to local
- * time. Tests drive real production functions against real PostgreSQL.
+ * PostgreSQL integration tests for provider-clock ordering between subscription
+ * reconciliation (S.999 observation fence) and Stripe webhooks (S.000 event time).
  */
 
 const providerMocks = vi.hoisted(() => ({
